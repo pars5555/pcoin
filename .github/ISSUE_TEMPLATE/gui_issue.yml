@@ -1,0 +1,10 @@
+name: Issue or feature request related to the GUI
+description: Any report, issue or feature request related to the GUI (bitcoin-qt)
+labels: [GUI]
+body:
+- type: textarea
+  id: gui-request
+  attributes:
+    label: Report
+  validations:
+    required: true

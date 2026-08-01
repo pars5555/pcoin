@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: PCoin website
+    url: https://pc.am
+    about: Project overview, quickstart, and mission
+  - name: PCoin technical manual (PCOIN.md)
+    url: https://github.com/pars5555/pcoin/blob/HEAD/PCOIN.md
+    about: Full technical documentation — build, run, mine, troubleshoot

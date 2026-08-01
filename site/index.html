@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PCoin — the coin anyone can mine</title>
+<meta name="description" content="PCoin (PCN) is an independent Layer-1 blockchain with Bitcoin's economics and RandomX CPU proof-of-work. If you own a phone or a laptop, you can mine PCN.">
+<meta name="theme-color" content="#0a0b10">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%238b5cf6'/%3E%3Cstop offset='1' stop-color='%232dd4bf'/%3E%3C/linearGradient%3E%3C/defs%3E%3Ccircle cx='32' cy='32' r='31' fill='%230a0b10'/%3E%3Ccircle cx='32' cy='32' r='28' fill='url(%23g)'/%3E%3Cpath d='M25 47V17h11a10 10 0 0 1 0 20h-8' fill='none' stroke='%230a0b10' stroke-width='6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+  :root{
+    --bg:#0a0b10;
+    --bg-alt:#0d0f17;
+    --panel:#11131d;
+    --panel-2:#151827;
+    --line:rgba(255,255,255,.09);
+    --line-soft:rgba(255,255,255,.06);
+    --text:#e9ebf4;
+    --muted:#9aa2b8;
+    --dim:#6b7288;
+    --violet:#8b5cf6;
+    --teal:#2dd4bf;
+    --grad:linear-gradient(135deg,#8b5cf6,#2dd4bf);
+    --radius:16px;
+    --mono:ui-monospace,"Cascadia Code",Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    background:var(--bg);
+    color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    font-size:16.5px;
+    line-height:1.65;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--teal);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 24px}
+
+  /* ---------- nav ---------- */
+  header.nav{
+    position:sticky;top:0;z-index:50;
+    background:rgba(10,11,16,.82);
+    backdrop-filter:blur(12px);
+    -webkit-backdrop-filter:blur(12px);
+    border-bottom:1px solid var(--line-soft);
+  }
+  .nav-inner{display:flex;align-items:center;gap:28px;padding:14px 24px;max-width:1080px;margin:0 auto;flex-wrap:wrap}
+  .brand{display:flex;align-items:center;gap:11px;font-weight:700;font-size:1.15rem;color:var(--text);letter-spacing:.01em}
+  .brand:hover{text-decoration:none}
+  .brand small{font-weight:600;color:var(--dim);font-size:.78rem;border:1px solid var(--line);border-radius:99px;padding:1px 8px}
+  nav.links{display:flex;gap:22px;margin-left:auto;flex-wrap:wrap;align-items:center}
+  nav.links a{color:var(--muted);font-size:.93rem;font-weight:500}
+  nav.links a:hover{color:var(--text);text-decoration:none}
+  .gh-pill{
+    display:inline-flex;align-items:center;gap:7px;
+    border:1px solid var(--line);border-radius:99px;padding:6px 14px;
+    color:var(--text) !important;font-weight:600;
+  }
+  .gh-pill:hover{border-color:var(--teal);text-decoration:none}
+
+  /* ---------- hero ---------- */
+  .hero{
+    position:relative;overflow:hidden;
+    border-bottom:1px solid var(--line-soft);
+    background:
+      radial-gradient(52rem 30rem at 12% -10%,rgba(139,92,246,.17),transparent 60%),
+      radial-gradient(46rem 28rem at 95% 10%,rgba(45,212,191,.12),transparent 60%),
+      var(--bg);
+  }
+  .hero::before{
+    content:"";position:absolute;inset:0;pointer-events:none;
+    background:
+      repeating-linear-gradient(0deg,rgba(255,255,255,.025) 0 1px,transparent 1px 56px),
+      repeating-linear-gradient(90deg,rgba(255,255,255,.025) 0 1px,transparent 1px 56px);
+    mask-image:radial-gradient(60rem 34rem at 50% 0%,#000 30%,transparent 75%);
+    -webkit-mask-image:radial-gradient(60rem 34rem at 50% 0%,#000 30%,transparent 75%);
+  }
+  .hero-inner{position:relative;display:flex;align-items:center;gap:48px;padding:92px 24px 100px;max-width:1080px;margin:0 auto}
+  .hero-copy{flex:1 1 34rem;min-width:0}
+  .eyebrow{
+    display:inline-flex;align-items:center;gap:8px;
+    font-size:.8rem;font-weight:600;letter-spacing:.04em;color:var(--muted);
+    border:1px solid var(--line);border-radius:99px;padding:6px 14px;margin-bottom:26px;
+    background:rgba(255,255,255,.03);
+  }
+  .eyebrow .dot{width:7px;height:7px;border-radius:99px;background:var(--grad);display:inline-block}
+  h1{font-size:clamp(2.5rem,6vw,4.1rem);line-height:1.06;letter-spacing:-.025em;font-weight:800;margin-bottom:22px}
+  h1 .grad{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero-sub{color:var(--muted);font-size:1.16rem;max-width:36rem;margin-bottom:34px}
+  .hero-sub strong{color:var(--text);font-weight:600}
+  .cta-row{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:38px}
+  .btn{
+    display:inline-flex;align-items:center;gap:9px;
+    border-radius:12px;padding:13px 26px;font-weight:700;font-size:1rem;
+    transition:transform .12s ease,box-shadow .12s ease,border-color .12s ease;
+  }
+  .btn:hover{text-decoration:none;transform:translateY(-1px)}
+  .btn-primary{background:var(--grad);color:#0a0b10;box-shadow:0 8px 28px rgba(94,140,220,.28)}
+  .btn-primary:hover{box-shadow:0 10px 34px rgba(94,140,220,.4)}
+  .btn-ghost{border:1px solid var(--line);color:var(--text);background:rgba(255,255,255,.03)}
+  .btn-ghost:hover{border-color:var(--teal)}
+  .fact-chips{display:flex;gap:10px;flex-wrap:wrap}
+  .chip{
+    font-size:.83rem;font-weight:600;color:var(--muted);
+    border:1px solid var(--line);border-radius:99px;padding:5px 13px;
+    background:rgba(255,255,255,.02);
+  }
+  .chip b{color:var(--text);font-weight:700}
+  .hero-art{flex:0 1 300px;display:flex;justify-content:center}
+  .hero-art svg{
+    width:min(280px,60vw);height:auto;
+    filter:drop-shadow(0 18px 60px rgba(139,92,246,.35)) drop-shadow(0 6px 24px rgba(45,212,191,.22));
+  }
+
+  /* ---------- sections ---------- */
+  section{padding:88px 0}
+  section.alt{background:var(--bg-alt);border-top:1px solid var(--line-soft);border-bottom:1px solid var(--line-soft)}
+  .kicker{
+    display:inline-block;font-size:.8rem;font-weight:800;letter-spacing:.14em;text-transform:uppercase;
+    background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;margin-bottom:12px;
+  }
+  h2{font-size:clamp(1.7rem,3.6vw,2.4rem);letter-spacing:-.02em;font-weight:800;margin-bottom:16px}
+  .lede{color:var(--muted);max-width:44rem;font-size:1.07rem;margin-bottom:44px}
+  .lede strong{color:var(--text)}
+
+  /* pillars */
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px}
+  .card{
+    background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:30px 28px;position:relative;overflow:hidden;
+    transition:border-color .15s ease,transform .15s ease;
+  }
+  .card:hover{border-color:rgba(139,92,246,.45);transform:translateY(-2px)}
+  .card .icon{
+    width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;
+    background:rgba(139,92,246,.13);border:1px solid rgba(139,92,246,.3);margin-bottom:18px;
+  }
+  .card h3{font-size:1.16rem;font-weight:700;margin-bottom:10px;letter-spacing:-.01em}
+  .card p{color:var(--muted);font-size:.97rem}
+  .card p b{color:var(--text)}
+
+  /* randomx section */
+  .split{display:flex;gap:44px;align-items:flex-start;flex-wrap:wrap}
+  .split .col{flex:1 1 22rem;min-width:0}
+  .mini-list{list-style:none;display:grid;gap:14px;margin-top:8px}
+  .mini-list li{
+    display:flex;gap:14px;align-items:flex-start;
+    background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 18px;
+  }
+  .mini-list .tick{
+    flex:0 0 auto;width:26px;height:26px;border-radius:8px;margin-top:2px;
+    background:rgba(45,212,191,.12);border:1px solid rgba(45,212,191,.35);
+    display:flex;align-items:center;justify-content:center;
+  }
+  .mini-list b{color:var(--text)}
+  .mini-list p{color:var(--muted);font-size:.95rem}
+  .honest-box{
+    border:1px dashed rgba(255,255,255,.22);border-radius:14px;padding:18px 20px;margin-top:22px;
+    color:var(--muted);font-size:.95rem;background:rgba(255,255,255,.02);
+  }
+  .honest-box b{color:var(--text)}
+
+  /* parameters table */
+  .table-shell{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);overflow-x:auto}
+  table.params{width:100%;border-collapse:collapse;min-width:560px}
+  table.params th,table.params td{padding:14px 22px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line-soft)}
+  table.params tr:last-child th,table.params tr:last-child td{border-bottom:none}
+  table.params th{color:var(--muted);font-weight:600;font-size:.92rem;white-space:nowrap;width:34%}
+  table.params td{font-size:.96rem}
+  table.params tr:hover td,table.params tr:hover th{background:rgba(255,255,255,.02)}
+  .mono{font-family:var(--mono);font-size:.87em;color:#c9f2ea;word-break:break-all}
+  .note{color:var(--dim);font-size:.88em}
+
+  /* terminal */
+  .term{
+    background:#0b0e16;border:1px solid var(--line);border-radius:var(--radius);
+    overflow:hidden;box-shadow:0 14px 44px rgba(0,0,0,.45);
+  }
+  .term-bar{
+    display:flex;align-items:center;gap:8px;padding:11px 16px;
+    background:#121524;border-bottom:1px solid var(--line-soft);
+  }
+  .term-bar i{width:11px;height:11px;border-radius:99px;display:inline-block}
+  .term-bar i:nth-child(1){background:#ff5f57}.term-bar i:nth-child(2){background:#febc2e}.term-bar i:nth-child(3){background:#28c840}
+  .term-bar span{margin-left:10px;color:var(--dim);font-size:.8rem;font-family:var(--mono)}
+  .term pre{
+    overflow-x:auto;padding:22px 24px;font-family:var(--mono);
+    font-size:.88rem;line-height:1.85;color:#dbe2f4;
+  }
+  .term .c{color:#6d7690}          /* comment */
+  .term .o{color:#7fd8c8}          /* output   */
+  .term .s{color:#b7a6f7}          /* string   */
+  .steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin:30px 0 34px}
+  .step{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 20px}
+  .step .num{
+    font-family:var(--mono);font-weight:700;font-size:.8rem;color:#0a0b10;
+    background:var(--grad);border-radius:8px;padding:2px 9px;display:inline-block;margin-bottom:10px;
+  }
+  .step h4{font-size:.99rem;font-weight:700;margin-bottom:4px}
+  .step p{color:var(--muted);font-size:.9rem}
+
+  /* roadmap */
+  .timeline{list-style:none;position:relative;margin-top:8px;padding-left:34px}
+  .timeline::before{
+    content:"";position:absolute;left:10px;top:8px;bottom:8px;width:2px;
+    background:linear-gradient(180deg,#8b5cf6,#2dd4bf);border-radius:2px;opacity:.55;
+  }
+  .timeline li{position:relative;padding:0 0 34px}
+  .timeline li:last-child{padding-bottom:0}
+  .timeline li::before{
+    content:"";position:absolute;left:-30px;top:7px;width:14px;height:14px;border-radius:99px;
+    background:var(--grad);box-shadow:0 0 0 5px rgba(139,92,246,.14);
+  }
+  .timeline h3{font-size:1.12rem;font-weight:700;letter-spacing:-.01em;margin-bottom:5px}
+  .timeline p{color:var(--muted);max-width:38rem;font-size:.97rem}
+  .timeline .tag{
+    display:inline-block;font-size:.72rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase;
+    color:var(--teal);border:1px solid rgba(45,212,191,.35);border-radius:99px;padding:2px 10px;margin-left:10px;vertical-align:2px;
+  }
+
+  /* honest notes */
+  .honest-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px}
+  .honest-card{
+    background:var(--panel);border:1px solid var(--line);border-left:3px solid transparent;
+    border-image:none;border-radius:14px;padding:24px 24px;
+  }
+  .honest-card{border-left-color:rgba(139,92,246,.6)}
+  .honest-card:nth-child(even){border-left-color:rgba(45,212,191,.6)}
+  .honest-card h3{font-size:1.03rem;font-weight:700;margin-bottom:8px}
+  .honest-card p{color:var(--muted);font-size:.94rem}
+  .honest-card p b{color:var(--text)}
+
+  /* footer */
+  footer{border-top:1px solid var(--line-soft);background:var(--bg-alt)}
+  .foot-inner{
+    display:flex;gap:32px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;
+    max-width:1080px;margin:0 auto;padding:52px 24px 30px;
+  }
+  .foot-brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:1.05rem;color:var(--text)}
+  .foot-col p,.foot-col a{color:var(--muted);font-size:.93rem;display:block}
+  .foot-col a{margin-bottom:6px}
+  .foot-col h5{font-size:.78rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin-bottom:12px}
+  .foot-base{
+    border-top:1px solid var(--line-soft);color:var(--dim);font-size:.85rem;
+    max-width:1080px;margin:0 auto;padding:20px 24px 34px;
+    display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;
+  }
+
+  @media (max-width:760px){
+    .hero-inner{padding:64px 24px 72px}
+    .hero-art{order:-1;flex-basis:auto}
+    .hero-art svg{width:150px}
+    section{padding:64px 0}
+    .nav-inner{gap:14px}
+    nav.links{gap:16px}
+  }
+</style>
+</head>
+<body>
+
+<!-- shared gradient defs for all inline SVGs -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="pgrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#2dd4bf"/>
+    </linearGradient>
+  </defs>
+</svg>
+
+<header class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="#top" aria-label="PCoin home">
+      <svg viewBox="0 0 64 64" width="34" height="34" aria-hidden="true">
+        <circle cx="32" cy="32" r="30" fill="url(#pgrad)"/>
+        <circle cx="32" cy="32" r="24" fill="none" stroke="rgba(10,11,16,.35)" stroke-width="1.6"/>
+        <path d="M25 47V17h11a10 10 0 0 1 0 20h-8" fill="none" stroke="#0a0b10" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      PCoin <small>PCN</small>
+    </a>
+    <nav class="links" aria-label="Site">
+      <a href="#mission">Mission</a>
+      <a href="#mining">Mining</a>
+      <a href="#parameters">Parameters</a>
+      <a href="#get-started">Get started</a>
+      <a href="#roadmap">Roadmap</a>
+      <a class="gh-pill" href="https://github.com/pars5555/pcoin" rel="noopener">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.1.79-.25.79-.55v-2.02c-3.2.7-3.87-1.36-3.87-1.36-.52-1.33-1.28-1.68-1.28-1.68-1.04-.72.08-.7.08-.7 1.15.08 1.76 1.19 1.76 1.19 1.03 1.75 2.69 1.25 3.34.95.1-.75.4-1.25.72-1.54-2.55-.29-5.23-1.28-5.23-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11.1 11.1 0 0 1 5.79 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.41-2.69 5.38-5.25 5.66.41.36.78 1.06.78 2.14v3.17c0 .3.2.66.8.55A11.5 11.5 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z"/></svg>
+        GitHub
+      </a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+
+  <!-- 1 · HERO -->
+  <div class="hero">
+    <div class="hero-inner">
+      <div class="hero-copy">
+        <span class="eyebrow"><span class="dot"></span>Independent Layer-1 · fork of Bitcoin Core v29.4 · launched August 2026</span>
+        <h1>The coin <span class="grad">anyone can mine.</span></h1>
+        <p class="hero-sub">
+          PCoin (PCN) is its own blockchain — not a token. It keeps Bitcoin's economics and swaps the
+          proof-of-work for <strong>RandomX</strong>, the CPU-fair algorithm. Ordinary processors are the
+          best miners. <strong>If you own a phone or a laptop, you can mine PCN.</strong>
+        </p>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="#get-started">Get started</a>
+          <a class="btn btn-ghost" href="https://github.com/pars5555/pcoin" rel="noopener">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.1.79-.25.79-.55v-2.02c-3.2.7-3.87-1.36-3.87-1.36-.52-1.33-1.28-1.68-1.28-1.68-1.04-.72.08-.7.08-.7 1.15.08 1.76 1.19 1.76 1.19 1.03 1.75 2.69 1.25 3.34.95.1-.75.4-1.25.72-1.54-2.55-.29-5.23-1.28-5.23-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11.1 11.1 0 0 1 5.79 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.41-2.69 5.38-5.25 5.66.41.36.78 1.06.78 2.14v3.17c0 .3.2.66.8.55A11.5 11.5 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z"/></svg>
+            GitHub
+          </a>
+        </div>
+        <div class="fact-chips">
+          <span class="chip"><b>21M</b> fixed cap</span>
+          <span class="chip"><b>0</b> premine</span>
+          <span class="chip"><b>RandomX</b> CPU PoW</span>
+          <span class="chip"><b>10-min</b> blocks</span>
+          <span class="chip"><b>MIT</b> open source</span>
+        </div>
+      </div>
+      <div class="hero-art" aria-hidden="true">
+        <svg viewBox="0 0 200 200">
+          <circle cx="100" cy="100" r="96" fill="none" stroke="rgba(255,255,255,.1)" stroke-width="1" stroke-dasharray="3 7"/>
+          <circle cx="100" cy="100" r="82" fill="url(#pgrad)"/>
+          <circle cx="100" cy="100" r="82" fill="none" stroke="rgba(255,255,255,.28)" stroke-width="1.5"/>
+          <circle cx="100" cy="100" r="66" fill="none" stroke="rgba(10,11,16,.3)" stroke-width="3"/>
+          <path d="M81 141V59h30a27 27 0 0 1 0 54H60" fill="none" stroke="#0a0b10" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2 · MISSION PILLARS -->
+  <section id="mission">
+    <div class="wrap">
+      <span class="kicker">The mission</span>
+      <h2>Money creation, for ordinary people</h2>
+      <p class="lede">
+        Bitcoin proved that neutral digital money works — but mining it now belongs to industrial ASIC farms.
+        PCoin restarts that experiment with one change: <strong>the hardware you already own is the mining hardware.</strong>
+        No ASIC farms, no premine, no investors.
+      </p>
+      <div class="cards">
+        <div class="card">
+          <div class="icon">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="url(#pgrad)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/>
+              <path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/>
+            </svg>
+          </div>
+          <h3>Fair by physics</h3>
+          <p>RandomX runs randomly generated programs over a large memory working set. That kills the ASIC
+          advantage and mostly neutralizes GPUs — <b>a general-purpose CPU is the best miner</b>. Fairness is
+          enforced by the algorithm itself, not by a promise.</p>
+        </div>
+        <div class="card">
+          <div class="icon">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="url(#pgrad)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>
+            </svg>
+          </div>
+          <h3>Proven, boring economics</h3>
+          <p>Bitcoin's monetary rules, untouched: <b>21,000,000 coins</b>, 50 PCN subsidy halving every
+          210,000 blocks, 10-minute blocks. No tail emission, no founder's cut, no governance knobs.
+          Boring is the point.</p>
+        </div>
+        <div class="card">
+          <div class="icon">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="url(#pgrad)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="5" r="2.6"/><circle cx="5" cy="18" r="2.6"/><circle cx="19" cy="18" r="2.6"/>
+              <path d="M10.8 7.2 6.4 15.7M13.2 7.2l4.4 8.5M7.6 18h8.8"/>
+            </svg>
+          </div>
+          <h3>Community from zero</h3>
+          <p>Every node validates every block; every node is equal. There is no foundation and no privileged
+          key. <b>The founder's role dissolves as the network grows</b> — the goal is a chain nobody controls,
+          including the person who started it.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 · WHY PHONES CAN MINE -->
+  <section id="mining" class="alt">
+    <div class="wrap">
+      <span class="kicker">Why phones can mine PCoin</span>
+      <h2>The best mining chip is the one in your pocket</h2>
+      <div class="split">
+        <div class="col">
+          <p class="lede" style="margin-bottom:20px">
+            Most proof-of-work coins are mined by special-purpose chips (ASICs) that are millions of times
+            faster than your computer. PCoin uses <strong>RandomX</strong> — the algorithm pioneered by Monero —
+            which is deliberately built so that <strong>an ordinary CPU is the most efficient miner there is</strong>.
+          </p>
+          <p style="color:var(--muted);font-size:.99rem;margin-bottom:16px">
+            PCoin runs RandomX with the fixed key <span class="mono">PCoin/RandomX/v1</span> and verifies
+            blocks in light mode with a 256&nbsp;MB cache — small enough to fit comfortably on a modern
+            phone. Block IDs stay double-SHA256; only the proof-of-work check uses RandomX.
+          </p>
+          <p style="color:var(--muted);font-size:.99rem">
+            At launch difficulty (about 4,096 expected hashes per block), a phone genuinely mines a block in
+            <b style="color:var(--text)">seconds to minutes</b>. Difficulty then self-adjusts every 2016
+            blocks to match whatever hashrate the community's CPUs actually provide.
+          </p>
+        </div>
+        <div class="col">
+          <ul class="mini-list">
+            <li>
+              <span class="tick"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="#2dd4bf" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12.5 10 18 20 6"/></svg></span>
+              <p><b>No ASICs.</b> Random program execution over big memory removes the efficiency edge special hardware depends on.</p>
+            </li>
+            <li>
+              <span class="tick"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="#2dd4bf" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12.5 10 18 20 6"/></svg></span>
+              <p><b>No extra software.</b> The built-in miner (<span class="mono">bitcoin-cli generatetoaddress</span>) grinds real RandomX blocks. External miners like xmrig do <b>not</b> work — they speak Monero's protocol, not PCoin's.</p>
+            </li>
+            <li>
+              <span class="tick"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="#2dd4bf" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12.5 10 18 20 6"/></svg></span>
+              <p><b>256 MB is enough.</b> Light-mode verification fits on phones, laptops, and small servers alike — every device can be a full participant.</p>
+            </li>
+          </ul>
+          <div class="honest-box">
+            <b>Honest numbers, not marketing:</b> a desktop CPU is still roughly 5–10× faster than a phone,
+            per device. RandomX narrows the gap from millions-to-one down to single digits — it does not
+            erase it.
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4 · KEY PARAMETERS -->
+  <section id="parameters">
+    <div class="wrap">
+      <span class="kicker">Key parameters</span>
+      <h2>The numbers that define PCoin</h2>
+      <p class="lede">Everything below is consensus, fixed in code, and auditable in the <a href="https://github.com/pars5555/pcoin" rel="noopener">public repository</a>.</p>
+      <div class="table-shell">
+        <table class="params">
+          <tbody>
+            <tr><th>Ticker</th><td>PCN</td></tr>
+            <tr><th>Max supply</th><td>21,000,000 PCN — hard cap, identical to Bitcoin</td></tr>
+            <tr><th>Block subsidy</th><td>50 PCN, halving every 210,000 blocks</td></tr>
+            <tr><th>Block time</th><td>10 minutes (target); difficulty retargets every 2016 blocks</td></tr>
+            <tr><th>Proof of work</th><td>RandomX, fixed key <span class="mono">PCoin/RandomX/v1</span>, light-mode (256&nbsp;MB) verification. Block IDs remain double-SHA256.</td></tr>
+            <tr><th>Base</th><td>Fork of Bitcoin Core v29.4 — independent network, own genesis, own magic</td></tr>
+            <tr><th>P2P / RPC ports</th><td><span class="mono">9444</span> / <span class="mono">9443</span> (mainnet)</td></tr>
+            <tr><th>Network magic</th><td><span class="mono">cf a2 d1 b8</span></td></tr>
+            <tr><th>Addresses</th><td>Legacy start with <span class="mono">P</span> (base58 prefix 55); native segwit <span class="mono">pc1...</span></td></tr>
+            <tr><th>Genesis block ID</th><td><span class="mono">a95d51f0cbf25cad10c35961c6189356525d079835f02e83e2395f382fbe264a</span></td></tr>
+            <tr><th>Genesis time</th><td><span class="mono">1785600628</span> — timestamp string: <span class="mono">&ldquo;PCoin 01/Aug/2026 an independent chain is born&rdquo;</span></td></tr>
+            <tr><th>Launch difficulty</th><td><span class="mono">nBits 0x1f0fffff</span> — about 4,096 expected hashes per block at launch <span class="note">(a phone can bootstrap the chain)</span></td></tr>
+            <tr><th>Config / data</th><td><span class="mono">pcoin.conf</span> · <span class="mono">~/.pcoin</span> (Linux) · <span class="mono">%LOCALAPPDATA%\PCoin</span> (Windows)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5 · QUICKSTART -->
+  <section id="get-started" class="alt">
+    <div class="wrap">
+      <span class="kicker">Get started</span>
+      <h2>Run a node. Mine a block. Five minutes.</h2>
+      <p class="lede">
+        PCoin ships as standard Bitcoin Core binaries (<span class="mono">bitcoind</span>,
+        <span class="mono">bitcoin-cli</span>) with PCoin's network built in. You do not need any
+        mining software — the miner is in the node.
+      </p>
+
+      <div class="steps">
+        <div class="step"><span class="num">1</span><h4>Get the binaries</h4><p>Build from source — the repo's PCOIN.md walks you through it — or use a pre-built package from GitHub Releases if one is published for your platform.</p></div>
+        <div class="step"><span class="num">2</span><h4>Run the node</h4><p>Start <span class="mono">bitcoind</span> — it finds the network via <span class="mono">seed.pc.am</span>.</p></div>
+        <div class="step"><span class="num">3</span><h4>Create a wallet</h4><p>One command. Your keys stay on your machine, in your datadir.</p></div>
+        <div class="step"><span class="num">4</span><h4>Mine</h4><p>The built-in miner grinds real RandomX blocks on your CPU.</p></div>
+      </div>
+
+      <div class="term">
+        <div class="term-bar"><i></i><i></i><i></i><span>quickstart — bash (Linux)</span></div>
+        <pre><span class="c"># 1) Get bitcoind + bitcoin-cli: build from source following PCOIN.md</span>
+<span class="c">#    in the repo (https://github.com/pars5555/pcoin), or unpack a</span>
+<span class="c">#    pre-built release if one is published for your platform:</span>
+<span class="c">#    https://github.com/pars5555/pcoin/releases</span>
+<span class="c">#    Then cd into the folder that contains bitcoind.</span>
+
+<span class="c"># 2) Start your node. It connects to the network via seed.pc.am.</span>
+./bitcoind -daemon
+
+<span class="c"># 3) Create a wallet and get a fresh address.</span>
+./bitcoin-cli createwallet <span class="s">"main"</span>
+ADDR=$(./bitcoin-cli getnewaddress)
+echo <span class="s">"$ADDR"</span>
+<span class="o">pc1q...</span>
+
+<span class="c"># 4) Mine a block with the built-in miner. Repeat or loop it.</span>
+./bitcoin-cli generatetoaddress 1 <span class="s">"$ADDR"</span>
+<span class="o">[ "…your block hash…" ]</span>
+
+<span class="c"># Watch your chain grow.</span>
+./bitcoin-cli getblockcount
+./bitcoin-cli getmininginfo
+./bitcoin-cli getbalance    <span class="c"># block rewards mature after 100 blocks</span></pre>
+      </div>
+
+      <div class="honest-box" style="max-width:100%">
+        <b>What to expect:</b> mining is a lottery. At launch difficulty each
+        <span class="mono">generatetoaddress</span> call takes seconds to a few minutes on a typical CPU —
+        some calls return fast, some sit for a while. As more people mine, difficulty rises every 2016
+        blocks and blocks get harder to find. Config lives in <span class="mono">pcoin.conf</span>;
+        data in <span class="mono">~/.pcoin</span> (Linux) or <span class="mono">%LOCALAPPDATA%\PCoin</span> (Windows).
+      </div>
+    </div>
+  </section>
+
+  <!-- 6 · ROADMAP -->
+  <section id="roadmap">
+    <div class="wrap">
+      <span class="kicker">Roadmap</span>
+      <h2>Near-term goals</h2>
+      <p class="lede">No dates promised, no tokens sold. These are the next concrete things we're building, in order.</p>
+      <ol class="timeline">
+        <li>
+          <h3>100 independent nodes <span class="tag">Network</span></h3>
+          <p>Get one hundred people running always-on nodes in different places. Decentralized block
+          production and history is the foundation for everything else.</p>
+        </li>
+        <li>
+          <h3>Android node + miner app <span class="tag">Mobile</span></h3>
+          <p>A one-tap app that runs a full node and mines on your phone's CPU. The clearest proof of the
+          mission: money creation from the device in your pocket.</p>
+        </li>
+        <li>
+          <h3>In-browser wallet <span class="tag">Wallet</span></h3>
+          <p>Send and receive PCN without installing anything — lowering the entry barrier for people who
+          will never touch a command line.</p>
+        </li>
+        <li>
+          <h3>First real-world micro-payment &amp; tipping pilots <span class="tag">Usage</span></h3>
+          <p>Small, honest experiments: tipping creators, paying for tiny services. Real usage between real
+          people, at a scale where mistakes are cheap.</p>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- 7 · HONEST NOTES -->
+  <section id="honest" class="alt">
+    <div class="wrap">
+      <span class="kicker">Honest notes</span>
+      <h2>Read this before you mine</h2>
+      <p class="lede">A fair coin deserves fair disclosure. Here is everything we'd want to know in your place.</p>
+      <div class="honest-grid">
+        <div class="honest-card">
+          <h3>Young, experimental chain</h3>
+          <p>PCoin launched in August 2026. It is an experiment in fair money creation —
+          <b>not an investment</b>. It has no price, and nothing here is financial advice. Treat PCN as
+          something you mine and learn with, not something you buy.</p>
+        </div>
+        <div class="honest-card">
+          <h3>No premine — and here's the founder's balance</h3>
+          <p>The founder holds only the <b>first ~100 PCN</b> mined during development — two 50-PCN blocks
+          used to test the chain. There was no premine, no allocation, and no sale. Everyone else's coins
+          come from the same place: mining.</p>
+        </div>
+        <div class="honest-card">
+          <h3>Security grows with you</h3>
+          <p>A proof-of-work chain is only as strong as its honest hashrate. Today that hashrate is small,
+          so the network is not yet resistant to well-resourced attackers. <b>Every new miner and node makes
+          it stronger.</b> That is exactly why participation matters.</p>
+        </div>
+        <div class="honest-card">
+          <h3>Open source, auditable</h3>
+          <p>The full source is public on <a href="https://github.com/pars5555/pcoin" rel="noopener">GitHub</a>
+          under the <b>MIT license</b>, based on Bitcoin Core. Don't trust our claims — read the diff.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- 8 · FOOTER -->
+<footer>
+  <div class="foot-inner">
+    <div class="foot-col" style="max-width:22rem">
+      <div class="foot-brand" style="margin-bottom:12px">
+        <svg viewBox="0 0 64 64" width="28" height="28" aria-hidden="true">
+          <circle cx="32" cy="32" r="30" fill="url(#pgrad)"/>
+          <path d="M25 47V17h11a10 10 0 0 1 0 20h-8" fill="none" stroke="#0a0b10" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        PCoin
+      </div>
+      <p>The coin anyone can mine. An independent Layer-1 blockchain with Bitcoin's economics and
+      RandomX CPU proof-of-work.</p>
+    </div>
+    <div class="foot-col">
+      <h5>Project</h5>
+      <a href="https://pc.am">pc.am</a>
+      <a href="https://github.com/pars5555/pcoin" rel="noopener">GitHub — source code</a>
+      <a href="https://github.com/pars5555/pcoin/releases" rel="noopener">Releases</a>
+    </div>
+    <div class="foot-col">
+      <h5>Network</h5>
+      <p>Seed node: <span class="mono">seed.pc.am</span></p>
+      <p>P2P <span class="mono">9444</span> · RPC <span class="mono">9443</span></p>
+      <p>Addresses: <span class="mono">P...</span> / <span class="mono">pc1...</span></p>
+    </div>
+  </div>
+  <div class="foot-base">
+    <span>Based on Bitcoin Core v29.4 · PoW by RandomX · MIT licensed</span>
+    <span>© 2026 PCoin Project</span>
+  </div>
+</footer>
+
+</body>
+</html>
