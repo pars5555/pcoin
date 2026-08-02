@@ -37,15 +37,21 @@ Write-Output "PCoin $Version installer"
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
 
 # Stop anything already running from this folder, otherwise the copy fails
-# with a sharing violation.
-$cliPath = Join-Path $InstallDir 'bitcoin-cli.exe'
+# with a sharing violation. The tray app re-launches bitcoin-cli every few
+# seconds, so it has to go first and be given time to die before the node.
 Get-Process PCoinTray -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 3
+Get-Process bitcoin-cli -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+# A previous install may have used a different datadir, so a targeted
+# 'bitcoin-cli stop' can miss. Ask nicely, then insist.
+$cliPath = Join-Path $InstallDir 'bitcoin-cli.exe'
 if (Test-Path $cliPath) {
+    try { & $cliPath stop 2>&1 | Out-Null } catch { }
     try { & $cliPath -datadir="$DataDir" stop 2>&1 | Out-Null } catch { }
-    Start-Sleep -Seconds 6
+    Start-Sleep -Seconds 8
 }
 Get-Process bitcoind -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 3
+Start-Sleep -Seconds 4
 
 # --- download and verify -------------------------------------------------
 $zip = Join-Path $env:TEMP $name
@@ -58,7 +64,19 @@ Write-Output "  sha256 ok"
 $tmp = Join-Path $env:TEMP 'pcoin-unpack'
 if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
 Expand-Archive -Path $zip -DestinationPath $tmp -Force
-Copy-Item (Join-Path $tmp "pcoin-$Version\*") $InstallDir -Force -Recurse
+# A file can stay locked briefly after its process exits, so retry rather than
+# aborting a half-finished install.
+foreach ($attempt in 1..6) {
+    try {
+        Copy-Item (Join-Path $tmp "pcoin-$Version\*") $InstallDir -Force -Recurse
+        break
+    } catch {
+        if ($attempt -eq 6) { throw }
+        Get-Process bitcoind, PCoinTray, bitcoin-cli -ErrorAction SilentlyContinue |
+            Stop-Process -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 5
+    }
+}
 Write-Output "  installed to $InstallDir"
 
 # --- node configuration --------------------------------------------------
