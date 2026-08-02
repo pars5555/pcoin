@@ -21,6 +21,7 @@
 #include <key_io.h>
 #include <net.h>
 #include <node/context.h>
+#include <node/cpuminer.h>
 #include <node/miner.h>
 #include <node/warnings.h>
 #include <policy/ephemeral_policy.h>
@@ -1122,11 +1123,113 @@ static RPCHelpMan submitheader()
     };
 }
 
+static RPCHelpMan startmining()
+{
+    return RPCHelpMan{"startmining",
+        "Start PCoin's built-in multi-threaded CPU miner.\n"
+        "Mining runs in the background until stopmining is called or the node shuts down.\n"
+        "Rewards are paid to the given address.",
+        {
+            {"address", RPCArg::Type::STR, RPCArg::Optional::NO, "The address to pay block rewards to."},
+            {"threads", RPCArg::Type::NUM, RPCArg::Default{0}, "Worker threads to use. 0 means every core. Values above the core count are capped."},
+        },
+        RPCResult{
+            RPCResult::Type::OBJ, "", "",
+            {
+                {RPCResult::Type::BOOL, "mining", "whether the miner is now running"},
+                {RPCResult::Type::NUM, "threads", "worker threads actually started"},
+                {RPCResult::Type::STR, "address", "address being paid"},
+            }},
+        RPCExamples{
+            "\nMine with four cores\n"
+            + HelpExampleCli("startmining", "\"myaddress\" 4")
+            + HelpExampleRpc("startmining", "\"myaddress\", 4")
+                },
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+{
+    CTxDestination destination = DecodeDestination(request.params[0].get_str());
+    if (!IsValidDestination(destination)) {
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Error: Invalid address");
+    }
+    const int threads{request.params[1].isNull() ? 0 : request.params[1].getInt<int>()};
+
+    NodeContext& node = EnsureAnyNodeContext(request.context);
+    Mining& miner = EnsureMining(node);
+    ChainstateManager& chainman = EnsureChainman(node);
+
+    std::string error;
+    auto& cpuminer = node::GetCpuMiner();
+    if (!cpuminer.Start(chainman, miner, GetScriptForDestination(destination), threads, error)) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, error);
+    }
+
+    UniValue obj(UniValue::VOBJ);
+    obj.pushKV("mining", cpuminer.IsRunning());
+    obj.pushKV("threads", cpuminer.GetThreads());
+    obj.pushKV("address", request.params[0].get_str());
+    return obj;
+},
+    };
+}
+
+static RPCHelpMan stopmining()
+{
+    return RPCHelpMan{"stopmining",
+        "Stop PCoin's built-in CPU miner.",
+        {},
+        RPCResult{
+            RPCResult::Type::OBJ, "", "",
+            {
+                {RPCResult::Type::BOOL, "mining", "always false"},
+            }},
+        RPCExamples{HelpExampleCli("stopmining", "") + HelpExampleRpc("stopmining", "")},
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+{
+    node::GetCpuMiner().Stop();
+    UniValue obj(UniValue::VOBJ);
+    obj.pushKV("mining", false);
+    return obj;
+},
+    };
+}
+
+static RPCHelpMan getcpuminerinfo()
+{
+    return RPCHelpMan{"getcpuminerinfo",
+        "Status of PCoin's built-in CPU miner.",
+        {},
+        RPCResult{
+            RPCResult::Type::OBJ, "", "",
+            {
+                {RPCResult::Type::BOOL, "mining", "whether the miner is running"},
+                {RPCResult::Type::NUM, "threads", "worker threads in use"},
+                {RPCResult::Type::NUM, "hashespersec", "current hash rate across all threads"},
+                {RPCResult::Type::NUM, "blocksfound", "blocks mined since the miner was started"},
+                {RPCResult::Type::NUM, "cores", "logical cores detected on this machine"},
+            }},
+        RPCExamples{HelpExampleCli("getcpuminerinfo", "") + HelpExampleRpc("getcpuminerinfo", "")},
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+{
+    const auto& cpuminer = node::GetCpuMiner();
+    UniValue obj(UniValue::VOBJ);
+    obj.pushKV("mining", cpuminer.IsRunning());
+    obj.pushKV("threads", cpuminer.GetThreads());
+    obj.pushKV("hashespersec", cpuminer.GetHashesPerSecond());
+    obj.pushKV("blocksfound", cpuminer.GetBlocksFound());
+    obj.pushKV("cores", static_cast<int>(std::max(1u, std::thread::hardware_concurrency())));
+    return obj;
+},
+    };
+}
+
 void RegisterMiningRPCCommands(CRPCTable& t)
 {
     static const CRPCCommand commands[]{
         {"mining", &getnetworkhashps},
         {"mining", &getmininginfo},
+        {"mining", &startmining},
+        {"mining", &stopmining},
+        {"mining", &getcpuminerinfo},
         {"mining", &prioritisetransaction},
         {"mining", &getprioritisedtransactions},
         {"mining", &getblocktemplate},

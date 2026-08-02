@@ -50,6 +50,7 @@
 #include <node/chainstate.h>
 #include <node/chainstatemanager_args.h>
 #include <node/context.h>
+#include <node/cpuminer.h>
 #include <node/interface_ui.h>
 #include <node/kernel_notifications.h>
 #include <node/mempool_args.h>
@@ -267,6 +268,9 @@ void Interrupt(NodeContext& node)
 #if HAVE_SYSTEM
     ShutdownNotify(*node.args);
 #endif
+    // Join the CPU miner's threads before the chainstate they reference is torn
+    // down in Shutdown().
+    node::GetCpuMiner().Stop();
     InterruptHTTPServer();
     InterruptHTTPRPC();
     InterruptRPC();
