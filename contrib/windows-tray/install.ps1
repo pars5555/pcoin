@@ -70,14 +70,32 @@ try {
 } catch { Write-Output '  firewall rule skipped (needs admin)' }
 
 # --- autostart -----------------------------------------------------------
-$startup = [Environment]::GetFolderPath('Startup')
-$ws = New-Object -ComObject WScript.Shell
-$lnk = $ws.CreateShortcut((Join-Path $startup 'PCoin Miner.lnk'))
-$lnk.TargetPath = (Join-Path $InstallDir 'PCoinTray.exe')
-$lnk.WorkingDirectory = $InstallDir
-$lnk.Description = 'PCoin node and miner'
-$lnk.Save()
-Write-Output '  autostart shortcut created'
+# GetFolderPath('Startup') comes back empty when this runs without a fully
+# loaded user profile (e.g. from a service or an elevated remote session), so
+# fall back to composing the path, and never let this step fail the install.
+try {
+    $startup = [Environment]::GetFolderPath('Startup')
+    if (-not $startup -and $env:APPDATA) {
+        $startup = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup'
+    }
+    if (-not $startup) {
+        $prof = if ($env:USERPROFILE) { $env:USERPROFILE } else { Join-Path $env:SystemDrive "Users\$env:USERNAME" }
+        $startup = Join-Path $prof 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup'
+    }
+    if (Test-Path $startup) {
+        $ws = New-Object -ComObject WScript.Shell
+        $lnk = $ws.CreateShortcut((Join-Path $startup 'PCoin Miner.lnk'))
+        $lnk.TargetPath = (Join-Path $InstallDir 'PCoinTray.exe')
+        $lnk.WorkingDirectory = $InstallDir
+        $lnk.Description = 'PCoin node and miner'
+        $lnk.Save()
+        Write-Output "  autostart shortcut created in $startup"
+    } else {
+        Write-Output "  autostart skipped: no Startup folder at '$startup'"
+    }
+} catch {
+    Write-Output ('  autostart skipped: ' + $_.Exception.Message)
+}
 
 # --- launch --------------------------------------------------------------
 if (-not $NoStart) {
