@@ -16,6 +16,7 @@ using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.Globalization;
+using System.Collections.Generic;
 using System.IO;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -55,9 +56,16 @@ namespace PCoinTray
         readonly Icon _iconMining;
         readonly Icon _iconIdle;
 
+        //! Mining effort is expressed as a percentage of the machine, which is
+        //! meaningful on any CPU, unlike a raw core count. 0 means not mining.
+        const int DEFAULT_PERCENT = 50;
+        static readonly int[] PERCENT_STEPS = { 10, 25, 50, 75, 100 };
+
         string _address = "";
         string _datadir = "";          // empty = bitcoind's default location
-        int _threads;                  // 0 = not mining
+        int _percent = DEFAULT_PERCENT;
+        bool _mining;
+        int _threads;                  // derived from _percent, reported by the node
         bool _nodeUp;
         Process _node;                 // set only if we launched it ourselves
         bool _startedNode;
@@ -69,7 +77,17 @@ namespace PCoinTray
         readonly ToolStripMenuItem _miStatus = new ToolStripMenuItem("Starting...") { Enabled = false };
         readonly ToolStripMenuItem _miChain = new ToolStripMenuItem("") { Enabled = false };
         readonly ToolStripMenuItem _miEarned = new ToolStripMenuItem("") { Enabled = false };
-        ToolStripMenuItem _miOff, _mi2, _mi4, _miAll;
+        ToolStripMenuItem _miOff;
+        readonly Dictionary<int, ToolStripMenuItem> _miPercent = new Dictionary<int, ToolStripMenuItem>();
+
+        //! Percentage of the machine -> worker threads. Always at least one
+        //! thread, never more than the machine has.
+        int ThreadsFor(int percent)
+        {
+            if (percent <= 0) return 0;
+            int t = (int)Math.Round(_cores * percent / 100.0, MidpointRounding.AwayFromZero);
+            return Math.Max(1, Math.Min(_cores, t));
+        }
 
         public TrayApp()
         {
@@ -111,7 +129,23 @@ namespace PCoinTray
                     string v = line.Substring(eq + 1).Trim();
                     if (k == "address") _address = v;
                     else if (k == "datadir") _datadir = v;
-                    else if (k == "threads") int.TryParse(v, out _threads);
+                    else if (k == "percent")
+                    {
+                        int p;
+                        if (int.TryParse(v, out p)) { _percent = p; _mining = p > 0; }
+                    }
+                    else if (k == "threads")
+                    {
+                        // Older config: a raw thread count. Convert once.
+                        int t;
+                        if (int.TryParse(v, out t))
+                        {
+                            _mining = t > 0;
+                            _percent = t > 0
+                                ? Math.Max(10, Math.Min(100, (int)Math.Round(t * 100.0 / Math.Max(1, _cores))))
+                                : DEFAULT_PERCENT;
+                        }
+                    }
                 }
             }
             catch { /* a broken config must not stop the app starting */ }
@@ -124,7 +158,7 @@ namespace PCoinTray
                 File.WriteAllText(_cfgPath,
                     "address=" + _address + "\r\n" +
                     "datadir=" + _datadir + "\r\n" +
-                    "threads=" + _threads.ToString(CultureInfo.InvariantCulture) + "\r\n");
+                    "percent=" + (_mining ? _percent : 0).ToString(CultureInfo.InvariantCulture) + "\r\n");
             }
             catch { }
         }
@@ -142,13 +176,17 @@ namespace PCoinTray
             menu.Items.Add(new ToolStripSeparator());
 
             _miOff = new ToolStripMenuItem("Not mining", null, (s, e) => SetMode(0));
-            _mi2 = new ToolStripMenuItem("Mine with 2 cores", null, (s, e) => SetMode(2));
-            _mi4 = new ToolStripMenuItem("Mine with 4 cores", null, (s, e) => SetMode(4));
-            _miAll = new ToolStripMenuItem("Mine with all " + _cores + " cores", null, (s, e) => SetMode(_cores));
             menu.Items.Add(_miOff);
-            menu.Items.Add(_mi2);
-            menu.Items.Add(_mi4);
-            menu.Items.Add(_miAll);
+            foreach (int p in PERCENT_STEPS)
+            {
+                int pct = p; // capture
+                var item = new ToolStripMenuItem(
+                    string.Format(CultureInfo.InvariantCulture, "Mine at {0}%  ({1} of {2} cores)",
+                                  pct, ThreadsFor(pct), _cores),
+                    null, (s, e) => SetMode(pct));
+                _miPercent[pct] = item;
+                menu.Items.Add(item);
+            }
 
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("Copy payout address", null, (s, e) =>
@@ -168,10 +206,8 @@ namespace PCoinTray
 
         void MarkMode()
         {
-            _miOff.Checked = _threads == 0;
-            _mi2.Checked = _threads == 2;
-            _mi4.Checked = _threads == 4;
-            _miAll.Checked = _threads == _cores && _threads != 0 && _threads != 2 && _threads != 4;
+            _miOff.Checked = !_mining;
+            foreach (var kv in _miPercent) kv.Value.Checked = _mining && kv.Key == _percent;
         }
 
         // ---------- node control ----------
@@ -180,7 +216,7 @@ namespace PCoinTray
         {
             EnsureNode();
             if (string.IsNullOrEmpty(_address)) _address = EnsureAddress();
-            if (_threads > 0) StartMining(_threads);
+            if (_mining) StartMining(ThreadsFor(_percent));
             SaveConfig();
         }
 
@@ -229,11 +265,13 @@ namespace PCoinTray
             return a == null ? "" : a.Trim();
         }
 
-        void SetMode(int threads)
+        void SetMode(int percent)
         {
-            _threads = threads;
+            _mining = percent > 0;
+            if (percent > 0) _percent = percent;
             SaveConfig();
             MarkMode();
+            int threads = ThreadsFor(percent);
             var t = new Thread(() =>
             {
                 if (threads == 0) { Cli("stopmining"); }
@@ -281,14 +319,17 @@ namespace PCoinTray
 
             if (mining && _threads > 0)
             {
+                _mining = true;
                 _icon.Icon = _iconMining;
                 _miStatus.Text = string.Format(CultureInfo.InvariantCulture,
-                    "Mining with {0} of {1} cores - {2:0.0} H/s", _threads, _cores, _hashrate);
+                    "Mining at {0}% - {1} of {2} cores - {3:0.0} H/s",
+                    _percent, _threads, _cores, _hashrate);
                 _icon.Text = Truncate(string.Format(CultureInfo.InvariantCulture,
-                    "PCoin Miner - {0} cores, {1:0.0} H/s", _threads, _hashrate));
+                    "PCoin Miner - {0}%, {1:0.0} H/s", _percent, _hashrate));
             }
             else
             {
+                _mining = false;
                 _icon.Icon = _iconIdle;
                 _miStatus.Text = "Not mining";
                 _icon.Text = "PCoin Miner - not mining";
