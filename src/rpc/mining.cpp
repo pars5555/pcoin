@@ -1132,6 +1132,7 @@ static RPCHelpMan startmining()
         {
             {"address", RPCArg::Type::STR, RPCArg::Optional::NO, "The address to pay block rewards to."},
             {"threads", RPCArg::Type::NUM, RPCArg::Default{0}, "Worker threads to use. 0 means every core. Values above the core count are capped."},
+            {"ttl", RPCArg::Type::NUM, RPCArg::Default{0}, "Dead-man's switch, in seconds. If set, mining stops automatically unless getcpuminerinfo or startmining is called at least this often. Use it when a supervising app enforces battery or thermal limits, so that mining cannot outlive the supervisor. 0 disables."},
         },
         RPCResult{
             RPCResult::Type::OBJ, "", "",
@@ -1152,6 +1153,7 @@ static RPCHelpMan startmining()
         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Error: Invalid address");
     }
     const int threads{request.params[1].isNull() ? 0 : request.params[1].getInt<int>()};
+    const int64_t ttl{request.params[2].isNull() ? 0 : request.params[2].getInt<int64_t>()};
 
     NodeContext& node = EnsureAnyNodeContext(request.context);
     Mining& miner = EnsureMining(node);
@@ -1159,7 +1161,7 @@ static RPCHelpMan startmining()
 
     std::string error;
     auto& cpuminer = node::GetCpuMiner();
-    if (!cpuminer.Start(chainman, miner, GetScriptForDestination(destination), threads, error)) {
+    if (!cpuminer.Start(chainman, miner, GetScriptForDestination(destination), threads, error, ttl)) {
         throw JSONRPCError(RPC_INVALID_PARAMETER, error);
     }
 
@@ -1167,6 +1169,7 @@ static RPCHelpMan startmining()
     obj.pushKV("mining", cpuminer.IsRunning());
     obj.pushKV("threads", cpuminer.GetThreads());
     obj.pushKV("address", request.params[0].get_str());
+    obj.pushKV("ttl", ttl);
     return obj;
 },
     };
@@ -1210,7 +1213,10 @@ static RPCHelpMan getcpuminerinfo()
         RPCExamples{HelpExampleCli("getcpuminerinfo", "") + HelpExampleRpc("getcpuminerinfo", "")},
         [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
 {
-    const auto& cpuminer = node::GetCpuMiner();
+    auto& cpuminer = node::GetCpuMiner();
+    // Polling this doubles as the dead-man's switch check-in: a supervisor that
+    // is alive enough to read the stats is alive enough to stop the miner.
+    cpuminer.KeepAlive();
     UniValue obj(UniValue::VOBJ);
     obj.pushKV("mining", cpuminer.IsRunning());
     obj.pushKV("threads", cpuminer.GetThreads());

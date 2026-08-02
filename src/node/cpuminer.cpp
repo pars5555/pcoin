@@ -56,8 +56,21 @@ CScript CpuMiner::GetScript() const
     return m_script;
 }
 
+static int64_t SteadyNowMs()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+void CpuMiner::KeepAlive()
+{
+    m_last_keepalive_ms = SteadyNowMs();
+}
+
 bool CpuMiner::Start(ChainstateManager& chainman, interfaces::Mining& mining,
-                     const CScript& script, int threads, std::string& error)
+                     const CScript& script, int threads, std::string& error,
+                     int64_t ttl_seconds)
 {
     if (script.empty()) {
         error = "No payout script: a valid address is required to mine.";
@@ -83,6 +96,8 @@ bool CpuMiner::Start(ChainstateManager& chainman, interfaces::Mining& mining,
     m_generation = 0;
     m_next_nonce = 0;
     m_threads = threads;
+    m_ttl_seconds = std::max<int64_t>(0, ttl_seconds);
+    m_last_keepalive_ms = SteadyNowMs();
     m_stop = false;
     m_running = true;
 
@@ -101,8 +116,13 @@ bool CpuMiner::Start(ChainstateManager& chainman, interfaces::Mining& mining,
 
 void CpuMiner::Stop()
 {
-    if (m_stop.exchange(true) && !m_running) return;
-    m_running = false;
+    // Always join. The supervisor can retire itself (dead-man's switch) and
+    // clear m_running on its own, so an early return keyed on m_running would
+    // leave joinable threads in m_workers; the next Start() would then append
+    // to a vector holding un-joined threads and std::terminate on destruction.
+    // Must never be called from the supervisor thread itself.
+    const bool was_running{m_running.exchange(false)};
+    m_stop = true;
 
     if (m_supervisor.joinable()) m_supervisor.join();
     for (auto& t : m_workers) {
@@ -111,7 +131,8 @@ void CpuMiner::Stop()
     m_workers.clear();
     m_threads = 0;
     m_hashrate = 0.0;
-    LogPrintf("PCoin CPU miner stopped\n");
+    m_ttl_seconds = 0;
+    if (was_running) LogPrintf("PCoin CPU miner stopped\n");
 }
 
 void CpuMiner::Supervisor(ChainstateManager* chainman, interfaces::Mining* mining)
@@ -157,6 +178,21 @@ void CpuMiner::Supervisor(ChainstateManager* chainman, interfaces::Mining* minin
             m_hashrate = static_cast<double>(h - last_hashes) * 1000.0 / static_cast<double>(dt);
             last_hashes = h;
             last_sample = sample_now;
+        }
+
+        // Dead-man's switch: if whoever asked for mining has stopped checking
+        // in, assume it is gone and stand down. Without this an orphaned node
+        // keeps hashing with nothing left to enforce battery or thermal limits.
+        const int64_t ttl{m_ttl_seconds.load()};
+        if (ttl > 0 && SteadyNowMs() - m_last_keepalive_ms.load() > ttl * 1000) {
+            LogPrintf("PCoin CPU miner: no keepalive for %ds, stopping\n", (int)ttl);
+            m_stop = true;
+            m_running = false;
+            // Report the truth immediately: the workers are on their way out,
+            // so getcpuminerinfo must not keep advertising live threads.
+            m_threads = 0;
+            m_hashrate = 0.0;
+            break;
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds{250});

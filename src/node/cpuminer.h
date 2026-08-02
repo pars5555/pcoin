@@ -45,8 +45,19 @@ public:
 
     //! Begin mining to `script` with `threads` workers. Restarts cleanly if
     //! already running. Returns false and sets `error` on bad input.
+    //!
+    //! `ttl_seconds` is a dead-man's switch: if greater than zero, mining stops
+    //! automatically unless KeepAlive() is called at least that often. It
+    //! exists because a supervising process can die -- a phone app killed by
+    //! the OS, a crashed script -- leaving the node hashing forever with
+    //! nothing left to apply battery or thermal limits. A device that overheats
+    //! because its minder vanished is exactly the failure this prevents.
     bool Start(ChainstateManager& chainman, interfaces::Mining& mining,
-               const CScript& script, int threads, std::string& error);
+               const CScript& script, int threads, std::string& error,
+               int64_t ttl_seconds = 0);
+
+    //! Refresh the dead-man's switch. Harmless when no TTL is set.
+    void KeepAlive();
 
     //! Stop all workers and join them. Safe to call when not running.
     void Stop();
@@ -83,6 +94,11 @@ private:
 
     std::atomic<uint64_t> m_hashes{0};
     std::atomic<uint64_t> m_blocks_found{0};
+
+    //! Dead-man's switch. 0 disables it.
+    std::atomic<int64_t> m_ttl_seconds{0};
+    //! steady_clock time of the last KeepAlive(), in milliseconds.
+    std::atomic<int64_t> m_last_keepalive_ms{0};
     std::atomic<double> m_hashrate{0.0}; //!< sampled by the supervisor
 };
 
