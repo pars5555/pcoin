@@ -90,10 +90,27 @@ RandomX is deliberately **CPU-fair**: it executes randomly generated programs
 over a large memory working set, which kills the efficiency edge of ASICs and
 mostly neutralizes GPUs — the best miner for it *is* a general-purpose CPU.
 Verification runs in light mode with a 256 MB cache, which fits comfortably on
-a modern phone, so phones can meaningfully mine. Honest numbers: a desktop
-mines with the 2 GB dataset (fast mode) that does not fit on a phone, so
-expect a desktop to be roughly 20–50× faster than a phone in light mode —
-still nothing like the millions-to-one advantage an ASIC has under SHA-256.
+a modern phone, so phones can meaningfully mine.
+
+Measured hashrates (RandomX v1.2.1, JIT enabled, 4 threads, light mode unless
+noted) — these are real measurements, not estimates:
+
+| Device | H/s | 256 MB cache init |
+|---|---|---|
+| Desktop (16 threads, 2 GB **fast** mode) | 2518 | 3.4 s |
+| Desktop (4 threads, light mode) | 178 | 0.7 s |
+| Galaxy Z Flip 5 / Snapdragon 8 Gen 2 | 144 | 0.7 s |
+| Pixel 4a / Snapdragon 730G | 51 | 2.0 s |
+| moto g play 2024 | 43 | 3.1 s |
+| Galaxy A03 / Helio P35 | 15 | 5.4 s |
+
+A full-speed desktop out-mines a flagship phone ~17× and an entry-level phone
+~170× — nothing like the millions-to-one advantage an ASIC has under SHA-256.
+Note the flagship phone in light mode is within 1.25× of this desktop in light
+mode; the desktop's real advantage comes from the 2 GB dataset phones cannot
+hold. All devices produced bit-identical RandomX results, so phones validate
+consensus exactly as x86 does.
+
 Difficulty
 self-adjusts every 2016 blocks, so the network settles at whatever hashrate its
 CPUs actually provide.

@@ -422,10 +422,25 @@
             </li>
           </ul>
           <div class="honest-box">
-            <b>Honest numbers, not marketing:</b> a desktop mining at full speed uses a 2 GB dataset that
-            does not fit on a phone, so phones mine in 256 MB light mode. Expect a desktop to be roughly
-            20–50× faster than a phone. That is a real gap — but under SHA-256 an ASIC beats any CPU by
-            millions to one. RandomX makes phones minority participants instead of hopeless ones.
+            <b>Measured numbers, not marketing.</b> RandomX light mode, JIT enabled, 4 threads, on real
+            hardware:
+            <table style="width:100%;border-collapse:collapse;margin:12px 0 10px;font-size:.92rem">
+              <tr style="color:var(--muted)">
+                <th style="text-align:left;padding:4px 8px 4px 0;font-weight:600">Device</th>
+                <th style="text-align:right;padding:4px 0;font-weight:600">Hashes / second</th>
+              </tr>
+              <tr><td style="padding:3px 8px 3px 0">Desktop, 16 threads, 2&nbsp;GB fast mode</td><td style="text-align:right" class="mono">2,518</td></tr>
+              <tr><td style="padding:3px 8px 3px 0">Galaxy Z Flip 5 (flagship)</td><td style="text-align:right" class="mono">144</td></tr>
+              <tr><td style="padding:3px 8px 3px 0">Pixel 4a (2020 mid-range)</td><td style="text-align:right" class="mono">51</td></tr>
+              <tr><td style="padding:3px 8px 3px 0">moto g play 2024 (budget)</td><td style="text-align:right" class="mono">43</td></tr>
+              <tr><td style="padding:3px 8px 3px 0">Galaxy A03 (entry level)</td><td style="text-align:right" class="mono">15</td></tr>
+            </table>
+            So a full-speed desktop out-mines a flagship phone about <b style="color:var(--text)">17×</b>,
+            and a cheap phone about <b style="color:var(--text)">170×</b>. That gap is real and we will not
+            hide it — but under SHA-256 an ASIC beats any CPU by millions to one. RandomX makes phones
+            genuine minority participants instead of hopeless ones. Every one of those phones also produced
+            <b style="color:var(--text)">bit-identical</b> results to the desktop, so a phone is a
+            first-class validator regardless of its speed.
           </div>
         </div>
       </div>
