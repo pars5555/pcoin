@@ -90,8 +90,11 @@ RandomX is deliberately **CPU-fair**: it executes randomly generated programs
 over a large memory working set, which kills the efficiency edge of ASICs and
 mostly neutralizes GPUs — the best miner for it *is* a general-purpose CPU.
 Verification runs in light mode with a 256 MB cache, which fits comfortably on
-a modern phone, so phones can meaningfully mine (a desktop is still roughly
-5–10× faster per device — honest numbers, not marketing). Difficulty
+a modern phone, so phones can meaningfully mine. Honest numbers: a desktop
+mines with the 2 GB dataset (fast mode) that does not fit on a phone, so
+expect a desktop to be roughly 20–50× faster than a phone in light mode —
+still nothing like the millions-to-one advantage an ASIC has under SHA-256.
+Difficulty
 self-adjusts every 2016 blocks, so the network settles at whatever hashrate its
 CPUs actually provide.
 
