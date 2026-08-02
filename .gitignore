@@ -21,3 +21,12 @@ test/lint/test_runner/target/
 /guix-build-*
 
 /ci/scratch/
+
+# PCoin: never publish credentials from this public repo
+PCOIN-SECRETS.md
+*SECRETS*
+*credential*
+*.key
+*.pem
+wallet.dat
+*wallet-backup*
