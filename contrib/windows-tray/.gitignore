@@ -1,4 +1,3 @@
-
-# Windows tray app build output
-contrib/windows-tray/*.exe
-contrib/windows-tray/pcoin-tray.cfg
+# Build output and per-machine settings (patterns are relative to this file)
+*.exe
+pcoin-tray.cfg
