@@ -16,6 +16,7 @@
 param(
     [int]$Threads = 0,
     [string]$InstallDir = 'C:\PCoin',
+    [string]$DataDir = '',
     [string]$Version = '1.0.1',
     [string]$Sha256 = '757e26c439a137e1134afe4767634218eeddac41286466b73a80c14ecb4f535a',
     [string[]]$AddNode = @('35.239.156.16:9444'),
@@ -26,8 +27,25 @@ $ErrorActionPreference = 'Stop'
 $name = "pcoin-$Version-win64.zip"
 $url = "https://github.com/pars5555/pcoin/releases/download/v$Version/$name"
 
+# Keep the data directory beside the program by default. Remote management
+# tools often launch with a service's environment block, so %LOCALAPPDATA% can
+# point at system32\config\systemprofile instead of the real user - an explicit
+# path makes the install identical on every machine.
+if (-not $DataDir) { $DataDir = Join-Path $InstallDir 'data' }
+
 Write-Output "PCoin $Version installer"
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
+
+# Stop anything already running from this folder, otherwise the copy fails
+# with a sharing violation.
+$cliPath = Join-Path $InstallDir 'bitcoin-cli.exe'
+Get-Process PCoinTray -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+if (Test-Path $cliPath) {
+    try { & $cliPath -datadir="$DataDir" stop 2>&1 | Out-Null } catch { }
+    Start-Sleep -Seconds 6
+}
+Get-Process bitcoind -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 3
 
 # --- download and verify -------------------------------------------------
 $zip = Join-Path $env:TEMP $name
@@ -44,20 +62,20 @@ Copy-Item (Join-Path $tmp "pcoin-$Version\*") $InstallDir -Force -Recurse
 Write-Output "  installed to $InstallDir"
 
 # --- node configuration --------------------------------------------------
-$dataDir = Join-Path $env:LOCALAPPDATA 'PCoin'
-New-Item -ItemType Directory -Force $dataDir | Out-Null
+New-Item -ItemType Directory -Force $DataDir | Out-Null
 $conf = @('server=1', 'listen=1', 'dbcache=300', 'maxconnections=40', 'par=2')
 foreach ($n in $AddNode) { $conf += "addnode=$n" }
-$conf | Set-Content -Encoding ascii (Join-Path $dataDir 'pcoin.conf')
+$conf | Set-Content -Encoding ascii (Join-Path $DataDir 'pcoin.conf')
+Write-Output "  data directory: $DataDir"
 
-@('address=', 'datadir=', "threads=$Threads") |
+@('address=', "datadir=$DataDir", "threads=$Threads") |
     Set-Content -Encoding ascii (Join-Path $InstallDir 'pcoin-tray.cfg')
 if ($Threads -gt 0) { Write-Output "  configured to mine with $Threads cores" }
 else { Write-Output '  configured; mining is OFF' }
 
 # --- best-effort host tweaks (need admin; not fatal) ---------------------
 try {
-    Add-MpPreference -ExclusionPath $InstallDir, $dataDir -ErrorAction Stop
+    Add-MpPreference -ExclusionPath $InstallDir, $DataDir -ErrorAction Stop
     Write-Output '  defender exclusions added'
 } catch { Write-Output '  defender exclusions skipped (needs admin)' }
 
@@ -74,15 +92,23 @@ try {
 # loaded user profile (e.g. from a service or an elevated remote session), so
 # fall back to composing the path, and never let this step fail the install.
 try {
-    $startup = [Environment]::GetFolderPath('Startup')
-    if (-not $startup -and $env:APPDATA) {
-        $startup = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup'
+    $tail = 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup'
+    # Prefer a path built from the actual account name: the environment block
+    # may belong to a service rather than the logged-on user.
+    $startup = ''
+    if ($env:USERNAME) {
+        $p = Join-Path (Join-Path $env:SystemDrive 'Users') (Join-Path $env:USERNAME $tail)
+        if (Test-Path $p) { $startup = $p }
     }
     if (-not $startup) {
-        $prof = if ($env:USERPROFILE) { $env:USERPROFILE } else { Join-Path $env:SystemDrive "Users\$env:USERNAME" }
-        $startup = Join-Path $prof 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup'
+        $c = [Environment]::GetFolderPath('Startup')
+        if ($c -and (Test-Path $c) -and $c -notmatch 'systemprofile') { $startup = $c }
     }
-    if (Test-Path $startup) {
+    if (-not $startup -and $env:APPDATA -and $env:APPDATA -notmatch 'systemprofile') {
+        $p = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup'
+        if (Test-Path $p) { $startup = $p }
+    }
+    if ($startup) {
         $ws = New-Object -ComObject WScript.Shell
         $lnk = $ws.CreateShortcut((Join-Path $startup 'PCoin Miner.lnk'))
         $lnk.TargetPath = (Join-Path $InstallDir 'PCoinTray.exe')
@@ -91,7 +117,7 @@ try {
         $lnk.Save()
         Write-Output "  autostart shortcut created in $startup"
     } else {
-        Write-Output "  autostart skipped: no Startup folder at '$startup'"
+        Write-Output '  autostart skipped: could not locate the user Startup folder'
     }
 } catch {
     Write-Output ('  autostart skipped: ' + $_.Exception.Message)
@@ -104,11 +130,11 @@ if (-not $NoStart) {
     Start-Sleep -Seconds 40
     $cli = Join-Path $InstallDir 'bitcoin-cli.exe'
     Write-Output '--- node ---'
-    & $cli getblockchaininfo 2>&1 | Select-Object -First 6
+    & $cli -datadir="$DataDir" getblockchaininfo 2>&1 | Select-Object -First 6
     Write-Output '--- miner ---'
-    & $cli getcpuminerinfo 2>&1 | Select-Object -First 7
+    & $cli -datadir="$DataDir" getcpuminerinfo 2>&1 | Select-Object -First 7
     Write-Output '--- peers ---'
-    & $cli getconnectioncount 2>&1
+    & $cli -datadir="$DataDir" getconnectioncount 2>&1
     Write-Output '--- processes ---'
     (Get-Process bitcoind, PCoinTray -ErrorAction SilentlyContinue |
         Select-Object Name, Id | Format-Table -AutoSize | Out-String).Trim()
