@@ -30,16 +30,15 @@ namespace PCoinTray
         {
             // One instance only: a second tray icon would be confusing and the
             // two would fight over the mining mode.
+            //
+            // Exit silently rather than showing a dialog. This app is launched
+            // by an autostart shortcut and by remote deployment, where a modal
+            // message box has nobody to dismiss it and the "duplicate" process
+            // then hangs around forever.
             bool created;
             using (var mutex = new Mutex(true, "PCoinTraySingleInstance", out created))
             {
-                if (!created)
-                {
-                    MessageBox.Show("The PCoin miner tray app is already running.\n" +
-                                    "Look for the PCoin icon in the notification area.",
-                                    "PCoin Miner", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    return;
-                }
+                if (!created) return;
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
                 Application.Run(new TrayApp());
