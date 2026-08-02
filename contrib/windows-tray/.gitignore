@@ -1,0 +1,4 @@
+
+# Windows tray app build output
+contrib/windows-tray/*.exe
+contrib/windows-tray/pcoin-tray.cfg
