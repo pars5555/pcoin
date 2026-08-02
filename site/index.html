@@ -487,7 +487,7 @@
       </p>
 
       <div class="steps">
-        <div class="step"><span class="num">1</span><h4>Get the binaries</h4><p>Build from source — the repo's PCOIN.md walks you through it — or use a pre-built package from GitHub Releases if one is published for your platform.</p></div>
+        <div class="step"><span class="num">1</span><h4>Get the binaries</h4><p>Download the ready-made package for <a href="https://github.com/pars5555/pcoin/releases/download/v1.0.0/pcoin-1.0.0-win64.zip" rel="noopener">Windows&nbsp;x64</a> or <a href="https://github.com/pars5555/pcoin/releases/download/v1.0.0/pcoin-1.0.0-linux-x86_64.tar.gz" rel="noopener">Linux&nbsp;x86-64</a>. On any other platform, build from source — the repo's PCOIN.md walks you through it.</p></div>
         <div class="step"><span class="num">2</span><h4>Run the node</h4><p>Start <span class="mono">bitcoind</span> — it finds the network via <span class="mono">seed.pc.am</span>.</p></div>
         <div class="step"><span class="num">3</span><h4>Create a wallet</h4><p>One command. Your keys stay on your machine, in your datadir.</p></div>
         <div class="step"><span class="num">4</span><h4>Mine</h4><p>The built-in miner grinds real RandomX blocks on your CPU.</p></div>
@@ -495,11 +495,11 @@
 
       <div class="term">
         <div class="term-bar"><i></i><i></i><i></i><span>quickstart — bash (Linux)</span></div>
-        <pre><span class="c"># 1) Get bitcoind + bitcoin-cli: build from source following PCOIN.md</span>
-<span class="c">#    in the repo (https://github.com/pars5555/pcoin), or unpack a</span>
-<span class="c">#    pre-built release if one is published for your platform:</span>
+        <pre><span class="c"># 1) Download and unpack the release, then cd into it.</span>
+<span class="c">#    Windows and Linux packages are ready to run:</span>
 <span class="c">#    https://github.com/pars5555/pcoin/releases</span>
-<span class="c">#    Then cd into the folder that contains bitcoind.</span>
+wget https://github.com/pars5555/pcoin/releases/download/v1.0.0/pcoin-1.0.0-linux-x86_64.tar.gz
+tar xzf pcoin-1.0.0-linux-x86_64.tar.gz &amp;&amp; cd pcoin-1.0.0
 
 <span class="c"># 2) Start your node. It connects to the network via seed.pc.am.</span>
 ./bitcoind -daemon
