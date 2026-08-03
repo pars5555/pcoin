@@ -81,8 +81,19 @@ static UniValue GetNetworkHashPS(int lookup, int height, const CChain& active_ch
         return 0;
 
     // If lookup is -1, then use blocks since last difficulty change.
-    if (lookup == -1)
-        lookup = pb->nHeight % Params().GetConsensus().DifficultyAdjustmentInterval() + 1;
+    //
+    // PCoin: under LWMA every block retargets, so "blocks since the last
+    // difficulty change" is always 1 and the upstream expression instead
+    // produces a sawtooth -- the sampling window grows from 1 to 2016 and
+    // resets every 2016 heights, making the reported hashrate jump for no
+    // physical reason. Sample the LWMA averaging window instead, which is the
+    // span the difficulty actually reflects.
+    const Consensus::Params& consensus{Params().GetConsensus()};
+    if (lookup == -1) {
+        lookup = pb->nHeight >= consensus.lwmaHeight
+                     ? consensus.nLwmaAveragingWindow
+                     : pb->nHeight % consensus.DifficultyAdjustmentInterval() + 1;
+    }
 
     // If lookup is larger than chain, then set it to chain length.
     if (lookup > pb->nHeight)

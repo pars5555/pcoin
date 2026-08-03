@@ -4251,8 +4251,19 @@ static bool ContextualCheckBlockHeader(const CBlockHeader& block, BlockValidatio
         }
     }
 
-    // Check timestamp
-    if (block.Time() > NodeClock::now() + std::chrono::seconds{MAX_FUTURE_BLOCK_TIME}) {
+    // Check timestamp.
+    //
+    // PCoin: at and above the LWMA fork height the limit tightens from 2 hours
+    // to nLwmaMaxFutureBlockTime. It is deliberately gated on height rather than
+    // applied globally: an ungated tightening would change the rules for the
+    // existing chain as soon as a node upgraded, so during the rollout a peer
+    // with a fast clock would be accepted by old nodes and rejected by new ones
+    // and split the network. Gated, the rule arrives exactly with the fork,
+    // when every node must already have upgraded.
+    const int64_t max_future_block_time{nHeight >= consensusParams.lwmaHeight
+                                            ? consensusParams.nLwmaMaxFutureBlockTime
+                                            : MAX_FUTURE_BLOCK_TIME};
+    if (block.Time() > NodeClock::now() + std::chrono::seconds{max_future_block_time}) {
         return state.Invalid(BlockValidationResult::BLOCK_TIME_FUTURE, "time-too-new", "block timestamp too far in the future");
     }
 

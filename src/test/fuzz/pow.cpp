@@ -122,3 +122,79 @@ FUZZ_TARGET(pow_transition, .init = initialize_pow)
     unsigned int new_nbits{GetNextWorkRequired(last_block, nullptr, consensus_params)};
     Assert(PermittedDifficultyTransition(consensus_params, last_block->nHeight + 1, last_block->nBits, new_nbits));
 }
+
+//! PCoin: exercise LwmaGetNextWorkRequired over random but structurally valid
+//! chains (nHeight consistent with the pprev walk, targets <= powLimit).
+FUZZ_TARGET(pow_lwma, .init = initialize_pow)
+{
+    FuzzedDataProvider fuzzed_data_provider(buffer.data(), buffer.size());
+    Consensus::Params consensus_params{Params().GetConsensus()};
+    // Activate LWMA from the bottom of this synthetic chain.
+    consensus_params.lwmaHeight = 0;
+
+    const arith_uint256 pow_limit = UintToArith256(consensus_params.powLimit);
+    const int64_t N{consensus_params.nLwmaAveragingWindow};
+
+    // Build a chain a little longer than the averaging window so the walk is
+    // always satisfiable.
+    const int chain_len{static_cast<int>(N) + 1 + fuzzed_data_provider.ConsumeIntegralInRange<int>(0, 40)};
+
+    std::vector<std::unique_ptr<CBlockIndex>> blocks;
+    int64_t time{fuzzed_data_provider.ConsumeIntegral<uint32_t>() / 2};
+    for (int height = 0; height < chain_len; ++height) {
+        CBlockHeader header;
+        // Deliberately wild solvetimes, including negative runs and zeros.
+        time += fuzzed_data_provider.ConsumeIntegralInRange<int64_t>(-4 * consensus_params.nLwmaMaxFutureBlockTime,
+                                                                    20 * consensus_params.nPowTargetSpacing);
+        if (time < 0) time = 0;
+        header.nTime = static_cast<uint32_t>(time & 0xffffffff);
+
+        arith_uint256 target;
+        target.SetCompact(fuzzed_data_provider.ConsumeIntegral<uint32_t>());
+        // Consensus guarantees targets are in (0, powLimit]; mirror that.
+        if (target == 0 || target > pow_limit) target = pow_limit;
+        header.nBits = target.GetCompact();
+
+        auto current_block{std::make_unique<CBlockIndex>(header)};
+        current_block->pprev = blocks.empty() ? nullptr : blocks.back().get();
+        current_block->nHeight = height;
+        blocks.emplace_back(std::move(current_block));
+    }
+
+    auto last_block{blocks.back().get()};
+    const unsigned int new_nbits{LwmaGetNextWorkRequired(last_block, consensus_params)};
+
+    // The result must always be a usable target: non-zero, not overflowing,
+    // and never above powLimit. A zero target would permanently halt the chain.
+    const auto derived{DeriveTarget(new_nbits, consensus_params.powLimit)};
+    Assert(derived.has_value());
+    Assert(*derived > arith_uint256{0});
+    Assert(*derived <= pow_limit);
+
+    // Deterministic: nBits is a pure function of the ancestors.
+    Assert(LwmaGetNextWorkRequired(last_block, consensus_params) == new_nbits);
+
+    // SECURITY INVARIANT: backdating never eases difficulty.
+    //
+    // Lowering any single timestamp in the window must never produce a LARGER
+    // (easier) target. Against raw solvetimes this was false for interior
+    // positions -- lowering w[i] shrank solvetime i (weight i) and grew
+    // solvetime i+1 (weight i+1) for a net gain of +d in the weighted sum,
+    // which is precisely the emission-inflation exploit. The running maximum in
+    // LwmaGetNextWorkRequired() makes it hold for every position.
+    {
+        const int idx{fuzzed_data_provider.ConsumeIntegralInRange<int>(chain_len - static_cast<int>(N), chain_len - 1)};
+        const uint32_t original{blocks[idx]->nTime};
+        const uint32_t drop{fuzzed_data_provider.ConsumeIntegralInRange<uint32_t>(0, original)};
+        blocks[idx]->nTime = original - drop;
+        const unsigned int backdated_nbits{LwmaGetNextWorkRequired(last_block, consensus_params)};
+        const auto backdated{DeriveTarget(backdated_nbits, consensus_params.powLimit)};
+        Assert(backdated.has_value());
+        Assert(*backdated <= *derived);
+        blocks[idx]->nTime = original;
+    }
+
+    // Under LWMA every transition is permitted (the 4x interval rule does not
+    // apply once every block retargets).
+    Assert(PermittedDifficultyTransition(consensus_params, last_block->nHeight + 1, last_block->nBits, new_nbits));
+}

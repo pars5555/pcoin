@@ -54,7 +54,9 @@ MAX_STANDARD_TX_WEIGHT = 400000
 # Genesis block time (regtest)
 TIME_GENESIS_BLOCK = 1296688602
 
-MAX_FUTURE_BLOCK_TIME = 2 * 60 * 60
+# PCoin: 15 minutes, not Bitcoin's 2 hours. Must match MAX_FUTURE_BLOCK_TIME in
+# src/chain.h, which LWMA relies on to bound forward timestamp inflation.
+MAX_FUTURE_BLOCK_TIME = 15 * 60
 
 # Coinbase transaction outputs can only be spent after this number of new blocks (network rule)
 COINBASE_MATURITY = 100

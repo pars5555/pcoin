@@ -157,6 +157,12 @@ public:
         std::unordered_map<Consensus::BuriedDeployment, int> activation_heights{};
         bool fastprune{false};
         bool enforce_bip94{false};
+        /**
+         * PCoin: regtest ships fPowNoRetargeting = true so blocks are instant.
+         * Set this (via -powretargeting) to turn retargeting on, which the
+         * LWMA functional test needs in order to exercise the algorithm.
+         */
+        bool pow_retargeting{false};
     };
 
     static std::unique_ptr<const CChainParams> RegTest(const RegTestOptions& options);

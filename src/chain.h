@@ -25,8 +25,35 @@
 /**
  * Maximum amount of time that a block timestamp is allowed to exceed the
  * current time before the block will be accepted.
+ *
+ * PCoin keeps Bitcoin's 2 hours here. LWMA wants a tighter limit, but this
+ * constant is NOT the place to impose it: it is height-independent, so lowering
+ * it would change the rules for the existing chain the instant a node upgrades,
+ * splitting the network from non-upgraded peers for the whole rollout. It also
+ * feeds TIMESTAMP_WINDOW below (wallet rescan grace) and the "your clock is
+ * behind the tip" startup refusal in node/chainstate.cpp, neither of which has
+ * anything to do with difficulty. See LWMA_MAX_FUTURE_BLOCK_TIME.
  */
 static constexpr int64_t MAX_FUTURE_BLOCK_TIME = 2 * 60 * 60;
+
+/**
+ * PCoin: the tighter future-time limit that LWMA actually wants, applied by
+ * ContextualCheckBlockHeader only at heights >= consensus.lwmaHeight (via
+ * Consensus::Params::nLwmaMaxFutureBlockTime). Gating it on the fork height is
+ * what keeps the rule change atomic with the fork instead of leaking into the
+ * existing chain at upgrade time.
+ *
+ * 15 minutes is Zcash's value and the norm across LWMA chains. Its job here is
+ * narrow: because the LWMA window measures solvetimes against a running maximum
+ * of timestamps, a miner cannot gain sustained apparent time by stamping
+ * forward (the offset cancels out of the differences), but it can create a
+ * single-block transient worth roughly FTL*N/k of target. At 900 s that
+ * transient is ~4.9%; at 7200 s it would be ~36%.
+ *
+ * Historical blocks are unaffected: the time-too-new test compares against
+ * current time, which is far ahead of any already-mined block.
+ */
+static constexpr int64_t LWMA_MAX_FUTURE_BLOCK_TIME = 15 * 60;
 
 /**
  * Timestamp window used as a grace period by code that compares external

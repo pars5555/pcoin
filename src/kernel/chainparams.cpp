@@ -5,6 +5,7 @@
 
 #include <kernel/chainparams.h>
 
+#include <chain.h> // LWMA_MAX_FUTURE_BLOCK_TIME
 #include <consensus/amount.h>
 #include <consensus/merkle.h>
 #include <consensus/params.h>
@@ -101,6 +102,50 @@ public:
         consensus.fPowNoRetargeting = false;
         consensus.nRuleChangeActivationThreshold = 1815; // 90% of 2016
         consensus.nMinerConfirmationWindow = 2016; // nPowTargetTimespan / nPowTargetSpacing
+        // PCoin: LWMA difficulty adjustment (hard fork).
+        //
+        // Height chosen against the live tip at height 2048 (time 1785748754),
+        // measured pace 1317 s/block == 65.6 blocks/day, giving ~11 days of
+        // rollout margin. Constraints, all satisfied:
+        //   * >= tip + 300, so a slow rollout cannot miss it.
+        //   * <= 3800: must land before height 4032, the next legacy retarget,
+        //     which overflows again and moves difficulty the WRONG way (at the
+        //     current pace it would make the chain ~1.3% harder rather than
+        //     ~2.2x easier), i.e. a death spiral with an accelerator.
+        //   * >= 2016 + nLwmaAveragingWindow + 1 == 2077, so the first LWMA
+        //     window never straddles the height-2016 target discontinuity and
+        //     mixes 1f0fffff targets with 1e0b7c33 ones.
+        // Expect a one-off ~2x difficulty DROP at this height; that is correct
+        // behaviour (the chain is currently running ~2.2x slower than target).
+        consensus.lwmaHeight = 2800;
+        // N trades recovery speed against difficulty noise, and it is baked into
+        // consensus -- it cannot be retuned without another fork, so it is
+        // chosen deliberately rather than inherited. Measured on the integer
+        // algorithm (contrib/lwma/lwma_ref.py), recovery from a 99% hashrate
+        // loss versus the stationary spread of log2(target) at constant
+        // hashrate:
+        //
+        //     N=30  21 blk / 2.4 d   stdev 0.272
+        //     N=45  30 blk / 3.3 d   stdev 0.218
+        //     N=60  40 blk / 4.3 d   stdev 0.185   <-- chosen
+        //     N=90  59 blk / 6.1 d   stdev 0.148
+        //
+        // 60 takes the middle: a 7-miner network cannot afford ~0.27 stdev of
+        // difficulty noise (it makes every honest miner's revenue lumpy and
+        // amplifies the timestamp effects bounded in pow.cpp, whose residual
+        // scales as 1/(N+1)), and 4.3 days to absorb a 99% loss is acceptable
+        // against the legacy rule's 1602 days.
+        //
+        // NOTE, because it bounds every recovery claim above: the live chain's
+        // difficulty (0x1e0b7c33) sits only 356.6x above powLimit. A hashrate
+        // loss larger than that cannot be absorbed by ANY difficulty algorithm
+        // -- the target floors at powLimit and spacing settles at
+        // 600 * loss/356.6 seconds. That is a liveness floor, not a spiral
+        // (blocks keep coming, just slower), but it means "99.9% of hashrate
+        // leaves" ends at ~28 min blocks permanently rather than recovering.
+        consensus.nLwmaAveragingWindow = 60;
+        consensus.nLwmaMaxSolvetime = 12 * consensus.nPowTargetSpacing; // 7200
+        consensus.nLwmaMaxFutureBlockTime = LWMA_MAX_FUTURE_BLOCK_TIME;  // 900
         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].bit = 28;
         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].nStartTime = Consensus::BIP9Deployment::NEVER_ACTIVE;
         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].nTimeout = Consensus::BIP9Deployment::NO_TIMEOUT;
@@ -114,6 +159,20 @@ public:
 
         consensus.nMinimumChainWork = uint256{};
         consensus.defaultAssumeValid = uint256{};
+
+        // The first LWMA window must lie entirely above the height-2016
+        // legacy retarget, or it would average targets differing by 356x.
+        assert(consensus.lwmaHeight > 2016 + consensus.nLwmaAveragingWindow);
+
+        // PermittedDifficultyTransition() cannot bound an LWMA transition (that
+        // needs the whole N-block window, which headerssync.cpp does not have),
+        // so it returns true unconditionally above lwmaHeight. That is only
+        // safe while the low-work headers pre-sync path stays disabled, i.e.
+        // while nMinimumChainWork is zero. Setting nMinimumChainWork without
+        // first giving PermittedDifficultyTransition a bound it can actually
+        // evaluate would let a peer feed unbounded cheap headers above the
+        // activation height. Fail loudly at startup rather than silently.
+        assert(consensus.nMinimumChainWork == uint256{});
 
         /**
          * The message start string is designed to be unlikely to occur in normal data.
@@ -181,11 +240,21 @@ public:
         consensus.powLimit = uint256{"000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"};
         consensus.nPowTargetTimespan = 14 * 24 * 60 * 60; // two weeks
         consensus.nPowTargetSpacing = 10 * 60;
-        consensus.fPowAllowMinDifficultyBlocks = true;
+        // PCoin: must be false wherever LWMA is active. A min-difficulty block
+        // injects a powLimit target into the averaging window, which would
+        // collapse difficulty for the next N blocks. LWMA makes the escape
+        // hatch redundant anyway, since it retargets downwards every block.
+        consensus.fPowAllowMinDifficultyBlocks = false;
         consensus.enforce_BIP94 = false;
         consensus.fPowNoRetargeting = false;
         consensus.nRuleChangeActivationThreshold = 1512; // 75% for testchains
         consensus.nMinerConfirmationWindow = 2016; // nPowTargetTimespan / nPowTargetSpacing
+        // PCoin: LWMA from the start of the chain. The short-history guard in
+        // LwmaGetNextWorkRequired() mines blocks 1..N-1 at powLimit.
+        consensus.lwmaHeight = 1;
+        consensus.nLwmaAveragingWindow = 60;
+        consensus.nLwmaMaxSolvetime = 12 * consensus.nPowTargetSpacing;
+        consensus.nLwmaMaxFutureBlockTime = LWMA_MAX_FUTURE_BLOCK_TIME;
         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].bit = 28;
         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].nStartTime = Consensus::BIP9Deployment::NEVER_ACTIVE;
         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].nTimeout = Consensus::BIP9Deployment::NO_TIMEOUT;
@@ -260,11 +329,16 @@ public:
         consensus.powLimit = uint256{"000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"};
         consensus.nPowTargetTimespan = 14 * 24 * 60 * 60; // two weeks
         consensus.nPowTargetSpacing = 10 * 60;
-        consensus.fPowAllowMinDifficultyBlocks = true;
+        // PCoin: see the note on testnet3 -- incompatible with LWMA.
+        consensus.fPowAllowMinDifficultyBlocks = false;
         consensus.enforce_BIP94 = true;
         consensus.fPowNoRetargeting = false;
         consensus.nRuleChangeActivationThreshold = 1512; // 75% for testchains
         consensus.nMinerConfirmationWindow = 2016; // nPowTargetTimespan / nPowTargetSpacing
+        consensus.lwmaHeight = 1;
+        consensus.nLwmaAveragingWindow = 60;
+        consensus.nLwmaMaxSolvetime = 12 * consensus.nPowTargetSpacing;
+        consensus.nLwmaMaxFutureBlockTime = LWMA_MAX_FUTURE_BLOCK_TIME;
         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].bit = 28;
         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].nStartTime = Consensus::BIP9Deployment::NEVER_ACTIVE;
         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].nTimeout = Consensus::BIP9Deployment::NO_TIMEOUT;
@@ -377,6 +451,10 @@ public:
         consensus.fPowNoRetargeting = false;
         consensus.nRuleChangeActivationThreshold = 1815; // 90% of 2016
         consensus.nMinerConfirmationWindow = 2016; // nPowTargetTimespan / nPowTargetSpacing
+        consensus.lwmaHeight = 1;
+        consensus.nLwmaAveragingWindow = 60;
+        consensus.nLwmaMaxSolvetime = 12 * consensus.nPowTargetSpacing;
+        consensus.nLwmaMaxFutureBlockTime = LWMA_MAX_FUTURE_BLOCK_TIME;
         consensus.MinBIP9WarningHeight = 0;
         consensus.powLimit = uint256{"000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"};
         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].bit = 28;
@@ -444,9 +522,18 @@ public:
         consensus.nPowTargetSpacing = 10 * 60;
         consensus.fPowAllowMinDifficultyBlocks = true;
         consensus.enforce_BIP94 = opts.enforce_bip94;
-        consensus.fPowNoRetargeting = true;
+        // PCoin: regtest disables retargeting by default so blocks stay
+        // instant. -powretargeting turns it back on so the LWMA functional
+        // test can actually exercise the algorithm.
+        consensus.fPowNoRetargeting = !opts.pow_retargeting;
         consensus.nRuleChangeActivationThreshold = 108; // 75% for testchains
         consensus.nMinerConfirmationWindow = 144; // Faster than normal for regtest (144 instead of 2016)
+        // PCoin: LWMA off by default on regtest; enable with
+        // -testactivationheight=lwma@<height>.
+        consensus.lwmaHeight = std::numeric_limits<int>::max();
+        consensus.nLwmaAveragingWindow = 60;
+        consensus.nLwmaMaxSolvetime = 12 * consensus.nPowTargetSpacing;
+        consensus.nLwmaMaxFutureBlockTime = LWMA_MAX_FUTURE_BLOCK_TIME;
 
         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].bit = 28;
         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].nStartTime = 0;
@@ -486,6 +573,9 @@ public:
                 break;
             case Consensus::BuriedDeployment::DEPLOYMENT_CSV:
                 consensus.CSVHeight = int{height};
+                break;
+            case Consensus::BuriedDeployment::DEPLOYMENT_LWMA:
+                consensus.lwmaHeight = int{height};
                 break;
             }
         }

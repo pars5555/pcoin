@@ -344,6 +344,7 @@ BASE_SCRIPTS = [
     'wallet_fallbackfee.py --descriptors',
     'rpc_dumptxoutset.py',
     'feature_minchainwork.py',
+    'feature_lwma.py',
     'rpc_estimatefee.py',
     'rpc_getblockstats.py',
     'feature_port.py',

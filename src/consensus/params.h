@@ -26,8 +26,10 @@ enum BuriedDeployment : int16_t {
     DEPLOYMENT_DERSIG,
     DEPLOYMENT_CSV,
     DEPLOYMENT_SEGWIT,
+    // PCoin: LWMA difficulty adjustment. Buried/height-activated hard fork.
+    DEPLOYMENT_LWMA,
 };
-constexpr bool ValidDeployment(BuriedDeployment dep) { return dep <= DEPLOYMENT_SEGWIT; }
+constexpr bool ValidDeployment(BuriedDeployment dep) { return dep <= DEPLOYMENT_LWMA; }
 
 enum DeploymentPos : uint16_t {
     DEPLOYMENT_TESTDUMMY,
@@ -116,6 +118,40 @@ struct Params {
     bool fPowNoRetargeting;
     int64_t nPowTargetSpacing;
     int64_t nPowTargetTimespan;
+    /**
+     * PCoin LWMA (zawy12 LWMA-1) difficulty adjustment.
+     *
+     * At heights >= lwmaHeight the next block's nBits is computed by
+     * LwmaGetNextWorkRequired() over a rolling window of the previous
+     * nLwmaAveragingWindow blocks, retargeting every block. Below
+     * lwmaHeight the legacy Bitcoin 2016-block retarget applies verbatim
+     * (see the warning in pow.cpp: the live chain's blocks 2016.. are only
+     * reproducible with the legacy code's 256-bit wraparound, so that path
+     * must never be "fixed").
+     *
+     * This is a hard fork: LWMA nBits values are rejected outright by nodes
+     * running the old rule, so activation is by fixed height rather than
+     * versionbits.
+     */
+    /** First height at which LWMA applies. */
+    int lwmaHeight;
+    /** N: number of solvetimes averaged. */
+    int64_t nLwmaAveragingWindow;
+    /**
+     * Per-solvetime upper clamp, 12*nPowTargetSpacing. Also fixes the maximum
+     * per-block difficulty DECREASE (12x) and the supermajority-ratchet
+     * threshold (1 - nPowTargetSpacing/nLwmaMaxSolvetime of total hashrate).
+     * There is no lower clamp: solvetimes are measured against a running
+     * maximum of the window timestamps and so are never negative.
+     */
+    int64_t nLwmaMaxSolvetime;
+    /**
+     * Tightened "block timestamp too far in the future" limit, applied only at
+     * heights >= lwmaHeight so that the rule change lands exactly on the fork
+     * and never on already-mined history. Bounds the one-off difficulty
+     * transient a forward-stamping miner can create.
+     */
+    int64_t nLwmaMaxFutureBlockTime;
     std::chrono::seconds PowTargetSpacing() const
     {
         return std::chrono::seconds{nPowTargetSpacing};
@@ -146,6 +182,8 @@ struct Params {
             return CSVHeight;
         case DEPLOYMENT_SEGWIT:
             return SegwitHeight;
+        case DEPLOYMENT_LWMA:
+            return lwmaHeight;
         } // no default case, so the compiler can warn about missing cases
         return std::numeric_limits<int>::max();
     }
