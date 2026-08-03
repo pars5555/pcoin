@@ -17,8 +17,8 @@ param(
     [int]$Threads = 0,
     [string]$InstallDir = 'C:\PCoin',
     [string]$DataDir = '',
-    [string]$Version = '1.0.1',
-    [string]$Sha256 = '757e26c439a137e1134afe4767634218eeddac41286466b73a80c14ecb4f535a',
+    [string]$Version = '1.2.0',
+    [string]$Sha256 = '63b8541db7a436cdbb2cb5ed5e9bdebb55f0129830973002f1236fd0bf048b83',
     [string[]]$AddNode = @('35.239.156.16:9444'),
     [switch]$NoStart
 )
