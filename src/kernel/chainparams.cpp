@@ -6,6 +6,7 @@
 #include <kernel/chainparams.h>
 
 #include <chain.h> // LWMA_MAX_FUTURE_BLOCK_TIME
+#include <chainparamsseeds.h>
 #include <consensus/amount.h>
 #include <consensus/merkle.h>
 #include <consensus/params.h>
@@ -203,7 +204,12 @@ public:
 
         bech32_hrp = "pc";
 
-        vFixedSeeds.clear();
+        // Fallback peers for when DNS seeding yields nothing: seed.pc.am is
+        // down, DNS is filtered, or the node was started with -dnsseed=0.
+        // Without these, that one DNS name is a single point of failure for
+        // joining the network at all. Format, provenance and the rule for
+        // adding more are documented in chainparamsseeds.h.
+        vFixedSeeds = std::vector<uint8_t>(std::begin(chainparams_seed_main), std::end(chainparams_seed_main));
 
         fDefaultConsistencyChecks = false;
         m_is_mockable_chain = false;
