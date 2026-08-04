@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Belt and braces behind android:allowBackup="false".
+
+  allowBackup is already false and must stay false, but a future manifest edit
+  or a targetSdk bump changing a default should not be able to silently start
+  shipping the wallet or the encrypted recovery phrase to a cloud backup. These
+  rules exclude both explicitly, so backup would be empty even if it were ever
+  turned on by accident.
+
+  (The Keystore key itself never leaves the device, so a copied blob would be
+  undecryptable anyway — but "the attacker only got ciphertext" is not a reason
+  to hand out the ciphertext.)
+-->
+<full-backup-content>
+    <!-- The encrypted recovery phrase. -->
+    <exclude domain="file" path="wallet/" />
+    <!-- wallet.dat, the chain, and the RPC cookie. -->
+    <exclude domain="file" path="pcoin/" />
+    <!-- Payout address, payout wallet, and which wallets exist. -->
+    <exclude domain="sharedpref" path="pcoin_miner.xml" />
+</full-backup-content>

@@ -1,0 +1,20 @@
+# Build outputs
+build/
+.gradle/
+.kotlin/
+*.apk
+*.aab
+
+# Machine-specific: SDK path, and on a release machine the signing config.
+local.properties
+
+# The node itself, cross-compiled for arm64. Build products of the C++ tree in
+# this repository, ~14 MB, rebuilt per release -- see README.md.
+app/src/main/jniLibs/
+
+# Keystores never live in the repo. See D:\pc.am (documented in CLAUDE.md).
+*.jks
+*.keystore
+
+# Signing configuration: keystore path and passwords. Never commit.
+signing.properties

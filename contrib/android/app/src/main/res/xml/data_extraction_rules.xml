@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Android 12+ form of backup_rules.xml. Same reasoning: allowBackup is
+  false, and these rules make sure that stays true in effect even if the flag is
+  ever flipped by accident.
+
+  device-transfer matters as much as cloud-backup here: a phone-to-phone
+  transfer that carried wallet.dat across would silently give two devices the
+  same mining keys.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path="wallet/" />
+        <exclude domain="file" path="pcoin/" />
+        <exclude domain="sharedpref" path="pcoin_miner.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="wallet/" />
+        <exclude domain="file" path="pcoin/" />
+        <exclude domain="sharedpref" path="pcoin_miner.xml" />
+    </device-transfer>
+</data-extraction-rules>

@@ -1,0 +1,590 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Single-screen dashboard. Plain framework widgets inside a ScrollView: no
+  ConstraintLayout, no Material dependency, nothing that could fail to resolve
+  offline. Everything shown here comes straight from the node.
+-->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/app_name"
+            android:textSize="24sp"
+            android:textStyle="bold" />
+
+        <!--
+          Shown only when POST_NOTIFICATIONS was refused: with no notification,
+          this screen is the ONLY place the phone admits it is mining, and the
+          user has to be told that.
+        -->
+        <TextView
+            android:id="@+id/notification_banner"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:background="#33FF8800"
+            android:padding="10dp"
+            android:text="@string/notifications_denied_banner"
+            android:textSize="13sp"
+            android:visibility="gone" />
+
+        <!--
+          Recovery-phrase state. Shown for an install whose wallet predates
+          recovery phrases, and for a fresh install that has no wallet at all.
+          Never shown once a phrase exists.
+        -->
+        <TextView
+            android:id="@+id/wallet_banner"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:background="#33FF4444"
+            android:padding="10dp"
+            android:text="@string/wallet_no_phrase_banner"
+            android:textSize="13sp"
+            android:visibility="gone" />
+
+        <LinearLayout
+            android:id="@+id/wallet_banner_actions"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:visibility="gone">
+
+            <Button
+                android:id="@+id/wallet_setup_btn"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/wallet_create_phrase" />
+
+            <Button
+                android:id="@+id/wallet_dismiss_btn"
+                style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/wallet_dismiss" />
+        </LinearLayout>
+
+        <!-- ========================= permissions ========================== -->
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="16dp"
+            android:background="#33FFFFFF" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/section_permissions"
+            android:textStyle="bold" />
+
+        <!-- Stays visible until every item below is satisfied. -->
+        <TextView
+            android:id="@+id/perm_summary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:background="#33FF8800"
+            android:padding="10dp"
+            android:text="@string/perm_warning"
+            android:textSize="13sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/permissions_hint"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/perm_notifications"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textSize="13sp" />
+
+        <Button
+            android:id="@+id/perm_notifications_btn"
+            style="?android:attr/buttonStyleSmall"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/perm_fix" />
+
+        <TextView
+            android:id="@+id/perm_battery"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textSize="13sp" />
+
+        <Button
+            android:id="@+id/perm_battery_btn"
+            style="?android:attr/buttonStyleSmall"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/perm_fix" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/perm_battery_unrestricted"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/perm_battery_unrestricted_hint"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/perm_unrestricted_btn"
+            style="?android:attr/buttonStyleSmall"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/perm_open_settings" />
+
+        <TextView
+            android:id="@+id/perm_autostart"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/perm_autostart_text"
+            android:textSize="13sp" />
+
+        <Button
+            android:id="@+id/perm_autostart_btn"
+            style="?android:attr/buttonStyleSmall"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/perm_open_settings" />
+
+
+        <!-- ============================ status ============================ -->
+
+        <TextView
+            android:id="@+id/gate_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/status_stopped"
+            android:textSize="16sp" />
+
+        <TextView
+            android:id="@+id/hashrate"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/dash"
+            android:textSize="40sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/label_hashrate"
+            android:textSize="13sp" />
+
+        <!-- =========================== controls =========================== -->
+
+        <Button
+            android:id="@+id/toggle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="@string/start_mining" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="20dp"
+            android:background="?android:attr/listDivider" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/label_performance"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/performance_value"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/dash"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <!--
+          10..100 in steps of 10 => 10 positions. android:min needs API 26, so
+          the mapping is done in code: progress 0..9 -> percent 10..100.
+        -->
+        <SeekBar
+            android:id="@+id/performance"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:max="9"
+            android:progress="4" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/performance_hint"
+            android:textSize="12sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/label_thermal"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/thermal_value"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Severe" />
+        </LinearLayout>
+
+        <SeekBar
+            android:id="@+id/thermal"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:max="3"
+            android:progress="1" />
+
+        <CheckBox
+            android:id="@+id/mine_on_battery"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/mine_on_battery" />
+
+        <TextView
+            android:id="@+id/always_on_warning"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#33FF4444"
+            android:padding="8dp"
+            android:text="@string/always_on_warning"
+            android:textSize="12sp"
+            android:visibility="gone" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/thermal_hint"
+            android:textSize="12sp" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="20dp"
+            android:background="?android:attr/listDivider" />
+
+        <!-- ============================= stats ============================= -->
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/section_mining"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/blocks_found"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textSize="15sp" />
+
+        <TextView
+            android:id="@+id/threads"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textSize="15sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/section_chain"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/height"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textSize="15sp" />
+
+        <TextView
+            android:id="@+id/peers"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textSize="15sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/section_wallet"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/balance_confirmed"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textSize="15sp" />
+
+        <TextView
+            android:id="@+id/balance_immature"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textSize="15sp" />
+
+        <!--
+          Only appears when the wallet holds money that getbalances reported in
+          no category at all, which happens after an unclean node restart drops
+          an unconfirmed transaction from the mempool. Without this line the
+          screen shows 0.00 everywhere with nothing pending, for a wallet that
+          does in fact hold the coins.
+        -->
+
+        <TextView
+            android:id="@+id/balance_inflight"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:background="#33FF8800"
+            android:padding="8dp"
+            android:textSize="15sp"
+            android:visibility="gone" />
+
+        <!--
+          The split matters more than the total. A user with an old wallet needs
+          to see, without reading anything, how much of their money the twelve
+          words actually bring back.
+        -->
+        <TextView
+            android:id="@+id/balance_seeded"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:textSize="13sp"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/balance_legacy"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textSize="13sp"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/backup_button"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="@string/wallet_backup_button"
+            android:visibility="gone" />
+
+        <!-- ========================== forwarding ========================== -->
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/section_forwarding"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <!--
+          The destination, shown whenever one is set, in every state.
+
+          It used to appear only inside the state sentence, so an in-flight
+          sweep or a blocked precondition replaced it and the address vanished
+          from the screen entirely. Somebody who had just set an address went
+          looking for confirmation and found none. This is the one value on the
+          card the user chose themselves, so it gets its own line and stays put.
+        -->
+        <TextView
+            android:id="@+id/forward_destination_label"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/forward_destination_label"
+            android:textSize="12sp"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/forward_destination"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textIsSelectable="true"
+            android:textSize="14sp"
+            android:typeface="monospace"
+            android:visibility="gone" />
+
+        <!--
+          Whatever state forwarding is in, it is stated here in words. There is
+          deliberately no state in which this card is blank: "nothing is
+          happening" and "something failed" must never look the same.
+        -->
+        <TextView
+            android:id="@+id/forward_state"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textSize="14sp" />
+
+        <!-- The precondition that is currently in the way, verbatim. -->
+        <TextView
+            android:id="@+id/forward_blocked"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textSize="13sp"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/forward_error"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:background="#33FF8800"
+            android:padding="8dp"
+            android:textSize="13sp"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/forward_last"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textIsSelectable="true"
+            android:textSize="13sp"
+            android:visibility="gone" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/forward_manage"
+                style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/forward_card_set" />
+
+            <Button
+                android:id="@+id/forward_ack"
+                style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/forward_card_probe_ack"
+                android:visibility="gone" />
+
+            <Button
+                android:id="@+id/forward_copy_txid"
+                style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/forward_card_copy"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/label_payout_address"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <!--
+          Two addresses live on this screen and they are easy to confuse: the
+          one above is where coins are FORWARDED to, this one is where the
+          miner PAYS. Somebody who set a forwarding address and then saw this
+          one unchanged reasonably concluded their setting had not taken, so
+          the difference is now spelled out rather than implied by the labels.
+        -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="@string/label_payout_hint"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/address"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/address_pending"
+            android:textIsSelectable="true"
+            android:textSize="14sp"
+            android:typeface="monospace" />
+
+        <Button
+            android:id="@+id/copy_address"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/copy_address" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/section_device"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/device"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textSize="15sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:layout_marginBottom="24dp"
+            android:text="@string/gating_note"
+            android:textSize="12sp" />
+
+    </LinearLayout>
+</ScrollView>

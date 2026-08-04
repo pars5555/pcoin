@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- DATA_SYNC covers API 29..33; SPECIAL_USE is what the service actually
+         declares from API 34 on. See the <service> element below. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Hashing must continue with the screen off; the service holds a partial
+         wake lock, and only ever while the phone is on external power. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!--
+      Lets the app ask to be exempted from Doze battery optimisation. Without
+      the exemption Android suspends the process during long idle periods and
+      mining stops minutes after the screen goes off. It is a special
+      permission: it cannot be granted in code, only by the user accepting a
+      system dialog, which the Permissions section of the app opens.
+    -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- Resume mining after a reboot when the user left it switched on. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!--
+      Needed for KeyguardManager.isDeviceSecure / createConfirmDeviceCredentialIntent,
+      which is how the recovery phrase is gated on API 24..29 (and the fallback
+      for any device with no enrolled biometric). Normal permission, granted at
+      install, no runtime prompt.
+    -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+
+    <application
+        android:allowBackup="false"
+        android:extractNativeLibs="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@android:drawable/ic_menu_compass"
+        android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.PCoinMiner">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:launchMode="singleTop">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          Wallet setup and restore. Not exported: nothing outside this app has
+          any business launching a screen that displays a recovery phrase.
+          excludeFromRecents plus FLAG_SECURE (set in code) keep the words out
+          of the task switcher.
+        -->
+        <activity
+            android:name=".SetupActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:label="@string/setup_title"
+            android:launchMode="singleTop"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!--
+          Forwarding settings. Not exported: nothing outside this app may open
+          the screen that decides where the user's coins are sent.
+        -->
+        <activity
+            android:name=".ForwardActivity"
+            android:exported="false"
+            android:label="@string/forward_title"
+            android:launchMode="singleTop"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".BackupActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:label="@string/backup_title"
+            android:launchMode="singleTop" />
+
+        <!--
+          The service runs a full node (network + disk sync) and the CPU miner.
+          Foreground is mandatory, and correct: the user must be able to see at
+          a glance that the phone is mining.
+
+          Two types are declared and the service picks one at runtime:
+            - specialUse on API 34+. A cryptocurrency node is not "data sync" in
+              the sense Android means it, and from targetSdk 35 a dataSync
+              foreground service is capped at 6 hours per 24 and then killed via
+              Service.onTimeout(), which would silently end an overnight mining
+              session. specialUse carries no such cap. It does require a Play
+              Console justification, which is the honest trade.
+            - dataSync on API 29..33, where specialUse does not exist.
+        -->
+        <service
+            android:name=".MinerService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse|dataSync">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Runs a PCoin (Layer-1 blockchain) full node and its CPU miner while the phone is charging. Continuous CPU and network work is the function the user explicitly started; it cannot be deferred or batched." />
+        </service>
+
+        <receiver
+            android:name=".BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+
+    </application>
+
+</manifest>

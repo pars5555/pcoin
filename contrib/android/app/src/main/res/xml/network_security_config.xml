@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The app talks JSON-RPC to its own bitcoind over http://127.0.0.1:9443.
+  Since targetSdk 28 cleartext HTTP is blocked by default, which would break
+  every RPC call. Cleartext is re-enabled for the loopback interface ONLY:
+  the traffic never leaves the device, and it is authenticated with the
+  node's .cookie file.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

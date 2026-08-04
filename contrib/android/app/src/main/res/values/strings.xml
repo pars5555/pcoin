@@ -1,0 +1,211 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PCoin Miner</string>
+
+    <string name="dash">--</string>
+    <string name="status_stopped">Stopped</string>
+
+    <string name="label_hashrate">Current hash rate</string>
+    <string name="label_performance">Performance</string>
+    <!-- formatted="false": the literal % signs are text, not format specifiers. -->
+    <string name="performance_hint" formatted="false">10% to 100% of this device, in steps of 10%.</string>
+    <string name="mine_on_battery">Also mine when not charging</string>
+    <string name="always_on_warning">Always-on mining is enabled. Running on battery, or ignoring heat, will flatten the battery quickly and keep the phone warm. Mining still stops if the phone reaches the point where Android would shut itself down — stopping one level early mines more than a shutdown and reboot would.</string>
+    <string name="section_permissions">Permissions</string>
+    <string name="perm_all_set">All set — this phone can mine in the background.</string>
+    <string name="perm_warning">Setup incomplete: mining will stop when the app is in the background or the screen is off. Grant everything listed below.</string>
+    <string name="perm_battery_unrestricted">Battery usage: set to Unrestricted</string>
+    <string name="perm_battery_unrestricted_hint">Settings &gt; Apps &gt; PCoin Miner &gt; Battery &gt; Unrestricted. If this is set to Restricted, Android stops the miner in the background no matter what else is granted.</string>
+    <string name="permissions_hint">These are needed for mining to keep running when the app is in the background or the screen is off.</string>
+    <string name="perm_fix">Grant</string>
+    <string name="perm_open_settings">Open settings</string>
+    <string name="perm_notifications_ok">Notifications: granted — the mining notification can be shown</string>
+    <string name="perm_notifications_missing">Notifications: NOT granted — required, the miner cannot run as a foreground service without it</string>
+    <string name="perm_battery_ok">Battery optimisation: exempt — mining continues with the screen off</string>
+    <string name="perm_battery_missing">Battery optimisation: active — Android will suspend mining shortly after the screen goes off</string>
+    <string name="perm_autostart_text">Some phones (Samsung, Xiaomi, Oppo, Huawei) also need the app allowed in their own battery or auto-start settings. Android has no way for an app to request this, so it has to be set by hand.</string>
+    <string name="label_thermal">Stop when hot</string>
+    <string name="thermal_hint" formatted="false">Mining pauses automatically once Android reports this heat level, and resumes when the phone cools. Choose Moderate for older phones.</string>
+
+    <string name="start_mining">Start mining</string>
+    <string name="stop_mining">Stop mining</string>
+
+    <string name="section_mining">MINING</string>
+    <string name="section_chain">BLOCKCHAIN</string>
+    <string name="section_wallet">WALLET</string>
+    <string name="section_device">DEVICE</string>
+
+    <string name="label_payout_address">MINING ADDRESS OF THIS PHONE</string>
+    <string name="label_payout_hint">Blocks this phone finds are paid here first. If forwarding is set above, coins move on from here once they mature.</string>
+    <string name="address_pending">Created when the node first starts…</string>
+    <string name="copy_address">Copy address</string>
+    <string name="address_copied">Payout address copied</string>
+
+    <string name="balance_in_flight">In flight — %1$d transaction(s) awaiting confirmation, %2$s incoming.\n\nYour coins are not lost. The node restarted before this transaction confirmed, so it is not being counted in the balances above. It will reappear there within a block or two.</string>
+
+    <string name="gating_note">Mining runs only while the phone is charging and the battery is below 42°C. It pauses on its own otherwise and resumes when the phone is cool and plugged in again.</string>
+
+    <!-- ===================== recovery phrase / setup ====================== -->
+
+    <string name="setup_title">Set up your wallet</string>
+    <string name="setup_intro">PCoin pays your mining rewards into a wallet on this phone. A 12-word recovery phrase is the only way to get that money back if the phone is lost, reset, or the app is uninstalled.</string>
+    <string name="setup_create">Create a new wallet</string>
+    <string name="setup_24_words">Advanced: use 24 words instead of 12</string>
+    <string name="setup_restore">I already have a recovery phrase</string>
+
+    <string name="show_title">Write these words down</string>
+    <string name="show_warning">Write these words on paper, in this order, and keep the paper somewhere safe. This is the ONLY way to recover your coins. Anyone who sees these words can take your coins. Nobody — not this app, not the PCoin network — can recover them for you.</string>
+    <string name="show_no_copy">There is no copy button on purpose. A recovery phrase belongs on paper, not on a clipboard that other apps and other devices can read.</string>
+    <string name="show_continue">I have written them down</string>
+
+    <string name="confirm_title">Check your paper</string>
+    <string name="confirm_intro">Type the words below exactly as you wrote them, to confirm the paper is correct. Different words are asked each time.</string>
+    <string name="confirm_word_label">Word %1$d</string>
+    <string name="confirm_button">Confirm</string>
+    <string name="confirm_show_again">Show me the words again</string>
+    <string name="confirm_wrong">That does not match. Check your paper — the words must be in the right order.</string>
+
+    <string name="restore_title">Enter your recovery phrase</string>
+    <string name="restore_intro">Type your words in order. You can also paste the whole phrase into the first box.</string>
+    <string name="restore_button">Restore wallet</string>
+    <string name="restore_progress">%1$d of %2$d valid words</string>
+    <string name="restore_count_prompt">How many words did you write down?</string>
+    <string name="restore_count_12">12 words</string>
+    <string name="restore_count_24">24 words</string>
+    <string name="restore_word_unknown">Not a recovery-phrase word</string>
+    <string name="restore_word_unknown_did_you_mean">Not a recovery-phrase word. Did you mean: %1$s</string>
+    <string name="restore_unknown_words">Some words are not in the recovery-phrase word list. They are marked above.</string>
+    <string name="restore_bad_count">A recovery phrase has 12 or 24 words; this one has %1$d.</string>
+    <string name="restore_checksum_failed">All the words are valid, but the phrase is not right — a word is in the wrong position, or one word was written down wrong. Check the order against your paper. (It is not possible to tell which word is wrong, so no word is marked.)</string>
+    <string name="restore_checksum_failed_count">All %1$d words are valid, but the phrase is not right.\n\nIf your paper actually has 24 words, tap “24 words” above and enter all of them — a 24-word phrase cannot be restored from its first 12.\n\nOtherwise check the order against your paper. (It is not possible to tell which word is wrong, so no word is marked.)</string>
+
+    <string name="progress_title">Setting up your wallet</string>
+    <string name="progress_note">This can take a moment. Leave the app open until it finishes.</string>
+    <string name="progress_saving">Protecting your recovery phrase…</string>
+    <string name="progress_waiting_node">Waiting for the PCoin node to start…</string>
+    <string name="progress_rescanning">Looking for your coins… %1$d%%</string>
+    <string name="progress_start_over">Start over</string>
+    <string name="setup_failed">Setup did not finish: %1$s\n\nNothing has been changed. Your coins, if you had any, are untouched. You can try again.</string>
+
+    <string name="done_title">Wallet ready</string>
+    <string name="done_created">Your wallet is set up and your mining rewards will be paid to:\n\n%1$s\n\nThis address comes from your recovery phrase, so those words bring it back on any device.</string>
+    <!--
+      The scan result is stated, not implied. A single mistyped word that happens
+      to be another word from the list passes the checksum about one time in
+      sixteen, and a wrong phrase then restores silently into an empty wallet
+      that looks exactly like a successful restore.
+    -->
+    <string name="done_restored">Your wallet has been restored. Mining rewards will be paid to:\n\n%1$s\n\n%2$s</string>
+    <string name="done_scan_found">The scan found %1$d transaction(s) and a balance of %2$s.\n\nIf that is not what you expected, the phrase may not be the one you meant — check the words against your paper.</string>
+    <string name="done_scan_empty">The scan finished and found NO transactions and a balance of zero.\n\nIf this phrase should have coins, it is not the right phrase: check every word against your paper, and check the word count. Nothing has been destroyed — your other wallets are untouched.</string>
+    <string name="done_scan_unknown">The node could not be asked what the scan found, so this wallet\'s balance is not known yet. Check the main screen in a moment.</string>
+    <string name="done_button">Done</string>
+
+    <string name="resume_title">Finish setting up your wallet</string>
+    <string name="resume_intro">A recovery phrase was created on this phone, but the wallet was never finished — setup was interrupted. Your words are safe and still stored here.\n\nNothing was lost. Finish the job now and the wallet those words recover will be built.</string>
+    <string name="resume_finish">Finish setting up</string>
+    <string name="resume_view">Show me the words again</string>
+    <string name="resume_reading">Reading your stored recovery phrase…</string>
+    <string name="error_phrase_exists">A recovery phrase is already stored on this phone, so a new one was NOT created and nothing has been changed. Go back and choose “Finish setting up” to build the wallet from the words you already have.</string>
+    <string name="error_lock_unknown">This phone would not say whether it has a screen lock (%1$s), so your recovery phrase was NOT stored — storing it under weaker protection without telling you would be worse. Nothing has been created. Set a PIN or pattern in Android settings and try again.</string>
+
+    <string name="storage_note_locked">A copy of your phrase is stored on this phone, encrypted and locked behind your screen lock. You can view it again from Backup. The paper is still what matters: this copy dies with the phone.</string>
+    <string name="storage_note_unlocked">This phone has no screen lock, so the stored copy of your phrase could not be locked behind one. It is still encrypted, but anyone who can unlock this phone can see it. Set a PIN or pattern in Android settings. Your paper copy is what really matters.</string>
+
+    <string name="gate_save_title">Confirm it\'s you</string>
+    <string name="gate_save_subtitle">Unlock to protect your recovery phrase on this device</string>
+    <string name="gate_view_title">Confirm it\'s you</string>
+    <string name="gate_view_subtitle">Unlock to view your recovery phrase</string>
+
+    <string name="error_store_failed">Your recovery phrase could not be stored (%1$s). Nothing has been created.</string>
+    <string name="error_unlock_failed">Could not confirm your screen lock (%1$s).</string>
+
+    <!-- ========================= backup screen =========================== -->
+
+    <string name="backup_title">Recovery phrase</string>
+    <string name="backup_warning">Anyone who sees these words can take your coins. Make sure nobody is looking over your shoulder, and never type them into anything but a PCoin wallet.</string>
+    <string name="backup_hidden">Hidden. Unlock to view.</string>
+    <string name="backup_hidden_paused">Hidden again because the app went to the background.</string>
+    <string name="backup_hidden_timeout">Hidden again after a couple of minutes.</string>
+    <string name="backup_shown">Write these on paper if you have not already.</string>
+    <string name="backup_reveal">Show my recovery phrase</string>
+    <string name="backup_close">Close</string>
+    <string name="backup_cancelled">Cancelled.</string>
+    <string name="backup_auth_failed">Screen lock was not confirmed, so the phrase stays hidden.</string>
+    <string name="backup_unavailable">The phrase could not be read (%1$s).</string>
+    <string name="backup_key_lost">%1$s\n\nYour coins are NOT affected — the wallet on this phone still holds them and still mines. What is lost is only the stored copy of the words. If you have your paper copy, nothing is wrong. If you do not, create a new wallet and move your coins to it.</string>
+    <string name="backup_none">This wallet has no recovery phrase.</string>
+    <string name="backup_none_note">This wallet was created before recovery phrases existed. It still works and its coins are still yours, but there are no words that can bring it back if this phone is lost. Create a recovery phrase from the main screen to protect future mining rewards.</string>
+
+    <!-- ==================== wallet state on the dashboard ================= -->
+
+    <string name="wallet_no_phrase_banner">This wallet has NO recovery phrase. If this phone is lost or the app is uninstalled, its coins are gone. Create a recovery phrase — your existing coins stay exactly where they are and stay spendable.</string>
+    <string name="wallet_create_phrase">Create a recovery phrase</string>
+    <string name="wallet_dismiss">Not now</string>
+    <string name="wallet_backup_button">View recovery phrase</string>
+    <string name="label_balance_seeded">Backed up by your recovery phrase</string>
+    <string name="label_balance_legacy">Old wallet — no recovery phrase</string>
+    <string name="wallet_needs_setup">No wallet yet. Set one up before mining, so your rewards are paid somewhere you can recover.</string>
+    <string name="wallet_setup_button">Set up wallet</string>
+    <string name="wallet_setup_incomplete">Wallet setup was never finished. A recovery phrase is stored on this phone, but no wallet was built from it — so those words do NOT yet recover anything, and any mining rewards are being paid somewhere else. Finish setup to fix this.</string>
+    <string name="wallet_finish_setup">Finish wallet setup</string>
+
+    <!-- ========================== forwarding ============================= -->
+
+    <string name="section_forwarding">FORWARDING</string>
+    <string name="forward_destination_label">FORWARDING TO THIS ADDRESS</string>
+    <string name="forward_title">Forward my coins</string>
+    <string name="forward_intro">This app is a wallet. Mined coins are paid into it and stay here, recoverable with your twelve words, until you choose otherwise.\n\nIf you set an address below, the app will automatically send coins there once they are spendable. Everything the wallet holds is forwarded, not only mining rewards — so a payment someone sends you here would go on to that address too.\n\nBefore any real forwarding starts, the app sends a 1.00000000 PC test payment and waits for you to confirm you can see it. If you never confirm it, nothing more is ever sent.</string>
+
+    <string name="forward_current_holding">Holding coins in this wallet. No forwarding address is set, and that is a perfectly safe place for them to stay.</string>
+    <string name="forward_current_probe_pending">Forwarding to:\n%1$s\n\nA test payment will be sent as soon as coins are spendable.</string>
+    <string name="forward_current_probe_sent">Forwarding to:\n%1$s\n\nA test payment is on its way. Nothing else will be sent until you confirm it arrived.</string>
+    <string name="forward_current_armed">Forwarding to:\n%1$s</string>
+
+    <string name="forward_address_label">FORWARD TO THIS ADDRESS</string>
+    <string name="forward_address_hint">pc1…</string>
+    <string name="forward_confirm_label">Retype the LAST 6 CHARACTERS of that address</string>
+    <string name="forward_confirm_full_label">Type the WHOLE address again</string>
+    <string name="forward_confirm_hint">Confirmation</string>
+    <string name="forward_confirm_full_mismatch">The two addresses are not the same. Check both.</string>
+    <string name="forward_save">Save forwarding address</string>
+    <string name="forward_stop">Stop forwarding, keep coins here</string>
+    <string name="forward_clear_record">Clear the stuck forward record</string>
+    <string name="forward_close">Close</string>
+    <string name="forward_checking">Checking that address with the node…</string>
+    <string name="forward_unchanged">That is already your forwarding address.</string>
+    <string name="forward_saved">Saved. A 1.00000000 PC test payment will be sent once coins are spendable — about a day after this phone finds its next block.</string>
+    <string name="forward_saved_queued">Saved. A forward is in flight to your previous address right now, so the new one takes effect as soon as that one settles — and then a fresh test payment is sent.</string>
+    <string name="forward_stopped">Forwarding is off. Coins stay in this wallet.</string>
+    <string name="forward_record_cleared">The stuck record has been cleared. Check the transaction in a block explorer before assuming it did not go through.</string>
+    <string name="forward_node_unreachable">The node could not check that address (%1$s), so nothing has been saved. Try again in a moment.</string>
+    <string name="forward_error_positions">\n\nThe problem looks like it is at character(s): %1$s</string>
+
+    <string name="forward_gate_title">Confirm it\'s you</string>
+    <string name="forward_gate_subtitle">Unlock to change where your coins are sent</string>
+    <string name="forward_clear_gate_subtitle">Unlock to clear the stuck forward record</string>
+    <string name="forward_gate_cancelled">Cancelled. Nothing has been changed.</string>
+    <string name="forward_gate_failed">Screen lock was not confirmed, so nothing has been changed.</string>
+    <string name="forward_no_lock">This phone has no screen lock (or has no stored recovery phrase to lock against), so nothing can gate this change — anyone holding the phone could redirect your coins. The whole address has to be typed twice instead. Set a PIN or pattern in Android settings.</string>
+    <string name="forward_lock_unknown">This phone would not say whether it has a screen lock (%1$s), so the forwarding address cannot be changed here. Nothing has been altered and your coins are safe in this wallet.</string>
+
+    <string name="forward_timing_note">Timing, honestly: mined coins cannot be spent for 101 blocks, which on PCoin today is about a day. Forwards start roughly a day after this phone finds a block, and then arrive about as often as it finds them. There is no way to make that faster.</string>
+
+    <!-- Dashboard card -->
+    <string name="forward_card_holding">Holding coins in this wallet. They are safe here: your twelve words recover them. Set an address to forward them automatically.</string>
+    <string name="forward_card_set">Set forwarding address</string>
+    <string name="forward_card_manage">Change or stop forwarding</string>
+    <string name="forward_card_probe_pending">Forwarding to:\n%1$s\n\nA test payment will be sent once coins mature — about a day after this phone finds its next block.</string>
+    <string name="forward_card_probe_sent">Test payment of %1$s sent to %2$s — waiting for it to confirm.</string>
+    <string name="forward_card_probe_ready">Test payment of %1$s has arrived at %2$s. Check that wallet, then confirm below.</string>
+    <string name="forward_card_probe_ack">I received it</string>
+    <string name="forward_card_armed">Forwarding to %1$s.</string>
+    <string name="forward_card_last">Last forward: %1$s on %2$s\n%3$s</string>
+    <string name="forward_card_copy">Copy transaction ID</string>
+    <string name="forward_txid_copied">Transaction ID copied</string>
+    <string name="forward_maturity_explainer">Mined coins cannot be spent for 101 blocks — about a day on PCoin right now. Forwards will start about a day after this phone finds a block, and then arrive roughly as often as it finds them.</string>
+    <string name="forward_card_pending">Forwarding %1$s — %2$s</string>
+
+    <string name="notifications_denied">Without notification permission the mining notification cannot be shown, but mining still works.</string>
+    <string name="notifications_denied_banner">Notifications are turned off, so there is no ongoing mining notification. While this app is closed, nothing on the phone will show that it is mining. Turn notifications on in Settings.</string>
+</resources>

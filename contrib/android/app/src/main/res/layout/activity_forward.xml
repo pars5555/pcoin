@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Forwarding settings. Plain framework widgets, same as every other screen in
+  this app: no ConstraintLayout, no Material dependency, nothing that could fail
+  to resolve offline.
+-->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/forward_title"
+            android:textSize="22sp"
+            android:textStyle="bold" />
+
+        <!--
+          The plain statement of what forwarding does, including the parts that
+          are easy to leave out: EVERYTHING in the wallet goes, not only mining
+          rewards, and coins are safe here if no address is ever set.
+        -->
+        <TextView
+            android:id="@+id/forward_intro"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/forward_intro"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/forward_current"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="#22FFFFFF"
+            android:padding="10dp"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/forward_no_lock"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:background="#33FF8800"
+            android:padding="10dp"
+            android:text="@string/forward_no_lock"
+            android:textSize="13sp"
+            android:visibility="gone" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/forward_address_label"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <EditText
+            android:id="@+id/forward_address_field"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:autofillHints=""
+            android:hint="@string/forward_address_hint"
+            android:inputType="textNoSuggestions|textVisiblePassword"
+            android:maxLines="3"
+            android:textSize="14sp"
+            android:typeface="monospace" />
+
+        <TextView
+            android:id="@+id/forward_confirm_label"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/forward_confirm_label"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <EditText
+            android:id="@+id/forward_confirm_field"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:autofillHints=""
+            android:hint="@string/forward_confirm_hint"
+            android:inputType="textNoSuggestions|textVisiblePassword"
+            android:maxLines="3"
+            android:textSize="14sp"
+            android:typeface="monospace" />
+
+        <TextView
+            android:id="@+id/forward_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:textSize="13sp" />
+
+        <Button
+            android:id="@+id/forward_save"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="@string/forward_save" />
+
+        <Button
+            android:id="@+id/forward_stop"
+            style="?android:attr/buttonStyleSmall"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="@string/forward_stop"
+            android:visibility="gone" />
+
+        <!--
+          Only appears when a record exists that the automatic resolver could not
+          settle. Behind the same unlock gate as setting an address, because it
+          is the one action that permits a second transaction over the same
+          coins.
+        -->
+        <Button
+            android:id="@+id/forward_clear_record"
+            style="?android:attr/buttonStyleSmall"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/forward_clear_record"
+            android:visibility="gone" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/forward_timing_note"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/forward_close"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:layout_marginBottom="24dp"
+            android:text="@string/backup_close" />
+
+    </LinearLayout>
+</ScrollView>
