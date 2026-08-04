@@ -72,6 +72,22 @@ bool CpuMiner::Start(ChainstateManager& chainman, interfaces::Mining& mining,
                      const CScript& script, int threads, std::string& error,
                      int64_t ttl_seconds)
 {
+    // Serialise the whole of Start() against Stop() and against another
+    // Start().
+    //
+    // m_supervisor and m_workers are a std::thread and a vector of them. They
+    // are not atomic and were previously touched with no lock at all, so two
+    // startmining calls arriving together would have one thread assigning over
+    // a std::thread while the other joined it. Assigning to a joinable thread
+    // calls std::terminate, and that is precisely how a node died in the field:
+    // exception 0x40000015 (STATUS_FATAL_APP_EXIT) with two "pcminer-sup thread
+    // start" lines in the log, seconds after two tray apps on the same PC both
+    // asked to mine.
+    //
+    // The node must survive whatever its callers do, however careless: this RPC
+    // is reachable by anyone who can reach the RPC port.
+    std::lock_guard<std::mutex> lifecycle(m_lifecycle_mutex);
+
     if (script.empty()) {
         error = "No payout script: a valid address is required to mine.";
         return false;
@@ -84,7 +100,7 @@ bool CpuMiner::Start(ChainstateManager& chainman, interfaces::Mining& mining,
         threads = max_threads;
     }
 
-    Stop(); // idempotent restart
+    StopLocked(); // idempotent restart; the lifecycle lock is already held
 
     {
         std::lock_guard<std::mutex> lock(m_mutex);
@@ -115,6 +131,12 @@ bool CpuMiner::Start(ChainstateManager& chainman, interfaces::Mining& mining,
 }
 
 void CpuMiner::Stop()
+{
+    std::lock_guard<std::mutex> lifecycle(m_lifecycle_mutex);
+    StopLocked();
+}
+
+void CpuMiner::StopLocked()
 {
     // Always join. The supervisor can retire itself (dead-man's switch) and
     // clear m_running on its own, so an early return keyed on m_running would

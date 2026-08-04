@@ -59,7 +59,11 @@ public:
     //! Refresh the dead-man's switch. Harmless when no TTL is set.
     void KeepAlive();
 
-    //! Stop all workers and join them. Safe to call when not running.
+    //! Stop all workers and join them. Safe to call when not running, and safe
+    //! to call concurrently with Start() from another thread.
+    //!
+    //! Must never be called from the supervisor thread itself: it joins that
+    //! thread.
     void Stop();
 
     bool IsRunning() const { return m_running; }
@@ -75,6 +79,19 @@ public:
 private:
     void Supervisor(ChainstateManager* chainman, interfaces::Mining* mining);
     void Worker(ChainstateManager* chainman);
+
+    //! Body of Stop(); requires m_lifecycle_mutex to be held by the caller.
+    void StopLocked();
+
+    /**
+     * Serialises Start() and Stop() against each other.
+     *
+     * Deliberately separate from m_mutex, which workers take while the miner is
+     * running: StopLocked() joins those workers, so holding the same lock they
+     * need would deadlock. This one is only ever held by a thread that is
+     * starting or stopping the miner, never by a worker.
+     */
+    std::mutex m_lifecycle_mutex;
 
     mutable std::mutex m_mutex;               //!< guards m_template and m_script
     std::shared_ptr<const CBlock> m_template; //!< current template, nonce unset
