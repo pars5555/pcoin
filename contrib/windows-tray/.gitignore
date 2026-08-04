@@ -1,3 +1,11 @@
 # Build output and per-machine settings (patterns are relative to this file)
 *.exe
 pcoin-tray.cfg
+pcoin-selftest.txt
+
+# The recovery phrase and its plain-text sidecar. These belong to whoever runs
+# the app on that machine and must never be committed anywhere.
+pcoin-seed.dat
+pcoin-seed.dat.prev
+pcoin-seed.dat.tmp
+pcoin-seed.info

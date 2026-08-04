@@ -18,6 +18,8 @@ using System.Drawing;
 using System.Globalization;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
@@ -26,9 +28,76 @@ namespace PCoinTray
 {
     static class Program
     {
+        //! A winexe has no console of its own, so borrow the one it was started
+        //! from. Only used by --selftest.
+        [DllImport("kernel32.dll")]
+        static extern bool AttachConsole(int dwProcessId);
+
         [STAThread]
-        static void Main()
+        static int Main(string[] args)
         {
+            foreach (var a in args)
+            {
+                if (a == "--selftest" || a == "-selftest") return SelfTest();
+            }
+            Run();
+            return 0;
+        }
+
+        /**
+         * Verify the key derivation against the published BIP32/BIP39/BIP84
+         * vectors and print the PCoin test vectors.
+         *
+         * Anything that touches this app's cryptography must be run through
+         * this before it is deployed anywhere.
+         */
+        static int SelfTest()
+        {
+            AttachConsole(-1);
+            var log = new List<string>();
+            bool ok;
+            try { ok = SeedSelfTest.Run(log); }
+            catch (Exception ex) { log.Add("EXCEPTION: " + ex); ok = false; }
+            var text = string.Join(Environment.NewLine, log.ToArray());
+            Console.WriteLine();
+            Console.WriteLine(text);
+            try
+            {
+                File.WriteAllText(Path.Combine(Path.GetDirectoryName(Application.ExecutablePath),
+                                               "pcoin-selftest.txt"), text);
+            }
+            catch { }
+            return ok ? 0 : 1;
+        }
+
+        static void Run()
+        {
+            // Refuse to run in session 0.
+            //
+            // Windows isolates services and anything they launch into session 0,
+            // which has no desktop and no notification area. A tray app started
+            // there runs perfectly, mines perfectly, and is completely invisible
+            // to the person at the keyboard - who reasonably concludes their PC
+            // is not mining. Worse, the single-instance mutex below is scoped to
+            // the session, so the invisible copy does not prevent a second one
+            // in the user's session, and the two fight over the mining mode.
+            //
+            // This happened on two of three machines: a remote deployment tool
+            // launched the app from a service context and the icon never
+            // appeared. Exiting here is what makes that self-correcting. It is
+            // the first thing done, before any node is started, so there is
+            // never a node left behind by the process that gives up.
+            try
+            {
+                if (Process.GetCurrentProcess().SessionId == 0)
+                {
+                    Note("refusing to start in session 0: a tray icon there is invisible. "
+                       + "Launch it in the interactive desktop session instead.");
+                    return;
+                }
+            }
+            catch { /* if the session cannot be read, carry on rather than not start */ }
+
             // One instance only: a second tray icon would be confusing and the
             // two would fight over the mining mode.
             //
@@ -44,6 +113,25 @@ namespace PCoinTray
                 Application.SetCompatibleTextRenderingDefault(false);
                 Application.Run(new TrayApp());
             }
+        }
+
+        /**
+         * Record why the app declined to start.
+         *
+         * A winexe that exits silently is impossible to diagnose remotely, and
+         * the one case that matters here - session 0 - is only ever hit from a
+         * remote or service context where there is nobody to show a dialog to.
+         */
+        static void Note(string message)
+        {
+            try
+            {
+                File.AppendAllText(
+                    Path.Combine(Path.GetDirectoryName(Application.ExecutablePath), "pcoin-tray.log"),
+                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)
+                        + "  " + message + Environment.NewLine);
+            }
+            catch { }
         }
     }
 
@@ -61,12 +149,20 @@ namespace PCoinTray
         const int DEFAULT_PERCENT = 50;
         static readonly int[] PERCENT_STEPS = { 10, 25, 50, 75, 100 };
 
+        //! The wallet this app has always used. It is never renamed, never
+        //! unloaded and never altered by the recovery-phrase work; a
+        //! phrase-backed wallet is added beside it.
+        const string WALLET_MAIN = "main";
+
         string _address = "";
+        string _addressWallet = "";    // which wallet the payout address belongs to
         string _datadir = "";          // empty = bitcoind's default location
         int _percent = DEFAULT_PERCENT;
         bool _mining;
+        bool _seedDeclined;            // the user was offered a phrase and said no
         int _threads;                  // derived from _percent, reported by the node
         bool _nodeUp;
+        bool _hashing;                 // observed: is the node actually hashing?
         Process _node;                 // set only if we launched it ourselves
         bool _startedNode;
         double _hashrate;
@@ -74,9 +170,50 @@ namespace PCoinTray
         long _height;
         int _cores = Environment.ProcessorCount;
 
+        RpcClient _rpc;                // HTTP RPC; anything carrying key material uses this
+        SeedWallet _seed;
+        PhraseInfo _phrase;            // null until a recovery phrase exists
+        int _balanceTick;
+        bool _balanceBusy;
+        readonly Form _sync = new Form();   // never shown; used to get onto the UI thread
+
+        MinerWindow _window;           // created the first time it is opened
+        bool _pollBusy;                // a status poll is in flight
+        int _tick;                     // timer ticks, one per second
+        bool _haveChainInfo;           // height/peers/difficulty have been read once
+        bool _nodeEverUp;              // the node has answered at least once
+        string _problem;               // why the node is unreachable, in words
+        bool _reviveBusy;              // a node restart is in flight
+        int _reviveCooldown;           // ticks to wait before trying again
+        readonly RateHistory _history = new RateHistory();
+
+        // The node's own vitals, refreshed rarely: enumerating processes is far
+        // more expensive than an RPC call and none of it changes second to
+        // second.
+        int _nodePid;
+        double _nodeMemMb;
+        TimeSpan _nodeUptime;
+        int _procTick;
+
+        // Latest readings that both the menu and the window display. Held as
+        // text because that is what both show, and null means "not known yet"
+        // rather than zero.
+        string _balPhraseText;
+        string _balOldText;
+        int _peers = -1;
+        long _headers;
+        double _progress = 1.0;
+        bool _syncing;
+        double _difficulty;
+        string _nodeVersion = "";
+        int _versionTick;
+
         readonly ToolStripMenuItem _miStatus = new ToolStripMenuItem("Starting...") { Enabled = false };
         readonly ToolStripMenuItem _miChain = new ToolStripMenuItem("") { Enabled = false };
         readonly ToolStripMenuItem _miEarned = new ToolStripMenuItem("") { Enabled = false };
+        readonly ToolStripMenuItem _miBackedUp = new ToolStripMenuItem("") { Enabled = false, Visible = false };
+        readonly ToolStripMenuItem _miOldWallet = new ToolStripMenuItem("") { Enabled = false, Visible = false };
+        ToolStripMenuItem _miPhrase;
         ToolStripMenuItem _miOff;
         readonly Dictionary<int, ToolStripMenuItem> _miPercent = new Dictionary<int, ToolStripMenuItem>();
 
@@ -97,19 +234,25 @@ namespace PCoinTray
             _iconIdle = MakeIcon(Color.FromArgb(90, 96, 110), Color.FromArgb(210, 210, 215));
 
             LoadConfig();
+            _rpc = new RpcClient(_datadir);
+            _seed = new SeedWallet(_rpc);
+            _phrase = PhraseInfo.Load(_dir);
+            var force = _sync.Handle;   // realise the handle so Invoke works later
             BuildMenu();
 
             _icon.Icon = _iconIdle;
             _icon.Text = "PCoin Miner - starting";
             _icon.Visible = true;
-            _icon.DoubleClick += (s, e) => ShowStatusBalloon();
+            _icon.DoubleClick += (s, e) => ShowWindow();
 
             // Bring the node up (and resume the saved mining mode) off the UI
             // thread: bitcoind can take a few seconds to become responsive.
             var t = new Thread(Startup) { IsBackground = true };
             t.Start();
 
-            _timer.Interval = 3000;
+            // One second, but see Refresh(): a closed window only polls every
+            // third tick, which is the interval this app has always used.
+            _timer.Interval = 1000;
             _timer.Tick += (s, e) => Refresh();
             _timer.Start();
         }
@@ -128,6 +271,8 @@ namespace PCoinTray
                     string k = line.Substring(0, eq).Trim();
                     string v = line.Substring(eq + 1).Trim();
                     if (k == "address") _address = v;
+                    else if (k == "addresswallet") _addressWallet = v;
+                    else if (k == "seedprompt") _seedDeclined = v == "declined";
                     else if (k == "datadir") _datadir = v;
                     else if (k == "percent")
                     {
@@ -157,8 +302,10 @@ namespace PCoinTray
             {
                 File.WriteAllText(_cfgPath,
                     "address=" + _address + "\r\n" +
+                    "addresswallet=" + _addressWallet + "\r\n" +
                     "datadir=" + _datadir + "\r\n" +
-                    "percent=" + (_mining ? _percent : 0).ToString(CultureInfo.InvariantCulture) + "\r\n");
+                    "percent=" + (_mining ? _percent : 0).ToString(CultureInfo.InvariantCulture) + "\r\n" +
+                    "seedprompt=" + (_seedDeclined ? "declined" : "") + "\r\n");
             }
             catch { }
         }
@@ -168,11 +315,19 @@ namespace PCoinTray
         void BuildMenu()
         {
             var menu = new ContextMenuStrip();
-            var title = new ToolStripMenuItem("PCoin Miner") { Enabled = false, Font = new Font(SystemFonts.MenuFont, FontStyle.Bold) };
-            menu.Items.Add(title);
+            // The window first, in bold: it is the default action for a
+            // double-click, and everything below is a shortcut into it.
+            var open = new ToolStripMenuItem("Open PCoin Miner", null, (s, e) => ShowWindow())
+            {
+                Font = new Font(SystemFonts.MenuFont, FontStyle.Bold)
+            };
+            menu.Items.Add(open);
+            menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(_miStatus);
             menu.Items.Add(_miChain);
             menu.Items.Add(_miEarned);
+            menu.Items.Add(_miBackedUp);
+            menu.Items.Add(_miOldWallet);
             menu.Items.Add(new ToolStripSeparator());
 
             _miOff = new ToolStripMenuItem("Not mining", null, (s, e) => SetMode(0));
@@ -189,6 +344,10 @@ namespace PCoinTray
             }
 
             menu.Items.Add(new ToolStripSeparator());
+            // No "copy the phrase" anywhere. Copying an address is fine - an
+            // address is public - and copying twelve words is not.
+            _miPhrase = new ToolStripMenuItem("Recovery phrase...", null, (s, e) => OnRecoveryPhrase());
+            menu.Items.Add(_miPhrase);
             menu.Items.Add(new ToolStripMenuItem("Copy payout address", null, (s, e) =>
             {
                 if (!string.IsNullOrEmpty(_address)) Clipboard.SetText(_address);
@@ -215,14 +374,96 @@ namespace PCoinTray
         void Startup()
         {
             EnsureNode();
+            EnsureWalletLoaded();
+            EnsurePhraseWallet();
             if (string.IsNullOrEmpty(_address)) _address = EnsureAddress();
             if (_mining) StartMining(ThreadsFor(_percent));
             SaveConfig();
+            OfferPhraseSetup();
+        }
+
+        /**
+         * Load the phrase-backed wallet, if this machine has one.
+         *
+         * It is loaded in addition to whatever wallet was already here. Nothing
+         * is created: a missing pcoin-hd wallet with a phrase on file means
+         * something is wrong that a silent createwallet would only paper over.
+         */
+        void EnsurePhraseWallet()
+        {
+            if (!_nodeUp || _phrase == null || string.IsNullOrEmpty(_phrase.Wallet)) return;
+            _seed.EnsureWallet(_phrase.Wallet, false, false);
+
+            // Adopt the recorded payout address only when nothing is saved -
+            // for instance after an upgrade blanked the config. A saved address
+            // is the user's persisted intent and is never replaced from here.
+            if (string.IsNullOrEmpty(_address) && !string.IsNullOrEmpty(_phrase.Address0))
+            {
+                _address = _phrase.Address0;
+                _addressWallet = _phrase.Wallet;
+                SaveConfig();
+            }
+        }
+
+        /**
+         * bitcoind does not open any wallet by itself, so the balance stays
+         * invisible until something asks for it. That used to happen as a side
+         * effect of EnsureAddress(), which is skipped once an address is saved
+         * — so after an upgrade the node mined happily while reporting no
+         * wallet at all. Load it explicitly, and ask the node to remember it so
+         * a future restart does not depend on this app at all.
+         *
+         * LOAD ONLY. This used to call EnsureWallet(create:true) on every
+         * startup, so wallet creation was a side effect of the app launching -
+         * the exact pattern that was deliberately removed from the Android
+         * NodeController. It did no damage today only because Core refuses
+         * createwallet over an existing directory; on a machine that has
+         * legitimately migrated to pcoin-hd it would silently manufacture an
+         * empty "main", and it was one Core behaviour change away from being
+         * dangerous. Creating a wallet is now something only the setup flow
+         * does, deliberately, from a recovery phrase.
+         */
+        void EnsureWalletLoaded()
+        {
+            if (!_nodeUp) return;
+
+            // Over the socket first, because "getwalletinfo" through bitcoin-cli
+            // fails once more than one wallet is loaded - it has no way to know
+            // which one is meant - and that failure used to read as "no wallet
+            // is open".
+            if (_seed.EnsureWallet(WALLET_MAIN, false, false) == null) return;
+
+            if (Cli("getwalletinfo") != null) return;   // already open
+            Cli("loadwallet \"main\" true");            // true => load on startup
         }
 
         void EnsureNode()
         {
             if (Cli("getblockcount") != null) { _nodeUp = true; return; }
+
+            // RPC silence does not mean there is no node.
+            //
+            // Core answers nothing useful while it loads, and after an unclean
+            // shutdown that includes a full wallet rescan - minutes, not
+            // seconds. Starting a second bitcoind then is pointless (it dies on
+            // the data directory lock) and would mark this app as the node's
+            // owner, so it would try to shut down a node it never started.
+            // Wait for the one that is already there instead.
+            bool already;
+            try { already = Process.GetProcessesByName("bitcoind").Length > 0; }
+            catch { already = false; }
+            if (already)
+            {
+                for (int i = 0; i < 300; i++)
+                {
+                    if (Cli("getblockcount") != null) { _nodeUp = true; return; }
+                    try { if (Process.GetProcessesByName("bitcoind").Length == 0) break; }
+                    catch { break; }
+                    Thread.Sleep(1000);
+                }
+                return;
+            }
+
             try
             {
                 // NOTE: -daemon/-daemonwait are Unix-only; on Windows bitcoind
@@ -256,12 +497,23 @@ namespace PCoinTray
 
         string EnsureAddress()
         {
+            // With a recovery phrase in use, the payout address comes from the
+            // phrase - not from whichever wallet happens to answer first. This
+            // is what stops an upgrade that blanks the config from quietly
+            // moving mining rewards back into the wallet with no backup.
+            if (_phrase != null && !string.IsNullOrEmpty(_phrase.Address0))
+            {
+                _addressWallet = _phrase.Wallet;
+                return _phrase.Address0;
+            }
+
             // Reuse an existing wallet if there is one; create it otherwise.
             if (Cli("loadwallet \"main\"") == null && Cli("getwalletinfo") == null)
             {
                 Cli("createwallet \"main\"");
             }
             string a = Cli("getnewaddress \"mining\"");
+            _addressWallet = WALLET_MAIN;
             return a == null ? "" : a.Trim();
         }
 
@@ -291,35 +543,584 @@ namespace PCoinTray
             Cli("startmining \"" + _address + "\" " + threads.ToString(CultureInfo.InvariantCulture));
         }
 
+        // ---------- recovery phrase ----------
+
+        //! Offer the phrase once, from the UI thread. If the answer is no, that
+        //! is remembered and never asked again; the menu item is always there.
+        void OfferPhraseSetup()
+        {
+            if (_phrase != null || _seedDeclined || !_nodeUp) return;
+            try { _sync.BeginInvoke(new Action(() => RunPhraseSetup())); }
+            catch { }
+        }
+
+        void OnRecoveryPhrase()
+        {
+            if (_phrase != null) ShowStoredPhrase();
+            else RunPhraseSetup();
+        }
+
+        /**
+         * Create or restore a phrase-backed wallet.
+         *
+         * Nothing is written anywhere - not the phrase file, not the config -
+         * until the node has been made to agree, address for address, with the
+         * words. If any step fails the machine is left exactly as it was.
+         */
+        void RunPhraseSetup()
+        {
+            if (!_nodeUp)
+            {
+                MessageBox.Show("The PCoin node is still starting. Try again in a moment.",
+                                "PCoin", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            bool hasOldWallet = _phrase == null && !string.IsNullOrEmpty(_address);
+            string mnemonic = null;
+            bool restore;
+
+            using (var intro = new PhraseIntroForm(hasOldWallet))
+            {
+                if (intro.ShowDialog() != DialogResult.OK || intro.Choice == SetupChoice.Cancel)
+                {
+                    _seedDeclined = true;
+                    SaveConfig();
+                    return;
+                }
+
+                if (intro.Choice == SetupChoice.Create)
+                {
+                    // A second phrase must never be generated over the top of a
+                    // stored one. If the words on file are the only copy of a
+                    // wallet, replacing them destroys it.
+                    if (SeedStore.Exists(_dir))
+                    {
+                        MessageBox.Show(
+                            "This PC already has a recovery phrase stored. Use \"Recovery phrase...\" to " +
+                            "see it.\r\n\r\nNothing has been changed. If you really mean to start over with " +
+                            "a different phrase, move " + SeedStore.PathFor(_dir) + " somewhere safe first.",
+                            "PCoin", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+                    restore = false;
+                    mnemonic = Bip39.Generate(intro.WordCount);
+                    var words = mnemonic.Split(' ');
+                    while (true)
+                    {
+                        using (var show = new PhraseShowForm(words,
+                            "Write these " + words.Length + " words down, in this order",
+                            "On paper, not on this computer. Anyone who has these words can spend " +
+                            "your PCoin, and nobody - not even you - can recover the coins without " +
+                            "them.\r\n\r\n" +
+                            "There is no copy button on purpose. Keep the paper somewhere you would " +
+                            "keep a passport.",
+                            "I have written it down"))
+                        {
+                            if (show.ShowDialog() != DialogResult.OK) return;   // nothing stored
+                        }
+                        using (var confirm = new PhraseConfirmForm(words))
+                        {
+                            var r = confirm.ShowDialog();
+                            if (r == DialogResult.OK) break;
+                            if (r == DialogResult.Retry) continue;
+                            return;                                              // nothing stored
+                        }
+                    }
+                }
+                else
+                {
+                    restore = true;
+                    using (var rf = new PhraseRestoreForm())
+                    {
+                        if (rf.ShowDialog() != DialogResult.OK || string.IsNullOrEmpty(rf.Mnemonic)) return;
+                        mnemonic = rf.Mnemonic;
+                    }
+                }
+            }
+
+            SetupOutcome outcome = null;
+            string mn = mnemonic;
+            var ex = BusyForm.Run(
+                restore ? "Restoring your wallet and scanning the blockchain. This can take a minute."
+                        : "Creating your wallet from the recovery phrase...",
+                () => { outcome = _seed.Setup(mn, restore); });
+
+            if (ex != null)
+            {
+                MessageBox.Show("Setup failed: " + RpcClient.Sanitize(ex.Message) +
+                                "\r\n\r\nNothing has been changed.",
+                                "PCoin", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+            if (outcome == null || !outcome.Ok)
+            {
+                MessageBox.Show((outcome == null ? "Setup did not complete." : outcome.Error) +
+                                "\r\n\r\nYour existing wallet and coins have not been touched.",
+                                "PCoin", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            // A restore that produced a brand new wallet while a different
+            // phrase is already on file would leave the stored words and the
+            // wallet being paid into disagreeing with each other. Stop before
+            // persisting anything: the node has an extra wallet, which is
+            // harmless, and mining carries on paying where it was.
+            if (SeedStore.Exists(_dir) && !outcome.AlreadySetUp)
+            {
+                MessageBox.Show(
+                    "This PC already has a different recovery phrase stored, so the new one has not " +
+                    "been saved and mining has not been redirected.\r\n\r\n" +
+                    "Nothing has been lost: your existing wallets and coins are untouched. Move " +
+                    SeedStore.PathFor(_dir) + " somewhere safe before restoring a different phrase.",
+                    "PCoin", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            // The node has now proved it derives the same address from the same
+            // words. Only at this point is anything persisted.
+            var info = new PhraseInfo
+            {
+                Wallet = outcome.Wallet,
+                Address0 = outcome.Address,
+                Network = outcome.Network,
+                Path = outcome.Path,
+                Fingerprint = outcome.Fingerprint,
+                Created = DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture),
+                WordCount = mnemonic.Split(' ').Length
+            };
+            var record = new PhraseRecord
+            {
+                WordCount = info.WordCount,
+                Network = info.Network,
+                Path = info.Path,
+                Wallet = info.Wallet,
+                Address0 = info.Address0,
+                Fingerprint = info.Fingerprint,
+                BirthTime = SeedWallet.GENESIS_TIME,
+                BirthHeight = 0,
+                Created = info.Created,
+                Mnemonic = mnemonic
+            };
+
+            try
+            {
+                // Replacing is allowed only when the wallet already held these
+                // exact keys - that is a repeat of the same setup, not a
+                // different phrase overwriting an old one.
+                SeedStore.Save(_dir, record, outcome.AlreadySetUp);
+                PhraseInfo.Save(_dir, info);
+            }
+            catch (Exception saveEx)
+            {
+                MessageBox.Show(
+                    "The wallet was created, but the phrase could not be saved on this PC:\r\n\r\n" +
+                    saveEx.Message + "\r\n\r\n" +
+                    "Your paper copy is what matters, so keep it safe. The \"Recovery phrase\" menu " +
+                    "item will not be able to show the words again.",
+                    "PCoin", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+
+            _phrase = info;
+            _address = outcome.Address;
+            _addressWallet = outcome.Wallet;
+            _seedDeclined = false;
+            SaveConfig();
+
+            string confChanges = _seed.EnsureConfig();
+
+            // Mining rewards go to the backed-up wallet from this moment. That
+            // is the whole point of doing this early: the amount that is not
+            // protected by the phrase stops growing today.
+            if (_mining) StartMining(ThreadsFor(_percent));
+
+            var msg = new StringBuilder();
+            msg.Append("Your PCoin wallet is now backed up by your recovery phrase.\r\n\r\n");
+            msg.Append("Mining rewards from now on are paid to:\r\n").Append(outcome.Address).Append("\r\n\r\n");
+
+            // On a restore, say what the scan found. A single mistyped word that
+            // happens to be another word from the list passes the checksum about
+            // one time in sixteen, so a wrong phrase restores cleanly into an
+            // empty wallet - and this dialog used to congratulate the user and
+            // redirect mining to it with no caveat at all.
+            if (restore)
+            {
+                if (outcome.TxCount < 0 || outcome.Balance < 0)
+                    msg.Append("The node could not be asked what the scan found, so this wallet's " +
+                               "balance is not known yet. Check the tray menu in a moment.\r\n\r\n");
+                else if (outcome.TxCount == 0 && outcome.Balance == 0)
+                    msg.Append("The scan finished and found NO transactions and a balance of zero.\r\n\r\n" +
+                               "If this phrase should have coins, it is not the right phrase - check " +
+                               "every word against your paper, and check whether you wrote down 12 " +
+                               "words or 24. Nothing has been destroyed and your other wallets are " +
+                               "untouched.\r\n\r\n");
+                else
+                    msg.Append("The scan found ")
+                       .Append(outcome.TxCount.ToString(CultureInfo.InvariantCulture))
+                       .Append(" transaction(s) and a balance of ")
+                       .Append(outcome.Balance.ToString("0.########", CultureInfo.InvariantCulture))
+                       .Append(" PC.\r\n\r\nIf that is not what you expected, check the words " +
+                               "against your paper.\r\n\r\n");
+            }
+
+            if (hasOldWallet)
+                msg.Append("Your previous wallet is untouched and still holds its coins. They are not " +
+                           "covered by the phrase - keep the existing wallet backup.\r\n\r\n");
+            if (!string.IsNullOrEmpty(confChanges) && !confChanges.StartsWith("could not"))
+                msg.Append("Added to pcoin.conf (takes effect the next time the node starts): ")
+                   .Append(confChanges).Append("\r\n\r\n");
+            msg.Append("You can see the words again from the tray menu.");
+            MessageBox.Show(msg.ToString(), "PCoin", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        /**
+         * Show the stored phrase again, behind a Windows sign-in prompt.
+         *
+         * The phrase file is encrypted for this Windows account, so this prompt
+         * is not what keeps an attacker out - it is what keeps a passer-by at an
+         * unattended desk out, and what makes revealing the words a deliberate
+         * act rather than an accident.
+         */
+        void ShowStoredPhrase()
+        {
+            var outcome = WindowsUnlock.Prompt(null,
+                "Confirm your Windows sign-in to show your PCoin recovery phrase.");
+
+            if (outcome == WindowsUnlock.Outcome.Cancelled) return;
+            if (outcome == WindowsUnlock.Outcome.WrongCredential)
+            {
+                MessageBox.Show("That did not match your Windows sign-in. Nothing has been shown.",
+                                "PCoin", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            if (outcome == WindowsUnlock.Outcome.CannotVerify)
+            {
+                // Never lock somebody out of their own recovery phrase because
+                // of how they sign in to Windows. Say plainly what this does and
+                // does not protect, and make them type something.
+                using (var t = new TypeToConfirmForm(
+                    "Windows could not check who you are",
+                    "This PC signs in with a PIN, a fingerprint or no password, so there is nothing " +
+                    "here that can be verified.\r\n\r\n" +
+                    "Your recovery phrase is stored encrypted for this Windows account, so anyone " +
+                    "already signed in as you could read it. Showing it now only makes sense if you " +
+                    "are alone and no screen sharing or recording is running.",
+                    "SHOW"))
+                {
+                    if (t.ShowDialog() != DialogResult.OK) return;
+                }
+            }
+
+            PhraseRecord rec;
+            try { rec = SeedStore.Load(_dir); }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    "The stored recovery phrase could not be decrypted on this PC.\r\n\r\n" + ex.Message +
+                    "\r\n\r\nThis happens when the phrase was saved by a different Windows account, or " +
+                    "when the file was copied here from another machine. Your paper copy still works; " +
+                    "the wallet itself is unaffected.",
+                    "PCoin", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            if (rec == null || string.IsNullOrEmpty(rec.Mnemonic))
+            {
+                MessageBox.Show("There is no recovery phrase stored on this PC.",
+                                "PCoin", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            using (var show = new PhraseShowForm(rec.Mnemonic.Split(' '),
+                "Your PCoin recovery phrase",
+                "These " + rec.WordCount + " words rebuild this wallet on any machine. " +
+                "Check them against your paper.\r\n\r\n" +
+                "First address: " + rec.Address0 + "\r\n" +
+                "Derivation: " + rec.Path + "  (BIP84 / BIP39, documented in PCOIN.md)",
+                "Close"))
+            {
+                show.ShowDialog();
+            }
+        }
+
         // ---------- status ----------
 
+        /**
+         * The timer tick. Decides how much to ask the node for, and how often.
+         *
+         * This app runs for months on somebody else's PC, so the cost of simply
+         * being open matters. Three rules keep it near zero:
+         *
+         *  - with the window closed there is nothing to animate, so it polls
+         *    every three seconds, as it always did;
+         *  - with the window open it polls once a second, but only for the hash
+         *    rate, which is a single small call over loopback;
+         *  - chain height, peers and difficulty change slowly and cost more, so
+         *    they are refreshed every five seconds either way.
+         */
         void Refresh()
         {
-            string info = Cli("getcpuminerinfo");
-            if (info == null)
+            _tick++;
+            bool windowOpen = _window != null && _window.IsVisible;
+            if (!windowOpen && (_tick % 3) != 0) return;
+
+            if (_pollBusy) return;
+            _pollBusy = true;
+            bool full = (_tick % 5) == 0 || !_haveChainInfo;
+            var t = new Thread(() =>
+            {
+                Reading r = null;
+                try { r = Poll(full); }
+                catch { }
+                try
+                {
+                    var got = r;
+                    _sync.BeginInvoke(new Action(() =>
+                    {
+                        try { ApplyReading(got); }
+                        finally { _pollBusy = false; }
+                    }));
+                }
+                catch { _pollBusy = false; }
+            })
+            { IsBackground = true };
+            t.Start();
+        }
+
+        //! What one poll of the node returns. Null fields mean "not answered".
+        class Reading
+        {
+            public bool Full;               // chain fields were refreshed too
+            public bool NodeUp;
+            public string Problem;          // why not, in words, when NodeUp is false
+            public bool Hashing;
+            public int Threads;
+            public double Hashrate;
+            public long BlocksFound;
+            public int Cores;
+            public long Height;
+            public long Headers;
+            public double Progress = 1.0;
+            public bool Syncing;
+            public double Difficulty;
+            public int Peers = -1;
+            public string Version;
+        }
+
+        /**
+         * Read the node's state. Runs on a worker thread; touches no UI.
+         *
+         * Prefers the loopback HTTP RPC, which costs one socket, and falls back
+         * to bitcoin-cli if that fails for any reason. The fallback is what
+         * keeps "is the node up?" as reliable as it was before this window
+         * existed - that answer drives whether mining is restarted, so it must
+         * never become less trustworthy than the process-spawning version.
+         */
+        /**
+         * Say, in one sentence a non-technical person can act on, why the node
+         * is not answering.
+         *
+         * "Node not running" was the only thing this app ever said, whatever
+         * the cause: a blocked port, a missing binary, a wrong data directory
+         * and a crashed process all looked identical. Somebody whose firewall
+         * is eating loopback RPC has no way to guess that from those three
+         * words, so each cause now names itself and says what to do about it.
+         */
+        string DiagnoseNode()
+        {
+            string exe = Path.Combine(_dir, "bitcoind.exe");
+            if (!File.Exists(exe))
+                return "bitcoind.exe is missing from " + _dir + ". Reinstall PCoin.";
+
+            bool processAlive;
+            try { processAlive = Process.GetProcessesByName("bitcoind").Length > 0; }
+            catch { processAlive = false; }
+
+            string datadir = string.IsNullOrEmpty(_datadir) ? RpcClient.DefaultDataDir() : _datadir;
+            if (!Directory.Exists(datadir))
+                return "The data folder " + datadir + " does not exist.";
+
+            if (!processAlive)
+            {
+                return _startedNode || _nodeEverUp
+                    ? "The PCoin node stopped. Restarting it..."
+                    : "Starting the PCoin node...";
+            }
+
+            // The process is alive but not answering. Distinguish "still
+            // starting" from "something is in the way", because the advice is
+            // completely different.
+            if (!File.Exists(Path.Combine(datadir, ".cookie")))
+                return "The node is starting up (no RPC cookie in " + datadir + " yet).";
+
+            var probe = _rpc.Call("uptime", "[]");
+            string err = probe.Error ?? "";
+
+            // A node that is loading is not a broken node. Core answers RPC
+            // during startup with error -28 and a human-readable stage, and it
+            // can sit there for a while: after an unclean shutdown the wallet
+            // is rescanned from its last flushed block, which on a fresh reboot
+            // means replaying the chain. Reporting that as "not running" is
+            // what makes people think mining has failed when it is seconds
+            // away from starting - so show the node's own progress instead.
+            if (err.IndexOf("-28", StringComparison.Ordinal) >= 0 ||
+                err.IndexOf("warmup", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                err.IndexOf("Loading", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                err.IndexOf("Rescanning", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                err.IndexOf("Verifying", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                string stage = err;
+                int q = stage.LastIndexOf(':');
+                if (q >= 0 && q + 1 < stage.Length) stage = stage.Substring(q + 1).Trim();
+                return "The node is starting up: " + (stage.Length > 0 ? stage : "please wait")
+                     + ". Mining begins on its own when it is ready.";
+            }
+
+            if (err.IndexOf("401", StringComparison.Ordinal) >= 0 ||
+                err.IndexOf("Unauthorized", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "The node refused this app's credentials. Delete .cookie in " + datadir
+                     + " and restart the node.";
+            if (err.IndexOf("actively refused", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                err.IndexOf("refused", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "Nothing is listening on 127.0.0.1:" + _rpc.Port + ". The node is still "
+                     + "starting, or a firewall or security tool is blocking local connections "
+                     + "to that port - allow bitcoind.exe on loopback.";
+            if (err.IndexOf("timed out", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                err.IndexOf("timeout", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "The node is not answering in time. It may be busy starting up, or a "
+                     + "firewall is silently dropping connections to 127.0.0.1:" + _rpc.Port + ".";
+            if (err.Length > 0) return "The node is not answering: " + err;
+            return "The node is running but not answering yet.";
+        }
+
+        Reading Poll(bool full)
+        {
+            var r = new Reading { Full = full };
+            var mi = _rpc.Call("getcpuminerinfo", "[]");
+            if (mi.Ok && mi.Result != null)
+            {
+                r.NodeUp = true;
+                bool? m = Json.Bool(mi.Result, "mining");
+                r.Hashing = m.HasValue && m.Value;
+                r.Threads = (int)(Json.Number(mi.Result, "threads") ?? 0);
+                r.Hashrate = Json.Number(mi.Result, "hashespersec") ?? 0;
+                r.BlocksFound = (long)(Json.Number(mi.Result, "blocksfound") ?? 0);
+                r.Cores = (int)(Json.Number(mi.Result, "cores") ?? 0);
+            }
+            else
+            {
+                string info = Cli("getcpuminerinfo");
+                if (info == null)
+                {
+                    // Both routes failed, so work out what to tell the user.
+                    // Done here, on the polling thread, because it touches the
+                    // filesystem and makes another RPC attempt.
+                    try { r.Problem = DiagnoseNode(); }
+                    catch (Exception ex) { r.Problem = "The node is not answering: " + ex.Message; }
+                    return r;                                // NodeUp stays false
+                }
+                r.NodeUp = true;
+                r.Hashing = Num(info, "mining") > 0 || info.Contains("\"mining\": true");
+                r.Threads = (int)Num(info, "threads");
+                r.Hashrate = Num(info, "hashespersec");
+                r.BlocksFound = (long)Num(info, "blocksfound");
+                r.Cores = (int)Num(info, "cores");
+            }
+
+            if (!full) return r;
+
+            var bc = _rpc.Call("getblockchaininfo", "[]");
+            if (bc.Ok && bc.Result != null)
+            {
+                r.Height = (long)(Json.Number(bc.Result, "blocks") ?? 0);
+                r.Headers = (long)(Json.Number(bc.Result, "headers") ?? 0);
+                r.Progress = Json.Number(bc.Result, "verificationprogress") ?? 1.0;
+                r.Difficulty = Json.Number(bc.Result, "difficulty") ?? 0;
+                bool? ibd = Json.Bool(bc.Result, "initialblockdownload");
+                // Two blocks of slack: a node one block behind the headers it
+                // has seen is not "syncing", it is simply between blocks.
+                r.Syncing = (ibd.HasValue && ibd.Value) || r.Headers - r.Height > 2;
+            }
+            else
+            {
+                string chain = Cli("getblockcount");
+                if (chain != null) long.TryParse(chain.Trim(), out r.Height);
+                r.Headers = r.Height;
+            }
+
+            var pc = _rpc.Call("getconnectioncount", "[]");
+            if (pc.Ok && pc.Result is double) r.Peers = (int)(double)pc.Result;
+
+            // The version never changes under a running node, so read it rarely.
+            if (--_versionTick <= 0 || string.IsNullOrEmpty(_nodeVersion))
+            {
+                _versionTick = 200;
+                var ni = _rpc.Call("getnetworkinfo", "[]");
+                if (ni.Ok && ni.Result != null)
+                {
+                    string sub = Json.Str(ni.Result, "subversion");
+                    if (!string.IsNullOrEmpty(sub)) r.Version = sub.Trim('/').Replace(":", " ");
+                }
+            }
+            return r;
+        }
+
+        /** Fold a reading into the display. UI thread only. */
+        void ApplyReading(Reading r)
+        {
+            if (r == null || !r.NodeUp)
             {
                 _nodeUp = false;
+                _hashing = false;
+                _history.Add(0.0);
+                _problem = (r == null || string.IsNullOrEmpty(r.Problem))
+                    ? "The PCoin node is not answering."
+                    : r.Problem;
                 _icon.Icon = _iconIdle;
-                _icon.Text = "PCoin Miner - node not running";
-                _miStatus.Text = "Node not running";
+                _icon.Text = Truncate("PCoin Miner - " + _problem);
+                _miStatus.Text = _problem;
                 _miChain.Text = "";
                 _miEarned.Text = "";
+                PushToWindow(false);
+                ReviveNode();
                 return;
             }
             _nodeUp = true;
-            bool mining = Num(info, "mining") > 0 || info.Contains("\"mining\": true");
-            _threads = (int)Num(info, "threads");
-            _hashrate = Num(info, "hashespersec");
-            _blocksFound = (long)Num(info, "blocksfound");
-            int c = (int)Num(info, "cores");
-            if (c > 0) _cores = c;
+            _nodeEverUp = true;
+            _problem = null;
+            bool mining = r.Hashing;
+            _hashing = r.Hashing && r.Threads > 0;
+            _threads = r.Threads;
+            _hashrate = r.Hashrate;
+            _blocksFound = r.BlocksFound;
+            if (r.Cores > 0) _cores = r.Cores;
+            // Chain fields are only present on a full poll; on a rate-only tick
+            // the previous values stand rather than being zeroed.
+            if (r.Full)
+            {
+                _haveChainInfo = true;
+                if (r.Height > 0) _height = r.Height;
+                _headers = r.Headers;
+                _progress = r.Progress;
+                _syncing = r.Syncing;
+                _difficulty = r.Difficulty;
+                _peers = r.Peers;
+                if (!string.IsNullOrEmpty(r.Version)) _nodeVersion = r.Version;
+            }
 
-            string chain = Cli("getblockcount");
-            if (chain != null) long.TryParse(chain.Trim(), out _height);
+            // Record the rate whether or not the window is open, so opening it
+            // shows the hour that just passed instead of an empty graph.
+            _history.Add(_hashing ? _hashrate : 0.0);
 
+            // NOTE: _mining is the user's saved INTENT and must not be
+            // overwritten from the node's observed state. An earlier version
+            // assigned it here, so restarting the node — an upgrade, a crash —
+            // left the app reading "not mining" while the node was still
+            // starting, then persisted that to the config. Mining silently
+            // stayed off afterwards; this was observed on all three machines
+            // after a binary upgrade. The observed value drives the display
+            // only; intent changes solely through SetMode().
             if (mining && _threads > 0)
             {
-                _mining = true;
                 _icon.Icon = _iconMining;
                 _miStatus.Text = string.Format(CultureInfo.InvariantCulture,
                     "Mining at {0}% - {1} of {2} cores - {3:0.0} H/s",
@@ -327,16 +1128,217 @@ namespace PCoinTray
                 _icon.Text = Truncate(string.Format(CultureInfo.InvariantCulture,
                     "PCoin Miner - {0}%, {1:0.0} H/s", _percent, _hashrate));
             }
+            else if (_mining)
+            {
+                // Intent is on but the node is not hashing: it is still coming
+                // up, or the miner was stopped underneath us. Say so, and get
+                // it going again rather than quietly giving up.
+                _icon.Icon = _iconIdle;
+                _miStatus.Text = "Starting miner...";
+                _icon.Text = "PCoin Miner - starting";
+                if (_nodeUp && !string.IsNullOrEmpty(_address))
+                {
+                    int want = ThreadsFor(_percent);
+                    var t = new Thread(() => StartMining(want)) { IsBackground = true };
+                    t.Start();
+                }
+            }
             else
             {
-                _mining = false;
                 _icon.Icon = _iconIdle;
                 _miStatus.Text = "Not mining";
                 _icon.Text = "PCoin Miner - not mining";
             }
             _miChain.Text = "Blockchain height: " + _height.ToString(CultureInfo.InvariantCulture);
             _miEarned.Text = "Blocks mined by this PC: " + _blocksFound.ToString(CultureInfo.InvariantCulture);
+            _miPhrase.Text = _phrase == null ? "Set up a recovery phrase..." : "Recovery phrase...";
+            UpdateBalances();
             MarkMode();
+            PushToWindow(true);
+        }
+
+        /**
+         * Bring a dead node back.
+         *
+         * Until now the app started bitcoind once, at launch, and if it ever
+         * died the tray simply said "node not running" forever and the machine
+         * quietly stopped contributing. That is what happened when the node
+         * crashed: the PC sat idle with an error in a tooltip nobody was
+         * looking at.
+         *
+         * Rate-limited to one attempt every thirty seconds. If the node is
+         * crashing on startup, retrying in a tight loop would bury the reason
+         * under thousands of log lines and hammer the disk.
+         */
+        void ReviveNode()
+        {
+            if (_reviveBusy) return;
+            if (--_reviveCooldown > 0) return;
+            _reviveCooldown = 30;
+
+            // Only start one if there really is no process. A node that is
+            // alive but slow to answer must be waited for, never duplicated:
+            // two bitcoind instances on one data directory corrupt it.
+            try { if (Process.GetProcessesByName("bitcoind").Length > 0) return; }
+            catch { return; }
+
+            _reviveBusy = true;
+            var t = new Thread(() =>
+            {
+                try
+                {
+                    EnsureNode();
+                    EnsureWalletLoaded();
+                    if (_nodeUp && _mining && !string.IsNullOrEmpty(_address))
+                    {
+                        StartMining(ThreadsFor(_percent));
+                    }
+                }
+                catch { }
+                finally { _reviveBusy = false; }
+            })
+            { IsBackground = true };
+            t.Start();
+        }
+
+        // ---------- main window ----------
+
+        void ShowWindow()
+        {
+            try
+            {
+                if (_window == null)
+                {
+                    _window = new MinerWindow(
+                        _history,
+                        pct => SetMode(pct),
+                        () => OnRecoveryPhrase(),
+                        () => { try { Process.Start("explorer.exe", _dir); } catch { } });
+                }
+                _window.Reveal();
+                PushToWindow(_nodeUp);
+            }
+            catch (Exception ex)
+            {
+                // Never let a UI problem take the miner down with it: the tray
+                // icon and the node have to keep working regardless.
+                _window = null;
+                MessageBox.Show("The PCoin Miner window could not be opened.\r\n\r\n" + ex.Message,
+                                "PCoin", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        void PushToWindow(bool nodeUp)
+        {
+            if (_window == null || !_window.IsVisible) return;
+            try
+            {
+                var s = new MinerSnapshot
+                {
+                    NodeUp = nodeUp,
+                    Hashing = nodeUp && _hashing,
+                    WantMining = _mining,
+                    Percent = _percent,
+                    Threads = _threads,
+                    Cores = _cores,
+                    Peers = _peers,
+                    Hashrate = _hashrate,
+                    Height = _height,
+                    Headers = _headers,
+                    BlocksFound = _blocksFound,
+                    Progress = _progress,
+                    Syncing = _syncing,
+                    Difficulty = _difficulty,
+                    Address = _address,
+                    HasPhrase = _phrase != null,
+                    PhraseBalance = _balPhraseText,
+                    OldBalance = _balOldText,
+                    NodeVersion = _nodeVersion,
+                    Problem = _problem
+                };
+                if (--_procTick <= 0 || _nodePid == 0)
+                {
+                    _procTick = 15;
+                    MinerWindow.FillProcessInfo(s);
+                    _nodePid = s.NodePid;
+                    _nodeMemMb = s.NodeMemoryMb;
+                    _nodeUptime = s.NodeUptime;
+                }
+                else
+                {
+                    s.NodePid = _nodePid;
+                    s.NodeMemoryMb = _nodeMemMb;
+                    s.NodeUptime = _nodeUptime;
+                }
+                _window.Apply(s);
+            }
+            catch { }
+        }
+
+        /**
+         * Show what each wallet holds, itemised.
+         *
+         * The two balances are never added into one number: "backed up by your
+         * phrase" and "in the old wallet with no phrase" are different kinds of
+         * money to the person who owns them. A balance that cannot be read says
+         * so rather than showing zero - somebody looking at their own coins must
+         * never be shown a zero that means "I do not know".
+         */
+        void UpdateBalances()
+        {
+            if (!_nodeUp || _balanceBusy) return;
+            if (--_balanceTick > 0) return;
+            _balanceTick = 5;                        // roughly every 15 seconds
+            _balanceBusy = true;
+
+            var t = new Thread(() =>
+            {
+                string hd = null, old = null;
+                try
+                {
+                    double trusted, immature;
+                    if (_phrase != null && !string.IsNullOrEmpty(_phrase.Wallet))
+                    {
+                        hd = _seed.Balances(_phrase.Wallet, out trusted, out immature)
+                            ? "Backed up by your phrase: " + Coins(trusted) + Maturing(immature)
+                            : "Backed up by your phrase: (cannot read)";
+                    }
+                    if (_seed.Balances(WALLET_MAIN, out trusted, out immature))
+                    {
+                        old = (_phrase == null ? "Balance: " : "Old wallet, no phrase: ")
+                            + Coins(trusted) + Maturing(immature);
+                    }
+                }
+                catch { }
+
+                try
+                {
+                    _sync.BeginInvoke(new Action(() =>
+                    {
+                        _miBackedUp.Visible = hd != null;
+                        if (hd != null) { _miBackedUp.Text = hd; _balPhraseText = hd; }
+                        _miOldWallet.Visible = old != null;
+                        if (old != null) { _miOldWallet.Text = old; _balOldText = old; }
+                        _balanceBusy = false;
+                        PushToWindow(_nodeUp);
+                    }));
+                }
+                catch { _balanceBusy = false; }
+            })
+            { IsBackground = true };
+            t.Start();
+        }
+
+        static string Coins(double v)
+        {
+            return v.ToString("#,##0.########", CultureInfo.InvariantCulture) + " PCN";
+        }
+
+        //! Coinbase output cannot be spent for 100 blocks, so newly mined coins
+        //! are reported separately rather than folded into a spendable total.
+        static string Maturing(double immature)
+        {
+            return immature > 0 ? "  (+" + Coins(immature) + " still maturing)" : "";
         }
 
         void ShowStatusBalloon()
@@ -356,6 +1358,10 @@ namespace PCoinTray
                 "You control it: right-click the tray icon to change how many cores " +
                 "it uses, or choose \"Not mining\" to stop entirely.\n\n" +
                 "Payout address:\n" + (_address == "" ? "(none yet)" : _address) + "\n\n" +
+                (_phrase == null
+                    ? "This wallet has NO recovery phrase. If Windows is reinstalled, the coins are gone. " +
+                      "Use \"Set up a recovery phrase...\" in the tray menu.\n\n"
+                    : "This wallet is backed up by a 12-word recovery phrase. Keep the paper safe.\n\n") +
                 "Website: https://pc.am",
                 "About PCoin Miner", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }

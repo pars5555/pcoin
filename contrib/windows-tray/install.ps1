@@ -81,13 +81,38 @@ Write-Output "  installed to $InstallDir"
 
 # --- node configuration --------------------------------------------------
 New-Item -ItemType Directory -Force $DataDir | Out-Null
-$conf = @('server=1', 'listen=1', 'dbcache=300', 'maxconnections=40', 'par=2')
+# fallbackfee: Core's default is 0 and PCoin has no fee history to estimate
+# from, so without this EVERY send fails with "Fee estimation failed".
+# changetype: a recovery-phrase wallet holds only wpkh descriptors, so change
+# for a payment to a taproot address cannot be allocated without it.
+# This file is rewritten on every install, so both belong here rather than
+# being appended once and silently lost at the next upgrade.
+$conf = @('server=1', 'listen=1', 'dbcache=300', 'maxconnections=40', 'par=2',
+          'fallbackfee=0.00001', 'changetype=bech32')
 foreach ($n in $AddNode) { $conf += "addnode=$n" }
 $conf | Set-Content -Encoding ascii (Join-Path $DataDir 'pcoin.conf')
 Write-Output "  data directory: $DataDir"
 
-@('address=', "datadir=$DataDir", "threads=$Threads") |
-    Set-Content -Encoding ascii (Join-Path $InstallDir 'pcoin-tray.cfg')
+# Keep the payout address that is already configured. Blanking it would make
+# the tray app hand out a fresh one on the next start, orphaning the address
+# whoever runs this machine has already written down. pcoin-seed.dat and
+# pcoin-seed.info are not touched at all - they hold the recovery phrase.
+$trayCfg = Join-Path $InstallDir 'pcoin-tray.cfg'
+$keep = @{}
+if (Test-Path $trayCfg) {
+    foreach ($line in (Get-Content $trayCfg)) {
+        $eq = $line.IndexOf('=')
+        if ($eq -gt 0) { $keep[$line.Substring(0, $eq).Trim()] = $line.Substring($eq + 1).Trim() }
+    }
+}
+$addr = ''
+if ($keep.ContainsKey('address')) { $addr = $keep['address'] }
+$addrWallet = ''
+if ($keep.ContainsKey('addresswallet')) { $addrWallet = $keep['addresswallet'] }
+if ($addr) { Write-Output "  keeping existing payout address $addr" }
+
+@("address=$addr", "addresswallet=$addrWallet", "datadir=$DataDir", "threads=$Threads") |
+    Set-Content -Encoding ascii $trayCfg
 if ($Threads -gt 0) { Write-Output "  configured to mine with $Threads cores" }
 else { Write-Output '  configured; mining is OFF' }
 
@@ -141,10 +166,61 @@ try {
     Write-Output ('  autostart skipped: ' + $_.Exception.Message)
 }
 
+# Second, independent autostart: a scheduled task with an AtLogOn trigger.
+#
+# The Startup shortcut is run by Explorer, which staggers startup items and can
+# take several minutes to get to them - measured on one of these machines, where
+# the tray did not appear for a good while after a reboot and the PC contributed
+# nothing in the meantime. Task Scheduler starts it directly at logon instead.
+#
+# Both may fire. That is harmless: the app takes a per-session single-instance
+# mutex, so whichever arrives second exits immediately.
+#
+# /IT puts it in the interactive desktop session, the only place a tray icon can
+# exist. /RL LIMITED keeps it unelevated so it never raises a UAC prompt.
+try {
+    $who = (Get-CimInstance Win32_ComputerSystem).UserName
+    if ($who) {
+        $exePath = Join-Path $InstallDir 'PCoinTray.exe'
+        schtasks /create /tn PCoinMiner /tr $exePath /sc onlogon /ru $who /it /rl LIMITED /f | Out-Null
+        if ($LASTEXITCODE -eq 0) { Write-Output "  autostart task created for $who" }
+        else { Write-Output '  autostart task could not be created (shortcut still applies)' }
+    }
+} catch {
+    Write-Output ('  autostart task skipped: ' + $_.Exception.Message)
+}
+
 # --- launch --------------------------------------------------------------
 if (-not $NoStart) {
-    Get-Process PCoinTray -ErrorAction SilentlyContinue | Stop-Process -Force
-    Start-Process -FilePath (Join-Path $InstallDir 'PCoinTray.exe') -WorkingDirectory $InstallDir
+    Get-Process PCoinTray -ErrorAction SilentlyContinue |
+        Stop-Process -Force -ErrorAction SilentlyContinue
+    $exe = Join-Path $InstallDir 'PCoinTray.exe'
+
+    # Start it in the session the person using this PC is logged into.
+    #
+    # Windows puts services, and everything they launch, in session 0 - which
+    # has no desktop and no notification area. Installing over a remote
+    # management tool that runs as a service therefore produces a miner that
+    # works perfectly and is completely invisible, with no tray icon to show
+    # the machine is mining or to stop it with. The app now refuses to start
+    # there at all, so without this the install would simply end with nothing
+    # running.
+    $target = (Get-Process explorer -ErrorAction SilentlyContinue | Select-Object -First 1).SessionId
+    $mine = (Get-Process -Id $PID).SessionId
+    if ($null -ne $target -and $mine -ne $target) {
+        try {
+            $who = (Get-CimInstance Win32_ComputerSystem).UserName
+            schtasks /create /tn PCoinTrayLaunch /tr $exe /sc once /st 23:59 /ru $who /it /f | Out-Null
+            schtasks /run /tn PCoinTrayLaunch | Out-Null
+            Start-Sleep -Seconds 8
+            schtasks /delete /tn PCoinTrayLaunch /f | Out-Null
+            Write-Output "  started in desktop session $target"
+        } catch {
+            Write-Output ('  could not reach the desktop session: ' + $_.Exception.Message)
+        }
+    } else {
+        Start-Process -FilePath $exe -WorkingDirectory $InstallDir
+    }
     Start-Sleep -Seconds 40
     $cli = Join-Path $InstallDir 'bitcoin-cli.exe'
     Write-Output '--- node ---'
@@ -155,6 +231,10 @@ if (-not $NoStart) {
     & $cli -datadir="$DataDir" getconnectioncount 2>&1
     Write-Output '--- processes ---'
     (Get-Process bitcoind, PCoinTray -ErrorAction SilentlyContinue |
-        Select-Object Name, Id | Format-Table -AutoSize | Out-String).Trim()
+        Select-Object Name, Id, SessionId | Format-Table -AutoSize | Out-String).Trim()
+    if (-not (Get-Process PCoinTray -ErrorAction SilentlyContinue |
+              Where-Object { $_.SessionId -eq $target })) {
+        Write-Output '  WARNING: no tray icon is visible on the desktop. Run PCoinTray.exe there.'
+    }
 }
 Write-Output 'PCOIN_INSTALL_DONE'
