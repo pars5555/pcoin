@@ -389,7 +389,191 @@ bitcoin-cli.exe getmininginfo
 bitcoin-cli.exe getbalance      # rewards mature after 100 blocks
 ```
 
-## 6. Why nodes and servers matter
+## 6. Wallet recovery phrase and key derivation
+
+Bitcoin Core has never supported BIP39, and PCoin's node does not either — the
+node stays byte-for-byte upstream in the wallet layer. The recovery phrase is
+implemented in the **client applications** (the Windows tray app, the Android
+miner), which derive the keys locally and hand the node a single account-level
+extended private key through `importdescriptors`.
+
+This section is the contract. Anything published here must keep working, because
+somebody's coins depend on it. A wallet that follows it can restore PCoin funds
+from the words alone, with no PCoin-specific software.
+
+### 6.1 The scheme
+
+| | |
+|---|---|
+| Mnemonic | **BIP39**, **English wordlist only** — never a localised list |
+| Length | **12 words** (128 bits) by default; 24 words (256 bits) optional. These two lengths only — BIP39 also defines 15, 18 and 21, and PCoin wallets deliberately do not accept or generate them, so that every client agrees on what a valid phrase is |
+| BIP39 passphrase | **empty string** (`""`). No "25th word" |
+| Seed | PBKDF2-HMAC-SHA512, 2048 iterations, salt `"mnemonic"`, 64 bytes |
+| Master key | BIP32, `HMAC-SHA512(key = "Bitcoin seed", data = seed)` |
+| Accounts | **BIP84** — `wpkh()`, native SegWit v0, `pc1q…` |
+
+The BIP32 key string is the literal ASCII `"Bitcoin seed"` — unchanged. It is
+part of BIP32 itself, and every standard library uses it. Changing it to
+`"PCoin seed"` would buy nothing and would make a PCoin phrase unrestorable in
+any other wallet.
+
+### 6.2 Derivation path
+
+```
+m / 84' / 9444' / account' / change / index
+
+receive: m/84'/9444'/0'/0/i
+change:  m/84'/9444'/0'/1/i
+```
+
+* **Coin type `9444'`** — PCoin's SLIP-44 index, matching the mainnet P2P port.
+  It is unregistered upstream at the time of writing and a registration PR is
+  the intended next step, but the number will not change either way.
+* **Coin type `1'` on every test network** — testnet, testnet4, signet and
+  regtest, per SLIP-44's universal convention. Never use `9444'` on a test
+  chain.
+* **Account is fixed at `0'`** in the current clients. `1'`, `2'`, … are
+  reserved.
+* Clients import the range `[0, 999]` on both chains, so a restore recovers
+  funds up to index 999 without any gap-limit logic.
+* The **mining payout address is `m/84'/9444'/0'/0/0`** — generated once and
+  reused, so the address a miner has already written down keeps working.
+
+**Why not coin type 0.** PCoin kept Bitcoin's extended-key version bytes on
+mainnet: `EXT_SECRET_KEY = 0x0488ADE4`, so PCoin extended keys serialise as
+literal `xprv…`/`xpub…` (`src/kernel/chainparams.cpp`). Under coin type 0 the
+same phrase would derive **byte-identical keys** on both chains — a reused
+phrase would silently put someone's Bitcoin keys on a PCoin node, and a leaked
+PCoin wallet would be a leaked Bitcoin wallet. Coin type 9444 is the only thing
+separating the two trees, which is exactly why it must never be changed.
+
+Test networks use `0x04358394` (`tprv`/`tpub`) and the `tpc`/`pcrt` bech32
+prefixes, so a client must select version bytes per network rather than
+hardcoding `xprv`.
+
+### 6.3 Descriptors
+
+Two descriptors are imported, with the origin fingerprint and path filled in:
+
+```
+external: wpkh([<master-fingerprint>/84h/9444h/0h]<account-xprv>/0/*)
+internal: wpkh([<master-fingerprint>/84h/9444h/0h]<account-xprv>/1/*)
+```
+
+* Derivation stops at the **account** level. The node gets a key that can spend
+  account 0 and nothing else; the seed and the root key never leave the client.
+* `84h` rather than `84'` — identical derivation, no quoting hazards.
+* `importdescriptors` requires a checksum. Get it from `getdescriptorinfo` and
+  append it — but use **only** the `checksum` field. The `descriptor` field it
+  returns is the canonical form **without private keys**; importing that
+  produces a watch-only wallet that looks healthy until the first send.
+
+### 6.4 Test vectors
+
+The mnemonic below is the standard all-zero-entropy BIP39 phrase. It is a **burn
+phrase**, published in every wallet's test suite. Never put coins on it.
+
+```
+mnemonic  = abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about
+passphrase= (empty)
+seed      = 5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc1
+            9a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4
+master fingerprint = 73c5da0a
+```
+
+Account 0 on **mainnet**, `m/84'/9444'/0'`:
+
+```
+xprv = xprv9y14Hos54MVJgZi4fDbHMeHQznnF9PCiwjtq5yCv6YKF1nCBFDSzHRtXHxqCWKy4EE5VXRJDdKcyfpSgrrTKKXJLvkPqWfpcLAXQtZcMRwL
+xpub = xpub6BzQhKPxtj3bu3nXmF8HinE9YpcjYqvaJxpRtMcXesrDtaXKnkmEqED19EcyDUGb3tuRih7NACR2HY1WrfkRP1dHpMZS2imgmrTrV8cVpE3
+```
+
+Descriptors, in the public form `listdescriptors` reports, with their checksums:
+
+```
+wpkh([73c5da0a/84h/9444h/0h]xpub6BzQhKPxtj3bu3nXmF8HinE9YpcjYqvaJxpRtMcXesrDtaXKnkmEqED19EcyDUGb3tuRih7NACR2HY1WrfkRP1dHpMZS2imgmrTrV8cVpE3/0/*)#w8mxel75
+wpkh([73c5da0a/84h/9444h/0h]xpub6BzQhKPxtj3bu3nXmF8HinE9YpcjYqvaJxpRtMcXesrDtaXKnkmEqED19EcyDUGb3tuRih7NACR2HY1WrfkRP1dHpMZS2imgmrTrV8cVpE3/1/*)#ln78y2wv
+```
+
+(The checksum covers the exact string, so the same descriptor written with the
+`xprv` instead of the `xpub` has a different one — that is expected.)
+
+First three receive addresses, `m/84'/9444'/0'/0/{0,1,2}`:
+
+```
+pc1qj7lccmpqhdgg6enh503hqqyx244e49yespm8pf
+pc1q0ncnjjyklxwts46h7e7jmls0l8d99lhv3wk0sm
+pc1qzze3twr9c0cg0s3v2yh7797gae4ufk7zu4wux0
+```
+
+First three change addresses, `m/84'/9444'/0'/1/{0,1,2}`:
+
+```
+pc1qel0k9nyfvgqsgkc4fv9jp9ff37gw48gnsqt2rs
+pc1qszm5tcmmewdgjny34klqv3dupm6jd5939k6e20
+pc1qxyzkhz58fs86rxjmm96hz58zt3j0qnx8s76tyg
+```
+
+Any node can confirm these without a wallet:
+
+```powershell
+bitcoin-cli.exe deriveaddresses "wpkh([73c5da0a/84h/9444h/0h]xpub6BzQhKPxtj3bu3nXmF8HinE9YpcjYqvaJxpRtMcXesrDtaXKnkmEqED19EcyDUGb3tuRih7NACR2HY1WrfkRP1dHpMZS2imgmrTrV8cVpE3/0/*)#w8mxel75" "[0,2]"
+```
+
+### 6.5 Two settings a spend depends on
+
+Independent of recovery phrases, and needed on any PCoin wallet that will ever
+send:
+
+```
+fallbackfee=0.00001
+changetype=bech32
+```
+
+Core's `DEFAULT_FALLBACK_FEE` is 0 and PCoin has no fee history to estimate
+from, so **without `fallbackfee` every mainnet send fails** with "Fee estimation
+failed". And because a phrase-backed wallet holds only `wpkh` descriptors,
+sending to a taproot `pc1p…` address fails while allocating change unless
+`changetype` pins change to bech32.
+
+### 6.6 Restoring by hand
+
+The clients do this for you; this is the same thing at the command line, for a
+wallet that has an account xprv from the words above.
+
+```powershell
+bitcoin-cli.exe createwallet "pcoin-hd" false true "" false true true false
+# blank=true: no HD seed of the node's own, only the keys that get imported
+
+# checksum each descriptor (the private form, exactly as it will be sent)
+bitcoin-cli.exe getdescriptorinfo "wpkh([73c5da0a/84h/9444h/0h]<xprv>/0/*)"
+
+bitcoin-cli.exe -rpcwallet=pcoin-hd importdescriptors "[
+  {\"desc\":\"wpkh([73c5da0a/84h/9444h/0h]<xprv>/0/*)#<sum>\",\"active\":true,\"internal\":false,\"range\":[0,999],\"next_index\":0,\"timestamp\":1785600628},
+  {\"desc\":\"wpkh([73c5da0a/84h/9444h/0h]<xprv>/1/*)#<sum>\",\"active\":true,\"internal\":true, \"range\":[0,999],\"next_index\":0,\"timestamp\":1785600628}]"
+```
+
+* `timestamp` is the genesis time `1785600628` for a restore — the true lower
+  bound for a rescan. For a phrase created a moment ago, use `"now"` instead and
+  the scan is skipped entirely.
+* `importdescriptors` returns a **result per descriptor and does not fail the
+  call** when only one of them worked. Check every `success`. A wallet that
+  imported the receive descriptor but not the change one can take coins and
+  cannot build change — invisible until the first send.
+* Do not put a `label` on the internal descriptor; the node rejects that.
+
+Finally, check that the node and the words agree before trusting the wallet:
+
+```powershell
+bitcoin-cli.exe -rpcwallet=pcoin-hd getaddressinfo pc1q…   # the address YOU derived at .../0/0
+# expect "ismine": true and "hdkeypath": "m/84h/9444h/0h/0/0"
+```
+
+Note that `getnewaddress` is **not** the right check after a restore: the rescan
+advances the descriptor past every index that already has history, so it
+correctly returns a later address than index 0.
+
+## 7. Why nodes and servers matter
 
 * **Seed nodes vs regular nodes.** There is no special "seed node" software — a
   seed is just an ordinary, always-on, publicly reachable node whose address
@@ -412,7 +596,7 @@ bitcoin-cli.exe getbalance      # rewards mature after 100 blocks
   different locations means one can reboot without the network becoming
   unreachable for newcomers.
 
-## 7. Honest next steps and warnings
+## 8. Honest next steps and warnings
 
 * **The chain is NOT secure.** Security of a PoW chain equals the cost of
   out-mining it. RandomX removes the *ASIC* threat, not the *51%* threat: with
