@@ -294,6 +294,16 @@ file, including this one. Note in particular that `run_remote.py` hard-codes the
 aicontrol bearer key and `SandboxHarness.kt` hard-codes a phone serial — neither
 belongs in this repo.
 
+**SSH access to all three seeds is written down: `D:\pc.am\PCOIN-SERVERS.md`.**
+Read it instead of asking, and instead of guessing. The IPs are public (they ship
+as fixed seeds in `src/chainparamsseeds.h`) but the usernames, key paths and
+per-host care levels are not, which is why they live on `D:` and not here. **The
+SSH username differs per host and is not derivable** — seed 2 cost a wasted round
+of four keys × six users × two ports before the answer turned out to be a
+username nobody had tried, with a key already on the machine. That file also
+records which boxes are shared production (one runs Odoo, one runs pc.am and
+~215 vhosts) and therefore how careful to be.
+
 **Seed node + website** — GCP, `35.239.156.16`, Debian 11.11, 2 vCPU / 8 GB RAM
 (≈7 GB usable), 49 GB disk with **18 GB free**, uptime ~1450 days.
 `ssh -i ~/.ssh/id_rsa rba@35.239.156.16` (`rba` has passwordless sudo; root login
