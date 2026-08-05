@@ -161,6 +161,9 @@ class SetupActivity : AppCompatActivity() {
         findViewById<Button>(R.id.choice_create).setOnClickListener { startCreate() }
         findViewById<Button>(R.id.choice_restore).setOnClickListener { startRestore() }
         findViewById<Button>(R.id.show_continue).setOnClickListener { startConfirm() }
+        findViewById<Button>(R.id.show_skip).setOnClickListener {
+            storeAndInstall(restored = false, confirmed = false)
+        }
         confirmButton.setOnClickListener { checkConfirmation() }
         findViewById<Button>(R.id.confirm_back).setOnClickListener { showStep(stepShow) }
         restoreButton.setOnClickListener { submitRestore() }
@@ -513,7 +516,18 @@ class SetupActivity : AppCompatActivity() {
      * were done first, a failure to store would leave a wallet whose phrase the
      * app cannot show again.
      */
-    private fun storeAndInstall(restored: Boolean) {
+    /**
+     * @param confirmed whether the user proved they wrote the phrase down.
+     *
+     * False is a legitimate state, not a failure: a miner that forwards its
+     * coins out holds about a day of rewards, and demanding a write-down
+     * ceremony before it can mine is friction with no matching risk. The
+     * phrase is still generated and stored encrypted either way, so the
+     * wallet is recoverable from the Backup screen whenever the owner gets
+     * round to it. prefs.phraseConfirmed stays false so the home screen keeps
+     * saying so -- deferred, never silently treated as done.
+     */
+    private fun storeAndInstall(restored: Boolean, confirmed: Boolean = true) {
         val words = phrase ?: return
         if (working) return
 
@@ -576,7 +590,7 @@ class SetupActivity : AppCompatActivity() {
                         failSetup(getString(R.string.error_store_failed, t.javaClass.simpleName))
                         return
                     }
-                    prefs.phraseConfirmed = true
+                    prefs.phraseConfirmed = confirmed
                     installWallet(restored, storedWithDeviceLock = p.deviceLockProtected)
                 }
 

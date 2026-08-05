@@ -57,6 +57,7 @@
     <string name="show_warning">Write these words on paper, in this order, and keep the paper somewhere safe. This is the ONLY way to recover your coins. Anyone who sees these words can take your coins. Nobody — not this app, not the PCoin network — can recover them for you.</string>
     <string name="show_no_copy">There is no copy button on purpose. A recovery phrase belongs on paper, not on a clipboard that other apps and other devices can read.</string>
     <string name="show_continue">I have written them down</string>
+    <string name="show_skip">Skip for now — I will write it down later</string>
 
     <string name="confirm_title">Check your paper</string>
     <string name="confirm_intro">Type the words below exactly as you wrote them, to confirm the paper is correct. Different words are asked each time.</string>
