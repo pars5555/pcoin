@@ -36,9 +36,21 @@ namespace PCoinTray
         [STAThread]
         static int Main(string[] args)
         {
-            foreach (var a in args)
+            for (int i = 0; i < args.Length; i++)
             {
+                var a = args[i];
                 if (a == "--selftest" || a == "-selftest") return SelfTest();
+                // Set the forwarding destination on a machine with no desktop.
+                // Same validation and same re-probe as the settings dialog; see
+                // FleetProvision.cs for why it is not a direct file write.
+                if (a == "--fleet-forward" || a == "-fleet-forward")
+                {
+                    AttachConsole(-1);
+                    var rest = new string[Math.Max(0, args.Length - i - 1)];
+                    Array.Copy(args, i + 1, rest, 0, rest.Length);
+                    Console.WriteLine();
+                    return FleetProvision.Run(rest);
+                }
             }
             Run();
             return 0;
@@ -177,6 +189,14 @@ namespace PCoinTray
         bool _balanceBusy;
         readonly Form _sync = new Form();   // never shown; used to get onto the UI thread
 
+        // Automatic forwarding of mined coins. Opt-in, starts empty, and its
+        // own state lives in pcoin-forward.json rather than pcoin-tray.cfg -
+        // install.ps1 rewrites that config wholesale on every upgrade and would
+        // destroy an in-flight sweep record with it.
+        ForwardStore _forwardStore;
+        ForwardEngine _forward;
+        HashSet<string> _loadedWallets = new HashSet<string>(StringComparer.Ordinal);
+
         MinerWindow _window;           // created the first time it is opened
         bool _pollBusy;                // a status poll is in flight
         int _tick;                     // timer ticks, one per second
@@ -213,6 +233,14 @@ namespace PCoinTray
         readonly ToolStripMenuItem _miEarned = new ToolStripMenuItem("") { Enabled = false };
         readonly ToolStripMenuItem _miBackedUp = new ToolStripMenuItem("") { Enabled = false, Visible = false };
         readonly ToolStripMenuItem _miOldWallet = new ToolStripMenuItem("") { Enabled = false, Visible = false };
+        // Forwarding gets three lines, not one: what it is doing, WHERE it is
+        // sending (always, from persisted intent), and the last forward with its
+        // transaction id. A destination hidden inside a status sentence is a
+        // destination nobody checks.
+        readonly ToolStripMenuItem _miForward = new ToolStripMenuItem("") { Enabled = false, Visible = false };
+        readonly ToolStripMenuItem _miForwardTo = new ToolStripMenuItem("") { Enabled = false, Visible = false };
+        readonly ToolStripMenuItem _miForwardLast = new ToolStripMenuItem("") { Enabled = false, Visible = false };
+        ToolStripMenuItem _miForwardAck;
         ToolStripMenuItem _miPhrase;
         ToolStripMenuItem _miOff;
         readonly Dictionary<int, ToolStripMenuItem> _miPercent = new Dictionary<int, ToolStripMenuItem>();
@@ -238,6 +266,16 @@ namespace PCoinTray
             _seed = new SeedWallet(_rpc);
             _phrase = PhraseInfo.Load(_dir);
             var force = _sync.Handle;   // realise the handle so Invoke works later
+
+            // Forwarding is opt-in and starts empty; constructing the engine
+            // sends nothing and asks the node nothing. A store that cannot be
+            // read parks forwarding rather than reading as "nothing configured".
+            _forwardStore = new ForwardStore(_dir);
+            _forward = new ForwardEngine(_rpc, _forwardStore,
+                () => string.IsNullOrEmpty(_addressWallet) ? WALLET_MAIN : _addressWallet,
+                (title, body, important) => Balloon(title, body, important),
+                () => OnForwardChanged());
+
             BuildMenu();
 
             _icon.Icon = _iconIdle;
@@ -328,6 +366,15 @@ namespace PCoinTray
             menu.Items.Add(_miEarned);
             menu.Items.Add(_miBackedUp);
             menu.Items.Add(_miOldWallet);
+            menu.Items.Add(_miForward);
+            menu.Items.Add(_miForwardTo);
+            menu.Items.Add(_miForwardLast);
+            _miForwardAck = new ToolStripMenuItem("I received it", null, (s, e) => OnAckProbe())
+            {
+                Visible = false,
+                Font = new Font(SystemFonts.MenuFont, FontStyle.Bold)
+            };
+            menu.Items.Add(_miForwardAck);
             menu.Items.Add(new ToolStripSeparator());
 
             _miOff = new ToolStripMenuItem("Not mining", null, (s, e) => SetMode(0));
@@ -348,6 +395,7 @@ namespace PCoinTray
             // address is public - and copying twelve words is not.
             _miPhrase = new ToolStripMenuItem("Recovery phrase...", null, (s, e) => OnRecoveryPhrase());
             menu.Items.Add(_miPhrase);
+            menu.Items.Add(new ToolStripMenuItem("Forward my coins...", null, (s, e) => OpenForwardSettings()));
             menu.Items.Add(new ToolStripMenuItem("Copy payout address", null, (s, e) =>
             {
                 if (!string.IsNullOrEmpty(_address)) Clipboard.SetText(_address);
@@ -379,7 +427,34 @@ namespace PCoinTray
             if (string.IsNullOrEmpty(_address)) _address = EnsureAddress();
             if (_mining) StartMining(ThreadsFor(_percent));
             SaveConfig();
+            ForwardNodeReady();
             OfferPhraseSetup();
+        }
+
+        /**
+         * Reconcile forwarding against the node that has just come up.
+         *
+         * An interrupted send has to be resolved before anything is allowed to
+         * build, and that check has to happen against THIS node - a restart is
+         * exactly the event that loses a mempool. Never throws: forwarding
+         * failing must never stop this PC mining.
+         */
+        void ForwardNodeReady()
+        {
+            try
+            {
+                if (!_nodeUp) return;
+                var loaded = _seed.LoadedWallets();
+                // Null means the node could not be asked, which is not an empty
+                // set. Passing an empty one would make reconciliation throw with
+                // "wallet not loaded", which is the correct outcome anyway: it
+                // leaves forwarding unreconciled, so no build is permitted.
+                var set = new HashSet<string>(StringComparer.Ordinal);
+                if (loaded != null) foreach (var w in loaded) set.Add(w);
+                _loadedWallets = set;
+                _forward.OnNodeReady(set);
+            }
+            catch { }
         }
 
         /**
@@ -842,6 +917,193 @@ namespace PCoinTray
             }
         }
 
+        // ---------- forwarding ----------
+
+        /**
+         * Open the forwarding settings.
+         *
+         * Modal, and deliberately so: the address it writes is the destination
+         * of every future block reward, and the engine re-reads that value at
+         * the commit point of a send. One window at a time is one decision at a
+         * time.
+         */
+        void OpenForwardSettings()
+        {
+            try
+            {
+                using (var f = new ForwardSettingsForm(_forward, _rpc,
+                           () => string.IsNullOrEmpty(_addressWallet) ? WALLET_MAIN : _addressWallet))
+                {
+                    f.ShowDialog();
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("The forwarding settings could not be opened.\r\n\r\n" + ex.Message,
+                                "PCoin", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            UpdateForwardMenu();
+            PushToWindow(_nodeUp);
+        }
+
+        void OnAckProbe()
+        {
+            try { _forward.AcknowledgeProbe(); }
+            catch (Exception ex)
+            {
+                MessageBox.Show("That could not be saved.\r\n\r\n" + ex.Message,
+                                "PCoin", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        /** Called by the engine from its worker thread. Hops to the UI thread. */
+        void OnForwardChanged()
+        {
+            try
+            {
+                _sync.BeginInvoke(new Action(() =>
+                {
+                    UpdateForwardMenu();
+                    PushToWindow(_nodeUp);
+                }));
+            }
+            catch { }
+        }
+
+        /**
+         * The three notifications forwarding is allowed to raise, and no others.
+         *
+         * Settled, the test payment arriving, and being stuck after three
+         * consecutive failures. "No peers", "syncing" and "nothing mature yet"
+         * NEVER notify - they are ordinary states shown in the app. That
+         * restraint is a design decision, not a limitation.
+         */
+        void Balloon(string title, string body, bool important)
+        {
+            try
+            {
+                _sync.BeginInvoke(new Action(() =>
+                {
+                    try
+                    {
+                        _icon.BalloonTipTitle = title;
+                        _icon.BalloonTipText = body;
+                        _icon.BalloonTipIcon = important ? ToolTipIcon.Warning : ToolTipIcon.Info;
+                        _icon.ShowBalloonTip(important ? 20000 : 10000);
+                    }
+                    catch { }
+                }));
+            }
+            catch { }
+        }
+
+        /**
+         * Forwarding's three menu lines.
+         *
+         * The destination is shown in EVERY non-holding state, straight from
+         * persisted intent - never only inside a status sentence, and never from
+         * a live reading that can go away when the node does.
+         */
+        void UpdateForwardMenu()
+        {
+            ForwardStatus f;
+            try { f = _forward.Status; }
+            catch { return; }
+
+            bool holding = f.State == ForwardState.HOLDING || string.IsNullOrEmpty(f.Address);
+            string line;
+            if (f.HasSweep && f.SweepState != SweepState.SETTLED)
+            {
+                line = "Forwarding " + ForwardPolicy.CoinsSat(f.SweepAmountSat) + " - " +
+                       ForwardPolicy.SweepWording(f.SweepState, f.SweepConfirmations);
+            }
+            else if (holding)
+            {
+                line = "Not forwarding - coins stay in this wallet";
+            }
+            else if (f.State == ForwardState.PROBING_PENDING)
+            {
+                line = "Forwarding: a test payment is due once coins mature";
+            }
+            else if (f.State == ForwardState.PROBING_SENT)
+            {
+                line = f.ProbeConfirmed
+                    ? "Test payment arrived - confirm you can see it"
+                    : "Test payment sent - waiting for it to confirm";
+            }
+            else
+            {
+                line = "Forwarding is on";
+                if (f.EtaMs > 0) line += " - next in about " + ForwardPolicy.RoughDuration(f.EtaMs);
+            }
+            if (!holding && !string.IsNullOrEmpty(f.Blocked) && !f.HasSweep)
+                line += "  (not forwarding: " + f.Blocked + ")";
+            if (!string.IsNullOrEmpty(f.Error)) line += "  !";
+            _miForward.Text = line;
+            _miForward.Visible = true;
+
+            _miForwardTo.Text = holding ? "" : "Forwarding to: " + f.Address;
+            _miForwardTo.Visible = !holding;
+
+            _miForwardLast.Visible = !string.IsNullOrEmpty(f.LastTxid);
+            if (_miForwardLast.Visible)
+            {
+                _miForwardLast.Text = "Last forward: " + ForwardPolicy.CoinsSat(f.LastAmountSat) +
+                                      " on " + new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+                                          .AddMilliseconds(f.LastAtMs).ToLocalTime()
+                                          .ToString("d MMM yyyy HH:mm", CultureInfo.InvariantCulture) +
+                                      "  -  " + f.LastTxid;
+            }
+
+            // Only openable once the node itself has seen the test payment six
+            // deep. A user cannot acknowledge a payment that has not landed.
+            _miForwardAck.Visible = f.State == ForwardState.PROBING_SENT && f.ProbeConfirmed && !f.ProbeAcked;
+        }
+
+        /**
+         * The forwarding status the window should draw.
+         *
+         * When the node is gone, the user's intent and the address they chose
+         * are properties of the install and stay on screen; whether a sweep is
+         * in flight, how many confirmations it has and what is blocking it are
+         * live readings and go back to unknown, rather than sitting there as
+         * though they were still being updated.
+         */
+        ForwardStatus ForwardForDisplay(bool nodeUp)
+        {
+            try
+            {
+                var f = _forward.Status;
+                if (nodeUp) return f;
+                return new ForwardStatus
+                {
+                    State = f.State,
+                    Address = f.Address,
+                    ProbeConfirmed = f.ProbeConfirmed,
+                    ProbeAcked = f.ProbeAcked,
+                    HasRecord = f.HasRecord,
+                    Error = f.Error,
+                    LastTxid = f.LastTxid,
+                    LastAmountSat = f.LastAmountSat,
+                    LastAtMs = f.LastAtMs,
+                    LastAddress = f.LastAddress,
+                };
+            }
+            catch { return new ForwardStatus(); }
+        }
+
+        //! What the forwarding engine needs from the tray's own poll.
+        NodeStats ForwardStatsFrom(Reading r)
+        {
+            return new NodeStats
+            {
+                Height = r.Height,
+                Headers = r.Headers,
+                InitialBlockDownload = r.InitialBlockDownload,
+                TipTimeSec = r.TipTimeSec,
+            };
+        }
+
         // ---------- status ----------
 
         /**
@@ -904,6 +1166,14 @@ namespace PCoinTray
             public double Difficulty;
             public int Peers = -1;
             public string Version;
+
+            // Forwarding needs the RAW readings, not the display-friendly ones.
+            // Its sync tolerance is 3 blocks where the display uses 2, and it
+            // needs the initialblockdownload flag itself rather than the folded
+            // Syncing above; a tip age check needs the tip's own timestamp.
+            public bool InitialBlockDownload;
+            public long TipTimeSec;
+            public HashSet<string> LoadedWallets;
         }
 
         /**
@@ -1036,9 +1306,14 @@ namespace PCoinTray
                 r.Progress = Json.Number(bc.Result, "verificationprogress") ?? 1.0;
                 r.Difficulty = Json.Number(bc.Result, "difficulty") ?? 0;
                 bool? ibd = Json.Bool(bc.Result, "initialblockdownload");
+                r.InitialBlockDownload = ibd.HasValue && ibd.Value;
+                // The tip's OWN timestamp, not mediantime, which lags five
+                // blocks - well over an hour at this chain's spacing - and would
+                // make the forwarding tip-age check meaningless.
+                r.TipTimeSec = (long)(Json.Number(bc.Result, "time") ?? 0);
                 // Two blocks of slack: a node one block behind the headers it
                 // has seen is not "syncing", it is simply between blocks.
-                r.Syncing = (ibd.HasValue && ibd.Value) || r.Headers - r.Height > 2;
+                r.Syncing = r.InitialBlockDownload || r.Headers - r.Height > 2;
             }
             else
             {
@@ -1049,6 +1324,23 @@ namespace PCoinTray
 
             var pc = _rpc.Call("getconnectioncount", "[]");
             if (pc.Ok && pc.Result is double) r.Peers = (int)(double)pc.Result;
+
+            // Which wallets are open. Forwarding treats "the payout wallet is in
+            // this set" as a precondition and, during reconciliation, THROWS
+            // when it is not - a wallet that cannot be asked is not evidence
+            // that nothing is in flight. A failed listwallets leaves this null,
+            // which is unknown, not empty.
+            var lw = _rpc.Call("listwallets", "[]");
+            if (lw.Ok)
+            {
+                var names = Json.Arr(lw.Result);
+                if (names != null)
+                {
+                    var set = new HashSet<string>(StringComparer.Ordinal);
+                    foreach (var n in names) { var s = n as string; if (s != null) set.Add(s); }
+                    r.LoadedWallets = set;
+                }
+            }
 
             // The version never changes under a running node, so read it rarely.
             if (--_versionTick <= 0 || string.IsNullOrEmpty(_nodeVersion))
@@ -1080,6 +1372,11 @@ namespace PCoinTray
                 _miStatus.Text = _problem;
                 _miChain.Text = "";
                 _miEarned.Text = "";
+                // Nothing that follows a lost node may be trusted until it has
+                // been re-checked, so reconciliation has to run again before any
+                // build is permitted.
+                try { _forward.OnNodeLost(); } catch { }
+                UpdateForwardMenu();
                 PushToWindow(false);
                 ReviveNode();
                 return;
@@ -1153,6 +1450,22 @@ namespace PCoinTray
             _miEarned.Text = "Blocks mined by this PC: " + _blocksFound.ToString(CultureInfo.InvariantCulture);
             _miPhrase.Text = _phrase == null ? "Set up a recovery phrase..." : "Recovery phrase...";
             UpdateBalances();
+
+            // The forwarding tick, on a FULL poll only - the rate-only ticks
+            // carry no chain fields at all, and a decision made on a zeroed
+            // height is a decision made on a number nobody read.
+            //
+            // This only DECIDES whether to evaluate. The work itself runs on the
+            // engine's own background thread: sendall alone can take a minute
+            // and this is the UI thread that drives the whole app.
+            if (r.Full)
+            {
+                if (r.LoadedWallets != null) _loadedWallets = r.LoadedWallets;
+                try { _forward.OnTick(ForwardStatsFrom(r), _loadedWallets, true); }
+                catch { /* forwarding failing must never stop this PC mining */ }
+            }
+            UpdateForwardMenu();
+
             MarkMode();
             PushToWindow(true);
         }
@@ -1189,6 +1502,7 @@ namespace PCoinTray
                 {
                     EnsureNode();
                     EnsureWalletLoaded();
+                    ForwardNodeReady();
                     if (_nodeUp && _mining && !string.IsNullOrEmpty(_address))
                     {
                         StartMining(ThreadsFor(_percent));
@@ -1213,7 +1527,9 @@ namespace PCoinTray
                         _history,
                         pct => SetMode(pct),
                         () => OnRecoveryPhrase(),
-                        () => { try { Process.Start("explorer.exe", _dir); } catch { } });
+                        () => { try { Process.Start("explorer.exe", _dir); } catch { } },
+                        () => OpenForwardSettings(),
+                        () => OnAckProbe());
                 }
                 _window.Reveal();
                 PushToWindow(_nodeUp);
@@ -1254,7 +1570,8 @@ namespace PCoinTray
                     PhraseBalance = _balPhraseText,
                     OldBalance = _balOldText,
                     NodeVersion = _nodeVersion,
-                    Problem = _problem
+                    Problem = _problem,
+                    Forward = ForwardForDisplay(nodeUp)
                 };
                 if (--_procTick <= 0 || _nodePid == 0)
                 {
@@ -1368,6 +1685,11 @@ namespace PCoinTray
 
         void Quit()
         {
+            // Tell forwarding we are going. It never starts a new build after
+            // this; a transaction already committed to disk is picked up and
+            // resolved by the next start, which is the whole point of writing
+            // the record before the broadcast.
+            try { _forward.Shutdown(); } catch { }
             try { Cli("stopmining"); } catch { }
             // Only shut the node down if this app was the one that started it.
             // A node that was already running belongs to someone else.

@@ -139,7 +139,10 @@ namespace PCoinTray
      */
     class TypeToConfirmForm : Form
     {
-        public TypeToConfirmForm(string headline, string body, string word)
+        //! @param action  what the confirming button says. It has to name what
+        //! is about to happen: a button reading "Show the phrase" on a dialog
+        //! about clearing a payment record is worse than no label at all.
+        public TypeToConfirmForm(string headline, string body, string word, string action = "Show the phrase")
         {
             Text = "PCoin - are you sure?";
             FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -156,7 +159,7 @@ namespace PCoinTray
             var box = new TextBox { Location = new Point(220, 164), Size = new Size(120, 26) };
             Controls.Add(box);
 
-            var ok = Ui.Button(this, "Show the phrase", 240, 204, 200, DialogResult.OK);
+            var ok = Ui.Button(this, action, 240, 204, 200, DialogResult.OK);
             ok.Enabled = false;
             box.TextChanged += (s, e) => ok.Enabled = box.Text.Trim().ToUpperInvariant() == word;
             var cancel = Ui.Button(this, "Cancel", 20, 204, 100, DialogResult.Cancel);

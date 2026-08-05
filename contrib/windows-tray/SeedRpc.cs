@@ -162,6 +162,27 @@ namespace PCoinTray
     {
         public object Result;
         public string Error;                    // null on success
+
+        /**
+         * The JSON-RPC error code, when the node ANSWERED with an error.
+         *
+         * Null means no code was available - either the call succeeded, or it
+         * never reached the node at all. The forwarding code depends on telling
+         * those two apart: "answered -5, I have never seen that transaction" is
+         * a fact about the chain, while "the socket timed out" is a fact about
+         * the network and resolves nothing. Matching on substrings of Error is
+         * not good enough in a path that spends money, because the node echoes
+         * user input back inside its error text.
+         */
+        public int? Code;
+
+        /**
+         * True when the failure happened below the JSON-RPC layer: no
+         * connection, a timeout, an unparseable body. The node did not answer,
+         * so nothing may be concluded from it.
+         */
+        public bool Transport;
+
         public bool Ok { get { return Error == null; } }
     }
 
@@ -252,21 +273,135 @@ namespace PCoinTray
          */
         public RpcResult Call(string wallet, string method, string paramsJson, int timeoutMs)
         {
-            LoadAuth();
             var res = new RpcResult();
+            string body = "{\"jsonrpc\":\"1.0\",\"id\":\"pcointray\",\"method\":" + Json.Quote(method) +
+                          ",\"params\":" + (paramsJson ?? "[]") + "}";
+
+            string text = Post(wallet, body, timeoutMs, res);
+            if (text == null) return res;                // Transport/Error already set
+
+            object parsed;
+            try { parsed = Json.Parse(text); }
+            catch (Exception ex)
+            {
+                // A body we cannot read is not an answer either.
+                res.Transport = true;
+                res.Error = Sanitize(ex.Message);
+                return res;
+            }
+            Fold(parsed, res);
+            return res;
+        }
+
+        /**
+         * Several calls in one HTTP round trip.
+         *
+         * Used where the alternative is hundreds of sequential loopback trips -
+         * `gettransaction` for every distinct txid behind a two-hundred-input
+         * sweep. Results come back in the same order as @p methods; a slot the
+         * node did not answer carries Transport = true, never a fabricated
+         * success, because the caller's default for an unread transaction has
+         * to stay the strict one.
+         *
+         * Core replies to a batch with HTTP 200 and an array of reply objects
+         * (src/httprpc.cpp), each carrying back the id it was sent, so results
+         * are matched by id rather than by position.
+         */
+        public List<RpcResult> Batch(string wallet, List<string> methods, List<string> paramsJson, int timeoutMs)
+        {
+            var results = new List<RpcResult>(methods.Count);
+            for (int i = 0; i < methods.Count; i++) results.Add(new RpcResult());
+            if (methods.Count == 0) return results;
+
+            var sb = new StringBuilder("[");
+            for (int i = 0; i < methods.Count; i++)
+            {
+                if (i > 0) sb.Append(',');
+                sb.Append("{\"jsonrpc\":\"1.0\",\"id\":")
+                  .Append(Json.Quote(i.ToString(CultureInfo.InvariantCulture)))
+                  .Append(",\"method\":").Append(Json.Quote(methods[i]))
+                  .Append(",\"params\":").Append(paramsJson[i] ?? "[]").Append('}');
+            }
+            sb.Append(']');
+
+            var transport = new RpcResult();
+            string text = Post(wallet, sb.ToString(), timeoutMs, transport);
+            if (text == null)
+            {
+                foreach (var r in results) { r.Transport = transport.Transport; r.Error = transport.Error; }
+                return results;
+            }
+
+            List<object> arr = null;
+            try { arr = Json.Arr(Json.Parse(text)); }
+            catch { }
+            if (arr == null)
+            {
+                // Not the shape a batch reply has. Nothing may be read out of
+                // it, so every slot stays unanswered.
+                foreach (var r in results) { r.Transport = true; r.Error = "the node did not answer the batch"; }
+                return results;
+            }
+
+            var seen = new bool[results.Count];
+            foreach (var item in arr)
+            {
+                string id = Json.Str(item, "id");
+                int slot;
+                if (id == null || !int.TryParse(id, NumberStyles.Integer, CultureInfo.InvariantCulture, out slot)) continue;
+                if (slot < 0 || slot >= results.Count || seen[slot]) continue;
+                seen[slot] = true;
+                Fold(item, results[slot]);
+            }
+            for (int i = 0; i < results.Count; i++)
+            {
+                if (seen[i]) continue;
+                results[i].Transport = true;
+                results[i].Error = "the node did not answer this call";
+            }
+            return results;
+        }
+
+        //! Turn one JSON-RPC reply object into a result. An `error` member wins
+        //! over `result`, and its code is kept as a number rather than only as
+        //! text: callers in the send path branch on it.
+        static void Fold(object reply, RpcResult res)
+        {
+            object err = Json.Field(reply, "error");
+            if (err != null)
+            {
+                string msg = Json.Str(err, "message");
+                double? code = Json.Number(err, "code");
+                if (code.HasValue) res.Code = (int)code.Value;
+                res.Error = Sanitize(msg ?? "the node reported an error") +
+                            (code.HasValue ? " (code " + ((int)code.Value).ToString(CultureInfo.InvariantCulture) + ")" : "");
+                return;
+            }
+            res.Result = Json.Field(reply, "result");
+        }
+
+        /**
+         * POST a body and return the response text, or null with @p res
+         * describing why not.
+         *
+         * An RPC error arrives as HTTP 500 with a JSON body, so a 500 is still
+         * a response and its body is still read; only a failure with no
+         * response at all is a transport failure.
+         */
+        string Post(string wallet, string body, int timeoutMs, RpcResult res)
+        {
+            LoadAuth();
             if (_user == null || _pass == null)
             {
+                res.Transport = true;
                 res.Error = "cannot read the node's RPC credentials (.cookie) in " + _datadir;
-                return res;
+                return null;
             }
 
             string url = "http://127.0.0.1:" + _port.ToString(CultureInfo.InvariantCulture) + "/";
             if (!string.IsNullOrEmpty(wallet)) url += "wallet/" + Uri.EscapeDataString(wallet);
 
-            string body = "{\"jsonrpc\":\"1.0\",\"id\":\"pcointray\",\"method\":" + Json.Quote(method) +
-                          ",\"params\":" + (paramsJson ?? "[]") + "}";
             byte[] payload = Encoding.UTF8.GetBytes(body);
-
             try
             {
                 var req = (HttpWebRequest)WebRequest.Create(url);
@@ -281,37 +416,41 @@ namespace PCoinTray
                 req.ContentLength = payload.Length;
                 using (var s = req.GetRequestStream()) s.Write(payload, 0, payload.Length);
 
-                string text;
                 try
                 {
                     using (var resp = (HttpWebResponse)req.GetResponse())
                     using (var rd = new StreamReader(resp.GetResponseStream()))
-                        text = rd.ReadToEnd();
+                        return rd.ReadToEnd();
                 }
                 catch (WebException we)
                 {
-                    // An RPC error comes back as HTTP 500 with a JSON body, so
-                    // the body still has to be read to say anything useful.
-                    if (we.Response == null) { res.Error = Sanitize(we.Message); return res; }
-                    using (var rd = new StreamReader(we.Response.GetResponseStream())) text = rd.ReadToEnd();
-                }
+                    if (we.Response == null)
+                    {
+                        res.Transport = true;
+                        res.Error = Sanitize(we.Message);
+                        return null;
+                    }
+                    string errText;
+                    using (var rd = new StreamReader(we.Response.GetResponseStream())) errText = rd.ReadToEnd();
+                    if (!string.IsNullOrEmpty(errText.Trim())) return errText;
 
-                object parsed = Json.Parse(text);
-                object err = Json.Field(parsed, "error");
-                if (err != null)
-                {
-                    string msg = Json.Str(err, "message");
-                    double? code = Json.Number(err, "code");
-                    res.Error = Sanitize(msg ?? text) + (code.HasValue ? " (code " + ((int)code.Value) + ")" : "");
-                    return res;
+                    // A response with no body at all - an HTTP 401 from bad
+                    // credentials is the one that matters - carries no JSON to
+                    // read, so name the status instead of failing with a JSON
+                    // parse error that says nothing about the cause.
+                    res.Transport = true;
+                    var http = we.Response as HttpWebResponse;
+                    res.Error = http != null
+                        ? "HTTP " + ((int)http.StatusCode).ToString(CultureInfo.InvariantCulture) + " " + http.StatusCode
+                        : Sanitize(we.Message);
+                    return null;
                 }
-                res.Result = Json.Field(parsed, "result");
-                return res;
             }
             catch (Exception ex)
             {
+                res.Transport = true;
                 res.Error = Sanitize(ex.Message);
-                return res;
+                return null;
             }
             finally
             {

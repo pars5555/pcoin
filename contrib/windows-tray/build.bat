@@ -42,6 +42,11 @@ if not exist "%FW%\WPF\PresentationFramework.dll" (
   /reference:"%FW%\WPF\PresentationFramework.dll" ^
   PCoinTray.cs ^
   MinerWindow.cs ^
+  ForwardPolicy.cs ^
+  ForwardStore.cs ^
+  ForwardEngine.cs ^
+  ForwardForms.cs ^
+  FleetProvision.cs ^
   SeedCrypto.cs ^
   SeedKeys.cs ^
   SeedRpc.cs ^

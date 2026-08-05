@@ -143,6 +143,17 @@ namespace PCoinTray
         public int NodePid;
         public double NodeMemoryMb;
         public TimeSpan NodeUptime;
+
+        /**
+         * Forwarding.
+         *
+         * The intent fields - state, address, whether the test payment has
+         * confirmed - are properties of the install and survive the node going
+         * away, exactly as HasPhrase does. The sweep fields are live readings
+         * and go back to unknown instead of sitting on screen next to a dead
+         * node as though they were still being updated.
+         */
+        public ForwardStatus Forward = new ForwardStatus();
     }
 
     /**
@@ -202,9 +213,21 @@ namespace PCoinTray
 
         readonly TextBlock _proc = new TextBlock();
 
+        readonly TextBlock _fwdState = new TextBlock();
+        readonly TextBlock _fwdDestLabel = new TextBlock();
+        readonly TextBox _fwdDest = new TextBox();
+        readonly TextBlock _fwdBlocked = new TextBlock();
+        readonly TextBlock _fwdError = new TextBlock();
+        readonly TextBlock _fwdLast = new TextBlock();
+        readonly Button _fwdManage = new Button();
+        readonly Button _fwdAck = new Button();
+        readonly Button _fwdCopyTxid = new Button();
+
         readonly Action<int> _setPercent;   // 0 = stop
         readonly Action _openPhrase;
         readonly Action _openFolder;
+        readonly Action _openForward;
+        readonly Action _ackProbe;
 
         //! True while code (not the user) is moving the slider, so the
         //! ValueChanged handler can tell a refresh apart from a real choice.
@@ -212,17 +235,20 @@ namespace PCoinTray
         int _pendingPercent = -1;
         MinerSnapshot _last = new MinerSnapshot();
 
-        public MinerWindow(RateHistory history, Action<int> setPercent, Action openPhrase, Action openFolder)
+        public MinerWindow(RateHistory history, Action<int> setPercent, Action openPhrase, Action openFolder,
+                           Action openForward, Action ackProbe)
         {
             _history = history;
             _setPercent = setPercent;
             _openPhrase = openPhrase;
             _openFolder = openFolder;
+            _openForward = openForward;
+            _ackProbe = ackProbe;
 
             Title = "PCoin Miner";
             Width = 470;
             MinWidth = 420;
-            Height = 706;
+            Height = 760;
             MinHeight = 460;
             Background = Bg;
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
@@ -256,6 +282,7 @@ namespace PCoinTray
             col.Children.Add(SyncCard());
             col.Children.Add(ControlCard());
             col.Children.Add(WalletCard());
+            col.Children.Add(ForwardCard());
             col.Children.Add(ProcessFooter());
             scroll.Content = col;
             return scroll;
@@ -519,6 +546,192 @@ namespace PCoinTray
         }
 
         /**
+         * The forwarding card.
+         *
+         * Two rules run through all of it. A transaction that has merely been
+         * broadcast is NEVER worded as sent - with one peer, or with only
+         * block-relay-only peers, a successful sendrawtransaction can mean
+         * nobody else has seen it. And every amount and address shown for an
+         * in-flight transaction comes from the DECODED transaction, never from
+         * the setting it was built from: what was actually built is the only
+         * honest thing to display.
+         */
+        UIElement ForwardCard()
+        {
+            var stack = new StackPanel();
+            stack.Children.Add(Caption("Forwarding"));
+
+            _fwdState.Foreground = Text;
+            _fwdState.FontSize = 13;
+            _fwdState.TextWrapping = TextWrapping.Wrap;
+            stack.Children.Add(_fwdState);
+
+            _fwdDestLabel.Text = "FORWARDING TO THIS ADDRESS";
+            _fwdDestLabel.Foreground = Muted;
+            _fwdDestLabel.FontSize = 10.5;
+            _fwdDestLabel.FontWeight = FontWeights.SemiBold;
+            _fwdDestLabel.Margin = new Thickness(0, 10, 0, 3);
+            stack.Children.Add(_fwdDestLabel);
+
+            // Same treatment the payout address gets: a read-only TextBox, not a
+            // label, because this is the string a person has to be able to
+            // select, copy and compare against their other wallet.
+            _fwdDest.IsReadOnly = true;
+            _fwdDest.Background = Brushes.Transparent;
+            _fwdDest.BorderThickness = new Thickness(0);
+            _fwdDest.Foreground = Text;
+            _fwdDest.FontFamily = new FontFamily("Consolas, Courier New");
+            _fwdDest.FontSize = 12;
+            _fwdDest.Padding = new Thickness(0);
+            _fwdDest.TextWrapping = TextWrapping.Wrap;
+            stack.Children.Add(_fwdDest);
+
+            _fwdBlocked.Foreground = Muted;
+            _fwdBlocked.FontSize = 11.5;
+            _fwdBlocked.TextWrapping = TextWrapping.Wrap;
+            _fwdBlocked.Margin = new Thickness(0, 8, 0, 0);
+            stack.Children.Add(_fwdBlocked);
+
+            _fwdError.Foreground = Warn;
+            _fwdError.FontSize = 11.5;
+            _fwdError.TextWrapping = TextWrapping.Wrap;
+            _fwdError.Margin = new Thickness(0, 8, 0, 0);
+            stack.Children.Add(_fwdError);
+
+            _fwdLast.Foreground = Muted;
+            _fwdLast.FontSize = 11;
+            _fwdLast.TextWrapping = TextWrapping.Wrap;
+            _fwdLast.Margin = new Thickness(0, 10, 0, 0);
+            stack.Children.Add(_fwdLast);
+
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0) };
+
+            _fwdManage.Content = "Set forwarding address";
+            _fwdManage.Padding = new Thickness(12, 6, 12, 6);
+            _fwdManage.FontSize = 12;
+            _fwdManage.Cursor = Cursors.Hand;
+            StyleButton(_fwdManage, false);
+            _fwdManage.Click += (s, e) => { if (_openForward != null) _openForward(); };
+            row.Children.Add(_fwdManage);
+
+            _fwdAck.Content = "I received it";
+            _fwdAck.Padding = new Thickness(12, 6, 12, 6);
+            _fwdAck.FontSize = 12;
+            _fwdAck.Margin = new Thickness(8, 0, 0, 0);
+            _fwdAck.Cursor = Cursors.Hand;
+            StyleButton(_fwdAck, true);
+            _fwdAck.Click += (s, e) => { if (_ackProbe != null) _ackProbe(); };
+            row.Children.Add(_fwdAck);
+
+            _fwdCopyTxid.Content = "Copy transaction ID";
+            _fwdCopyTxid.Padding = new Thickness(12, 6, 12, 6);
+            _fwdCopyTxid.FontSize = 12;
+            _fwdCopyTxid.Margin = new Thickness(8, 0, 0, 0);
+            _fwdCopyTxid.Cursor = Cursors.Hand;
+            StyleButton(_fwdCopyTxid, false);
+            _fwdCopyTxid.Click += (s, e) =>
+            {
+                if (string.IsNullOrEmpty(_last.Forward.LastTxid)) return;
+                try { Clipboard.SetText(_last.Forward.LastTxid); _fwdCopyTxid.Content = "Copied"; } catch { }
+            };
+            row.Children.Add(_fwdCopyTxid);
+
+            stack.Children.Add(row);
+            return Panel(stack);
+        }
+
+        void ApplyForward(MinerSnapshot s)
+        {
+            ForwardStatus f = s.Forward ?? new ForwardStatus();
+            bool holding = f.State == ForwardState.HOLDING || string.IsNullOrEmpty(f.Address);
+            bool inFlight = f.HasSweep && f.SweepState != SweepState.SETTLED;
+
+            if (inFlight)
+            {
+                _fwdState.Text = "Forwarding " + ForwardPolicy.CoinsSat(f.SweepAmountSat) + " - " +
+                                 ForwardPolicy.SweepWording(f.SweepState, f.SweepConfirmations);
+            }
+            else if (holding)
+            {
+                _fwdState.Text = "Holding coins in this wallet. They are safe here: your twelve words " +
+                                 "recover them. Set an address to forward them automatically.";
+            }
+            else if (f.State == ForwardState.PROBING_PENDING)
+            {
+                // Shows the destination IN FULL, deliberately. This is the state
+                // a user sits in for a day after typing an address, and it is
+                // the only chance to notice a wrong one before rewards are
+                // committed to it. A shortened form would hide exactly the
+                // characters a mistyped address differs by.
+                _fwdState.Text = "Forwarding to:\n" + f.Address +
+                                 "\n\nA test payment will be sent once coins mature - about a day " +
+                                 "after this PC finds its next block.";
+            }
+            else if (f.State == ForwardState.PROBING_SENT && f.ProbeConfirmed)
+            {
+                _fwdState.Text = "Test payment of " + ForwardPolicy.CoinsSat(ForwardPolicy.PROBE_SAT) +
+                                 " has arrived at " + ForwardPolicy.ShortAddress(f.Address) +
+                                 ". Check that wallet, then confirm below.";
+            }
+            else if (f.State == ForwardState.PROBING_SENT)
+            {
+                _fwdState.Text = "Test payment of " + ForwardPolicy.CoinsSat(ForwardPolicy.PROBE_SAT) +
+                                 " sent to " + ForwardPolicy.ShortAddress(f.Address) +
+                                 " - waiting for it to confirm.";
+            }
+            else
+            {
+                string t = "Forwarding to " + ForwardPolicy.ShortAddress(f.Address) + ".";
+                // Computed from OBSERVED block spacing, never from the 600 s
+                // target - the measured value is far higher, so the target would
+                // understate every estimate.
+                if (f.EtaMs > 0) t += " Next forward in about " + ForwardPolicy.RoughDuration(f.EtaMs) + ".";
+                _fwdState.Text = t;
+            }
+
+            // Read straight from persisted intent, never from a live reading:
+            // the address the user chose must stay on screen even when the node
+            // is unreachable, a sweep is mid-flight, or a precondition is
+            // blocking. Shown in EVERY non-holding state, never only inside a
+            // status sentence.
+            bool showDest = !holding;
+            _fwdDest.Text = f.Address ?? "";
+            _fwdDest.Visibility = showDest ? Visibility.Visible : Visibility.Collapsed;
+            _fwdDestLabel.Visibility = showDest ? Visibility.Visible : Visibility.Collapsed;
+
+            // Ordinary blocked states are shown here and never notified:
+            // "nothing mature yet" is what a healthy PC reports for most of
+            // every day.
+            bool showBlocked = !string.IsNullOrEmpty(f.Blocked) && !holding && !inFlight;
+            _fwdBlocked.Text = showBlocked ? "Not forwarding: " + f.Blocked : "";
+            _fwdBlocked.Visibility = showBlocked ? Visibility.Visible : Visibility.Collapsed;
+
+            _fwdError.Text = f.Error ?? "";
+            _fwdError.Visibility = string.IsNullOrEmpty(f.Error) ? Visibility.Collapsed : Visibility.Visible;
+
+            // Sourced from persisted history, not from a live read, so it stays
+            // on screen across restarts and does not vanish because a query
+            // failed.
+            bool hasLast = !string.IsNullOrEmpty(f.LastTxid);
+            if (hasLast)
+            {
+                _fwdLast.Text = "Last forward: " + ForwardPolicy.CoinsSat(f.LastAmountSat) + " on " +
+                                new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+                                    .AddMilliseconds(f.LastAtMs).ToLocalTime()
+                                    .ToString("d MMM yyyy HH:mm", CultureInfo.InvariantCulture) +
+                                "\n" + f.LastTxid;
+            }
+            _fwdLast.Visibility = hasLast ? Visibility.Visible : Visibility.Collapsed;
+            _fwdCopyTxid.Visibility = hasLast ? Visibility.Visible : Visibility.Collapsed;
+
+            _fwdManage.Content = holding ? "Set forwarding address" : "Change or stop forwarding";
+            // Only openable once the node itself has seen the test payment six
+            // deep. A user cannot acknowledge a payment that has not landed.
+            _fwdAck.Visibility = (f.State == ForwardState.PROBING_SENT && f.ProbeConfirmed && !f.ProbeAcked)
+                ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        /**
          * The node's vitals as a single footer line rather than a card.
          *
          * It is reference information - which process, how much memory, how
@@ -664,6 +877,8 @@ namespace PCoinTray
             _phraseBtn.Content = s.HasPhrase ? "Recovery phrase..." : "Set up a recovery phrase...";
 
             _addr.Text = string.IsNullOrEmpty(s.Address) ? "(none yet)" : s.Address;
+
+            ApplyForward(s);
 
             _proc.Text = BuildProcessText(s);
         }
