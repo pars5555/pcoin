@@ -17,9 +17,11 @@ param(
     [int]$Threads = 0,
     [string]$InstallDir = 'C:\PCoin',
     [string]$DataDir = '',
-    [string]$Version = '1.2.0',
-    [string]$Sha256 = '63b8541db7a436cdbb2cb5ed5e9bdebb55f0129830973002f1236fd0bf048b83',
-    [string[]]$AddNode = @('35.239.156.16:9444'),
+    [string]$Version = '1.2.1',
+    [string]$Sha256 = 'aafef86254f341482b6a2c8714f99b9b8688fa7041fb8f78458991559c6c0074',
+    # All three seeds, not just one. The node also carries them compiled in as
+    # of v1.2.1, so this is belt and braces rather than the only route in.
+    [string[]]$AddNode = @('35.239.156.16:9444', '35.238.47.14:9444', '178.105.3.51:9444'),
     [switch]$NoStart
 )
 
