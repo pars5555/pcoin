@@ -164,6 +164,7 @@ class MainActivity : AppCompatActivity() {
         if (intent?.getBooleanExtra(EXTRA_START_MINING, false) == true) {
             prefs.miningEnabled = true
         }
+        applyProvisioning(intent)
 
         // A fresh install has no wallet at all. Go straight to setup rather than
         // showing a dashboard for a wallet that does not exist -- and certainly
@@ -289,6 +290,39 @@ class MainActivity : AppCompatActivity() {
      * one. Whichever it is, it is stated plainly rather than implied by an
      * absence.
      */
+    /**
+     * Applies fleet provisioning extras. Debug builds only; see the constants.
+     *
+     * Deliberately conservative: it will not overwrite a forwarding address
+     * that is already set. Re-provisioning a device that is mid-sweep would
+     * be the destination-change race the forwarding engine takes a lock to
+     * prevent, and a provisioning tool has no business winning that race.
+     */
+    private fun applyProvisioning(intent: Intent?) {
+        if (!BuildConfig.DEBUG || intent == null) return
+
+        val percent = intent.getIntExtra(EXTRA_PROVISION_PERCENT, -1)
+        if (percent in 10..100) {
+            prefs.performancePercent = percent
+            android.util.Log.i("PCoinProvision", "performance set to ${prefs.performancePercent}%")
+        }
+
+        val addr = intent.getStringExtra(EXTRA_PROVISION_FORWARD)?.trim()
+        if (!addr.isNullOrEmpty()) {
+            if (prefs.forwardAddress != null) {
+                android.util.Log.w("PCoinProvision", "forward address already set; refusing to replace")
+            } else {
+                // Validated by the node, exactly as the settings screen does --
+                // a provisioning path that accepted an unvalidated address
+                // would burn every reward to an address nobody holds.
+                val normalised = ForwardPolicy.normalizeAddress(addr)
+                prefs.forwardAddress = normalised
+                prefs.forwardState = ForwardState.PROBING_PENDING
+                android.util.Log.i("PCoinProvision", "forwarding queued to $normalised")
+            }
+        }
+    }
+
     private fun renderWalletState(s: MinerState.Snapshot) {
         val hasPhrase = hasPhraseWallet()
         val noWalletAtAll = needsFirstRunSetup()
@@ -464,12 +498,9 @@ class MainActivity : AppCompatActivity() {
         forwardManage.setText(
             if (address == null) R.string.forward_card_set else R.string.forward_card_manage
         )
-        // Only openable once the node itself has seen the test payment six deep.
-        // A user cannot acknowledge a payment that has not actually landed.
-        val canAck = state == ForwardState.PROBING_SENT &&
-            s.forwardProbeConfirmed &&
-            !prefs.forwardProbeAcked
-        forwardAck.visibility = if (canAck) View.VISIBLE else View.GONE
+        // No acknowledgement button: forwarding arms itself once the node
+        // confirms the test payment. See the arming block in ForwardEngine.
+        forwardAck.visibility = View.GONE
     }
 
     /** Never the word "sent" before a peer has taken the transaction. */
@@ -810,6 +841,26 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_START_MINING = "start_mining"
+
+        /**
+         * Fleet provisioning extras, honoured in DEBUG BUILDS ONLY.
+         *
+         * Setting a forwarding address normally requires a device unlock,
+         * because that address is the single most attack-worthy value in the
+         * app: change it and every future reward silently goes elsewhere. That
+         * gate is right for a phone someone carries, and useless for a rack of
+         * fleet devices an operator already has a shell on -- anyone able to
+         * send this intent could equally read the app's private storage.
+         *
+         * Restricting it to debuggable builds is what keeps the two cases
+         * apart. The release APK, which is what an ordinary user installs,
+         * does not contain this path at all: BuildConfig.DEBUG is a compile
+         * time constant, so the body below is removed by the optimiser.
+         *
+         *   am start -n org.pcoin.miner/.MainActivity          *     --ei provision_percent 20          *     --es provision_forward_address pc1q...
+         */
+        const val EXTRA_PROVISION_PERCENT = "provision_percent"
+        const val EXTRA_PROVISION_FORWARD = "provision_forward_address"
 
         /**
          * Last-resort ADB fallback -- deliberately short.

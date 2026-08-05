@@ -416,15 +416,27 @@ class ForwardEngine(context: Context, private val node: NodeController) {
             return
         }
 
-        // Both halves are facts, not readings: the user pressed the button, and
-        // the node reported six confirmations at the time it did.
-        if (state == ForwardState.PROBING_SENT &&
-            prefs.forwardProbeAcked &&
-            prefs.forwardProbeConfirmed
-        ) {
+        // Arming is automatic once the node has confirmed the test payment.
+        //
+        // This used to also require a human "I received it". That was dropped
+        // deliberately: the operator watches the destination wallet anyway, and
+        // payments that stop arriving are noticed within minutes, so the tap
+        // bought a one-off confirmation at the cost of every device needing
+        // someone physically at it before it could forward anything.
+        //
+        // What is LOST by not asking, stated plainly so nobody assumes it is
+        // still covered: a confirmed probe proves the transaction reached the
+        // chain paying that script. It does NOT prove anyone holds the key. A
+        // mistyped-but-valid address has a good checksum, passes validateaddress
+        // and confirms identically. The 1 PCN probe is still sent and still has
+        // to confirm, so it remains a live canary for the build/sign/broadcast
+        // path and for an address the network rejects -- but "these coins are
+        // spendable by me" is now the operator's observation, not something this
+        // code establishes.
+        if (state == ForwardState.PROBING_SENT && prefs.forwardProbeConfirmed) {
             prefs.forwardState = ForwardState.ARMED
             state = ForwardState.ARMED
-            Log.i(TAG, "forwarding armed")
+            Log.i(TAG, "forwarding armed (probe confirmed)")
         }
 
         val destination = prefs.forwardAddress

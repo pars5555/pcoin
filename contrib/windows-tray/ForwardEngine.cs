@@ -670,13 +670,29 @@ namespace PCoinTray
                 return;
             }
 
-            // Both halves are facts, not readings: the user pressed the button,
-            // and the node reported six confirmations at the time it did.
-            if (state == ForwardState.PROBING_SENT && _store.ProbeAcked && _store.ProbeConfirmed)
+            // Arming is automatic once the node has confirmed the test payment.
+            //
+            // This used to also require a human "I received it". That was dropped
+            // deliberately: on a fleet the operator watches the destination
+            // wallet anyway, and a payment that stops arriving is noticed within
+            // minutes, so the click bought a one-off confirmation at the cost of
+            // every machine needing someone physically at it before it could
+            // forward anything.
+            //
+            // What is LOST by not asking, stated plainly so nobody assumes it is
+            // still covered: a confirmed probe proves the transaction reached the
+            // chain paying that script. It does NOT prove anyone holds the key.
+            // A mistyped-but-valid address has a good checksum, passes
+            // validateaddress and confirms identically. The 1 PCN probe is still
+            // sent and still has to confirm, so it remains a live canary for the
+            // build/sign/broadcast path and for an address the network rejects --
+            // but "these coins are spendable by me" is now the operator's
+            // observation, not something this code establishes.
+            if (state == ForwardState.PROBING_SENT && _store.ProbeConfirmed)
             {
                 _store.State = ForwardState.ARMED;
                 state = ForwardState.ARMED;
-                Log("forwarding armed");
+                Log("forwarding armed (probe confirmed)");
             }
 
             string destination = _store.Address;

@@ -220,7 +220,6 @@ namespace PCoinTray
         readonly TextBlock _fwdError = new TextBlock();
         readonly TextBlock _fwdLast = new TextBlock();
         readonly Button _fwdManage = new Button();
-        readonly Button _fwdAck = new Button();
         readonly Button _fwdCopyTxid = new Button();
 
         readonly Action<int> _setPercent;   // 0 = stop
@@ -614,15 +613,8 @@ namespace PCoinTray
             _fwdManage.Click += (s, e) => { if (_openForward != null) _openForward(); };
             row.Children.Add(_fwdManage);
 
-            _fwdAck.Content = "I received it";
-            _fwdAck.Padding = new Thickness(12, 6, 12, 6);
-            _fwdAck.FontSize = 12;
-            _fwdAck.Margin = new Thickness(8, 0, 0, 0);
-            _fwdAck.Cursor = Cursors.Hand;
-            StyleButton(_fwdAck, true);
-            _fwdAck.Click += (s, e) => { if (_ackProbe != null) _ackProbe(); };
-            row.Children.Add(_fwdAck);
-
+            // No "I received it" button: forwarding arms itself once the node
+            // confirms the test payment.
             _fwdCopyTxid.Content = "Copy transaction ID";
             _fwdCopyTxid.Padding = new Thickness(12, 6, 12, 6);
             _fwdCopyTxid.FontSize = 12;
@@ -725,10 +717,6 @@ namespace PCoinTray
             _fwdCopyTxid.Visibility = hasLast ? Visibility.Visible : Visibility.Collapsed;
 
             _fwdManage.Content = holding ? "Set forwarding address" : "Change or stop forwarding";
-            // Only openable once the node itself has seen the test payment six
-            // deep. A user cannot acknowledge a payment that has not landed.
-            _fwdAck.Visibility = (f.State == ForwardState.PROBING_SENT && f.ProbeConfirmed && !f.ProbeAcked)
-                ? Visibility.Visible : Visibility.Collapsed;
         }
 
         /**

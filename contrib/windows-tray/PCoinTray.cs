@@ -240,7 +240,6 @@ namespace PCoinTray
         readonly ToolStripMenuItem _miForward = new ToolStripMenuItem("") { Enabled = false, Visible = false };
         readonly ToolStripMenuItem _miForwardTo = new ToolStripMenuItem("") { Enabled = false, Visible = false };
         readonly ToolStripMenuItem _miForwardLast = new ToolStripMenuItem("") { Enabled = false, Visible = false };
-        ToolStripMenuItem _miForwardAck;
         ToolStripMenuItem _miPhrase;
         ToolStripMenuItem _miOff;
         readonly Dictionary<int, ToolStripMenuItem> _miPercent = new Dictionary<int, ToolStripMenuItem>();
@@ -369,12 +368,9 @@ namespace PCoinTray
             menu.Items.Add(_miForward);
             menu.Items.Add(_miForwardTo);
             menu.Items.Add(_miForwardLast);
-            _miForwardAck = new ToolStripMenuItem("I received it", null, (s, e) => OnAckProbe())
-            {
-                Visible = false,
-                Font = new Font(SystemFonts.MenuFont, FontStyle.Bold)
-            };
-            menu.Items.Add(_miForwardAck);
+            // No "I received it" item: forwarding arms itself once the node
+            // confirms the test payment. See ForwardEngine's arming block for
+            // what that trades away.
             menu.Items.Add(new ToolStripSeparator());
 
             _miOff = new ToolStripMenuItem("Not mining", null, (s, e) => SetMode(0));
@@ -1055,9 +1051,6 @@ namespace PCoinTray
                                       "  -  " + f.LastTxid;
             }
 
-            // Only openable once the node itself has seen the test payment six
-            // deep. A user cannot acknowledge a payment that has not landed.
-            _miForwardAck.Visible = f.State == ForwardState.PROBING_SENT && f.ProbeConfirmed && !f.ProbeAcked;
         }
 
         /**
