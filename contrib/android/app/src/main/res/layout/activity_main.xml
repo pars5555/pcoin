@@ -76,6 +76,37 @@
                 android:text="@string/wallet_dismiss" />
         </LinearLayout>
 
+        <!-- ============================ status ============================ -->
+
+        <!--
+          Directly under the recovery-phrase section, above permissions. This is
+          the number people open the app to read, so it should not be below a
+          permissions block that is usually satisfied and rarely interesting.
+          The start/stop button stays with the other controls further down.
+        -->
+        <TextView
+            android:id="@+id/gate_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/status_stopped"
+            android:textSize="16sp" />
+
+        <TextView
+            android:id="@+id/hashrate"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/dash"
+            android:textSize="40sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/label_hashrate"
+            android:textSize="13sp" />
+
         <!-- ========================= permissions ========================== -->
 
         <View
@@ -171,32 +202,6 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="@string/perm_open_settings" />
-
-
-        <!-- ============================ status ============================ -->
-
-        <TextView
-            android:id="@+id/gate_status"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:text="@string/status_stopped"
-            android:textSize="16sp" />
-
-        <TextView
-            android:id="@+id/hashrate"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="@string/dash"
-            android:textSize="40sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/label_hashrate"
-            android:textSize="13sp" />
 
         <!-- =========================== controls =========================== -->
 

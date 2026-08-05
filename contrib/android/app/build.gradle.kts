@@ -6,6 +6,10 @@ plugins {
 }
 
 android {
+    // Needed for BuildConfig.DEBUG, which gates the fleet provisioning path in
+    // MainActivity. AGP 8 stopped generating BuildConfig unless asked.
+    buildFeatures { buildConfig = true }
+
     namespace = "org.pcoin.miner"
     compileSdk = 34
 
@@ -13,8 +17,18 @@ android {
         applicationId = "org.pcoin.miner"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        // BUMP THIS ON EVERY BUILD THAT LEAVES THIS MACHINE.
+        //
+        // It stayed at 1 across several different APKs, so two phones running
+        // genuinely different binaries both reported 0.1.0/1 and nothing could
+        // tell them apart. One of them sat on a build that predated the "Skip
+        // for now" button and was stuck in setup, mining nothing, for a day --
+        // invisible precisely because the version said it was up to date.
+        //
+        // Comparing APK size or sha256 is the reliable check; the version is
+        // only as good as this line.
+        versionCode = 2
+        versionName = "0.2.0"
 
         // Deliberately NO ndk.abiFilters here: the prebuilt PCoin binaries only
         // exist for arm64-v8a and filtering must never drop that ABI.
@@ -37,6 +51,23 @@ android {
     val ksPath = signingProps.getProperty("storeFile") ?: System.getenv("PCOIN_KEYSTORE")
     val ksPass = signingProps.getProperty("storePassword") ?: System.getenv("PCOIN_KEYSTORE_PASSWORD")
 
+    // The DEBUG key matters just as much as the release one here, because the
+    // fleet phones run debug-signed builds and their wallets live in app data.
+    //
+    // Gradle's default is ~/.android/debug.keystore. That file was lost and
+    // silently regenerated on 2026-08-04, which produced a build Android refused
+    // to install over the existing one ("signatures do not match"). The only way
+    // through would have been an uninstall, and an uninstall destroys the wallet
+    // -- on a phone with no recovery phrase, that is the coins.
+    //
+    // So the debug key is pinned to a copy of the ORIGINAL keystore kept outside
+    // the repo, exactly like the release key. If it is ever missing, the build
+    // still works but silently falls back to the regenerated default, so verify
+    // the signer before shipping:
+    //   apksigner verify --print-certs app-debug.apk
+    // must report SHA-256 de1fd65053b2448d6541c01c045b599d68344e71f82eb854895ee5cea8a510d8
+    val dbgPath = signingProps.getProperty("debugStoreFile") ?: System.getenv("PCOIN_DEBUG_KEYSTORE")
+
     signingConfigs {
         if (ksPath != null && ksPass != null && file(ksPath).exists()) {
             create("release") {
@@ -44,6 +75,14 @@ android {
                 storePassword = ksPass
                 keyAlias = signingProps.getProperty("keyAlias") ?: "pcoin"
                 keyPassword = signingProps.getProperty("keyPassword") ?: ksPass
+            }
+        }
+        if (dbgPath != null && file(dbgPath).exists()) {
+            getByName("debug") {
+                storeFile = file(dbgPath)
+                storePassword = signingProps.getProperty("debugStorePassword") ?: "android"
+                keyAlias = signingProps.getProperty("debugKeyAlias") ?: "androiddebugkey"
+                keyPassword = signingProps.getProperty("debugKeyPassword") ?: "android"
             }
         }
     }
