@@ -63,18 +63,11 @@ test/functional/        upstream's framework — largely BROKEN against PCoin (�
 
 Outside the repo, and this matters more than anything else in this section:
 
-* **The Android app is not in git at all.** `git ls-files | grep -i android`
-  returns nothing. ~12,000 lines of Kotlin across ~33 `.kt` files, including all
-  the wallet crypto, live only at
-  `C:\Users\pars\AppData\Local\Temp\claude\d--xampp-htdocs-pcoin\093b1752-c717-4849-ad4e-05a227aebc87\scratchpad\pcoin-android-app`
-  — a session-scoped temp directory with no version control of any kind.
-  Treat that directory as irreplaceable. (The line count moves; the app is under
-  active edit. It is the order of magnitude that matters.)
-* **Most of the Windows tray app is untracked.** `git ls-files contrib/windows-tray`
-  returns exactly five files (`.gitignore`, `PCoinTray.cs`, `README.md`,
-  `build.bat`, `install.ps1`). Untracked: `Bip39Wordlist.cs`, `MinerWindow.cs`,
-  `PCoinTray.manifest`, `SeedCrypto.cs`, `SeedForms.cs`, `SeedKeys.cs`,
-  `SeedRpc.cs`, `SeedSelfTest.cs`, `SeedStore.cs`, `SeedWallet.cs`.
+* ~~The Android app is not in git at all.~~ **Fixed.** It lives at
+  `contrib/android` and is tracked. The scratchpad copy it used to live in is
+  gone; do not go looking for it.
+* ~~Most of the Windows tray app is untracked.~~ **Fixed.** Every source
+  `build.bat` compiles is tracked, so a fresh clone can build the tray.
   `build.bat:31-52` compiles a fixed source list naming nine of those ten files
   plus the manifest. **A fresh clone cannot build the tray app**, and
   `README.md:102-108` tells a fresh cloner to just run `build.bat`.
@@ -238,12 +231,40 @@ NuGet.** Remember §2: nine of the ten sources are untracked, so this only build
 in the working tree, not from a clone.
 
 ### Android app
-From the scratchpad app directory (AGP 8.5.1 / Kotlin 2.0.21 / wrapper 8.11.1,
-`minSdk 24`, `targetSdk 34`, `applicationId org.pcoin.miner`):
+From `contrib/android` (AGP 8.5.1 / Kotlin 2.0.21 / wrapper 8.11.1,
+`minSdk 24`, `targetSdk 34`).
+
+**TWO APPS, ONE SOURCE TREE.** Product flavours on the `role` dimension:
+
+| flavour | applicationId | what it is |
+|---|---|---|
+| `miner` | `am.pc.pcoinminer` | node + wallet + mining |
+| `wallet` | `am.pc.pcoinwallet` | node + wallet, mining compiled out |
+
 ```cmd
-gradlew.bat testDebugUnitTest --tests "org.pcoin.miner.wallet.*"
-gradlew.bat assembleDebug
+gradlew.bat testMinerDebugUnitTest --tests "org.pcoin.miner.wallet.*"
+gradlew.bat assembleMinerDebug     :: app/build/outputs/apk/miner/debug/
+gradlew.bat assembleWalletDebug    :: app/build/outputs/apk/wallet/debug/
 ```
+
+Bare `assembleDebug` no longer exists — the flavour split replaced it, and the
+output path moved. Anything that hardcodes `apk/debug/app-debug.apk` is stale.
+
+Three traps that follow from the flavours and the rename:
+
+1. **`namespace` is still `org.pcoin.miner` for both flavours.** It is only the
+   R/BuildConfig package. `applicationId` is the app identity.
+2. **`uiautomator` reports resource-ids under the APPLICATION ID**, not the
+   namespace — so a fleet script matching `org.pcoin.miner:id/…` silently matches
+   nothing and reads as "no buttons on screen". Match any package prefix.
+3. **The debug signing key is pinned** via `signing.properties`
+   (`debugStoreFile`). Gradle's default `~/.android/debug.keystore` was lost and
+   silently regenerated once, producing a build Android refused to install over
+   the existing one. Verify before shipping — `apksigner verify --print-certs`
+   must report `de1fd650…`.
+
+Changing either `applicationId` again means an uninstall on every phone, and an
+uninstall destroys the wallet in app-private data.
 
 > **Never run bare `gradlew.bat testDebugUnitTest`.** The debug unit-test task
 > includes `app/src/test/java/org/pcoin/miner/ForwardSandboxE2ETest.kt`, which has
@@ -409,10 +430,12 @@ allocating change).
   all — the wallet file *is* the coins.**
 
 **Backups.** `D:\pc.am\wallet-backups`. Produced by
-`scratchpad/backup_phones.ps1` (`run-as org.pcoin.miner … backupwallet`, base64
+`scratchpad/backup_phones.ps1` (`run-as am.pc.pcoinminer … backupwallet`, base64
 out over `adb exec-out`, `[IO.File]::WriteAllBytes`, then delete the temp file on
 the device) and `scratchpad/pull_pc_wallets.py` (same shape via `run_remote.py`,
-decoded and written `"wb"` in Python).
+decoded and written `"wb"` in Python). Both discover devices from `adb devices`
+rather than a hardcoded list — the old fixed list named a phone that had left the
+fleet and omitted two that joined it, so it backed up neither.
 
 > **Standing rule: a backup is not a backup until it has been loaded.**
 > Before anything destructive — an uninstall, a key rotation, a datadir wipe, a

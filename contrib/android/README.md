@@ -27,16 +27,36 @@ sdk.dir=C\:\\path\\to\\Android\\Sdk
 
 ## Building
 
+This module builds **two apps** from one source tree, as product flavours on the
+`role` dimension:
+
+| flavour | applicationId | what it is |
+|---|---|---|
+| `miner` | `am.pc.pcoinminer` | node + wallet + mining |
+| `wallet` | `am.pc.pcoinwallet` | node + wallet, mining compiled out |
+
 ```
-gradlew.bat :app:assembleDebug
+gradlew.bat :app:assembleMinerDebug     REM app/build/outputs/apk/miner/debug/
+gradlew.bat :app:assembleWalletDebug    REM app/build/outputs/apk/wallet/debug/
 ```
 
-**Do not run a bare `gradlew.bat testDebugUnitTest`.** The suite includes an
+There is no bare `assembleDebug` any more, and the output path gained a flavour
+directory. Anything still pointing at `apk/debug/app-debug.apk` is stale.
+
+**Do not run a bare `gradlew.bat testMinerDebugUnitTest`.** The suite includes an
 end-to-end forwarding test that drives a real phone over adb. Scope it:
 
 ```
-gradlew.bat :app:testDebugUnitTest --tests "org.pcoin.miner.wallet.*"
+gradlew.bat :app:testMinerDebugUnitTest --tests "org.pcoin.miner.wallet.*"
 ```
+
+`namespace` stays `org.pcoin.miner` for both flavours — it is only the
+R/BuildConfig package, which is why the test filter above is unchanged.
+`applicationId` is what makes them different apps.
+
+Note for anything that automates the UI: **uiautomator reports resource-ids under
+the applicationId**, so they are `am.pc.pcoinminer:id/…`, not the namespace.
+Matching the wrong prefix finds nothing and looks like an empty screen.
 
 ## Signing
 
