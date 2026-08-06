@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Wallet copy. Overrides by NAME beat the values in src/main at merge time, so
+  the miner's own strings are untouched.
+
+  Non-ASCII characters are written as XML entities rather than literal bytes,
+  because this file is edited by tooling that has already mangled the encoding
+  once. Rules this copy follows:
+    plain language, no jargon: "Available to spend", not "confirmed balance"
+    never say a number the app has not actually read
+    maturity in blocks, never a time estimate
+    a failed check is not an error to alarm about, it is simply not an answer
+-->
+<resources>
+    <string name="app_name">PCoin Wallet</string>
+
+    <string name="wallet_title">My PCoin</string>
+    <string name="wallet_available">Available to spend</string>
+
+    <!-- Placeholder before the first successful read. Never 0.00000000: a
+         balance nobody has read is not a balance of zero. -->
+    <string name="wallet_amount_unknown">&#8212;</string>
+
+    <string name="wallet_refresh">Refresh balance</string>
+    <string name="wallet_refresh_busy">Checking&#8230;</string>
+
+    <string name="wallet_checked_never">Not checked yet</string>
+    <string name="wallet_checked_syncing">Your balance will appear once this phone has caught up</string>
+    <string name="wallet_checked_just_now">Updated just now</string>
+    <string name="wallet_checked_ago">Updated %1$s ago</string>
+    <string name="wallet_check_failed">Could not check just now. Your coins are safe; this is only the reading.</string>
+
+    <string name="wallet_note_pending">%1$s arriving, not yet confirmed</string>
+    <string name="wallet_note_immature">%1$s newly mined, spendable in about %2$d more blocks</string>
+    <string name="wallet_note_both">%1$s arriving &#183; %2$s spendable in about %3$d more blocks</string>
+
+    <string name="wallet_receive_title">Receive</string>
+    <string name="wallet_receive_hint">Share this address to be paid. It is yours and does not change.</string>
+    <string name="wallet_address_unknown">No address yet. Finish setting up your wallet.</string>
+    <string name="wallet_copy">Copy</string>
+    <string name="wallet_share">Share</string>
+    <string name="wallet_copied">Address copied</string>
+    <string name="wallet_share_subject">My PCoin address</string>
+
+    <string name="wallet_backup_title">Write down your recovery phrase</string>
+    <string name="wallet_backup_body">Twelve words are the only way to get this wallet back if the phone is lost or the app is removed.</string>
+    <string name="wallet_backup_action">Show my phrase</string>
+
+    <!-- Node state in plain words. The mining gate reads "Paused: switched off"
+         permanently in this build, so none of it is used here. -->
+    <string name="wallet_node_starting">Starting&#8230;</string>
+    <string name="wallet_node_syncing">Catching up with the network, %1$d%%</string>
+    <string name="wallet_node_no_peers">Looking for the network&#8230;</string>
+    <string name="wallet_node_ready">Up to date</string>
+    <string name="wallet_node_stopped">Not running</string>
+
+    <string name="wallet_chain_line">Block %1$d &#183; %2$d peers</string>
+    <string name="wallet_chain_line_unknown">Not connected yet</string>
+</resources>

@@ -1,0 +1,20 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Same style NAME as src/main, so AndroidManifest needs no flavour override:
+  a resource defined in a flavour source set wins over main at merge time.
+
+  DayNight is kept, which is what makes values-night/colors.xml apply. The
+  window background is set here rather than on the root view so there is no
+  white flash before the first frame.
+-->
+<resources>
+    <style name="Theme.PCoinMiner" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:windowBackground">@color/canvas</item>
+        <item name="android:colorBackground">@color/canvas</item>
+        <item name="android:textColorPrimary">@color/ink</item>
+        <item name="android:textColorSecondary">@color/ink_muted</item>
+        <item name="colorAccent">@color/brand</item>
+    </style>
+</resources>
+
+

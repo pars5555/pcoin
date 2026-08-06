@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Wallet palette, light.
+
+  Explicit per-theme values, never alpha over a background: a translucent tint
+  looks different on every surface it lands on and cannot be checked.
+
+  Contrast ratios are computed against the surface each colour is actually drawn
+  on, not against white in the abstract. WCAG AA wants 4.5:1 for body text and
+  3:1 for large text and non-text indicators.
+
+    ink        #14181F on surface #FFFFFF   16.8:1   body, and every real amount
+    ink_muted  #55606E on surface #FFFFFF    6.7:1   labels, secondary lines
+    ink_muted  #55606E on canvas  #FAF7F2    6.3:1   same text on the page
+    brand      #0D5C63 on surface #FFFFFF    6.9:1   links, ghost button text
+    on_brand   #FFFFFF on brand   #0D5C63    6.9:1   primary button label
+    good       #1E7A4B on surface #FFFFFF    4.6:1
+    wait       #8A5A00 on tint_wait #FDF0D5  4.9:1
+    alert      #B3261E on tint_alert #FBE6E4 5.1:1
+
+  ink_muted doubles as the "not known yet" colour deliberately. An unknown
+  balance is not an error and must not be red. It is simply not yet answered.
+-->
+<resources>
+    <color name="canvas">#FAF7F2</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="hairline">#DDD5C8</color>
+
+    <color name="ink">#14181F</color>
+    <color name="ink_muted">#55606E</color>
+
+    <color name="brand">#0D5C63</color>
+    <color name="on_brand">#FFFFFF</color>
+
+    <color name="good">#1E7A4B</color>
+    <color name="wait">#8A5A00</color>
+    <color name="alert">#B3261E</color>
+
+    <color name="tint_wait">#FDF0D5</color>
+    <color name="tint_alert">#FBE6E4</color>
+    <color name="tint_neutral">#F0EDE6</color>
+</resources>

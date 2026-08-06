@@ -1,0 +1,11 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<!-- Card surface: rounded, hairline stroke. No elevation - a shadow needs a
+     Material dependency this project does not have, and a 1dp stroke reads
+     just as clearly on both themes. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="@color/surface" />
+    <corners android:radius="18dp" />
+    <stroke android:width="1dp" android:color="@color/hairline" />
+</shape>
+
+

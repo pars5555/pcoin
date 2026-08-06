@@ -21,7 +21,7 @@ object Fmt {
 
     /** Coin amounts, as reported by the wallet. -1 means "not known yet". */
     fun coins(v: Double): String =
-        if (v.isNaN() || v < 0) "--" else String.format(Locale.US, "%.8f PC", v)
+        if (v.isNaN() || v < 0) "--" else String.format(Locale.US, "%.8f PCN", v)
 
     /**
      * Coin amounts held in satoshi. Everything on the forwarding path works in
@@ -30,7 +30,7 @@ object Fmt {
      * point is an assertion that can be off by a rounding error.
      */
     fun coinsSat(sat: Long): String =
-        if (sat < 0) "--" else String.format(Locale.US, "%d.%08d PC", sat / 100_000_000L, sat % 100_000_000L)
+        if (sat < 0) "--" else String.format(Locale.US, "%d.%08d PCN", sat / 100_000_000L, sat % 100_000_000L)
 
     /**
      * A rough wall-clock duration, for "about 10 h from now" style estimates.

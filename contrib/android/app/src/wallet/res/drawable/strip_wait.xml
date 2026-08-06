@@ -1,0 +1,17 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<!-- Attention strip: 4dp rule on the leading edge over a tinted fill. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/tint_wait" />
+            <corners android:radius="12dp" />
+        </shape>
+    </item>
+    <item android:width="4dp" android:gravity="start|fill_vertical">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/wait" />
+        </shape>
+    </item>
+</layer-list>
+
+

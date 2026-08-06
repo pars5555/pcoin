@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Wallet palette, dark.
+
+  Not the light palette inverted. Saturated colours that pass on white fail on a
+  dark surface, so brand, good, wait and alert are all lifted, and the tints
+  become dark washes rather than pale ones.
+
+    ink        #EAF0F6 on surface #1A2029   13.9:1   body, and every real amount
+    ink_muted  #9AA7B4 on surface #1A2029    6.4:1   labels, secondary lines
+    ink_muted  #9AA7B4 on canvas  #10141A    7.5:1   same text on the page
+    brand      #4ECDC4 on surface #1A2029    9.4:1   links, ghost button text
+    on_brand   #06212A on brand   #4ECDC4    9.6:1   primary button label
+    good       #5FD39A on surface #1A2029    9.6:1
+    wait       #E8B44C on tint_wait #2E2718  6.9:1
+    alert      #F2837A on tint_alert #33201F 6.6:1
+
+  on_brand is near-black here on purpose. White on a mint fill is 1.9:1 and
+  unreadable, which is the classic dark-mode button mistake.
+-->
+<resources>
+    <color name="canvas">#10141A</color>
+    <color name="surface">#1A2029</color>
+    <color name="hairline">#39434F</color>
+
+    <color name="ink">#EAF0F6</color>
+    <color name="ink_muted">#9AA7B4</color>
+
+    <color name="brand">#4ECDC4</color>
+    <color name="on_brand">#06212A</color>
+
+    <color name="good">#5FD39A</color>
+    <color name="wait">#E8B44C</color>
+    <color name="alert">#F2837A</color>
+
+    <color name="tint_wait">#2E2718</color>
+    <color name="tint_alert">#33201F</color>
+    <color name="tint_neutral">#222A33</color>
+</resources>
