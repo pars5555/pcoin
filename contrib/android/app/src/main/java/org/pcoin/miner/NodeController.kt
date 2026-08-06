@@ -674,7 +674,7 @@ class NodeController(context: Context) {
     private fun bestImmature(wallet: String): Long = try {
         val list = rpc.call(
             "listtransactions",
-            JSONArray().put("*").put(IN_FLIGHT_SCAN).put(0).put(true),
+            JSONArray().put("*").put(IMMATURE_SCAN).put(0).put(true),
             wallet = wallet,
             readTimeoutMs = STATS_TIMEOUT_MS,
         ) as? JSONArray
@@ -888,6 +888,22 @@ class NodeController(context: Context) {
          * generous window costs nothing in the normal case.
          */
         private const val IN_FLIGHT_SCAN = 50
+
+        /**
+         * How far back to look for an immature coinbase.
+         *
+         * Deeper than [IN_FLIGHT_SCAN] because it is answering a different
+         * question. An in-flight transaction is by definition the most recent
+         * thing in the wallet; an immature coinbase can be up to 100 blocks old
+         * and every payment received since sits in front of it. Measured on the
+         * treasury wallet: 50 entries found nothing while the balance genuinely
+         * held 50 PCN immature, 100 found it. 200 leaves room for the busier
+         * wallet this becomes as the fleet grows.
+         *
+         * Only ever requested when the immature balance is above zero, so a
+         * wallet with nothing maturing never pays for it.
+         */
+        private const val IMMATURE_SCAN = 200
 
         /** Depth at which a coinbase becomes spendable. Consensus, not a guess. */
         private const val COINBASE_SPENDABLE_DEPTH = 101L
