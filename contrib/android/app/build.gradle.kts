@@ -55,12 +55,19 @@ android {
     productFlavors {
         create("miner") {
             dimension = "role"
-            // MUST NOT CHANGE. Every fleet phone has a wallet in this app's
-            // private data, and Android treats a different applicationId as a
-            // different app: the only way to "upgrade" across one is an
-            // uninstall, and an uninstall destroys the wallet. On a phone with
-            // no recovery phrase that is the coins.
-            applicationId = "org.pcoin.miner"
+            // Renamed from org.pcoin.miner on 2026-08-06, deliberately and once.
+            //
+            // Android treats a changed applicationId as a DIFFERENT app, so
+            // every phone had to be uninstalled -- which destroys the wallet in
+            // app-private data. That was acceptable only because it was done as
+            // a planned migration: every wallet, seed blob and prefs file was
+            // backed up to D:\pc.am\wallet-backups first, the treasury seed had
+            // already been restored onto a separate phone, and the coins left
+            // behind were immature coinbase worth a few hundred PCN.
+            //
+            // It is NOT free to do again. Once these phones have mined for a
+            // day they hold real balances, and there is no second free window.
+            applicationId = "am.pc.pcoinminer"
 
             // BUMP THIS ON EVERY BUILD THAT LEAVES THIS MACHINE.
             //
@@ -73,8 +80,11 @@ android {
             //
             // Comparing APK size or sha256 is the reliable check; the version is
             // only as good as this line.
-            versionCode = 2
-            versionName = "0.2.0"
+            // Reset to 1 with the new applicationId: this is a new app as far as
+            // Android is concerned, and carrying 2 over would claim an upgrade
+            // history it does not have.
+            versionCode = 1
+            versionName = "0.3.0"
 
             buildConfigField("boolean", "MINING", "true")
             // The miner keeps 9443. This half of the change is a provable no-op
