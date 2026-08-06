@@ -126,6 +126,16 @@
     <string name="send_err_syncing">Wait until this phone has caught up before sending.</string>
     <string name="send_busy_back">Hold on &#8212; finishing this payment.</string>
 
+    <!-- The device unlock in front of sending. Wording is about confirming a
+         payment, not about "security", because that is what the person is
+         actually being asked. -->
+    <string name="send_gate_title">Confirm this payment</string>
+    <string name="send_gate_subtitle">Unlock to send your PCoin</string>
+    <string name="send_gate_cancelled">Not sent. You cancelled the unlock.</string>
+    <string name="send_gate_failed">Not sent. The unlock did not succeed.</string>
+    <string name="send_gate_unavailable">This phone has no screen lock, so nothing can stand between someone holding it and sending your coins. Set a PIN or pattern in Android settings.</string>
+    <string name="send_lock_unknown">Not sent: %1$s\n\nThis phone would not say whether it has a screen lock, and sending without knowing that is not something this app will do. Try again, or restart the phone.</string>
+
     <!-- History. Maturity is always in blocks: this chain's spacing is not
          constant, so any time estimate would be a guess dressed as a fact. -->
     <string name="wallet_history">History</string>

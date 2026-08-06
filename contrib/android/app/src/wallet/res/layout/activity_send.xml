@@ -37,6 +37,21 @@
             android:textColor="@color/ink_muted"
             android:textSize="15sp" />
 
+        <!-- Shown only when this phone cannot put a device unlock in front of
+             sending, or could not be asked. Stated here, before anything is
+             typed, because it is a property of the phone rather than of the
+             payment. -->
+        <TextView
+            android:id="@+id/send_gate_notice"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/strip_wait"
+            android:padding="12dp"
+            android:textColor="@color/ink"
+            android:textSize="13sp"
+            android:visibility="gone" />
+
         <!-- ========================== compose ========================== -->
 
         <LinearLayout

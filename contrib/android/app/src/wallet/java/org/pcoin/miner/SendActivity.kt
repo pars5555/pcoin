@@ -7,9 +7,12 @@ import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.content.Intent
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import org.pcoin.miner.wallet.SeedGate
+import org.pcoin.miner.wallet.SeedStore
 
 /**
  * Send PCoin.
@@ -41,6 +44,7 @@ class SendActivity : AppCompatActivity() {
     private val ui = Handler(Looper.getMainLooper())
 
     private lateinit var available: TextView
+    private lateinit var gateNotice: TextView
     private lateinit var composeCard: LinearLayout
     private lateinit var addressField: EditText
     private lateinit var amountField: EditText
@@ -67,12 +71,28 @@ class SendActivity : AppCompatActivity() {
     private var prepared: ForwardEngine.Prepared? = null
     private var busy = false
 
+    private lateinit var gate: SeedGate
+    private lateinit var seedStore: SeedStore
+
+    /** True when there is both a device lock AND a Keystore key to bind it to. */
+    private var gateAvailable = false
+
+    /**
+     * Non-null when the platform would not say whether a lock exists.
+     *
+     * Held separately from `gateAvailable = false` because the two mean opposite
+     * things: no lock is a known fact this screen states and works around, while
+     * an unanswered query is an unknown that must stop the send.
+     */
+    private var lockCheckFailed: String? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
         setContentView(R.layout.activity_send)
 
         available = findViewById(R.id.send_available)
+        gateNotice = findViewById(R.id.send_gate_notice)
         composeCard = findViewById(R.id.compose_card)
         addressField = findViewById(R.id.address_field)
         amountField = findViewById(R.id.amount_field)
@@ -113,7 +133,43 @@ class SendActivity : AppCompatActivity() {
         }
         doneButton.setOnClickListener { finish() }
 
+        seedStore = SeedStore(this)
+        gate = SeedGate(this)
+        gateAvailable = try {
+            // Both halves are required. A device lock with no Keystore-backed
+            // key behind it gives a prompt that gates nothing, and this screen
+            // says so rather than showing one.
+            SeedGate.deviceLockAvailable(this) && seedStore.exists()
+        } catch (e: SeedGate.LockCheckFailed) {
+            lockCheckFailed = e.message
+            false
+        }
+
         renderAvailable()
+        renderGateNotice()
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        // The API 24..29 path returns through here; without this the credential
+        // confirmation completes and nothing ever hears about it.
+        if (gate.onActivityResult(requestCode, resultCode)) return
+        @Suppress("DEPRECATION")
+        super.onActivityResult(requestCode, resultCode, data)
+    }
+
+    /**
+     * Says, before the user commits to anything, whether this send can be
+     * gated at all. Stating it up front rather than at the moment of confirming
+     * is deliberate: it is a property of the phone, not of this payment.
+     */
+    private fun renderGateNotice() {
+        val text = when {
+            lockCheckFailed != null -> getString(R.string.send_lock_unknown, lockCheckFailed)
+            !gateAvailable -> getString(R.string.send_gate_unavailable)
+            else -> null
+        }
+        gateNotice.text = text.orEmpty()
+        gateNotice.visibility = if (text == null) View.GONE else View.VISIBLE
     }
 
     /**
@@ -246,7 +302,68 @@ class SendActivity : AppCompatActivity() {
             else getString(R.string.send_review_total, Fmt.coinsSat(p.paidSat + p.feeSat))
     }
 
+    /**
+     * Device unlock, then broadcast.
+     *
+     * The action that moves the coins gets at least the protection that
+     * READING the recovery phrase already has. Without this, the Keystore work
+     * guarded a convenience copy of twelve words while anyone who got the phone
+     * past its lock screen once could tap Send, All, Confirm.
+     *
+     * Three states, and the difference between the last two is the point:
+     *
+     *   gate available     prompt, and broadcast only on success.
+     *   no device lock     broadcast, having said plainly on screen that
+     *                      nothing can gate it. A prompt with nothing behind it
+     *                      is theatre, and refusing outright would brick sending
+     *                      on a phone with no PIN.
+     *   lock check FAILED  refuse. "I could not ask whether this device has a
+     *                      lock" is not "it has none" -- silently taking the
+     *                      ungated path on an unknown is a security control
+     *                      degrading without anyone noticing.
+     *
+     * Same shape as ForwardActivity.authorizeAndStore, deliberately: changing
+     * where coins go and actually sending them deserve the same treatment.
+     */
     private fun onConfirm() {
+        if (prepared == null || busy) return
+
+        lockCheckFailed?.let {
+            reviewError.text = getString(R.string.send_lock_unknown, it)
+            reviewError.visibility = View.VISIBLE
+            return
+        }
+        if (!gateAvailable) {
+            broadcast()
+            return
+        }
+
+        reviewError.visibility = View.GONE
+        gate.authorize(
+            title = getString(R.string.send_gate_title),
+            subtitle = getString(R.string.send_gate_subtitle),
+            gated = true,
+            // beginRead() inside the lambda, not before: on API 24..29 the
+            // Cipher.init inside it is what throws UserNotAuthenticatedException
+            // and SeedGate re-runs prepare after the unlock. Nothing is
+            // decrypted -- the phrase is not needed to send, the node holds the
+            // keys. This is the Keystore being used purely as an authorisation
+            // token, which is exactly what ForwardActivity does.
+            prepare = { seedStore.beginRead().cipher },
+            callback = object : SeedGate.Callback {
+                override fun onAuthenticated() = broadcast()
+
+                override fun onFailed(reason: String, cancelled: Boolean) {
+                    reviewError.setText(
+                        if (cancelled) R.string.send_gate_cancelled else R.string.send_gate_failed
+                    )
+                    reviewError.visibility = View.VISIBLE
+                }
+            },
+        )
+    }
+
+    private fun broadcast() {
         val p = prepared ?: return
         if (busy) return
         busy = true
