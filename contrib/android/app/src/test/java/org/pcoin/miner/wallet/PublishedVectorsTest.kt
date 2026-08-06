@@ -26,9 +26,12 @@ class PublishedVectorsTest {
     private val burnPhrase =
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
 
+    // trim() each line, matching WordList.load. See DerivationVectorsTest for
+    // why: without it a CRLF checkout puts a trailing \r on every word and these
+    // published vectors fail for a reason that has nothing to do with them.
     private fun bip39(): Bip39 = Bip39(
         File("src/main/assets/bip39/english.txt").readText()
-            .split("\n").filter { it.isNotBlank() }
+            .split("\n").map { it.trim() }.filter { it.isNotEmpty() }
     )
 
     @Test

@@ -1,1 +1,16 @@
 src/clientversion.cpp export-subst
+
+# The BIP39 wordlist is verified at load time against a SHA-256 constant
+# (Bip39.WORDLIST_SHA256), so it has to arrive byte-for-byte identical on every
+# platform. Without this, a checkout on Windows rewrites its 2048 line endings
+# to CRLF, the file grows from 13116 to 15164 bytes, the digest no longer
+# matches, and WordList.load throws CorruptWordlist -- an app that can neither
+# create nor restore a wallet, from a clean clone, with no local change to blame.
+#
+# `-text` means never convert in either direction, which is what a digest-checked
+# file needs. Marking it `text eol=lf` would be weaker: that still normalises on
+# commit and only fixes the checkout side.
+contrib/android/app/src/main/assets/bip39/english.txt -text
+
+# Same reasoning, lower stakes: golden vectors are compared literally.
+contrib/android/app/src/test/resources/qr_vectors.txt -text

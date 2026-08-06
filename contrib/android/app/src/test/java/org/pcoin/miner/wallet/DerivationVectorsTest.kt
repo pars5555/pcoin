@@ -20,8 +20,14 @@ class DerivationVectorsTest {
 
     private val wordlistFile = File("src/main/assets/bip39/english.txt")
 
+    // trim() each line, exactly as WordList.load does in production. Without it
+    // these tests are line-ending fragile: a checkout that hands over CRLF puts
+    // a trailing \r on all 2048 words and every vector below fails with a
+    // baffling diff. The real defence is the -text rule in .gitattributes;
+    // matching production's parsing here means the tests cannot disagree with
+    // the app about what a wordlist is.
     private fun bip39(): Bip39 =
-        Bip39(wordlistFile.readText().split("\n").filter { it.isNotBlank() })
+        Bip39(wordlistFile.readText().split("\n").map { it.trim() }.filter { it.isNotEmpty() })
 
     // ---------------------------------------------------------------- wordlist
 
