@@ -295,15 +295,27 @@ class RpcClient(private val dataDir: File, val port: Int = DEFAULT_RPC_PORT) {
         const val TAG = "PCoinRpc"
 
         /**
-         * PCoin mainnet RPC port. Chosen in chainparamsbase.cpp as P2P port - 1
-         * (9444 - 1), because P2P + 1 is reserved for the Tor onion listener.
+         * This build's loopback RPC port: 9443 for the miner, 9543 for the
+         * wallet.
          *
-         * Deliberately NOT overridden to some private port: if a second PCoin
-         * node is already on 9443, we want bitcoind to fail loudly at bind time
-         * rather than quietly run a second node with a second 256 MiB RandomX
-         * cache on the user's phone.
+         * 9443 is PCoin mainnet's own choice, made in chainparamsbase.cpp as
+         * P2P - 1 (9444 - 1) because P2P + 1 is the Tor onion listener.
+         *
+         * It used to be a hard constant, with the reasoning that a second node
+         * on 9443 should fail loudly at bind time rather than quietly run a
+         * second 256 MiB RandomX cache on someone's phone. That was right when
+         * one app existed. Now the miner and the wallet are two apps that may
+         * legitimately sit on one device, and loopback RPC is the ONLY thing
+         * they would contend for -- bitcoind runs with listen=0 so P2P 9444 is
+         * never bound, and datadirs, Keystore aliases and prefs are already
+         * per-package.
+         *
+         * The original concern survives as a deployment rule rather than a bind
+         * error: RandomXPowInit() runs eagerly whether a node mines or not, so
+         * co-installing really does cost two ~256 MiB caches. Do not co-install
+         * on a small phone.
          */
-        const val DEFAULT_RPC_PORT = 9443
+        val DEFAULT_RPC_PORT = BuildConfig.RPC_PORT
 
         const val COOKIE_FILE = ".cookie"
         private const val CONNECT_TIMEOUT_MS = 4_000

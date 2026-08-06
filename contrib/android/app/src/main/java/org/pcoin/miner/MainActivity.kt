@@ -158,13 +158,16 @@ class MainActivity : AppCompatActivity() {
 
         setUpSlider()
         setUpThermalSlider()
+        hideMiningControlsIfWallet()
 
         // Allows a deployment or automation tool to switch mining on without
         // simulating a tap:  am start -n org.pcoin.miner/.MainActivity --ez start_mining true
-        if (intent?.getBooleanExtra(EXTRA_START_MINING, false) == true) {
+        if (BuildConfig.MINING && intent?.getBooleanExtra(EXTRA_START_MINING, false) == true) {
             prefs.miningEnabled = true
         }
         applyProvisioning(intent)
+        // (see hideMiningControlsIfWallet below for why the mining UI is gone
+        //  in the wallet flavour rather than merely inert)
 
         // A fresh install has no wallet at all. Go straight to setup rather than
         // showing a dashboard for a wallet that does not exist -- and certainly
@@ -563,6 +566,30 @@ class MainActivity : AppCompatActivity() {
      * is tuned per device, so it knows a phone is struggling well before the
      * battery warms up.
      */
+    /**
+     * The wallet flavour ships the same screen with the mining controls removed.
+     *
+     * Removed, not disabled: a greyed-out Start Mining button on a wallet is an
+     * invitation to tap it and a question to answer later. The read-only stats
+     * (height, peers, balances) stay because they are exactly as true for a
+     * wallet as for a miner -- both run the same node.
+     *
+     * This is the interim shape. The proper split gives the wallet its own
+     * layout from shared card includes; until then one honest `GONE` beats a
+     * layout rewrite next to money-handling code.
+     */
+    private fun hideMiningControlsIfWallet() {
+        if (BuildConfig.MINING) return
+        for (v in listOf<View>(toggle, performance, performanceValue, thermal, thermalValue)) {
+            v.visibility = View.GONE
+        }
+        findViewById<View>(R.id.mine_on_battery)?.visibility = View.GONE
+        findViewById<View>(R.id.always_on_warning)?.visibility = View.GONE
+        findViewById<View>(R.id.blocks_found)?.visibility = View.GONE
+        findViewById<View>(R.id.threads)?.visibility = View.GONE
+        hashrate.visibility = View.GONE
+    }
+
     private fun setUpThermalSlider() {
         thermal.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {

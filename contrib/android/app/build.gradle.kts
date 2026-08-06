@@ -5,6 +5,16 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// Hoisted out of `android { }` so the signing guard below can see them too.
+val signingProps = Properties().apply {
+    val f = rootProject.file("signing.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+val ksPath: String? = signingProps.getProperty("storeFile") ?: System.getenv("PCOIN_KEYSTORE")
+val ksPass: String? = signingProps.getProperty("storePassword") ?: System.getenv("PCOIN_KEYSTORE_PASSWORD")
+val dbgPath: String? = signingProps.getProperty("debugStoreFile") ?: System.getenv("PCOIN_DEBUG_KEYSTORE")
+val releaseKeyAvailable: Boolean = ksPath != null && ksPass != null && file(ksPath).exists()
+
 android {
     // Needed for BuildConfig.DEBUG, which gates the fleet provisioning path in
     // MainActivity. AGP 8 stopped generating BuildConfig unless asked.
@@ -14,21 +24,8 @@ android {
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "org.pcoin.miner"
         minSdk = 24
         targetSdk = 34
-        // BUMP THIS ON EVERY BUILD THAT LEAVES THIS MACHINE.
-        //
-        // It stayed at 1 across several different APKs, so two phones running
-        // genuinely different binaries both reported 0.1.0/1 and nothing could
-        // tell them apart. One of them sat on a build that predated the "Skip
-        // for now" button and was stuck in setup, mining nothing, for a day --
-        // invisible precisely because the version said it was up to date.
-        //
-        // Comparing APK size or sha256 is the reliable check; the version is
-        // only as good as this line.
-        versionCode = 2
-        versionName = "0.2.0"
 
         // Deliberately NO ndk.abiFilters here: the prebuilt PCoin binaries only
         // exist for arm64-v8a and filtering must never drop that ABI.
@@ -36,6 +33,78 @@ android {
 
     // No `splits { abi { ... } }` block anywhere: a per-ABI split would produce
     // an APK that omits arm64-v8a native libs.
+
+    // TWO APPS, ONE SOURCE TREE.
+    //
+    // `miner` is the existing app, unchanged. `wallet` is the same wallet and
+    // the same bundled node WITHOUT mining -- possible at all because PCoin's
+    // entire chain is about 1 MB, so a phone can carry a full node and owe
+    // nothing to a trusted server.
+    //
+    // Flavours rather than a second module, deliberately: the shared code is
+    // ~11k lines of money-handling doctrine paid for in real incidents, this
+    // tree has NO CI, and a fork would drift silently. Flavours also leave
+    // jniLibs where they are, whose failure mode is a silently stripped
+    // libbitcoind.so that installs fine and dies on exec.
+    //
+    // `namespace` stays org.pcoin.miner for BOTH. It is the R/BuildConfig
+    // package, not the app identity; changing it would rename 29 source files
+    // for nothing. `applicationId` is what makes them different apps.
+    flavorDimensions += "role"
+
+    productFlavors {
+        create("miner") {
+            dimension = "role"
+            // MUST NOT CHANGE. Every fleet phone has a wallet in this app's
+            // private data, and Android treats a different applicationId as a
+            // different app: the only way to "upgrade" across one is an
+            // uninstall, and an uninstall destroys the wallet. On a phone with
+            // no recovery phrase that is the coins.
+            applicationId = "org.pcoin.miner"
+
+            // BUMP THIS ON EVERY BUILD THAT LEAVES THIS MACHINE.
+            //
+            // It stayed at 1 across several different APKs, so two phones
+            // running genuinely different binaries both reported 0.1.0/1 and
+            // nothing could tell them apart. One of them sat on a build that
+            // predated the "Skip for now" button and was stuck in setup, mining
+            // nothing, for a day -- invisible precisely because the version said
+            // it was up to date.
+            //
+            // Comparing APK size or sha256 is the reliable check; the version is
+            // only as good as this line.
+            versionCode = 2
+            versionName = "0.2.0"
+
+            buildConfigField("boolean", "MINING", "true")
+            // The miner keeps 9443. This half of the change is a provable no-op
+            // on the fleet.
+            buildConfigField("int", "RPC_PORT", "9443")
+        }
+
+        create("wallet") {
+            dimension = "role"
+            // Free to choose: this app has never been installed anywhere, so
+            // there is no wallet on any device to strand. Contrast the miner
+            // above, whose id cannot move without an uninstall, and an
+            // uninstall destroys the wallet in app-private data.
+            //
+            // NOTE this is the APP ID, not the Kotlin package. `namespace`
+            // stays org.pcoin.miner for both flavours because it is only the
+            // R/BuildConfig package; renaming it would touch 29 source files
+            // and buy nothing a user can see.
+            applicationId = "am.pc.pcoinwallet"
+            versionCode = 1
+            versionName = "0.1.0"
+
+            buildConfigField("boolean", "MINING", "false")
+            // The ONLY genuine collision between the two apps. bitcoind is
+            // started with listen=0 so P2P 9444 is never bound, and datadirs,
+            // Keystore aliases, prefs files and notification channels are all
+            // per-package already. Loopback RPC is the one shared resource.
+            buildConfigField("int", "RPC_PORT", "9543")
+        }
+    }
 
     // Release signing. The keystore lives OUTSIDE the repo and its location and
     // password come from signing.properties (also outside version control) or

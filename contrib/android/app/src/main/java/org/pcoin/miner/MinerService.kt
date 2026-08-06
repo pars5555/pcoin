@@ -168,14 +168,33 @@ class MinerService : Service() {
             }
             else -> {
                 // ACTION_START, or a null intent from a START_STICKY restart.
-                prefs.miningEnabled = true
+                // MINING=false means this build has no mining UI to have sent
+                // ACTION_START, but a START_STICKY restart delivers a null
+                // intent and lands here too -- so it is guarded rather than
+                // trusted.
+                if (BuildConfig.MINING) prefs.miningEnabled = true
             }
         }
 
-        userWantsMining = prefs.miningEnabled
+        userWantsMining = wantsMining()
         startWorker()
         return START_STICKY
     }
+
+    /**
+     * Does this build mine at all?
+     *
+     * The wallet flavour ships the same node and the same wallet but must never
+     * mine, so the answer is the user's persisted intent AND a build constant.
+     * Read through this rather than off `prefs.miningEnabled` directly: the
+     * pref is the user's intent and stays whatever it was, which matters if a
+     * datadir is ever moved between the two apps.
+     *
+     * Note this only stops THIS APP from asking. The bundled bitcoind contains
+     * the CPU miner regardless, which is why the wallet also sends an explicit
+     * stopmining at bring-up.
+     */
+    private fun wantsMining(): Boolean = BuildConfig.MINING && prefs.miningEnabled
 
     /**
      * Starts the control thread if it is not already running.
@@ -367,7 +386,7 @@ class MinerService : Service() {
 
         val battery = readBattery()
         val percent = prefs.performancePercent
-        userWantsMining = prefs.miningEnabled
+        userWantsMining = wantsMining()
 
         // The setup flow can finish while the service is already running, and it
         // writes the payout address straight to Prefs. Pick it up without
