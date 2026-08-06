@@ -199,7 +199,6 @@
     <string name="forward_card_probe_pending">Forwarding to:\n%1$s\n\nA test payment will be sent once coins mature — about a day after this phone finds its next block.</string>
     <string name="forward_card_probe_sent">Test payment of %1$s sent to %2$s — waiting for it to confirm.</string>
     <string name="forward_card_probe_ready">Test payment of %1$s has arrived at %2$s. Check that wallet, then confirm below.</string>
-    <string name="forward_card_probe_ack">I received it</string>
     <string name="forward_card_armed">Forwarding to %1$s.</string>
     <string name="forward_card_last">Last forward: %1$s on %2$s\n%3$s</string>
     <string name="forward_card_copy">Copy transaction ID</string>

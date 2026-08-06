@@ -13,6 +13,7 @@ val signingProps = Properties().apply {
 val ksPath: String? = signingProps.getProperty("storeFile") ?: System.getenv("PCOIN_KEYSTORE")
 val ksPass: String? = signingProps.getProperty("storePassword") ?: System.getenv("PCOIN_KEYSTORE_PASSWORD")
 val dbgPath: String? = signingProps.getProperty("debugStoreFile") ?: System.getenv("PCOIN_DEBUG_KEYSTORE")
+@Suppress("unused") // read by the release signing guard in buildTypes below
 val releaseKeyAvailable: Boolean = ksPath != null && ksPass != null && file(ksPath).exists()
 
 android {
@@ -174,8 +175,27 @@ android {
             isMinifyEnabled = false
             // Fall back to the debug key only when no release keystore is
             // configured, so a fresh clone can still build something runnable.
+            //
+            // Loudly, though. A debug-signed "release" APK installs and runs
+            // perfectly and is indistinguishable at a glance, but Android will
+            // refuse to upgrade a properly-signed build over it later -- and the
+            // only recovery is an uninstall, which destroys the wallet in
+            // app-private storage. This warning is the guard the hoisted
+            // `releaseKeyAvailable` at the top of this file was declared for; it
+            // sat unused, so the fallback was completely silent.
             signingConfig = signingConfigs.findByName("release")
-                ?: signingConfigs.getByName("debug")
+                ?: signingConfigs.getByName("debug").also {
+                    logger.warn(
+                        "\n" +
+                            "**********************************************************************\n" +
+                            "  PCoin: RELEASE build is being signed with the DEBUG key.\n" +
+                            "  No usable release keystore was found.\n" +
+                            "    signing.properties storeFile : ${ksPath ?: "(not set)"}\n" +
+                            "    exists                       : ${ksPath?.let { p -> file(p).exists() } ?: false}\n" +
+                            "  Do NOT ship this APK. See contrib/android/README.md - Signing.\n" +
+                            "**********************************************************************\n"
+                    )
+                }
         }
     }
 

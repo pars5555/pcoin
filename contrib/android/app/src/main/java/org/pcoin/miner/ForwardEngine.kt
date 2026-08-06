@@ -316,7 +316,13 @@ class ForwardEngine(context: Context, private val node: NodeController) {
         for (i in 0 until list.length()) {
             val tx = list.optJSONObject(i) ?: continue
             if (tx.optString("category") != "send") continue
-            if (tx.optInt("confirmations", 1) > 0) continue
+            // Default 0, not 1. A missing confirmations field must mean "treat
+            // this as possibly in flight" and therefore adopt it. The two
+            // mistakes are not symmetric: adopting something already settled
+            // costs one wasted resolve pass, while failing to adopt something
+            // still in flight is what lets a second sweep get built over coins
+            // that are already committed.
+            if (tx.optInt("confirmations", 0) > 0) continue
             if (tx.optBoolean("abandoned", false)) continue
             val txid = tx.optString("txid").takeIf { it.isNotBlank() } ?: continue
 
@@ -333,11 +339,21 @@ class ForwardEngine(context: Context, private val node: NodeController) {
 
             val decoded = decode(hex)
             // Whatever does not come back to us is what was being paid.
+            //
+            // Every output has to be classified before the total means anything.
+            // If even one cannot be, the sum is not "roughly right" -- an
+            // unreadable change output is added to the amount and can become the
+            // destination we then display as the payee. Throwing leaves
+            // `reconciled` false, so nothing is built until the wallet can
+            // actually be asked; returning a half-read record would have us
+            // report a confident wrong figure for someone's money.
             var paidSat = 0L
             var paidTo = ""
             for (out in decoded.outputs) {
                 if (out.address.isBlank()) continue
-                if (isMine(wallet, out.address)) continue
+                val mine = isMine(wallet, out.address)
+                    ?: throw IOException("could not tell whether $txid pays this wallet or another")
+                if (mine) continue
                 paidSat += out.valueSat
                 if (paidTo.isBlank()) paidTo = out.address
             }
@@ -508,7 +524,6 @@ class ForwardEngine(context: Context, private val node: NodeController) {
         // Any change re-probes. A swapped address must not be able to receive a
         // full sweep until someone has confirmed a test payment arrived at it.
         prefs.forwardProbeTxid = null
-        prefs.forwardProbeAcked = false
         prefs.forwardProbeConfirmed = false
         prefs.forwardState = ForwardState.PROBING_PENDING
         Log.i(TAG, "queued forwarding address applied; re-probing")
@@ -800,6 +815,19 @@ class ForwardEngine(context: Context, private val node: NodeController) {
     private fun resolveRecord(record: SweepRecord, wallet: String, depth: Int = 0) {
         val obs = observe(record.txid, wallet)
         val now = System.currentTimeMillis()
+
+        // A transaction that is demonstrably fine erases any earlier conflict
+        // sighting, BEFORE the resolution below reads it. Reorgs are routine on
+        // this chain, so a noted-then-recovered conflict is an ordinary event;
+        // leaving the timestamp set would let the next single transient reading
+        // trip MARK_CONFLICTED instantly instead of after a second sighting.
+        var record = record
+        if (ForwardPolicy.clearsConflict(obs, record)) {
+            record = record.copy(conflictSeenAtMs = 0L)
+            writeRecord(record)
+            Log.i(TAG, "${record.txid.take(12)}: conflict sighting cleared, transaction is healthy")
+        }
+
         when (ForwardPolicy.resolve(obs, record, now)) {
             ForwardPolicy.Resolution.UNRESOLVED -> {
                 // Deliberately does nothing at all, including not touching the
@@ -938,14 +966,21 @@ class ForwardEngine(context: Context, private val node: NodeController) {
                 prefs.forwardState = ForwardState.PROBING_SENT
             }
             prefs.forwardProbeConfirmed = true
-            if (!prefs.forwardProbeAcked && !probeAckNotified) {
+            // Told, not asked. Forwarding arms itself on this confirmation, so
+            // the notification reports what has happened rather than requesting
+            // a tap that no longer exists. It is still worth sending: it is the
+            // moment to look at the destination wallet, because a confirmed
+            // probe proves the address accepted coins and NOT that anyone holds
+            // the key -- see the arming block for the full statement of what
+            // dropping the acknowledgement gave up.
+            if (!probeAckNotified) {
                 probeAckNotified = true
                 notifyForward(
                     NOTIF_PROBE,
                     "Check your other wallet",
                     "A ${Fmt.coinsSat(ForwardPolicy.PROBE_SAT)} test payment has arrived at " +
-                        "${ForwardPolicy.shortAddress(record.address)}. Confirm you can see it to " +
-                        "start forwarding.",
+                        "${ForwardPolicy.shortAddress(record.address)}. Forwarding is now on. " +
+                        "Check you can see it in that wallet.",
                     NotificationManager.IMPORTANCE_DEFAULT,
                 )
             }
@@ -1061,7 +1096,11 @@ class ForwardEngine(context: Context, private val node: NodeController) {
             isValid = v.optBoolean("isvalid", false),
             isWitness = v.optBoolean("iswitness", false),
             witnessVersion = v.optInt("witness_version", 0),
-            isMine = isMine(wallet, address),
+            // Diagnostic only -- it drives a "you are forwarding to this same
+            // wallet" warning, never a build decision -- so an unreadable answer
+            // may safely fall back to false here. Written explicitly rather than
+            // left to a default, so the choice is visible.
+            isMine = isMine(wallet, address) == true,
             nodeError = v.optString("error"),
             scriptPubKey = v.optString("scriptPubKey"),
         )
@@ -1069,12 +1108,26 @@ class ForwardEngine(context: Context, private val node: NodeController) {
         null
     }
 
-    /** getaddressinfo is wallet-scoped, so it is always aimed at the PAYOUT wallet. */
-    private fun isMine(wallet: String, address: String): Boolean = try {
+    /**
+     * Does the PAYOUT wallet own this address?
+     *
+     * getaddressinfo is wallet-scoped, so it is always aimed at the payout
+     * wallet by name -- asking the wrong wallet returns a confident,
+     * authoritative-looking `false` for a perfectly good address, and that has
+     * already cost this project a payout address once.
+     *
+     * @return null when the node could not be asked. NOT false. Callers have to
+     *   choose what an unknown means for them, because it means different
+     *   things: for a diagnostic line it is fine to fall back, but for anything
+     *   deciding what a transaction PAID it is not -- an unreadable answer there
+     *   turns our own change output into a payment to a stranger and inflates
+     *   the amount we report to the user.
+     */
+    private fun isMine(wallet: String, address: String): Boolean? = try {
         (rpc.call("getaddressinfo", JSONArray().put(address), wallet = wallet, readTimeoutMs = RPC_TIMEOUT_MS)
-            as? JSONObject)?.optBoolean("ismine", false) == true
+            as? JSONObject)?.optBoolean("ismine", false)
     } catch (e: IOException) {
-        false
+        null
     }
 
     /**
@@ -1196,6 +1249,331 @@ class ForwardEngine(context: Context, private val node: NodeController) {
             as? String ?: return 0L
         return (rpc.call("getblockheader", JSONArray().put(hash), readTimeoutMs = RPC_TIMEOUT_MS)
             as? JSONObject)?.optLong("time", 0L) ?: 0L
+    }
+
+    // --------------------------------------------------------- user-directed send
+
+    /**
+     * A send the USER asked for, as opposed to the automatic sweep.
+     *
+     * Deliberately split into two calls -- [prepareSend] then [broadcastPrepared]
+     * -- because the fee cannot be known until the node has actually built the
+     * transaction, and the user must see the real fee before committing to it.
+     *
+     * `add_to_wallet = false` is what makes that safe: the node signs and hands
+     * back the bytes without recording anything, so a prepared send that the
+     * user backs out of leaves no trace at all. Nothing is locked, nothing is
+     * persisted, and the inputs stay available.
+     */
+    data class Prepared(
+        val hex: String,
+        val txid: String,
+        val destination: String,
+        val paidSat: Long,
+        val feeSat: Long,
+        val inputs: Int,
+        val sendMax: Boolean,
+    )
+
+    /** Thrown with a message already fit to show a user. */
+    class SendRefused(message: String) : Exception(message)
+
+    /**
+     * Build and fully verify, but do not broadcast.
+     *
+     * Every failure below is a refusal, never a silent fallback: an unanswered
+     * node resolves nothing, and "I could not check" must not read as "it is
+     * fine".
+     */
+    @Throws(SendRefused::class, IOException::class)
+    fun prepareSend(destination: String, amountSat: Long, sendMax: Boolean, wallet: String): Prepared {
+        if (!sendMax && Amounts.isDust(amountSat)) {
+            throw SendRefused("That amount is too small to send.")
+        }
+
+        // The node is the authority on whether this is a PCoin address at all,
+        // and on its canonical spelling. A wrong-chain address fails here.
+        val v = rpc.call("validateaddress", JSONArray().put(destination), readTimeoutMs = RPC_TIMEOUT_MS)
+            as? JSONObject ?: throw SendRefused("The node could not check that address.")
+        if (!v.optBoolean("isvalid", false)) throw SendRefused("That is not a valid PCoin address.")
+        val canonical = v.optString("address").ifBlank { destination }
+        val expectedScript = v.optString("scriptPubKey")
+        if (expectedScript.isBlank()) {
+            throw SendRefused("The node did not describe that address; refusing to build blind.")
+        }
+        // A witness version this network cannot spend is a silent burn.
+        if (v.optBoolean("iswitness", false) && v.optInt("witness_version", 0) > 1) {
+            throw SendRefused("That address uses a format nothing on this network can spend yet.")
+        }
+
+        // Core reports "you cannot afford this" as an RPC ERROR, not as a
+        // complete=false result, so the friendly message has to be produced here
+        // rather than from the return value. Measured on regtest: asking for more
+        // than the balance AND asking for exactly the balance both come back as
+        // -4 "Insufficient funds"; sendall on an empty wallet is -6 with a
+        // paragraph about uneconomic UTXOs. None of those are worth showing raw.
+        val built = try {
+            if (sendMax) callSendAllTo(canonical, wallet) else callExactSend(canonical, amountSat, wallet)
+        } catch (e: RpcClient.RpcError) {
+            throw SendRefused(explainBuildFailure(e))
+        }
+        if (!built.complete || built.hex.isBlank()) {
+            throw SendRefused("Could not build the payment. You may not have enough spendable coins.")
+        }
+
+        val decoded = decode(built.hex)
+        val annotated = annotateChange(decoded, wallet, canonical)
+
+        // Input value comes from the node's own view of the outpoints being
+        // spent, not from anything we asked for -- the fee is a difference and
+        // both sides of it must be observed.
+        var inValue = 0L
+        for (o in annotated.inputs) {
+            val prev = rpc.call(
+                "gettxout", JSONArray().put(o.txid).put(o.vout).put(true),
+                readTimeoutMs = RPC_TIMEOUT_MS,
+            ) as? JSONObject
+            if (prev == null) {
+                // Already spent or unknown: cannot compute a fee we can defend.
+                throw SendRefused("Could not read one of the coins being spent. Nothing was sent.")
+            }
+            inValue += toSat(prev.optDouble("value", -1.0))
+        }
+
+        val why = ForwardPolicy.verifyUserSend(
+            decoded = annotated,
+            destination = canonical,
+            expectedScriptHex = expectedScript,
+            expectedTxid = built.txid,
+            requestedSat = amountSat,
+            sendMax = sendMax,
+            inputValueSat = inValue,
+        )
+        if (why != null) throw SendRefused("The transaction the node built is not the one asked for: $why")
+
+        val paid = annotated.outputs.first { it.address == canonical }.valueSat
+        val fee = inValue - annotated.outputs.sumOf { it.valueSat }
+        return Prepared(built.hex, built.txid, canonical, paid, fee, annotated.inputs.size, sendMax)
+    }
+
+    /**
+     * Broadcast a previously prepared send.
+     *
+     * testmempoolaccept runs again here, not just at prepare time: the user may
+     * have spent a minute reading the confirmation screen, and a sweep or a
+     * reorg can have moved the coins underneath in that window. One cheap call
+     * closes it.
+     *
+     * The rest of this function exists because THIS TRANSACTION HAS ALREADY BEEN
+     * SENT is a completely different answer from THIS TRANSACTION WAS REJECTED,
+     * and the node reports the first one through the same channel as the second.
+     * Measured against a regtest node:
+     *
+     *   already in the mempool   testmempoolaccept  allowed=false
+     *                                               reject-reason txn-already-in-mempool
+     *                            sendrawtransaction succeeds, returns the txid
+     *   already confirmed        testmempoolaccept  allowed=false
+     *                                               reject-reason txn-already-known
+     *                            sendrawtransaction error -27
+     *   genuinely stale          testmempoolaccept  allowed=false
+     *                                               reject-reason missing-inputs
+     *                            sendrawtransaction error -25
+     *
+     * Rendering the first two as failure would tell somebody their payment did
+     * not go through while their coins were already gone -- and the obvious
+     * reaction to that screen is to press Send again. Only the third is a real
+     * failure, and it is the one case where the money went somewhere else.
+     */
+    @Throws(SendRefused::class, IOException::class)
+    fun broadcastPrepared(p: Prepared): String {
+        testAccept(p.hex)?.let { reason ->
+            if (isAlreadySent(reason)) return p.txid
+            throw SendRefused(explainReject(reason))
+        }
+        val txid = try {
+            rpc.call(
+                "sendrawtransaction",
+                JSONArray().put(p.hex).put(ForwardPolicy.BROADCAST_MAX_FEE_RATE),
+                readTimeoutMs = RPC_TIMEOUT_MS,
+            ) as? String ?: throw SendRefused("The node did not confirm the broadcast.")
+        } catch (e: RpcClient.RpcError) {
+            // -27 is "outputs already in the UTXO set": it is already mined.
+            if (e.code == RPC_ALREADY_IN_UTXO_SET) return p.txid
+            throw SendRefused(explainReject(e.message ?: "the node refused it"))
+        }
+        return txid.ifBlank { p.txid }
+    }
+
+    /**
+     * Why the node would not build it.
+     *
+     * The amount is deliberately NOT restated here ("you only have X"): the
+     * balance shown on screen came from a snapshot, the node just refused using
+     * its own live view, and quoting the stale number next to the live refusal
+     * is how a user ends up believing the app is lying to them.
+     */
+    private fun explainBuildFailure(e: RpcClient.RpcError): String {
+        val m = e.message.orEmpty()
+        return when {
+            m.contains("Insufficient funds") ->
+                "Not enough spendable coins for that amount plus the network fee. " +
+                    "Newly mined coins need 100 blocks before they can be spent."
+            m.contains("Total value of UTXO pool too low") ->
+                "There is nothing spendable in this wallet yet."
+            m.contains("Transaction amount too small") ->
+                "That amount is too small to send."
+            m.contains("Invalid address") || m.contains("Invalid Bitcoin address") ->
+                "That is not a valid PCoin address."
+            m.contains("Please enter the wallet passphrase") ->
+                "The wallet is locked."
+            else -> "Could not build the payment: ${m.substringAfter(": ", m)}"
+        }
+    }
+
+    /** Reject reasons that mean "this exact transaction is already out there". */
+    private fun isAlreadySent(reason: String): Boolean =
+        reason.contains("txn-already-in-mempool") || reason.contains("txn-already-known")
+
+    /** Node wording, turned into something worth showing a person. */
+    private fun explainReject(reason: String): String = when {
+        reason.contains("missing-inputs") || reason.contains("missingorspent") ->
+            "Those coins have already been spent by something else. Nothing was sent -- " +
+                "go back and build the payment again."
+        reason.contains("min relay fee") || reason.contains("mempool min fee") ->
+            "The fee is too low for the network to relay this payment."
+        reason.contains("dust") ->
+            "One of the amounts is too small for the network to carry."
+        else -> "The network would not accept it: $reason"
+    }
+
+    // -------------------------------------------------------------- history
+
+    /**
+     * One line of wallet history.
+     *
+     * [amountSat] is a MAGNITUDE, always positive. Core reports a send as a
+     * negative amount, but the direction is already carried by [kind], and
+     * keeping a sign in two places is how a screen ends up rendering "-1.5" as
+     * received.
+     *
+     * [confirmations] may be 0 (in the mempool) or NEGATIVE (the node has seen a
+     * conflicting transaction in a block). Negative is not "fewer confirmations",
+     * it is a different state entirely, and the UI must say so rather than
+     * clamping it to zero.
+     */
+    data class HistoryEntry(
+        val txid: String,
+        val kind: Kind,
+        val amountSat: Long,
+        val feeSat: Long,
+        val confirmations: Int,
+        val timeSec: Long,
+        val address: String,
+    ) {
+        enum class Kind { RECEIVED, SENT, MINED, MATURING, CONFLICTED }
+    }
+
+    /**
+     * Recent wallet history, newest first.
+     *
+     * `listtransactions` returns oldest-last, so the list is reversed here once
+     * rather than in the UI. Wallet change does not appear at all -- Core omits
+     * outputs it recognises as its own change -- so a send shows as exactly one
+     * line for the amount that left, which is what a person expects to see.
+     *
+     * Categories, all four of which this chain produces: `generate` (a mined
+     * block past maturity), `immature` (mined, not yet spendable), `send`,
+     * `receive`. `orphan` is a mined block that lost a reorg; on a chain with a
+     * ~3% stale rate it is not hypothetical, and it is folded into CONFLICTED
+     * because the money is genuinely not there.
+     */
+    @Throws(IOException::class)
+    fun listHistory(wallet: String, count: Int = 50): List<HistoryEntry> {
+        val arr = rpc.call(
+            "listtransactions",
+            JSONArray().put("*").put(count).put(0).put(true),
+            wallet = wallet,
+            readTimeoutMs = LIST_TIMEOUT_MS,
+        ) as? JSONArray ?: throw IOException("the node did not answer listtransactions")
+
+        val out = ArrayList<HistoryEntry>(arr.length())
+        for (i in 0 until arr.length()) {
+            val t = arr.optJSONObject(i) ?: continue
+            val txid = t.optString("txid")
+            if (txid.isBlank()) continue
+            val category = t.optString("category")
+            val confirmations = t.optInt("confirmations", 0)
+            // A send whose amount we cannot read is not a send of zero.
+            if (!t.has("amount")) continue
+            val amount = toSat(t.optDouble("amount", 0.0))
+
+            val kind = when {
+                confirmations < 0 || category == "orphan" -> HistoryEntry.Kind.CONFLICTED
+                category == "immature" -> HistoryEntry.Kind.MATURING
+                category == "generate" -> HistoryEntry.Kind.MINED
+                category == "send" -> HistoryEntry.Kind.SENT
+                category == "receive" -> HistoryEntry.Kind.RECEIVED
+                else -> continue
+            }
+            out.add(
+                HistoryEntry(
+                    txid = txid,
+                    kind = kind,
+                    amountSat = kotlin.math.abs(amount),
+                    // `fee` is present only on sends, and is negative there.
+                    feeSat = kotlin.math.abs(toSat(t.optDouble("fee", 0.0))),
+                    confirmations = confirmations,
+                    timeSec = t.optLong("time", 0L),
+                    address = t.optString("address"),
+                )
+            )
+        }
+        out.reverse()
+        return out
+    }
+
+    /** Exact amount, node-selected inputs, change back to us. */
+    private fun callExactSend(destination: String, amountSat: Long, wallet: String): Built {
+        val options = JSONObject()
+            .put("add_to_wallet", false)
+            .put("fee_rate", ForwardPolicy.FEE_RATE_SAT_VB)
+        // The amount goes over as an exact fixed-point STRING. AmountFromValue
+        // runs ParseFixedPoint over the raw text, and a double can serialise as
+        // 1.0E-8, which the node rejects.
+        val params = JSONArray()
+            .put(JSONObject().put(destination, Amounts.toNodeString(amountSat)))
+            .put(JSONObject.NULL)
+            .put("unset")
+            .put(JSONObject.NULL)
+            .put(options)
+        val r = rpc.call("send", params, wallet = wallet, readTimeoutMs = BUILD_TIMEOUT_MS)
+            as? JSONObject ?: return Built(false, "", "")
+        return Built(r.optBoolean("complete", false), r.optString("txid"), r.optString("hex"))
+    }
+
+    /**
+     * Everything spendable, one output, no change.
+     *
+     * `sendall` takes the SAME positional shape as `send` --
+     * `(recipients, conf_target, estimate_mode, fee_rate, options)` -- so the
+     * options object belongs at position 5, not position 2. Passing it second
+     * lands it in conf_target and the node refuses the whole call with
+     * "JSON value of type object is not of expected type number". Verified
+     * against a regtest node; do not shorten this argument list.
+     */
+    private fun callSendAllTo(destination: String, wallet: String): Built {
+        val options = JSONObject()
+            .put("add_to_wallet", false)
+            .put("fee_rate", ForwardPolicy.FEE_RATE_SAT_VB)
+        val params = JSONArray()
+            .put(JSONArray().put(destination))
+            .put(JSONObject.NULL)
+            .put("unset")
+            .put(JSONObject.NULL)
+            .put(options)
+        val r = rpc.call("sendall", params, wallet = wallet, readTimeoutMs = BUILD_TIMEOUT_MS)
+            as? JSONObject ?: return Built(false, "", "")
+        return Built(r.optBoolean("complete", false), r.optString("txid"), r.optString("hex"))
     }
 
     // ------------------------------------------------------------- decoding

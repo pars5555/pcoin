@@ -77,7 +77,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var forwardError: TextView
     private lateinit var forwardLast: TextView
     private lateinit var forwardManage: Button
-    private lateinit var forwardAck: Button
     private lateinit var forwardCopyTxid: Button
 
     private lateinit var seedStore: SeedStore
@@ -149,7 +148,6 @@ class MainActivity : AppCompatActivity() {
         forwardError = findViewById(R.id.forward_error)
         forwardLast = findViewById(R.id.forward_last)
         forwardManage = findViewById(R.id.forward_manage)
-        forwardAck = findViewById(R.id.forward_ack)
         forwardCopyTxid = findViewById(R.id.forward_copy_txid)
         setUpForwardButtons()
         setUpWalletButtons()
@@ -407,16 +405,6 @@ class MainActivity : AppCompatActivity() {
     private fun setUpForwardButtons() {
         forwardManage.setOnClickListener { startActivity(ForwardActivity.intent(this)) }
 
-        forwardAck.setOnClickListener {
-            // Records the user's intent only. The engine still refuses to arm
-            // until the node has ALSO confirmed the test payment six deep --
-            // both halves are required, and this button is the half that
-            // proves someone can actually see the coins at the far end.
-            prefs.forwardProbeAcked = true
-            ForwardEngine.requestEvaluation()
-            render(MinerState.snapshot)
-        }
-
         forwardCopyTxid.setOnClickListener {
             val txid = prefs.forwardLastTxid ?: return@setOnClickListener
             val cm = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -520,9 +508,6 @@ class MainActivity : AppCompatActivity() {
         forwardManage.setText(
             if (address == null) R.string.forward_card_set else R.string.forward_card_manage
         )
-        // No acknowledgement button: forwarding arms itself once the node
-        // confirms the test payment. See the arming block in ForwardEngine.
-        forwardAck.visibility = View.GONE
     }
 
     /** Never the word "sent" before a peer has taken the transaction. */

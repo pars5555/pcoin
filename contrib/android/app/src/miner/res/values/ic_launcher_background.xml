@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Miner launcher colour. Deliberately different from the wallet's, because both
+  apps can be installed on the same phone and share the same monogram.
+-->
+<resources>
+    <color name="ic_launcher_background">#B4530A</color>
+</resources>

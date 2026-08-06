@@ -52,6 +52,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var balanceNote: TextView
     private lateinit var balanceCheckedAt: TextView
     private lateinit var refreshButton: Button
+    private lateinit var sendButton: Button
+    private lateinit var historyButton: Button
+    private lateinit var backupTitle: TextView
+    private lateinit var backupBody: TextView
+    private lateinit var receiveQr: QrView
     private lateinit var receiveAddress: TextView
     private lateinit var copyButton: Button
     private lateinit var shareButton: Button
@@ -65,7 +70,19 @@ class MainActivity : AppCompatActivity() {
     /** True from the moment Refresh is pressed until a newer reading lands. */
     private var refreshing = false
     private var refreshStartedAtMs = 0L
-    private var balanceAtRefreshStart = -1.0
+
+    /**
+     * The node's read timestamp at the moment Refresh was pressed.
+     *
+     * Refresh succeeds when the service publishes a STRICTLY NEWER one, i.e.
+     * when the node has actually answered again. Comparing balances instead
+     * cannot work: the overwhelmingly common case is a correct refresh that
+     * returns the same number.
+     */
+    private var readAtRefreshStart = 0L
+
+    /** True while balanceCheckedAt is showing a refresh failure that must stand. */
+    private var showingFailure = false
 
     private val tick = object : Runnable {
         override fun run() {
@@ -93,17 +110,24 @@ class MainActivity : AppCompatActivity() {
         balanceNote = findViewById(R.id.balance_note)
         balanceCheckedAt = findViewById(R.id.balance_checked_at)
         refreshButton = findViewById(R.id.refresh_button)
+        sendButton = findViewById(R.id.send_button)
+        historyButton = findViewById(R.id.history_button)
         receiveAddress = findViewById(R.id.receive_address)
         copyButton = findViewById(R.id.copy_button)
         shareButton = findViewById(R.id.share_button)
         backupCard = findViewById(R.id.backup_card)
         backupButton = findViewById(R.id.backup_button)
+        backupTitle = findViewById(R.id.backup_title)
+        backupBody = findViewById(R.id.backup_body)
+        receiveQr = findViewById(R.id.receive_qr)
         chainLine = findViewById(R.id.chain_line)
 
         balanceAmount.text = getString(R.string.wallet_amount_unknown)
         balanceCheckedAt.text = getString(R.string.wallet_checked_never)
 
         refreshButton.setOnClickListener { onRefresh() }
+        sendButton.setOnClickListener { startActivity(Intent(this, SendActivity::class.java)) }
+        historyButton.setOnClickListener { startActivity(Intent(this, HistoryActivity::class.java)) }
         copyButton.setOnClickListener { copyAddress() }
         shareButton.setOnClickListener { shareAddress() }
         backupButton.setOnClickListener { startActivity(Intent(this, BackupActivity::class.java)) }
@@ -148,7 +172,8 @@ class MainActivity : AppCompatActivity() {
         if (refreshing) return
         refreshing = true
         refreshStartedAtMs = System.currentTimeMillis()
-        balanceAtRefreshStart = MinerState.snapshot.balanceConfirmed
+        readAtRefreshStart = MinerState.snapshot.chainReadAtMs
+        showingFailure = false
         refreshButton.isEnabled = false
         refreshButton.alpha = 0.6f
         refreshButton.text = getString(R.string.wallet_refresh_busy)
@@ -161,6 +186,7 @@ class MainActivity : AppCompatActivity() {
         refreshButton.isEnabled = true
         refreshButton.alpha = 1f
         refreshButton.text = getString(R.string.wallet_refresh)
+        showingFailure = !succeeded
         if (!succeeded) balanceCheckedAt.text = getString(R.string.wallet_check_failed)
     }
 
@@ -181,11 +207,15 @@ class MainActivity : AppCompatActivity() {
         // So the balance counts as read only when the node has caught up.
         // Headers arrive far ahead of blocks, which is what makes this testable
         // before the wallet has finished scanning.
-        val caughtUp = s.height >= 0 && s.headers >= 0 && s.height >= s.headers
+        val caughtUp = s.balanceIsTrustworthy
         val known = caughtUp && s.balanceConfirmed >= 0.0
 
         if (known) {
-            lastGoodReadAtMs = now
+            // The node's read timestamp, NOT `now`. Assigning `now` here stamped
+            // "Updated just now" on every 2 s redraw, so a node that stopped
+            // answering an hour ago still had its last figure labelled as fresh
+            // -- the exact opposite of what this field is documented to mean.
+            lastGoodReadAtMs = s.chainReadAtMs
             balanceAmount.text = Fmt.coins(s.balanceConfirmed)
         } else {
             // Deliberately leaves any previously-shown figure in place rather
@@ -198,12 +228,20 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (refreshing) {
-            val movedOn = known && (s.balanceConfirmed != balanceAtRefreshStart || now - refreshStartedAtMs > 1_500)
-            if (movedOn) endRefresh(true)
+            // Success means the NODE ANSWERED AGAIN since the button was
+            // pressed -- a newer chainReadAtMs. It used to mean "1.5 seconds
+            // have gone by and the last known figure still looks fine", which
+            // reported a cheerful success on a phone whose node had been dead
+            // for twenty minutes. A timer is not a read.
+            if (known && s.chainReadAtMs > readAtRefreshStart) endRefresh(true)
             else if (now - refreshStartedAtMs > REFRESH_TIMEOUT_MS) endRefresh(false)
         }
 
-        if (!refreshing) balanceCheckedAt.text = checkedAtText(now, caughtUp)
+        // Guarded on `failedText`, not on `refreshing`: endRefresh(false) clears
+        // the flag before writing its message, so an unguarded assignment here
+        // overwrote that message in the same synchronous render() pass and the
+        // failure was visible for zero frames.
+        if (!refreshing && !showingFailure) balanceCheckedAt.text = checkedAtText(now, caughtUp)
         renderNote(s, caughtUp)
         renderNode(s)
         renderBackupCard()
@@ -242,12 +280,24 @@ class MainActivity : AppCompatActivity() {
             balanceNote.visibility = View.GONE
             return
         }
+        // Blocks REMAINING, from the depth of the closest-to-mature coinbase.
+        // This used to render the constant 100 into a sentence promising a
+        // countdown, so it read "about 100 more blocks" the whole way from
+        // freshly mined to spendable. -1 means the node did not tell us, and
+        // then no number is printed at all rather than a plausible one.
+        val left = s.immatureBestConfirmations
+            .takeIf { it >= 0 }
+            ?.let { (COINBASE_SPENDABLE_DEPTH - it).coerceAtLeast(1L) }
+
         balanceNote.visibility = View.VISIBLE
         balanceNote.text = when {
+            pending > 0.0 && immature > 0.0 && left != null ->
+                getString(R.string.wallet_note_both, Fmt.coins(pending), Fmt.coins(immature), left)
             pending > 0.0 && immature > 0.0 ->
-                getString(R.string.wallet_note_both, Fmt.coins(pending), Fmt.coins(immature), MATURITY_BLOCKS)
+                getString(R.string.wallet_note_both_unknown, Fmt.coins(pending), Fmt.coins(immature))
             pending > 0.0 -> getString(R.string.wallet_note_pending, Fmt.coins(pending))
-            else -> getString(R.string.wallet_note_immature, Fmt.coins(immature), MATURITY_BLOCKS)
+            left != null -> getString(R.string.wallet_note_immature, Fmt.coins(immature), left)
+            else -> getString(R.string.wallet_note_immature_unknown, Fmt.coins(immature))
         }
     }
 
@@ -262,13 +312,25 @@ class MainActivity : AppCompatActivity() {
         val hh = s.headers
         val peers = s.peers
 
+        // A percentage needs a denominator worth dividing by. A node that has
+        // just started knows no headers, so hh is 0 and the ratio is not a
+        // number -- report 0% rather than inventing one.
+        fun syncing(): Pair<String, Int> {
+            val pct =
+                if (hh > 0) ((h.toDouble() / hh.toDouble()) * 100.0).roundToInt().coerceIn(0, 99)
+                else 0
+            return getString(R.string.wallet_node_syncing, pct) to R.color.wait
+        }
+
         val (text, colour) = when {
             h < 0 || hh < 0 -> getString(R.string.wallet_node_starting) to R.color.ink_muted
             peers == 0 -> getString(R.string.wallet_node_no_peers) to R.color.wait
-            hh > 0 && h < hh -> {
-                val pct = ((h.toDouble() / hh.toDouble()) * 100.0).roundToInt().coerceIn(0, 99)
-                getString(R.string.wallet_node_syncing, pct) to R.color.wait
-            }
+            // The node's own flag comes FIRST. `h < hh` cannot catch a node
+            // sitting at height 0 with no headers learned yet, and that state is
+            // real: an unclean restart was observed coming back at height 0 and
+            // reporting "Up to date" the whole way through the resync.
+            s.initialBlockDownload -> syncing()
+            h < hh -> syncing()
             else -> getString(R.string.wallet_node_ready) to R.color.good
         }
         nodeStatus.text = text
@@ -284,11 +346,42 @@ class MainActivity : AppCompatActivity() {
         receiveAddress.text = addr ?: getString(R.string.wallet_address_unknown)
         copyButton.isEnabled = addr != null
         shareButton.isEnabled = addr != null
+        // The bare address, not a pcoin: URI. Nothing in this ecosystem parses
+        // BIP21 yet, and a scanner that hands a wallet "pcoin:pc1q..." it does
+        // not understand is worse than one that hands it an address every
+        // wallet accepts. The address text stays on screen underneath either
+        // way -- the QR is a convenience, never the only copy.
+        receiveQr.setContent(addr)
     }
 
-    /** Only nag while the phrase is genuinely unconfirmed. */
+    /**
+     * The recovery-phrase card. Always reachable, wording depends on state.
+     *
+     * This used to hide the whole card once [Prefs.phraseConfirmed] was set --
+     * which removed the ONLY route to BackupActivity in this flavour. There is
+     * no menu, no toolbar and no settings screen here, so confirming the backup
+     * made the twelve words permanently unreadable on the device that holds
+     * them. Setup defaults `confirmed` to true on both the create and the
+     * restore path, so that was very nearly everybody, and it inverted the
+     * incentive: the user who skipped the write-down kept access and the one who
+     * did it properly lost it.
+     *
+     * So the card stays. Once confirmed it stops nagging and becomes a quiet
+     * way back in -- a phrase you can never re-read is a phrase you cannot check
+     * against the paper you wrote it on.
+     */
     private fun renderBackupCard() {
-        backupCard.visibility = if (prefs.phraseConfirmed) View.GONE else View.VISIBLE
+        backupCard.visibility = View.VISIBLE
+        val confirmed = prefs.phraseConfirmed
+        backupTitle.setText(
+            if (confirmed) R.string.wallet_phrase_title else R.string.wallet_backup_title
+        )
+        backupBody.setText(
+            if (confirmed) R.string.wallet_phrase_body else R.string.wallet_backup_body
+        )
+        backupCard.setBackgroundResource(
+            if (confirmed) R.drawable.bg_card else R.drawable.strip_wait
+        )
     }
 
     // -------------------------------------------------------------------- share
@@ -319,6 +412,7 @@ class MainActivity : AppCompatActivity() {
         const val REFRESH_TIMEOUT_MS = 30_000L
 
         /** Consensus coinbase maturity. Stated in blocks, never as a duration. */
-        const val MATURITY_BLOCKS = 100
+        /** Depth at which a coinbase becomes spendable. Consensus, not a guess. */
+        const val COINBASE_SPENDABLE_DEPTH = 101L
     }
 }

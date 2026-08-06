@@ -31,8 +31,14 @@
     <string name="wallet_check_failed">Could not check just now. Your coins are safe; this is only the reading.</string>
 
     <string name="wallet_note_pending">%1$s arriving, not yet confirmed</string>
-    <string name="wallet_note_immature">%1$s newly mined, spendable in about %2$d more blocks</string>
-    <string name="wallet_note_both">%1$s arriving &#183; %2$s spendable in about %3$d more blocks</string>
+    <!-- Maturity in BLOCKS, never as a time: spacing on this chain is not
+         constant, so a duration would be a guess presented as a fact. The
+         _unknown variants are used when the node did not report a depth, and
+         they deliberately carry no number at all. -->
+    <string name="wallet_note_immature">%1$s newly mined, spendable in %2$d more blocks</string>
+    <string name="wallet_note_both">%1$s arriving &#183; %2$s spendable in %3$d more blocks</string>
+    <string name="wallet_note_immature_unknown">%1$s newly mined, not spendable yet</string>
+    <string name="wallet_note_both_unknown">%1$s arriving &#183; %2$s newly mined, not spendable yet</string>
 
     <string name="wallet_receive_title">Receive</string>
     <string name="wallet_receive_hint">Share this address to be paid. It is yours and does not change.</string>
@@ -46,6 +52,12 @@
     <string name="wallet_backup_body">Twelve words are the only way to get this wallet back if the phone is lost or the app is removed.</string>
     <string name="wallet_backup_action">Show my phrase</string>
 
+    <!-- Shown in the same card once the phrase has been confirmed: no longer a
+         nag, but still the only way back to the words. -->
+    <string name="wallet_qr_description">QR code of your receiving address</string>
+    <string name="wallet_phrase_title">Recovery phrase</string>
+    <string name="wallet_phrase_body">Your twelve words restore this wallet on any device. Check them against your paper copy whenever you want.</string>
+
     <!-- Node state in plain words. The mining gate reads "Paused: switched off"
          permanently in this build, so none of it is used here. -->
     <string name="wallet_node_starting">Starting&#8230;</string>
@@ -56,4 +68,104 @@
 
     <string name="wallet_chain_line">Block %1$d &#183; %2$d peers</string>
     <string name="wallet_chain_line_unknown">Not connected yet</string>
+
+    <string name="wallet_send">Send</string>
+
+    <!--
+      Overrides src/main. A same-named string in a flavour REPLACES main's, which
+      is how the shared SetupActivity gets wallet wording without a second copy
+      of the activity. Main's version opens "PCoin pays your mining rewards into
+      a wallet on this phone", which is a promise this build does not keep: there
+      is no miner in it.
+    -->
+    <string name="setup_intro">This app holds PCoin on this phone. A 12-word recovery phrase is the only way to get your coins back if the phone is lost, reset, or the app is uninstalled.</string>
+    <string name="done_created">Your wallet is set up. Coins sent to this address are yours:\n\n%1$s\n\nThis address comes from your recovery phrase, so those words bring it back on any device.</string>
+    <string name="done_restored">Your wallet has been restored. Your address is:\n\n%1$s\n\n%2$s</string>
+    <string name="backup_key_lost">%1$s\n\nYour coins are NOT affected &#8212; the wallet on this phone still holds them. What is lost is only the stored copy of the words. If you have your paper copy, nothing is wrong. If you do not, create a new wallet and move your coins to it.</string>
+    <string name="backup_none_note">This wallet was created before recovery phrases existed. It still works and its coins are still yours, but there are no words that can bring it back if this phone is lost. Create a recovery phrase from the main screen to protect them.</string>
+    <string name="wallet_setup_incomplete">Wallet setup was never finished. A recovery phrase is stored on this phone, but no wallet was built from it &#8212; so those words do NOT yet recover anything. Finish setup to fix this.</string>
+
+    <!-- Send. The wording distinguishes what was ASKED for from what the node
+         actually BUILT, because only the second one is about to be broadcast. -->
+    <string name="send_title">Send PCoin</string>
+    <string name="send_available">Available to spend: %1$s</string>
+    <string name="send_available_unknown">Waiting for your balance&#8230;</string>
+
+    <string name="send_to_label">To this address</string>
+    <string name="send_to_hint">pc1&#8230;</string>
+    <string name="send_amount_label">Amount</string>
+    <string name="send_amount_hint">0.00000000</string>
+    <string name="send_max">All</string>
+    <string name="send_review">Check this send</string>
+
+    <string name="send_check_title">Check before sending</string>
+    <string name="send_check_hint">Nothing has been sent yet. These are the real figures from the transaction that was just built.</string>
+    <string name="send_review_amount">Amount: %1$s</string>
+    <string name="send_review_fee">Network fee: %1$s</string>
+    <string name="send_review_total">Leaves your wallet: %1$s</string>
+    <string name="send_review_all">Sending everything, minus the fee</string>
+    <string name="send_confirm">Send now</string>
+    <string name="send_back">Change something</string>
+
+    <string name="send_preparing">Checking&#8230;</string>
+    <string name="send_sending">Sending&#8230;</string>
+
+    <string name="send_ok_title">Sent</string>
+    <string name="send_ok_body">Your payment is on its way. It will show as confirmed once it is in a block.</string>
+    <string name="send_failed_title">Not sent</string>
+    <string name="send_done">Done</string>
+
+    <string name="send_err_no_address">Enter the address you want to pay.</string>
+    <string name="send_err_amount_empty">Enter an amount, or tap All.</string>
+    <string name="send_err_amount_bad">That is not an amount. Use digits and a dot, like 1.5</string>
+    <string name="send_err_amount_decimals">PCoin has 8 decimal places. That is more.</string>
+    <string name="send_err_amount_zero">Enter an amount greater than zero.</string>
+    <string name="send_err_amount_negative">Enter a positive amount.</string>
+    <string name="send_err_amount_huge">That is more PCoin than will ever exist.</string>
+    <string name="send_err_amount_dust">That amount is too small to send.</string>
+    <string name="send_err_syncing">Wait until this phone has caught up before sending.</string>
+    <string name="send_busy_back">Hold on &#8212; finishing this payment.</string>
+
+    <!-- History. Maturity is always in blocks: this chain's spacing is not
+         constant, so any time estimate would be a guess dressed as a fact. -->
+    <string name="wallet_history">History</string>
+    <string name="history_title">Activity</string>
+    <string name="history_refresh">Refresh</string>
+    <string name="history_loading">Loading your activity&#8230;</string>
+    <string name="history_loading_short">Loading&#8230;</string>
+    <string name="history_empty">Nothing yet. Payments in and out will appear here.</string>
+    <string name="history_empty_syncing">This phone is still catching up. Your transactions will appear once it has.</string>
+    <string name="history_count_capped">Showing the most recent %1$d</string>
+    <string name="history_failed">Could not load your activity: %1$s</string>
+    <string name="history_no_service">The wallet service is not running yet.</string>
+
+    <string name="history_received">Received</string>
+    <string name="history_sent">Sent</string>
+    <string name="history_mined">Mined</string>
+    <string name="history_maturing">Mined &#8212; not spendable yet</string>
+    <string name="history_conflicted">Replaced</string>
+
+    <string name="history_status_pending">Waiting to be included in a block</string>
+    <string name="history_status_catching_up">This phone is still catching up &#8212; not confirmed yet as far as it can see</string>
+
+    <plurals name="history_count">
+        <item quantity="one">%1$d transaction</item>
+        <item quantity="other">%1$d transactions</item>
+    </plurals>
+    <plurals name="history_status_maturing">
+        <item quantity="one">Spendable in %1$d more block</item>
+        <item quantity="other">Spendable in %1$d more blocks</item>
+    </plurals>
+    <plurals name="history_status_confirmed">
+        <item quantity="one">%1$d confirmation</item>
+        <item quantity="other">%1$d confirmations</item>
+    </plurals>
+    <plurals name="history_status_confirmed_fee">
+        <item quantity="one">%1$d confirmation &#183; fee %2$s</item>
+        <item quantity="other">%1$d confirmations &#183; fee %2$s</item>
+    </plurals>
+    <plurals name="history_status_conflicted">
+        <item quantity="one">Superseded by another transaction %1$d block ago</item>
+        <item quantity="other">Superseded by another transaction %1$d blocks ago</item>
+    </plurals>
 </resources>

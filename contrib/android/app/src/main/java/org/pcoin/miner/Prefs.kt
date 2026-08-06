@@ -250,29 +250,23 @@ class Prefs(context: Context) {
         }
 
     /**
-     * The user pressed "I received it" for the test payment.
-     *
-     * This is the whole safety property of the feature: a valid address that
-     * nobody holds the key to accepts coins silently and burns every future
-     * reward, and `verifymessage` cannot verify a bech32 address in this fork
-     * (common/signmessage.cpp rejects anything that is not P2PKH), so a signed
-     * challenge is not available. A confirmed payment the user can see in their
-     * own wallet is the only proof left. If they never press it, the app never
-     * forwards more than the 1 PCN probe.
-     */
-    var forwardProbeAcked: Boolean
-        get() = sp.getBoolean(KEY_FORWARD_PROBE_ACKED, false)
-        @Suppress("ApplySharedPref")
-        set(value) {
-            sp.edit().putBoolean(KEY_FORWARD_PROBE_ACKED, value).commit()
-        }
-
-    /**
      * The probe reached 6 confirmations, as the node reported at the time.
      *
-     * Recorded rather than re-read, so the acknowledge button does not depend on
-     * a live query that could fail: this is a node-confirmed fact the app then
-     * owns. Arming requires BOTH this and [forwardProbeAcked].
+     * Recorded rather than re-read, so arming does not depend on a live query
+     * that could fail: this is a node-confirmed fact the app then owns. It is
+     * now the ONLY condition for arming.
+     *
+     * There used to be a second one -- a human pressing "I received it" -- and
+     * what that gave up is worth stating where the flag lives, not only where it
+     * is read. A valid address nobody holds the key to accepts coins silently
+     * and burns every future reward, and `verifymessage` cannot verify a bech32
+     * address in this fork (common/signmessage.cpp rejects anything that is not
+     * P2PKH), so a signed challenge is not available either. The probe therefore
+     * proves the build/sign/broadcast path works and that the network accepts
+     * the address; it does NOT prove the coins are spendable by anyone. That
+     * last check is the operator watching the destination wallet -- which is the
+     * trade that was accepted, so that a device does not need someone physically
+     * at it before it can forward.
      */
     var forwardProbeConfirmed: Boolean
         get() = sp.getBoolean(KEY_FORWARD_PROBE_CONFIRMED, false)
@@ -368,7 +362,6 @@ class Prefs(context: Context) {
         private const val KEY_FORWARD_STATE = "forward_state"
         private const val KEY_FORWARD_PENDING_ADDRESS = "forward_pending_address"
         private const val KEY_FORWARD_PROBE_TXID = "forward_probe_txid"
-        private const val KEY_FORWARD_PROBE_ACKED = "forward_probe_acked"
         private const val KEY_FORWARD_PROBE_CONFIRMED = "forward_probe_confirmed"
         private const val KEY_FORWARD_RECORD = "forward_sweep_record"
         private const val KEY_FORWARD_LAST_TXID = "forward_last_txid"

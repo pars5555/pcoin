@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Wallet launcher colour. Deliberately different from the miner's, because both
+  apps can be installed on the same phone and share the same monogram.
+  Matches @color/brand on the wallet's own screens.
+-->
+<resources>
+    <color name="ic_launcher_background">#0F6E5C</color>
+</resources>

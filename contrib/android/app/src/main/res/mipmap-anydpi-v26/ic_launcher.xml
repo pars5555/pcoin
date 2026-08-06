@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive launcher icon, API 26+.
+
+  `ic_launcher_background` is defined per FLAVOUR, which is the whole point: the
+  miner and the wallet are designed to sit on the same phone, and before this
+  they showed the identical stock compass glyph distinguishable only by caption.
+  Same monogram, different colour, so they are told apart at a glance.
+
+  API 24-25 falls back to mipmap/ic_launcher.xml, which has to exist for those
+  two API levels since minSdk is 24.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+    <monochrome android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>

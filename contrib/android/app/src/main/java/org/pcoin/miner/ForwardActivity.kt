@@ -377,7 +377,6 @@ class ForwardActivity : AppCompatActivity() {
                 // picked up an unlocked phone: a swapped address cannot receive a
                 // full sweep until a test payment has been acknowledged.
                 prefs.forwardProbeTxid = null
-                prefs.forwardProbeAcked = false
                 prefs.forwardProbeConfirmed = false
                 prefs.forwardState = ForwardState.PROBING_PENDING
             }
@@ -412,7 +411,6 @@ class ForwardActivity : AppCompatActivity() {
             prefs.forwardAddress = null
             prefs.forwardPendingAddress = null
             prefs.forwardProbeTxid = null
-            prefs.forwardProbeAcked = false
             prefs.forwardProbeConfirmed = false
             prefs.forwardState = ForwardState.HOLDING
         }

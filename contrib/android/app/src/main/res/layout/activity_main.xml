@@ -513,14 +513,6 @@
                 android:text="@string/forward_card_set" />
 
             <Button
-                android:id="@+id/forward_ack"
-                style="?android:attr/buttonStyleSmall"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/forward_card_probe_ack"
-                android:visibility="gone" />
-
-            <Button
                 android:id="@+id/forward_copy_txid"
                 style="?android:attr/buttonStyleSmall"
                 android:layout_width="wrap_content"

@@ -43,16 +43,30 @@ gradlew.bat :app:assembleWalletDebug    REM app/build/outputs/apk/wallet/debug/
 There is no bare `assembleDebug` any more, and the output path gained a flavour
 directory. Anything still pointing at `apk/debug/app-debug.apk` is stale.
 
-**Do not run a bare `gradlew.bat testMinerDebugUnitTest`.** The suite includes an
-end-to-end forwarding test that drives a real phone over adb. Scope it:
+### Tests
+
+Run the whole suite. It is device-free.
 
 ```
-gradlew.bat :app:testMinerDebugUnitTest --tests "org.pcoin.miner.wallet.*"
+gradlew.bat :app:testWalletDebugUnitTest
 ```
+
+125 cases across seven classes: `UserSendTest` (24), `ForwardPolicyTest` (62),
+`AmountsTest` (10), `BalanceTrustTest` (11) in package `org.pcoin.miner`, plus
+`DerivationVectorsTest` (13), `PublishedVectorsTest` (1) and `RedactTest` (4) in
+`org.pcoin.miner.wallet`.
+
+> Earlier revisions of this file told you to scope every run to
+> `--tests "org.pcoin.miner.wallet.*"` because of an end-to-end forwarding test
+> that drove a real phone over adb. **That test no longer exists** — there is no
+> `ForwardSandboxE2ETest`, no `SandboxHarness`, no `androidTest` source set, and
+> nothing matching in git history. The filter is now actively harmful: it runs 18
+> of 125 cases and skips *every* send-path test, which is the money-moving half
+> of the app. Use a filter only to narrow a specific investigation.
 
 `namespace` stays `org.pcoin.miner` for both flavours — it is only the
-R/BuildConfig package, which is why the test filter above is unchanged.
-`applicationId` is what makes them different apps.
+R/BuildConfig package, which is why the test package names do not mention the
+flavour. `applicationId` is what makes them different apps.
 
 Note for anything that automates the UI: **uiautomator reports resource-ids under
 the applicationId**, so they are `am.pc.pcoinminer:id/…`, not the namespace.
@@ -66,9 +80,41 @@ change of signing key, so losing it means every user must uninstall — and an
 uninstall destroys the wallet inside. Debug builds are used on the test fleet
 precisely so wallets survive redeployment.
 
-The build reads `storeFile` / `storePassword` / `keyAlias` from
-`local.properties`, falling back to the `PCOIN_KEYSTORE` and
-`PCOIN_KEYSTORE_PASSWORD` environment variables.
+The build reads signing configuration from **`signing.properties`** in this
+directory — *not* `local.properties`, which holds only `sdk.dir`. Keys placed in
+`local.properties` are silently ignored, and the release build then falls back to
+the debug key without saying so (`app/build.gradle.kts:9-16, 177-178`).
+
+```properties
+# contrib/android/signing.properties  -- never commit; ignored by .gitignore
+storeFile=D:\\pc.am\\pcoin-release.keystore
+storePassword=...
+keyAlias=...
+keyPassword=...
+
+# The DEBUG keystore is pinned here too, and that matters more than it looks.
+# Gradle's default ~/.android/debug.keystore was lost and silently regenerated
+# once, producing a build Android refused to install over the existing one --
+# and the recovery for that is an uninstall, which destroys the wallet.
+debugStoreFile=D:\\pc.am\\pcoin-debug.keystore
+debugStorePassword=android
+debugKeyAlias=androiddebugkey
+debugKeyPassword=android
+```
+
+`storeFile` / `storePassword` fall back to the `PCOIN_KEYSTORE` and
+`PCOIN_KEYSTORE_PASSWORD` environment variables; `debugStoreFile` falls back to
+`PCOIN_DEBUG_KEYSTORE`.
+
+Before shipping anything, check which key actually signed it:
+
+```
+apksigner verify --print-certs app\build\outputs\apk\wallet\debug\app-wallet-debug.apk
+```
+
+The debug certificate must report SHA-256 `de1fd650…`. A different digest means
+the pinned keystore was not used, and installing that build over an existing one
+will fail.
 
 ## Layout
 

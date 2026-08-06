@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The PCoin "P" monogram, shared by both flavours.
+
+  108x108 is the adaptive-icon viewport; the launcher may crop anything outside
+  the central 66x66 safe circle, so the glyph is kept well inside it. Drawn as a
+  vector rather than shipped as PNGs at five densities: it is two paths, and a
+  vector cannot be the wrong size on a device nobody tested.
+
+  fillType="evenOdd" is what cuts the counter out of the bowl. With the default
+  nonzero winding the inner path would simply be painted over and the P would
+  come out solid.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M34,26 h24 a15,15 0 0 1 0,30 h-10 v26 h-14 z M48,36 h9 a5.5,5.5 0 0 1 0,11 h-9 z" />
+</vector>

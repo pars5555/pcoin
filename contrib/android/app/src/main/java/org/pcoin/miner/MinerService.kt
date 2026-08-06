@@ -127,6 +127,11 @@ class MinerService : Service() {
         prefs = Prefs(this)
         node = NodeController(this)
         forward = ForwardEngine(this, node)
+        // Published so a user-initiated send can reuse THIS engine and THIS
+        // node connection. Building a second ForwardEngine in an Activity would
+        // give the app two independent RPC clients over one wallet, which is
+        // how two transactions come to select the same coins.
+        liveEngine = forward
         createChannel()
         // startForegroundService() gives us ~5 s to show a notification, so do
         // it before anything that could block.
@@ -226,6 +231,7 @@ class MinerService : Service() {
 
     override fun onDestroy() {
         alive = false
+        liveEngine = null
         MinerState.markStopped()
         worker?.interrupt()
 
@@ -494,9 +500,16 @@ class MinerService : Service() {
                 height = stats.height,
                 headers = stats.headers,
                 verificationProgress = stats.verificationProgress,
+                initialBlockDownload = stats.initialBlockDownload,
+                // Stamped ONLY here, on the path where a stats round trip
+                // actually came back. Every other update() in this file copies
+                // the previous value forward, which is what makes it mean
+                // "when the node last answered" rather than "when we last drew".
+                chainReadAtMs = System.currentTimeMillis(),
                 peers = stats.peers,
                 balanceConfirmed = total.confirmed,
                 balanceImmature = total.immature,
+                immatureBestConfirmations = total.bestImmatureConfirmations,
                 balancePending = total.pending,
                 balanceInFlight = total.inFlight,
                 balanceInFlightCount = total.inFlightCount,
@@ -815,10 +828,15 @@ class MinerService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        val title = if (s.gate == Gate.MINING) {
-            "Mining — ${Fmt.hashrate(s.hashesPerSec)}"
-        } else {
-            s.gateText()
+        // gateText() describes the MINING gate, which does not exist in the
+        // wallet build: wantsMining() is `BuildConfig.MINING && ...`, so the gate
+        // settles on PAUSED_BY_USER and the notification read "Paused: switched
+        // off" -- permanently, on the lock screen, about a switch the wallet
+        // does not have. The body below is already flavour-correct.
+        val title = when {
+            s.gate == Gate.MINING -> "Mining — ${Fmt.hashrate(s.hashesPerSec)}"
+            !BuildConfig.MINING -> "PCoin Wallet"
+            else -> s.gateText()
         }
         val body = buildString {
             if (s.gate == Gate.MINING) {
@@ -958,6 +976,18 @@ class MinerService : Service() {
 
     companion object {
         const val TAG = "PCoinService"
+
+        /**
+         * The running service's engine, or null when no service is up.
+         *
+         * Null is a real answer and callers must treat it as one: it means the
+         * node is not being supervised, so there is nothing to send with. It is
+         * never a reason to build a second engine.
+         */
+        @Volatile
+        private var liveEngine: ForwardEngine? = null
+
+        fun engine(): ForwardEngine? = liveEngine
 
         const val ACTION_START = "org.pcoin.miner.action.START"
         const val ACTION_STOP = "org.pcoin.miner.action.STOP"

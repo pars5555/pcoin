@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Wallet-only additions. Flavour manifests MERGE into src/main's rather than
+  replacing it, so everything already declared there (the service, setup, backup,
+  permissions) still applies and is not repeated here.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!-- Send is reached from the home screen only, never from outside the
+             app: no intent-filter, not exported. A payment screen that any other
+             app can launch with extras is a phishing surface. -->
+        <!--
+          configChanges is load-bearing, not a shortcut. Without it a rotation
+          while the broadcast is in flight destroys the activity, and the reply
+          carrying the txid arrives at a dead screen: the payment went through
+          and the person who made it is looking at a blank compose form. Handling
+          the config change keeps one instance alive for the whole send.
+        -->
+        <activity
+            android:name=".SendActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+            android:exported="false"
+            android:label="@string/send_title"
+            android:launchMode="singleTop"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- Read-only, so a rotation costs at most one reload. -->
+        <activity
+            android:name=".HistoryActivity"
+            android:exported="false"
+            android:label="@string/history_title" />
+    </application>
+</manifest>

@@ -77,11 +77,23 @@
                 android:textColor="@color/ink_muted"
                 android:textSize="15sp" />
 
+            <!--
+              autoSize, not maxLines alone. Fmt.coins always renders eight
+              decimals plus " PCN", which overflows a 360dp phone at 38sp and
+              clipped the least-significant end with no ellipsis - the decimals
+              and the unit simply vanished, and it got worse with the system
+              font scale. Shrinking to fit keeps the whole figure legible; the
+              floor of 20sp is still a headline.
+            -->
             <TextView
                 android:id="@+id/balance_amount"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
+                android:autoSizeMaxTextSize="38sp"
+                android:autoSizeMinTextSize="20sp"
+                android:autoSizeStepGranularity="1sp"
+                android:autoSizeTextType="uniform"
                 android:maxLines="1"
                 android:textColor="@color/ink"
                 android:textSize="38sp"
@@ -110,18 +122,50 @@
                 android:textColor="@color/ink_muted"
                 android:textSize="13sp" />
 
-            <Button
-                android:id="@+id/refresh_button"
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="14dp"
-                android:background="@drawable/btn_primary"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/send_button"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:background="@drawable/btn_primary"
+                    android:minHeight="52dp"
+                    android:text="@string/wallet_send"
+                    android:textAllCaps="false"
+                    android:textColor="@color/on_brand"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+
+                <Button
+                    android:id="@+id/refresh_button"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="10dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/btn_ghost"
+                    android:minHeight="52dp"
+                    android:text="@string/wallet_refresh"
+                    android:textAllCaps="false"
+                    android:textColor="@color/brand"
+                    android:textSize="15sp" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/history_button"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/btn_ghost"
                 android:minHeight="52dp"
-                android:text="@string/wallet_refresh"
+                android:text="@string/wallet_history"
                 android:textAllCaps="false"
-                android:textColor="@color/on_brand"
-                android:textSize="16sp"
-                android:textStyle="bold" />
+                android:textColor="@color/brand"
+                android:textSize="15sp" />
         </LinearLayout>
 
         <!-- =========================== receive =========================== -->
@@ -149,6 +193,20 @@
                 android:text="@string/wallet_receive_hint"
                 android:textColor="@color/ink_muted"
                 android:textSize="14sp" />
+
+            <!--
+              Width-capped and centred rather than match_parent: a QR the full
+              width of a modern phone is needlessly huge, and the view draws
+              whole-pixel modules on a white plate with its own quiet zone, so
+              it must not be stretched or themed.
+            -->
+            <org.pcoin.miner.QrView
+                android:id="@+id/receive_qr"
+                android:layout_width="240dp"
+                android:layout_height="240dp"
+                android:layout_gravity="center_horizontal"
+                android:layout_marginTop="14dp"
+                android:contentDescription="@string/wallet_qr_description" />
 
             <TextView
                 android:id="@+id/receive_address"
@@ -208,6 +266,7 @@
             android:visibility="gone">
 
             <TextView
+                android:id="@+id/backup_title"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="@string/wallet_backup_title"
@@ -216,6 +275,7 @@
                 android:textStyle="bold" />
 
             <TextView
+                android:id="@+id/backup_body"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
@@ -236,9 +296,8 @@
                 android:textSize="15sp" />
         </LinearLayout>
 
-        <!-- Send and transaction history are the next block of work. They are
-             deliberately absent rather than present-and-dead: a Send button that
-             opens nothing is worse than no Send button. -->
+        <!-- Transaction history is the next block of work. It is deliberately
+             absent rather than present-and-dead. -->
 
         <TextView
             android:id="@+id/chain_line"

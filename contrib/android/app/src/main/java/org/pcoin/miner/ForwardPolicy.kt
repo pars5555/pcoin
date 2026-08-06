@@ -322,6 +322,76 @@ object ForwardPolicy {
     fun maxFeeSat(inputs: Int): Long = ceil(10.0 * estimatedVsize(inputs)).toLong()
 
     /**
+     * The same ceiling for a transaction the NODE chose the inputs for.
+     *
+     * A user-directed send does not pass an input set, so the count is only
+     * known after decoding. Two outputs rather than one adds 31 vbytes.
+     */
+    fun maxFeeSatFor(inputs: Int, outputs: Int): Long =
+        ceil(10.0 * (10.5 + 68.0 * inputs + 31.0 * outputs)).toLong()
+
+    /**
+     * A user-directed send, checked against the transaction the node actually
+     * built rather than the one we asked for.
+     *
+     * Everything here is asserted on the DECODED bytes. The request said what we
+     * wanted; this says what we got, and only the second one is about to be
+     * broadcast.
+     *
+     * The change assertion is the one that matters, and it is the same reasoning
+     * as [verifyProbe]: a mis-built transaction could pay the destination
+     * perfectly and quietly send the remaining balance to a stranger. Change
+     * must be ours AND on a change descriptor.
+     *
+     * @param sendMax true when the user asked to empty the wallet, in which case
+     *   there is no change and exactly one output is expected.
+     */
+    fun verifyUserSend(
+        decoded: DecodedTx,
+        destination: String,
+        expectedScriptHex: String,
+        expectedTxid: String,
+        requestedSat: Long,
+        sendMax: Boolean,
+        inputValueSat: Long,
+    ): String? {
+        if (decoded.txid != expectedTxid) return "txid does not match the decoded transaction"
+        if (decoded.inputs.isEmpty()) return "the transaction spends nothing"
+
+        val expectedOutputs = if (sendMax) 1 else 2
+        // Core folds sub-dust change into the fee, so an exact-amount send can
+        // legitimately come back with one output. More than expected never can.
+        if (decoded.outputs.size > expectedOutputs) {
+            return "expected at most $expectedOutputs outputs, got ${decoded.outputs.size}"
+        }
+        if (decoded.outputs.isEmpty()) return "the transaction pays nothing"
+
+        val paidIndex = decoded.outputs.indexOfFirst { it.address == destination }
+        if (paidIndex < 0) return "no output pays the address you entered"
+        val paid = decoded.outputs[paidIndex]
+
+        if (!scriptMatches(paid.scriptHex, expectedScriptHex)) {
+            return "the output script does not match that address"
+        }
+        if (!sendMax && paid.valueSat != requestedSat) {
+            return "the amount built is ${paid.valueSat} sat, not the ${requestedSat} sat you asked for"
+        }
+
+        if (decoded.outputs.size == 2) {
+            val change = decoded.outputs[1 - paidIndex]
+            if (!change.isMine) return "change does not come back to this wallet"
+            if (!change.isChange) return "change is not on a change descriptor"
+        }
+
+        val outValue = decoded.outputs.sumOf { it.valueSat }
+        val fee = inputValueSat - outValue
+        if (fee <= 0) return "fee is not positive"
+        val ceiling = maxFeeSatFor(decoded.inputs.size, decoded.outputs.size)
+        if (fee > ceiling) return "fee $fee sat exceeds the $ceiling sat ceiling"
+        return null
+    }
+
+    /**
      * The formal floor: `max(1 PCN, 1000 x estimated fee)`. At 1 sat/vB the
      * second arm is 0.0011 PCN for one input, so it never binds today -- it is
      * here so that if this chain ever grows a fee market, the sweep stops being
@@ -585,6 +655,27 @@ object ForwardPolicy {
         /** Conflict seen twice, far enough apart. Now it may be acted on. */
         MARK_CONFLICTED,
     }
+
+    /**
+     * Whether a healthy observation should erase an earlier conflict sighting.
+     *
+     * The two-sightings rule ([CONFLICT_CONFIRM_MS]) only means anything if the
+     * clock is reset when the transaction turns out to be fine. Without this, a
+     * conflict noted once and then resolved by a reorg leaves `conflictSeenAtMs`
+     * set forever -- and the NEXT transient negative reading, hours or days
+     * later, satisfies `now - first >= CONFLICT_CONFIRM_MS` immediately and
+     * marks the record conflicted off a SINGLE observation. That is exactly the
+     * thing the delay exists to prevent, and reorgs are routine on this chain.
+     *
+     * Only a positive statement clears it: the wallet knows the transaction AND
+     * reports it at zero or more confirmations. An unreadable observation still
+     * resolves nothing, so it leaves the sighting standing.
+     */
+    fun clearsConflict(obs: TxObservation, record: SweepRecord): Boolean =
+        record.conflictSeenAtMs != 0L &&
+            obs.readable &&
+            obs.knownToWallet &&
+            obs.confirmations >= 0
 
     /**
      * Resolves a non-terminal record against one observation.

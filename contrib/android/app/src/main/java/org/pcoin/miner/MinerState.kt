@@ -87,6 +87,37 @@ object MinerState {
         val headers: Long = -1,
         val peers: Int = -1,
         val verificationProgress: Double = -1.0,
+        /**
+         * The node's own `initialblockdownload` flag.
+         *
+         * Defaults to TRUE, and that default is the point: before anything has
+         * been read, the honest answer to "has this node caught up" is no.
+         *
+         * `height >= headers` on its own is NOT a catch-up test. A node that has
+         * just started has height 0 and headers 0, which satisfies it trivially,
+         * and a wallet that trusts it will render a confident 0.00000000 for an
+         * account that holds real coins. That is not hypothetical: it was
+         * observed on the test device after an unclean restart, where the node
+         * came back at height 0 and the screen said "Up to date".
+         *
+         * The mining gate deliberately does NOT use this flag -- see
+         * [MinerService.isSyncing] -- because IsInitialBlockDownload() also
+         * latches true when the tip is simply older than 24 h, which on a chain
+         * this quiet would pause mining forever. Showing a balance and deciding
+         * to mine are different questions, and they get different tests.
+         */
+        val initialBlockDownload: Boolean = true,
+        /**
+         * When the chain and balance figures above were last actually READ from
+         * the node. 0 means never.
+         *
+         * Distinct from [updatedAtMs], which advances on every publish including
+         * the ones that carry forward an old reading because the RPC failed.
+         * A screen that wants to say "updated just now" has to key off THIS, or
+         * it is reporting how recently it drew itself -- which it can do for
+         * hours over a node that stopped answering.
+         */
+        val chainReadAtMs: Long = 0L,
 
         // --- wallet ---
         /**
@@ -106,6 +137,14 @@ object MinerState {
          * situation it describes (a wallet with coins reporting 0.00 everywhere)
          * is exactly the one that reads as "my money is gone".
          */
+        /**
+         * Depth of the closest-to-mature coinbase, or -1 when not known.
+         *
+         * Exists so a screen can say how many blocks are actually left instead
+         * of printing the constant 100 into a sentence that promises a
+         * countdown. -1 must render as "not spendable yet" with no number.
+         */
+        val immatureBestConfirmations: Long = -1L,
         val balanceInFlight: Double = -1.0,
         val balanceInFlightCount: Int = 0,
         val payoutAddress: String = "",
@@ -170,6 +209,32 @@ object MinerState {
                 gate == Gate.PAUSED_THERMAL ||
                 gate == Gate.PAUSED_TOO_HOT ||
                 gate == Gate.PAUSED_NO_TEMP
+
+        /**
+         * Whether a balance read from this node can be shown as fact.
+         *
+         * Three conditions, and all three earn their place:
+         *
+         *   heights have been READ at all -- -1 means the node did not answer,
+         *   which resolves nothing;
+         *
+         *   the node says it is out of initial block download -- this is the one
+         *   that catches a freshly restarted node sitting at height 0, where
+         *   `height >= headers` is trivially true and a wallet holding real
+         *   coins would be rendered as 0.00000000;
+         *
+         *   the tip is not behind the headers we already know about.
+         *
+         * Observed on the test device: a hard kill left the node coming back at
+         * `nBestHeight = 0` with `block tree size = 1`, re-syncing from genesis,
+         * while the screen said "Up to date" next to a zero balance. Two of the
+         * three conditions passed; this flag is the one that did not.
+         *
+         * Deliberately NOT used by the mining gate -- see [MinerService.isSyncing]
+         * for why initialblockdownload is the wrong test for that question.
+         */
+        val balanceIsTrustworthy: Boolean
+            get() = height >= 0 && headers >= 0 && !initialBlockDownload && height >= headers
 
         /** One short line for the notification and the status row. */
         fun gateText(): String = when (gate) {

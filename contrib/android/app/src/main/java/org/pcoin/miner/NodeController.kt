@@ -534,6 +534,14 @@ class NodeController(context: Context) {
          */
         val inFlight: Double = -1.0,
         val inFlightCount: Int = 0,
+        /**
+         * Depth of the closest-to-mature coinbase, or -1 for unknown.
+         *
+         * -1 covers three different situations that all mean the same thing to
+         * a caller: nothing is maturing, the node could not be asked, or it was
+         * not looked for. None of them licenses printing a number.
+         */
+        val bestImmatureConfirmations: Long = -1L,
     ) {
         val known: Boolean get() = confirmed >= 0 || immature >= 0
 
@@ -551,6 +559,11 @@ class NodeController(context: Context) {
                 add(pending, other.pending),
                 flight,
                 inFlightCount + other.inFlightCount,
+                // The DEEPEST of the two, because the question is "when does
+                // something become spendable" and the answer is whichever coin
+                // matures first. maxOf works on -1 too: an unknown side simply
+                // loses to a known one, and two unknowns stay unknown.
+                maxOf(bestImmatureConfirmations, other.bestImmatureConfirmations),
             )
         }
     }
@@ -634,12 +647,49 @@ class NodeController(context: Context) {
                 pending = pending,
                 inFlight = flight?.first ?: -1.0,
                 inFlightCount = flight?.second ?: 0,
+                // Only asked when there is actually something maturing, so the
+                // normal case costs no extra round trip.
+                bestImmatureConfirmations = if (immature > 0.0) bestImmature(wallet) else -1L,
             )
         }
     } catch (e: IOException) {
         // Unknown, not zero. Showing 0.00 for a wallet whose balance simply
         // could not be read would look exactly like the money being gone.
         null
+    }
+
+    /**
+     * Depth of the most-confirmed coinbase that is still immature.
+     *
+     * Answers "how many more blocks until SOMETHING becomes spendable", which is
+     * the question a person actually has when they see a maturing balance. The
+     * screen used to render a hardcoded 100 into a string that promises a
+     * remaining count, so it never moved.
+     *
+     * @return confirmations of the closest-to-mature coinbase, or -1 when the
+     *   node could not be asked or nothing is maturing. -1 is unknown, never
+     *   zero: a caller must render "not spendable yet" without a number rather
+     *   than claim the coins are one block away.
+     */
+    private fun bestImmature(wallet: String): Long = try {
+        val list = rpc.call(
+            "listtransactions",
+            JSONArray().put("*").put(IN_FLIGHT_SCAN).put(0).put(true),
+            wallet = wallet,
+            readTimeoutMs = STATS_TIMEOUT_MS,
+        ) as? JSONArray
+        var best = -1L
+        for (i in 0 until (list?.length() ?: 0)) {
+            val tx = list?.optJSONObject(i) ?: continue
+            if (tx.optString("category") != "immature") continue
+            // -1 default is deliberate: a missing confirmations field must not
+            // read as a coinbase sitting at depth 0.
+            val c = tx.optLong("confirmations", -1L)
+            if (c in 0 until COINBASE_SPENDABLE_DEPTH && c > best) best = c
+        }
+        best
+    } catch (e: IOException) {
+        -1L
     }
 
     /**
@@ -838,5 +888,8 @@ class NodeController(context: Context) {
          * generous window costs nothing in the normal case.
          */
         private const val IN_FLIGHT_SCAN = 50
+
+        /** Depth at which a coinbase becomes spendable. Consensus, not a guess. */
+        private const val COINBASE_SPENDABLE_DEPTH = 101L
     }
 }
