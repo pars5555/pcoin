@@ -26,6 +26,31 @@ class BootReceiver : BroadcastReceiver() {
             return
         }
         val prefs = Prefs(context)
+
+        if (!BuildConfig.MINING) {
+            // A WALLET still needs its node after a reboot or an upgrade.
+            //
+            // The gate below is `!prefs.miningEnabled`, and in a build with
+            // mining compiled out that pref can never be true -- both writers of
+            // `true` sit inside `if (BuildConfig.MINING)`. So this receiver used
+            // to return early for the wallet on BOTH triggers, leaving bitcoind
+            // down after a reboot AND after MY_PACKAGE_REPLACED, which is the
+            // fleet's own `adb install -r` upgrade path. A wallet with no node
+            // shows no balance, cannot receive, and stops evaluating forwarding.
+            //
+            // prepare() brings the node up without touching miningEnabled, which
+            // is the user's own intent and must not be written by a lifecycle
+            // event. A wallet with no address yet is still worth a node: it has
+            // a chain to sync and coins may already be on their way to it.
+            Log.i(TAG, "boot ($action): wallet build, bringing the node up")
+            try {
+                MinerService.prepare(context)
+            } catch (t: Throwable) {
+                Log.w(TAG, "boot prepare refused: ${t.message}")
+            }
+            return
+        }
+
         if (!prefs.miningEnabled) {
             Log.i(TAG, "boot: mining is switched off, staying idle")
             return

@@ -182,8 +182,27 @@ class MainActivity : AppCompatActivity() {
         // the app, "mining is on" should still mean mining is on. The gates
         // still apply -- the service re-evaluates charging and temperature
         // before it hashes anything.
-        if (prefs.miningEnabled && !isRunning(MinerState.snapshot) && notificationsGranted()) {
-            startMining()
+        if (BuildConfig.MINING) {
+            if (prefs.miningEnabled && !isRunning(MinerState.snapshot) && notificationsGranted()) {
+                startMining()
+            }
+        } else {
+            // THE WALLET MUST BRING ITS OWN NODE UP.
+            //
+            // The node is only ever started as part of the mining flow, so a
+            // build with mining compiled out never starts one at all: after
+            // first-run setup completes, the wallet sits at "Stopped" with no
+            // balance, no height and no way to receive -- observed on a phone
+            // holding real coins after a reinstall.
+            //
+            // ACTION_PREPARE is exactly the right entry point and already
+            // exists: it brings the node up WITHOUT touching prefs.miningEnabled,
+            // which is the user's own persisted intent and must not be written
+            // by a lifecycle event.
+            //
+            // Cheap to call unconditionally -- MinerService.startWorker() is a
+            // no-op when the control thread is already running.
+            if (!needsFirstRunSetup()) MinerService.prepare(this)
         }
 
         toggle.setOnClickListener {

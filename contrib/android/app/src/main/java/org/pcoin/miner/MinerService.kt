@@ -842,7 +842,16 @@ class MinerService : Service() {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setContentIntent(open)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stop)
+            .also {
+                // No "Stop" on a wallet. ACTION_STOP is stopSelf() +
+                // START_NOT_STICKY, so a mis-tap in the shade takes the node
+                // down -- and a wallet has no visible control to bring it back,
+                // because the mining toggle is gone. It also stops
+                // ForwardEngine.onTick, so forwarding quietly stops evaluating.
+                if (BuildConfig.MINING) {
+                    it.addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stop)
+                }
+            }
             .build()
     }
 

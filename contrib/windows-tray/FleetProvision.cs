@@ -115,22 +115,38 @@ namespace PCoinTray
             string canonical = Json.Str(v, "address");
             if (string.IsNullOrEmpty(canonical)) canonical = normalized;
 
-            bool mine = false;
+            // getaddressinfo is wallet-scoped. If it could not be asked, "is this
+            // our own address" is UNKNOWN -- and unknown is not "no".
+            //
+            // This used to print a note and carry on with mine=false. That made
+            // the own-wallet check unable to refuse anything, because
+            // ForwardPolicy.CheckAddress reaches OWN_WALLET only via
+            // `if (facts.IsMine)` and AddressVerdict has no UNKNOWN member. A
+            // provisioning run in the window this file itself recommends -- just
+            // after an upgrade, before the payout wallet is loaded -- would take
+            // a locally-owned address, write it as the destination, and the
+            // machine would then sweep its own coins back to itself forever,
+            // burning a fee every time, while reporting successful forwards.
+            //
+            // Refuse instead. ForwardForms does the same thing for the same
+            // reason: "Could not ask. That is not evidence that the address is
+            // not ours."
+            bool mine;
             var mi = rpc.Call(payoutWallet, "getaddressinfo", "[" + Json.Quote(canonical) + "]", 20000);
             if (mi.Ok)
             {
                 bool? m = Json.Bool(Json.Obj(mi.Result), "ismine");
                 mine = m.HasValue && m.Value;
             }
-            // getaddressinfo is wallet-scoped. If it could not be asked, "is this
-            // our own address" stays unknown -- and unknown is not "no". Say so
-            // rather than letting a silent false through, which is the exact
-            // failure that once discarded a payout address.
             else
             {
-                Console.WriteLine("NOTE: could not ask wallet '" + payoutWallet + "' whether it owns this address ("
+                Console.WriteLine("REFUSED: could not ask wallet '" + payoutWallet
+                                  + "' whether it already owns this address ("
                                   + RpcClient.Sanitize(mi.Error ?? "no answer") + ").");
-                Console.WriteLine("      The own-wallet check is therefore not conclusive below.");
+                Console.WriteLine("Nothing was written. Load the payout wallet and run this again --");
+                Console.WriteLine("an unanswered ownership check is not evidence that the address is not ours,");
+                Console.WriteLine("and forwarding to our own address would burn a fee on every sweep forever.");
+                return 7;
             }
 
             var facts = new AddressFacts
