@@ -142,10 +142,37 @@ class HistoryActivity : AppCompatActivity() {
 
             rowStatus.text = statusLine(e)
 
-            val when_ = if (e.timeSec > 0) stamp.format(Date(e.timeSec * 1000L)) else ""
+            val when_ = if (e.timeSec > 0) stamp.format(Date(e.timeSec * 1000L)) + relative(e.timeSec) else ""
             detail.text = if (when_.isEmpty()) e.txid else "$when_\n${e.txid}"
             rows.addView(v)
         }
+    }
+
+    /**
+     * " (3 hours 12 minutes ago)" for anything within the last day, else "".
+     *
+     * Only the last 24 hours, because that is the window where "when did this
+     * happen" is a live question. Past that the timestamp already answers it and
+     * a running count of days would just be noise.
+     *
+     * A transaction timestamped in the FUTURE gets nothing rather than a
+     * negative or a cheerful "0 minutes ago". That is not hypothetical here:
+     * block timestamps on this chain are only required to beat the median of
+     * the last eleven, so they are not monotonic in height and a block can
+     * legitimately carry a time a little ahead of the clock reading it.
+     */
+    private fun relative(timeSec: Long): String {
+        val deltaSec = System.currentTimeMillis() / 1000L - timeSec
+        if (deltaSec < 0 || deltaSec >= 24 * 3600) return ""
+        val hours = deltaSec / 3600
+        val minutes = (deltaSec % 3600) / 60
+        val parts = when {
+            hours > 0 -> resources.getQuantityString(R.plurals.history_rel_hours, hours.toInt(), hours) +
+                " " + resources.getQuantityString(R.plurals.history_rel_minutes, minutes.toInt(), minutes)
+            minutes > 0 -> resources.getQuantityString(R.plurals.history_rel_minutes, minutes.toInt(), minutes)
+            else -> return " " + getString(R.string.history_rel_just_now)
+        }
+        return " " + getString(R.string.history_rel_ago, parts)
     }
 
     private fun statusLine(e: ForwardEngine.HistoryEntry): String = when {

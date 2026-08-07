@@ -156,6 +156,18 @@
     <string name="history_conflicted">Replaced</string>
 
     <string name="history_status_pending">Waiting to be included in a block</string>
+
+    <!-- Relative age, shown next to the timestamp for the last 24 hours only. -->
+    <string name="history_rel_ago">(%1$s ago)</string>
+    <string name="history_rel_just_now">(just now)</string>
+    <plurals name="history_rel_hours">
+        <item quantity="one">%1$d hour</item>
+        <item quantity="other">%1$d hours</item>
+    </plurals>
+    <plurals name="history_rel_minutes">
+        <item quantity="one">%1$d minute</item>
+        <item quantity="other">%1$d minutes</item>
+    </plurals>
     <string name="history_status_catching_up">This phone is still catching up &#8212; not confirmed yet as far as it can see</string>
 
     <plurals name="history_count">

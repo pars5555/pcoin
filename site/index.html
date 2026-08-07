@@ -162,6 +162,38 @@
   }
   .honest-box b{color:var(--text)}
 
+  /* hashrate calculator */
+  .calc-shell{
+    border:1px solid var(--line);border-radius:var(--radius);padding:22px;
+    background:var(--panel);margin-top:24px;
+  }
+  .calc-controls{display:flex;gap:22px;flex-wrap:wrap;margin-bottom:22px}
+  .calc-field{display:flex;flex-direction:column;gap:8px;flex:1 1 260px;min-width:0}
+  .calc-field>span{font-size:.9rem;color:var(--muted)}
+  .calc-field>span b{color:var(--text)}
+  .calc-field select,.calc-field input[type=range]{
+    width:100%;max-width:100%;box-sizing:border-box;
+  }
+  .calc-field select{
+    background:var(--bg);color:var(--text);border:1px solid var(--line);
+    border-radius:10px;padding:11px 12px;font:inherit;font-size:.95rem;
+  }
+  .calc-field input[type=range]{accent-color:var(--teal);height:34px}
+  .calc-results{
+    display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));
+  }
+  .calc-cell{
+    background:var(--bg);border:1px solid var(--line-soft);border-radius:12px;padding:14px 16px;
+    min-width:0;
+  }
+  .calc-label{display:block;font-size:.8rem;color:var(--dim);margin-bottom:6px}
+  .calc-value{
+    display:block;font-size:1.35rem;font-weight:700;color:var(--text);
+    font-family:var(--mono);word-break:break-word;
+  }
+  .calc-note{margin-top:16px;font-size:.85rem;color:var(--dim)}
+  .calc-note b{color:var(--muted)}
+
   /* parameters table */
   .table-shell{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);overflow-x:auto}
   table.params{width:100%;border-collapse:collapse;min-width:560px}
@@ -282,6 +314,7 @@
     <nav class="links" aria-label="Site">
       <a href="#mission">Mission</a>
       <a href="#mining">Mining</a>
+      <a href="#calculator">Calculator</a>
       <a href="#parameters">Parameters</a>
       <a href="#get-started">Get started</a>
       <a href="#roadmap">Roadmap</a>
@@ -447,6 +480,66 @@
     </div>
   </section>
 
+  <!-- 3b · HASHRATE CALCULATOR -->
+  <section id="calculator" class="alt">
+    <div class="wrap">
+      <span class="kicker">Hashrate calculator</span>
+      <h2>What would your device actually do?</h2>
+      <p class="lede">
+        Pick a device and how much of it you want to give up. The figures for the listed devices are
+        <b>measured on those exact devices</b> running this software, not estimates. Difficulty is read live
+        from <a href="https://explorer.pc.am" rel="noopener">the explorer</a>, so the answer is against the
+        real network as it is right now.
+      </p>
+
+      <div class="calc-shell">
+        <div class="calc-controls">
+          <label class="calc-field">
+            <span>Device</span>
+            <select id="calc-device"></select>
+          </label>
+          <label class="calc-field">
+            <span>Threads: <b id="calc-threads-out">2</b></span>
+            <input id="calc-threads" type="range" min="1" max="16" value="2" step="1">
+          </label>
+        </div>
+
+        <div class="calc-results">
+          <div class="calc-cell">
+            <span class="calc-label">Your hash rate</span>
+            <span class="calc-value" id="calc-hs">&mdash;</span>
+          </div>
+          <div class="calc-cell">
+            <span class="calc-label">Share of network</span>
+            <span class="calc-value" id="calc-share">&mdash;</span>
+          </div>
+          <div class="calc-cell">
+            <span class="calc-label">Average time per block you find</span>
+            <span class="calc-value" id="calc-time">&mdash;</span>
+          </div>
+          <div class="calc-cell">
+            <span class="calc-label">Average PCN per day <span style="color:var(--dim)">&mdash; at today's difficulty</span></span>
+            <span class="calc-value" id="calc-day">&mdash;</span>
+          </div>
+        </div>
+
+        <p class="calc-note" id="calc-dilute"></p>
+        <p class="calc-note" id="calc-basis">Reading live figures from the explorer&hellip;</p>
+      </div>
+
+      <div class="honest-box" style="max-width:100%">
+        <b>Read this before you believe any of it.</b> Mining is a lottery, and these are
+        <i>averages over a long run</i>, not a schedule. A phone averaging one block every nine days may
+        find two next week and none for a month; that is what randomness looks like and it is not a fault.
+        The numbers also move: every miner who joins pushes difficulty up and everyone's share down, and
+        from height 2800 difficulty adjusts <b>every block</b>, so it reacts within minutes rather than
+        weeks. Thread counts above about half your cores usually return less than they cost, because
+        RandomX is bound by memory rather than clock speed &mdash; and on a phone the heat limit will stop
+        you before the core count does. <b>Nothing here is income, and none of it is a promise.</b>
+      </div>
+    </div>
+  </section>
+
   <!-- 4 · KEY PARAMETERS -->
   <section id="parameters">
     <div class="wrap">
@@ -459,7 +552,7 @@
             <tr><th>Ticker</th><td>PCN</td></tr>
             <tr><th>Max supply</th><td>21,000,000 PCN — hard cap, identical to Bitcoin</td></tr>
             <tr><th>Block subsidy</th><td>50 PCN, halving every 210,000 blocks</td></tr>
-            <tr><th>Block time</th><td>10 minutes (target); difficulty retargets every 2016 blocks</td></tr>
+            <tr><th>Block time</th><td>10 minutes (target). Difficulty retargets <b>every block</b> using LWMA from height 2800; before that it used Bitcoin's 2016-block retarget <span class="note">(actual spacing today runs well above target while hashrate is small — see <a href="https://explorer.pc.am" rel="noopener">the explorer</a> for live blocks)</span></td></tr>
             <tr><th>Proof of work</th><td>RandomX, fixed key <span class="mono">PCoin/RandomX/v1</span>, light-mode (256&nbsp;MB) verification. Block IDs remain double-SHA256.</td></tr>
             <tr><th>Base</th><td>Fork of Bitcoin Core v29.4 — independent network, own genesis, own magic</td></tr>
             <tr><th>P2P / RPC ports</th><td><span class="mono">9444</span> / <span class="mono">9443</span> (mainnet)</td></tr>
@@ -521,11 +614,12 @@ echo <span class="s">"$ADDR"</span>
       </div>
 
       <div class="honest-box" style="max-width:100%">
-        <b>What to expect:</b> mining is a lottery. At launch difficulty each
-        <span class="mono">generatetoaddress</span> call takes seconds to a few minutes on a typical CPU —
-        some calls return fast, some sit for a while. As more people mine, difficulty rises every 2016
-        blocks and blocks get harder to find. Config lives in <span class="mono">pcoin.conf</span>;
-        data in <span class="mono">~/.pcoin</span> (Linux) or <span class="mono">%LOCALAPPDATA%\PCoin</span> (Windows).
+        <b>What to expect:</b> mining is a lottery. Each <span class="mono">generatetoaddress</span> call can
+        return in seconds or sit for a long time — that is the nature of it, not a fault. As more people
+        mine, difficulty rises and blocks get harder to find; from height 2800 it adjusts
+        <b>every block</b> (LWMA) rather than every 2016. Config lives in <span class="mono">pcoin.conf</span>
+        — note the name, it is not <span class="mono">bitcoin.conf</span> — and data in
+        <span class="mono">~/.pcoin</span> (Linux) or <span class="mono">%LOCALAPPDATA%\PCoin</span> (Windows).
       </div>
     </div>
   </section>
@@ -535,25 +629,40 @@ echo <span class="s">"$ADDR"</span>
     <div class="wrap">
       <span class="kicker">Roadmap</span>
       <h2>Near-term goals</h2>
-      <p class="lede">No dates promised, no tokens sold. These are the next concrete things we're building, in order.</p>
+      <p class="lede">No dates promised, no tokens sold. Shipped items say so; everything else is still to do,
+      and nothing here is described as finished before it is.</p>
       <ol class="timeline">
         <li>
-          <h3>100 independent nodes <span class="tag">Network</span></h3>
+          <h3>Android node + miner app <span class="tag">Shipped</span></h3>
+          <p>An app that runs a full node and mines on your phone's CPU. The clearest proof of the mission:
+          money creation from the device in your pocket. Built from the same source as the wallet below.</p>
+        </li>
+        <li>
+          <h3>Android wallet app <span class="tag">Shipped</span></h3>
+          <p>A wallet-only build with no miner in it: balance, send, receive with a QR code, and history.
+          It carries a full node rather than trusting a server, which the whole chain being about 20 MB
+          makes practical. A twelve-word recovery phrase restores it on any device.</p>
+        </li>
+        <li>
+          <h3>Block explorer and public API <span class="tag">Shipped</span></h3>
+          <p>Live at <a href="https://explorer.pc.am" rel="noopener">explorer.pc.am</a>: blocks,
+          transactions, addresses and a rich list, plus a read-only JSON API at
+          <span class="mono">/api</span> for wallets and, eventually, exchange integrations.</p>
+        </li>
+        <li>
+          <h3>100 independent nodes <span class="tag">In progress</span></h3>
           <p>Get one hundred people running always-on nodes in different places. Decentralized block
-          production and history is the foundation for everything else.</p>
+          production and history is the foundation for everything else. Today the number is far smaller
+          than that, and most of the hashrate is the founder's own machines.</p>
         </li>
         <li>
-          <h3>Android node + miner app <span class="tag">Mobile</span></h3>
-          <p>A one-tap app that runs a full node and mines on your phone's CPU. The clearest proof of the
-          mission: money creation from the device in your pocket.</p>
+          <h3>Browser-based wallet <span class="tag">Planned</span></h3>
+          <p><b>Not built yet.</b> The intent is send and receive without installing anything, for people who
+          will never touch a command line. Until it exists, the Android wallet and the desktop node are the
+          only wallets there are.</p>
         </li>
         <li>
-          <h3>In-browser wallet <span class="tag">Wallet</span></h3>
-          <p>Send and receive PCN without installing anything — lowering the entry barrier for people who
-          will never touch a command line.</p>
-        </li>
-        <li>
-          <h3>First real-world micro-payment &amp; tipping pilots <span class="tag">Usage</span></h3>
+          <h3>First real-world micro-payment &amp; tipping pilots <span class="tag">Planned</span></h3>
           <p>Small, honest experiments: tipping creators, paying for tiny services. Real usage between real
           people, at a scale where mistakes are cheap.</p>
         </li>
@@ -575,10 +684,14 @@ echo <span class="s">"$ADDR"</span>
           something you mine and learn with, not something you buy.</p>
         </div>
         <div class="honest-card">
-          <h3>No premine — and here's the founder's balance</h3>
-          <p>The founder holds only the <b>first ~100 PCN</b> mined during development — two 50-PCN blocks
-          used to test the chain. There was no premine, no allocation, and no sale. Everyone else's coins
-          come from the same place: mining.</p>
+          <h3>No premine — but the founder holds most of the coins today</h3>
+          <p>There was no premine, no allocation and no sale: every PCN in existence was mined. But almost
+          all of the mining so far has been done by the founder's own machines, so
+          <b>one address currently holds about 92% of everything mined</b> — roughly 107,900 of ~116,800 PCN.
+          You do not have to take that on trust: it is
+          <a href="https://explorer.pc.am/api/addresses/top" rel="noopener">the top entry in the public rich
+          list</a>, and you can check it yourself. That share falls as other people mine, and that is the
+          entire point of publishing it.</p>
         </div>
         <div class="honest-card">
           <h3>Security grows with you</h3>
@@ -630,5 +743,167 @@ echo <span class="s">"$ADDR"</span>
   </div>
 </footer>
 
+<script>
+/* Hashrate calculator.
+ *
+ * Every "measured" figure below came off that exact device running this
+ * software, divided by the threads it was using at the time. Nothing is
+ * extrapolated from a benchmark score, and the estimated entries say so.
+ *
+ * Difficulty is fetched live from the explorer rather than baked in, because a
+ * hardcoded difficulty on a chain that retargets every block from height 2800
+ * would be wrong within the hour. If the fetch fails the page says so and falls
+ * back to a dated snapshot rather than quietly showing a stale answer.
+ */
+(function () {
+  "use strict";
+
+  // per = hashes/sec per thread. mt = the thread count it was actually measured
+  // at, which matters: RandomX is bound by memory bandwidth, so multiplying a
+  // 4-thread measurement out to 20 threads flatters the result. The UI says so
+  // rather than pretending the scaling is linear.
+  var DEVICES = [
+    { g: "Phones (measured)", n: "Moto G Play 2024 - Snapdragon 680", per: 22.5, t: 8,  mt: 2 },
+    { g: "Phones (measured)", n: "Galaxy Note9 - Snapdragon 845",     per: 19.5, t: 8,  mt: 2 },
+    { g: "Phones (measured)", n: "Pixel 4a - Snapdragon 730G",        per: 17.0, t: 8,  mt: 2 },
+    { g: "Desktops (measured)", n: "Intel i5-9600K - 6 cores",        per: 70.0, t: 6,  mt: 2 },
+    { g: "Desktops (measured)", n: "Intel i9-10900X - 10 cores",      per: 64.5, t: 20, mt: 4 },
+    { g: "Desktops (measured)", n: "Intel i9-9900K - 8 cores",        per: 63.0, t: 16, mt: 4 },
+    { g: "Rough estimates", n: "Recent flagship phone",  per: 25, t: 8,  mt: 2, est: 1 },
+    { g: "Rough estimates", n: "Mid-range phone",        per: 18, t: 8,  mt: 2, est: 1 },
+    { g: "Rough estimates", n: "Older / budget phone",   per: 12, t: 8,  mt: 2, est: 1 },
+    { g: "Rough estimates", n: "Laptop CPU",             per: 45, t: 8,  mt: 4, est: 1 },
+    { g: "Rough estimates", n: "Modern desktop CPU",     per: 65, t: 16, mt: 4, est: 1 }
+  ];
+
+  var SUBSIDY = 50;                 // PCN per block, until the first halving
+  var SNAPSHOT_DIFF = 0.0003401078; // fallback only; see note below
+  var SNAPSHOT_SPACING = 1012;      // measured median, same date
+  var SNAPSHOT_WHEN = "7 Aug 2026";
+
+  var sel   = document.getElementById("calc-device");
+  var thr   = document.getElementById("calc-threads");
+  var thrO  = document.getElementById("calc-threads-out");
+  var elHs  = document.getElementById("calc-hs");
+  var elSh  = document.getElementById("calc-share");
+  var elTm  = document.getElementById("calc-time");
+  var elDy  = document.getElementById("calc-day");
+  var elBas = document.getElementById("calc-basis");
+  if (!sel || !thr) return;
+
+  var difficulty = SNAPSHOT_DIFF;
+  var spacing = SNAPSHOT_SPACING;
+  var live = false;
+
+  var group = null;
+  DEVICES.forEach(function (d, i) {
+    if (d.g !== group) {
+      group = d.g;
+      var og = document.createElement("optgroup");
+      og.label = group;
+      sel.appendChild(og);
+    }
+    var o = document.createElement("option");
+    o.value = String(i);
+    o.textContent = d.n + (d.est ? " (estimate)" : "");
+    sel.lastChild.appendChild(o);
+  });
+  sel.value = "0";
+
+  function duration(sec) {
+    if (!isFinite(sec) || sec <= 0) return "—";
+    var u = [["year", 31557600], ["day", 86400], ["hour", 3600], ["minute", 60]];
+    for (var i = 0; i < u.length; i++) {
+      if (sec >= u[i][1]) {
+        var v = sec / u[i][1];
+        return (v >= 10 ? Math.round(v) : Math.round(v * 10) / 10) +
+               " " + u[i][0] + (Math.round(v) === 1 ? "" : "s");
+      }
+    }
+    return Math.round(sec) + " seconds";
+  }
+
+  function render() {
+    var d = DEVICES[parseInt(sel.value, 10) || 0];
+    var t = Math.min(parseInt(thr.value, 10) || 1, d.t);
+    if (parseInt(thr.value, 10) > d.t) { thr.value = String(d.t); t = d.t; }
+    thrO.textContent = t + (t === d.t ? " (all)" : "");
+
+    var hs = d.per * t;
+    // Expected hashes for one block at this difficulty. 2^32 is the standard
+    // difficulty-1 work unit, unchanged from Bitcoin.
+    var perBlock = difficulty * 4294967296;
+    var secs = perBlock / hs;
+    var perDay = (86400 / secs) * SUBSIDY;
+
+    // Network hashrate from OBSERVED block spacing, not the 600 s target. The
+    // chain currently runs well slower than target, so using the target would
+    // overstate the network by about 70% and understate your share by the same.
+    var netHs = perBlock / spacing;
+    var share = (hs / netHs) * 100;
+
+    elHs.textContent = (hs >= 1000 ? (hs / 1000).toFixed(2) + " kH/s" : hs.toFixed(1) + " H/s");
+    elSh.textContent = share >= 1 ? share.toFixed(1) + "%" :
+                       share >= 0.01 ? share.toFixed(2) + "%" : "<0.01%";
+    elTm.textContent = duration(secs);
+    elDy.textContent = perDay >= 1 ? perDay.toFixed(1) + " PCN" :
+                       perDay > 0 ? perDay.toFixed(3) + " PCN" : "—";
+
+    // The number above is real but it is large for one reason only: almost
+    // nobody is mining, so difficulty sits near the floor. Saying that plainly,
+    // with the arithmetic, is the difference between informing someone and
+    // baiting them.
+    var d10 = perDay / 10, d100 = perDay / 100;
+    document.getElementById("calc-dilute").innerHTML =
+      "That figure is high because the network is tiny, and it is divided by every miner who joins. " +
+      "<b>If ten times as much hashrate were mining, the same device would average " +
+      (d10 >= 1 ? d10.toFixed(1) : d10.toFixed(3)) + " PCN/day; at a hundred times, " +
+      (d100 >= 1 ? d100.toFixed(1) : d100.toFixed(3)) + " PCN/day.</b> " +
+      "The coins are the same coins either way — there are just more people sharing them.";
+
+    var basis = "Difficulty " + difficulty.toPrecision(4) +
+      ", observed block spacing " + Math.round(spacing) + " s" +
+      (live ? " — both live from explorer.pc.am."
+            : " — <b>could not reach the explorer, using a snapshot from " + SNAPSHOT_WHEN + "</b>.") +
+      " " + (d.est ? "This device is an <b>estimate</b>, not measured."
+                   : "Measured on that hardware at " + d.mt + " threads.") +
+      (t > d.mt * 2
+        ? " <b>At " + t + " threads this is extrapolated well past what was measured, and RandomX" +
+          " scales sub-linearly with threads, so treat it as an optimistic ceiling.</b>"
+        : "") +
+      " Capped at " + d.t + " threads for this hardware.";
+    elBas.innerHTML = basis;
+  }
+
+  sel.addEventListener("change", render);
+  thr.addEventListener("input", render);
+  render();
+
+  // Recent blocks give both numbers at once: the tip's difficulty and, from the
+  // timestamps, how far apart blocks actually land. The MEDIAN is used rather
+  // than the mean because a single long gap -- routine on a chain this small --
+  // drags a mean badly. Block timestamps are also not monotonic in height here,
+  // so negative gaps are discarded rather than trusted.
+  fetch("https://explorer.pc.am/api/blocks?limit=25", { mode: "cors" })
+    .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+    .then(function (j) {
+      var b = (j && j.blocks) || [];
+      if (!b.length) return;
+      if (typeof b[0].difficulty === "number" && b[0].difficulty > 0) difficulty = b[0].difficulty;
+      var ts = b.map(function (x) { return x.time; })
+                .filter(function (x) { return typeof x === "number"; })
+                .sort(function (x, y) { return y - x; });
+      var gaps = [];
+      for (var i = 0; i + 1 < ts.length; i++) { if (ts[i] - ts[i + 1] > 0) gaps.push(ts[i] - ts[i + 1]); }
+      if (gaps.length >= 5) {
+        gaps.sort(function (x, y) { return x - y; });
+        spacing = gaps[Math.floor(gaps.length / 2)];
+      }
+      live = true;
+      render();
+    })
+    .catch(function () { /* the snapshot notice above already says so */ });
+})();
+</script>
 </body>
 </html>
