@@ -1,0 +1,18 @@
+[Unit]
+Description=PCoin seed health check
+Documentation=https://github.com/pars5555/pcoin/blob/main/doc/SEED-MONITORING.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pcoin-seed-watch
+
+# The check itself must never be the thing that loads the box.
+Nice=10
+MemoryMax=64M
+CPUQuota=10%
+TimeoutStartSec=60
+
+# A failure here is deliberately loud in systemd rather than silently retried:
+# `systemctl list-units --failed` and `systemctl status pcoin-seed-watch` both
+# show it, and OnFailure= can be pointed at a notifier later without changing
+# any of the checking logic.

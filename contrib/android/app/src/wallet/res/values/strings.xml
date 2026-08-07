@@ -157,6 +157,14 @@
 
     <string name="history_status_pending">Waiting to be included in a block</string>
 
+    <!-- Counterparty. Worded per direction because listtransactions puts a
+         different thing in `address` for each: the destination for a send, but
+         YOUR OWN address for a receive or a coinbase. There is deliberately no
+         "from" wording, because the wallet does not record a sender. -->
+    <string name="history_party_to">To %1$s</string>
+    <string name="history_party_received_at">Received at your address %1$s</string>
+    <string name="history_party_mined_to">Block reward to %1$s</string>
+
     <!-- Relative age, shown next to the timestamp for the last 24 hours only. -->
     <string name="history_rel_ago">(%1$s ago)</string>
     <string name="history_rel_just_now">(just now)</string>

@@ -1,0 +1,68 @@
+#!/bin/bash
+# Watch this PCoin seed and say something when it stops being useful.
+#
+# "The container is running" is not the question. A node can be up, listening,
+# and answering RPC while its chain has been stuck for hours or it has lost
+# every peer -- and from the outside that looks identical to health. Each check
+# below is a separate way of being useless:
+#
+#   rpc        the node answers at all
+#   peers      somebody is connected; a seed with no peers seeds nothing
+#   progress   the tip moved since last run, OR is younger than the stall limit
+#   listening  9444 accepts connections, which is the entire job of a seed
+#
+# Deliberately no alerting integration: it writes state and exits non-zero.
+# systemd records the failure, and OnFailure can carry it wherever it needs to
+# go later. Inventing a notification channel nobody agreed to is how monitoring
+# ends up muted.
+set -u
+
+CONTAINER=pcoin-seed
+STATE=/var/lib/pcoin-seed-watch/state
+STALL_SECONDS=${STALL_SECONDS:-7200}   # 2 h. Target spacing is 600 s and the
+                                       # chain has run past 1200 s, so anything
+                                       # tighter cries wolf.
+mkdir -p "$(dirname "$STATE")"
+
+fail() { echo "UNHEALTHY: $*"; exit 1; }
+say()  { echo "$*"; }
+
+docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null | grep -q true \
+  || fail "container $CONTAINER is not running"
+
+cli() { docker exec "$CONTAINER" bitcoin-cli "$@" 2>/dev/null; }
+
+INFO=$(cli getblockchaininfo) || fail "RPC did not answer"
+[ -n "$INFO" ] || fail "RPC returned nothing"
+
+HEIGHT=$(echo "$INFO"    | sed -n 's/.*"blocks": *\([0-9]*\).*/\1/p' | head -1)
+TIPTIME=$(echo "$INFO"   | sed -n 's/.*"time": *\([0-9]*\).*/\1/p'   | head -1)
+PEERS=$(cli getconnectioncount)
+
+[ -n "$HEIGHT" ] || fail "could not read height from getblockchaininfo"
+[ -n "$PEERS" ]  || fail "could not read peer count"
+[ "$PEERS" -gt 0 ] 2>/dev/null || fail "zero peers -- this seed is seeding nothing"
+
+# Is the tip stale? Block timestamps on this chain are not monotonic in height,
+# so a tip can legitimately read slightly ahead of the clock; a negative age is
+# treated as zero rather than as an error.
+NOW=$(date +%s)
+AGE=$(( NOW - ${TIPTIME:-$NOW} ))
+[ "$AGE" -lt 0 ] && AGE=0
+
+PREV_HEIGHT=0
+[ -f "$STATE" ] && PREV_HEIGHT=$(cut -d' ' -f1 "$STATE" 2>/dev/null || echo 0)
+echo "$HEIGHT $NOW" > "$STATE"
+
+if [ "$AGE" -gt "$STALL_SECONDS" ] && [ "$HEIGHT" = "$PREV_HEIGHT" ]; then
+  fail "chain stalled: height $HEIGHT unchanged and tip is ${AGE}s old (limit ${STALL_SECONDS}s), $PEERS peers"
+fi
+
+# The seed's actual job. RPC health says nothing about whether the P2P port
+# accepts anyone.
+if command -v nc >/dev/null 2>&1; then
+  nc -z -w 5 127.0.0.1 9444 || fail "P2P port 9444 is not accepting connections"
+fi
+
+say "ok: height $HEIGHT, tip ${AGE}s old, $PEERS peers"
+exit 0

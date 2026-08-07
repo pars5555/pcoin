@@ -143,8 +143,41 @@ class HistoryActivity : AppCompatActivity() {
             rowStatus.text = statusLine(e)
 
             val when_ = if (e.timeSec > 0) stamp.format(Date(e.timeSec * 1000L)) + relative(e.timeSec) else ""
-            detail.text = if (when_.isEmpty()) e.txid else "$when_\n${e.txid}"
+            detail.text = listOf(when_, party(e), e.txid)
+                .filter { it.isNotEmpty() }
+                .joinToString("\n")
             rows.addView(v)
+        }
+    }
+
+    /**
+     * Who the money went to, or which of your addresses it arrived at.
+     *
+     * This has to be kind-aware, and the reason is the whole difficulty of the
+     * feature: `listtransactions` puts a DIFFERENT thing in `address` depending
+     * on the category. For a send it is the destination -- genuinely the
+     * counterparty. For a receive, a generate or an immature coinbase it is
+     * YOUR OWN address, the one the coins landed on. Printing it under one
+     * label would tell someone their own address was the person who paid them.
+     *
+     * There is no "from" for a receive, and none is invented. The sender is not
+     * in the wallet's record at all; recovering it means fetching the funding
+     * transaction and looking at the addresses its inputs spent, which is a
+     * different question with no single answer when there are several inputs.
+     * An empty address -- which is what a send to multiple destinations
+     * produces -- prints nothing rather than a blank label.
+     */
+    private fun party(e: ForwardEngine.HistoryEntry): String {
+        if (e.address.isBlank()) return ""
+        return when (e.kind) {
+            ForwardEngine.HistoryEntry.Kind.SENT ->
+                getString(R.string.history_party_to, e.address)
+            ForwardEngine.HistoryEntry.Kind.RECEIVED ->
+                getString(R.string.history_party_received_at, e.address)
+            ForwardEngine.HistoryEntry.Kind.MINED,
+            ForwardEngine.HistoryEntry.Kind.MATURING ->
+                getString(R.string.history_party_mined_to, e.address)
+            ForwardEngine.HistoryEntry.Kind.CONFLICTED -> ""
         }
     }
 
