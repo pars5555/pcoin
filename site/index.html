@@ -162,6 +162,21 @@
   }
   .honest-box b{color:var(--text)}
 
+  /* downloads */
+  .dl-grid{display:grid;gap:18px;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));margin-bottom:8px}
+  .dl-card{
+    background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:24px 22px;display:flex;flex-direction:column;min-width:0;
+    transition:border-color .15s ease,transform .15s ease;
+  }
+  .dl-card:hover{border-color:rgba(45,212,191,.45);transform:translateY(-2px)}
+  .dl-card h3{font-size:1.1rem;font-weight:700;margin-bottom:8px}
+  .dl-sub{color:var(--muted);font-size:.92rem;flex:1 1 auto;margin-bottom:16px}
+  .dl-btn{width:100%;justify-content:center;padding:12px 16px;font-size:.97rem}
+  .dl-alt{display:block;margin-top:10px;font-size:.87rem;color:var(--dim);text-align:center}
+  .dl-alt:hover{color:var(--teal)}
+
+
   /* hashrate calculator */
   .calc-shell{
     border:1px solid var(--line);border-radius:var(--radius);padding:22px;
@@ -313,6 +328,7 @@
     </a>
     <nav class="links" aria-label="Site">
       <a href="#mission">Mission</a>
+      <a href="#download">Download</a>
       <a href="#mining">Mining</a>
       <a href="#calculator">Calculator</a>
       <a href="#parameters">Parameters</a>
@@ -569,6 +585,71 @@
   </section>
 
   <!-- 5 · QUICKSTART -->
+  <!-- 5a · DOWNLOADS -->
+  <section id="download">
+    <div class="wrap">
+      <span class="kicker">Download</span>
+      <h2>Get PCoin</h2>
+      <p class="lede">
+        Every link points at the <b>latest release</b> and keeps working when a new one ships &mdash;
+        they resolve through GitHub's <span class="mono">/releases/latest</span>, so nothing here goes
+        stale. Mining is <b>off by default</b> everywhere: a node that mines before it has synced is
+        building on a chain it has not checked.
+      </p>
+
+      <div class="dl-grid">
+        <div class="dl-card">
+          <h3>Windows</h3>
+          <p class="dl-sub">Node, CLI and tray app. Writes a working config and adds an uninstall entry.</p>
+          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-1.2.2-win64-setup.exe" rel="noopener">Installer (.exe)</a>
+          <a class="dl-alt" href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-1.2.2-win64.zip" rel="noopener">or portable .zip</a>
+        </div>
+
+        <div class="dl-card">
+          <h3>Linux</h3>
+          <p class="dl-sub">Debian and Ubuntu. Installs <span class="mono">pcoind</span> and <span class="mono">pcoin-cli</span> with a systemd unit.</p>
+          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-1.2.2-linux-amd64.deb" rel="noopener">Package (.deb)</a>
+          <a class="dl-alt" href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-1.2.2-linux-x86_64.tar.gz" rel="noopener">or portable .tar.gz</a>
+        </div>
+
+        <div class="dl-card">
+          <h3>Android &mdash; miner</h3>
+          <p class="dl-sub">Full node, wallet and CPU mining on your phone. arm64.</p>
+          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-1.2.2-android-miner.apk" rel="noopener">Miner (.apk)</a>
+          <a class="dl-alt" href="#android-note">read this first</a>
+        </div>
+
+        <div class="dl-card">
+          <h3>Android &mdash; wallet</h3>
+          <p class="dl-sub">Balance, send, receive by QR, history. Carries a full node; no mining.</p>
+          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-1.2.2-android-wallet.apk" rel="noopener">Wallet (.apk)</a>
+          <a class="dl-alt" href="#android-note">read this first</a>
+        </div>
+      </div>
+
+      <div class="honest-box" id="android-note" style="max-width:100%">
+        <b>Before you install.</b>
+        The config file is <span class="mono">pcoin.conf</span>, not
+        <span class="mono">bitcoin.conf</span> &mdash; a node handed the wrong one ignores it silently.
+        The Linux package deliberately installs as <span class="mono">pcoind</span> so it can never
+        collide with Bitcoin Core. <b>Uninstalling never deletes your wallet</b> on Windows or Linux:
+        it is left in <span class="mono">C:\PCoin\data</span> or
+        <span class="mono">/var/lib/pcoin</span> for you to remove yourself.
+        <br><br>
+        <b>Android is different, and this one can cost you coins.</b> The APK holds its wallet in
+        app-private storage, so <b>uninstalling the app destroys that wallet</b>. Write your twelve-word
+        recovery phrase down before you remove or replace it. Android also refuses to install over an
+        app signed with a different key, so if you are running an earlier build from source you must
+        uninstall first &mdash; with the same consequence.
+        <br><br>
+        <b>Check what you downloaded.</b> Every file's SHA-256 is published at
+        <a href="https://pc.am/dl/SHA256SUMS.txt">pc.am/dl/SHA256SUMS.txt</a> and alongside the
+        release. They prove the download is intact; they are not signatures, and the builds are not
+        reproducible yet.
+      </div>
+    </div>
+  </section>
+
   <section id="get-started" class="alt">
     <div class="wrap">
       <span class="kicker">Get started</span>
@@ -580,7 +661,7 @@
       </p>
 
       <div class="steps">
-        <div class="step"><span class="num">1</span><h4>Get the binaries</h4><p>Download the ready-made package for <a href="https://github.com/pars5555/pcoin/releases/download/v1.2.1/pcoin-1.2.1-win64.zip" rel="noopener">Windows&nbsp;x64</a> or <a href="https://github.com/pars5555/pcoin/releases/download/v1.2.1/pcoin-1.2.1-linux-x86_64.tar.gz" rel="noopener">Linux&nbsp;x86-64</a>. On any other platform, build from source — the repo's PCOIN.md walks you through it.</p></div>
+        <div class="step"><span class="num">1</span><h4>Get the binaries</h4><p>Use the <a href="#download">downloads above</a> &mdash; an installer for Windows, a .deb for Debian/Ubuntu, APKs for Android, or a portable archive. On any other platform, build from source; the repo's PCOIN.md walks you through it.</p></div>
         <div class="step"><span class="num">2</span><h4>Run the node</h4><p>Start <span class="mono">bitcoind</span> — it finds the network via <span class="mono">seed.pc.am</span>.</p></div>
         <div class="step"><span class="num">3</span><h4>Create a wallet</h4><p>One command. Your keys stay on your machine, in your datadir.</p></div>
         <div class="step"><span class="num">4</span><h4>Mine</h4><p>The built-in miner grinds real RandomX blocks on your CPU.</p></div>
@@ -588,29 +669,38 @@
 
       <div class="term">
         <div class="term-bar"><i></i><i></i><i></i><span>quickstart — bash (Linux)</span></div>
-        <pre><span class="c"># 1) Download and unpack the release, then cd into it.</span>
-<span class="c">#    Windows and Linux packages are ready to run:</span>
-<span class="c">#    https://github.com/pars5555/pcoin/releases</span>
-wget https://github.com/pars5555/pcoin/releases/download/v1.2.1/pcoin-1.2.1-linux-x86_64.tar.gz
-tar xzf pcoin-1.2.1-linux-x86_64.tar.gz &amp;&amp; cd pcoin-1.2.1
+        <pre><span class="c"># 1) On Debian or Ubuntu, the package is the easy route.</span>
+<span class="c">#    It installs pcoind + pcoin-cli and a systemd unit.</span>
+wget https://github.com/pars5555/pcoin/releases/latest/download/pcoin-1.2.2-linux-amd64.deb
+sudo apt install ./pcoin-1.2.2-linux-amd64.deb
 
-<span class="c"># 2) Start your node. It connects to the network via seed.pc.am.</span>
-./bitcoind -daemon
+<span class="c"># 2) Start the node. It finds the network via seed.pc.am.</span>
+sudo systemctl enable --now pcoind
+
+<span class="c">#    Prefer no packages? Take the portable archive instead:</span>
+<span class="c">#    .../releases/latest/download/pcoin-1.2.2-linux-x86_64.tar.gz</span>
+<span class="c">#    then run ./bitcoind -daemon from inside it.</span>
+
+<span class="c"># The package runs the node as the 'pcoin' user, so talk to it as that</span>
+<span class="c"># user. Save yourself the typing:</span>
+<span class="k">alias</span> pcli=<span class="s">'sudo -u pcoin pcoin-cli -datadir=/var/lib/pcoin'</span>
 
 <span class="c"># 3) Create a wallet and get a fresh address.</span>
-./bitcoin-cli createwallet <span class="s">"main"</span>
-ADDR=$(./bitcoin-cli getnewaddress)
+pcli createwallet <span class="s">"main"</span>
+ADDR=$(pcli getnewaddress)
 echo <span class="s">"$ADDR"</span>
 <span class="o">pc1q...</span>
 
 <span class="c"># 4) Mine a block with the built-in miner. Repeat or loop it.</span>
-./bitcoin-cli generatetoaddress 1 <span class="s">"$ADDR"</span>
+<span class="c">#    Wait until you are synced first - mining on a chain you have</span>
+<span class="c">#    not verified builds on nothing.</span>
+pcli generatetoaddress 1 <span class="s">"$ADDR"</span>
 <span class="o">[ "…your block hash…" ]</span>
 
 <span class="c"># Watch your chain grow.</span>
-./bitcoin-cli getblockcount
-./bitcoin-cli getmininginfo
-./bitcoin-cli getbalance    <span class="c"># block rewards mature after 100 blocks</span></pre>
+pcli getblockcount
+pcli getmininginfo
+pcli getbalance    <span class="c"># block rewards mature after 100 blocks</span></pre>
       </div>
 
       <div class="honest-box" style="max-width:100%">
