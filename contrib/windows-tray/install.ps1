@@ -17,8 +17,11 @@ param(
     [int]$Threads = 0,
     [string]$InstallDir = 'C:\PCoin',
     [string]$DataDir = '',
-    [string]$Version = '1.2.1',
-    [string]$Sha256 = 'aafef86254f341482b6a2c8714f99b9b8688fa7041fb8f78458991559c6c0074',
+    # Bump both together at every release. The hash is of pcoin-<ver>-win64.zip
+    # and the install aborts on a mismatch, so a forgotten bump here breaks
+    # every new install rather than failing quietly.
+    [string]$Version = '1.2.2',
+    [string]$Sha256 = '695ad2729ce9254219cfd12fb72909e624b59c70d02ee0753db853fa586460b4',
     # All three seeds, not just one. The node also carries them compiled in as
     # of v1.2.1, so this is belt and braces rather than the only route in.
     [string[]]$AddNode = @('35.239.156.16:9444', '35.238.47.14:9444', '178.105.3.51:9444'),
@@ -66,11 +69,26 @@ Write-Output "  sha256 ok"
 $tmp = Join-Path $env:TEMP 'pcoin-unpack'
 if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
 Expand-Archive -Path $zip -DestinationPath $tmp -Force
+
+# The release archive lays the binaries out as pcoin-<ver>\bin\*.exe, but every
+# line below this one -- and the tray app, and the scheduled task -- expects
+# them directly in $InstallDir. Copying the tree verbatim buried them one level
+# down and produced an install that looked complete and could not start a node.
+# So find bitcoind.exe wherever it is and flatten from there, which also copes
+# with a flat archive if the layout ever changes back.
+$src = Get-ChildItem -Path $tmp -Filter 'bitcoind.exe' -Recurse -File |
+       Select-Object -First 1
+if (-not $src) { throw "bitcoind.exe not found in $name -- archive layout unexpected" }
+$srcDir = $src.DirectoryName
+
 # A file can stay locked briefly after its process exits, so retry rather than
 # aborting a half-finished install.
 foreach ($attempt in 1..6) {
     try {
-        Copy-Item (Join-Path $tmp "pcoin-$Version\*") $InstallDir -Force -Recurse
+        Copy-Item (Join-Path $srcDir '*') $InstallDir -Force -Recurse
+        # COPYING sits beside the bin\ directory, not inside it.
+        Get-ChildItem -Path $tmp -Filter 'COPYING' -Recurse -File |
+            ForEach-Object { Copy-Item $_.FullName $InstallDir -Force }
         break
     } catch {
         if ($attempt -eq 6) { throw }

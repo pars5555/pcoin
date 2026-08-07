@@ -601,28 +601,28 @@
         <div class="dl-card">
           <h3>Windows</h3>
           <p class="dl-sub">Node, CLI and tray app. Writes a working config and adds an uninstall entry.</p>
-          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-1.2.2-win64-setup.exe" rel="noopener">Installer (.exe)</a>
-          <a class="dl-alt" href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-1.2.2-win64.zip" rel="noopener">or portable .zip</a>
+          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-win64-setup.exe" rel="noopener">Installer (.exe)</a>
+          <a class="dl-alt" href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-win64.zip" rel="noopener">or portable .zip</a>
         </div>
 
         <div class="dl-card">
           <h3>Linux</h3>
           <p class="dl-sub">Debian and Ubuntu. Installs <span class="mono">pcoind</span> and <span class="mono">pcoin-cli</span> with a systemd unit.</p>
-          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-1.2.2-linux-amd64.deb" rel="noopener">Package (.deb)</a>
-          <a class="dl-alt" href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-1.2.2-linux-x86_64.tar.gz" rel="noopener">or portable .tar.gz</a>
+          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-linux-amd64.deb" rel="noopener">Package (.deb)</a>
+          <a class="dl-alt" href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-linux-x86_64.tar.gz" rel="noopener">or portable .tar.gz</a>
         </div>
 
         <div class="dl-card">
           <h3>Android &mdash; miner</h3>
           <p class="dl-sub">Full node, wallet and CPU mining on your phone. arm64.</p>
-          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-1.2.2-android-miner.apk" rel="noopener">Miner (.apk)</a>
+          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-android-miner.apk" rel="noopener">Miner (.apk)</a>
           <a class="dl-alt" href="#android-note">read this first</a>
         </div>
 
         <div class="dl-card">
           <h3>Android &mdash; wallet</h3>
           <p class="dl-sub">Balance, send, receive by QR, history. Carries a full node; no mining.</p>
-          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-1.2.2-android-wallet.apk" rel="noopener">Wallet (.apk)</a>
+          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-android-wallet.apk" rel="noopener">Wallet (.apk)</a>
           <a class="dl-alt" href="#android-note">read this first</a>
         </div>
       </div>
@@ -671,14 +671,14 @@
         <div class="term-bar"><i></i><i></i><i></i><span>quickstart — bash (Linux)</span></div>
         <pre><span class="c"># 1) On Debian or Ubuntu, the package is the easy route.</span>
 <span class="c">#    It installs pcoind + pcoin-cli and a systemd unit.</span>
-wget https://github.com/pars5555/pcoin/releases/latest/download/pcoin-1.2.2-linux-amd64.deb
-sudo apt install ./pcoin-1.2.2-linux-amd64.deb
+wget https://github.com/pars5555/pcoin/releases/latest/download/pcoin-linux-amd64.deb
+sudo apt install ./pcoin-linux-amd64.deb
 
 <span class="c"># 2) Start the node. It finds the network via seed.pc.am.</span>
 sudo systemctl enable --now pcoind
 
 <span class="c">#    Prefer no packages? Take the portable archive instead:</span>
-<span class="c">#    .../releases/latest/download/pcoin-1.2.2-linux-x86_64.tar.gz</span>
+<span class="c">#    .../releases/latest/download/pcoin-linux-x86_64.tar.gz</span>
 <span class="c">#    then run ./bitcoind -daemon from inside it.</span>
 
 <span class="c"># The package runs the node as the 'pcoin' user, so talk to it as that</span>

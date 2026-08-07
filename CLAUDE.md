@@ -298,14 +298,49 @@ alone does nothing. Packaging requires renaming `bitcoind` →
 because Android 10+ blocks exec from app-writable storage.
 
 ### Cutting a release
-Entirely manual. Build each target, assemble `pcoin-<ver>-win64.zip` /
-`-linux-x86_64.tar.gz` / `-android-arm64.apk`, each containing a top-level
-`pcoin-<ver>/`, publish with the `scratchpad/publish_120.py` pattern (it pulls
-the GitHub token from `git credential fill` — never hard-coded), then **update
-`contrib/windows-tray/install.ps1:20-21`**, where `$Version` and `$Sha256` are
-pinned defaults. The installer refuses to install on hash mismatch, so forgetting
-the SHA bump breaks every new install. Finally update `site/index.html` and
-redeploy pc.am.
+Entirely manual — there is no CI. Six artifacts per release, from three builds:
+
+| artifact | built by |
+|---|---|
+| `pcoin-<ver>-win64.zip` | mingw cross-compile, packed with a **Python** `zipfile` script |
+| `pcoin-<ver>-win64-setup.exe` | `contrib/windows-tray/installer.iss` via Inno Setup 6 ISCC |
+| `pcoin-<ver>-linux-x86_64.tar.gz` | the Linux build tree |
+| `pcoin-<ver>-linux-amd64.deb` | `contrib/linux-deb/build-deb.sh <ver> <bindir>` |
+| `pcoin-<ver>-android-{miner,wallet}.apk` | `gradlew.bat assemble{Miner,Wallet}Release` |
+
+The archives each contain a top-level `pcoin-<ver>/`. **Never build the zip with
+PowerShell `Compress-Archive`** — it writes entry names containing backslashes,
+so the whole tree unpacks on Linux and macOS as a handful of files with `\` in
+their names. Use `zipfile` and assert `sum("\\" in n for n in namelist()) == 0`.
+
+Publish with the `scratchpad/publish_122.py` pattern — it pulls the GitHub token
+from `git credential fill`, never a literal, and is idempotent (an asset of the
+same name is deleted before re-upload), which matters because a 9 MB upload over
+a flaky link is exactly the thing that half-finishes.
+
+**Every asset is then uploaded a second time under a version-less name**
+(`pcoin-win64-setup.exe`, …) by `scratchpad/stable_names.py`. This is
+load-bearing, not tidiness: pc.am links through
+`/releases/latest/download/<name>`, and GitHub resolves `latest` to the newest
+release and then looks for that **exact** filename. A versioned name in that URL
+works for one release and 404s for every one after it. The site links to the
+stable names and therefore needs **no edit at release time**. `SHA256SUMS` lists
+both name forms with the same hash.
+
+Two things that still need a manual bump:
+* **`contrib/windows-tray/install.ps1:20-21`** — `$Version` and `$Sha256` are
+  pinned defaults and the installer refuses to run on a hash mismatch, so
+  forgetting the SHA bump breaks every new install.
+* **`pc.am/dl/SHA256SUMS.txt`** — copy the release's `SHA256SUMS` up with the
+  explanatory preamble.
+
+`site/index.html` only needs redeploying when its *content* changes. If you find
+yourself editing a download URL there, something has regressed.
+
+Sanity check before calling it done: `curl -sIL -o /dev/null -w '%{http_code}'`
+every stable link, and hash one downloaded file against the published list. The
+site pointed at v1.0.0 binaries while `install.ps1` pinned v1.2.0 for long
+enough that it made §9's open-items list.
 
 ## 5. The fleet
 
@@ -636,14 +671,14 @@ and the entire recovery-phrase client feature are not committed anywhere.**
 
 Open items, roughly in order of how much damage they do if ignored:
 
-1. **`site/index.html` (and the live pc.am) still link to v1.0.0 binaries** —
-   lines **490** and **501** — while `install.ps1` pins v1.2.0. Anyone following
-   the website today gets a node that will fork at height 2800, which is ~10 days
-   out. This is a two-URL edit and it is the highest-value ten minutes available
-   anywhere in this project.
-2. **Get the tray sources and the Android app into version control.** Ten
-   untracked files that `build.bat` requires, and ~12,000 lines of wallet crypto
-   in a temp directory, are the largest single standing risk here.
+1. ~~`site/index.html` links to v1.0.0 binaries.~~ **Fixed.** pc.am now has a
+   `#download` section linking every platform through
+   `/releases/latest/download/<version-less name>`, so it tracks the newest
+   release without an edit. See §4 "Cutting a release" for why the names must
+   stay version-less.
+2. ~~Get the tray sources and the Android app into version control.~~ **Fixed.**
+   Both are tracked, as are the two packaging scripts (`installer.iss`,
+   `contrib/linux-deb/build-deb.sh`).
 3. **The docs are stale on difficulty.** `README.md:28,67` and
    `PCOIN.md:12,29,85,115,382` still say "retarget every 2016 blocks".
 4. `doc/WINDOWS-NODE-SETUP.md:39,43,233` says the config file is `bitcoin.conf`.
