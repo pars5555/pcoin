@@ -327,7 +327,8 @@
       <a href="#download">Download</a>
       <a href="#mining">Mining</a>
       <a href="#calculator">Calculator</a>
-      <a href="#parameters">Parameters</a>
+      <a href="#spend">Spend it</a>
+        <a href="#parameters">Parameters</a>
       <a href="#get-started">Get started</a>
       <a href="#roadmap">Roadmap</a>
       <a class="gh-pill" href="https://github.com/pars5555/pcoin" rel="noopener">
@@ -368,11 +369,15 @@
       </div>
       <div class="hero-art" aria-hidden="true">
         <svg viewBox="0 0 200 200">
-          <circle cx="100" cy="100" r="96" fill="none" stroke="rgba(255,255,255,.1)" stroke-width="1" stroke-dasharray="3 7"/>
-          <circle cx="100" cy="100" r="82" fill="url(#pgrad)"/>
-          <circle cx="100" cy="100" r="82" fill="none" stroke="rgba(255,255,255,.28)" stroke-width="1.5"/>
-          <circle cx="100" cy="100" r="66" fill="none" stroke="rgba(10,11,16,.3)" stroke-width="3"/>
-          <path d="M81 141V59h30a27 27 0 0 1 0 54H60" fill="none" stroke="#0a0b10" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
+          <!-- PCoin mark: the struck coin. Generated from the same geometry as the
+               Android drawables, the Windows tray and the app icons
+               (contrib/branding). Do not hand-edit: regenerate instead, or the
+               website logo drifts away from every other surface. -->
+          <circle cx="100" cy="100" r="96" fill="none" stroke="rgba(255,255,255,.10)" stroke-width="1" stroke-dasharray="3 7"/>
+          <circle cx="100" cy="100" r="92" fill="#262B33"/>
+          <circle cx="100" cy="100" r="92" fill="none" stroke="rgba(255,255,255,.14)" stroke-width="1.5"/>
+          <path fill="#fff" d="M100,16A84,84 0 0 1 116.39,17.61L112.92,35.03A66.24,66.24 0 0 0 100,33.76ZM132.15,22.39A84,84 0 0 1 146.67,30.16L136.8,44.92A66.24,66.24 0 0 0 125.35,38.8ZM159.4,40.6A84,84 0 0 1 169.84,53.33L155.08,63.2A66.24,66.24 0 0 0 146.84,53.16ZM177.61,67.85A84,84 0 0 1 182.39,83.61L164.97,87.08A66.24,66.24 0 0 0 161.2,74.65ZM184,100A84,84 0 0 1 182.39,116.39L164.97,112.92A66.24,66.24 0 0 0 166.24,100ZM177.61,132.15A84,84 0 0 1 169.84,146.67L155.08,136.8A66.24,66.24 0 0 0 161.2,125.35ZM159.4,159.4A84,84 0 0 1 146.67,169.84L136.8,155.08A66.24,66.24 0 0 0 146.84,146.84ZM132.15,177.61A84,84 0 0 1 116.39,182.39L112.92,164.97A66.24,66.24 0 0 0 125.35,161.2ZM100,184A84,84 0 0 1 83.61,182.39L87.08,164.97A66.24,66.24 0 0 0 100,166.24ZM67.85,177.61A84,84 0 0 1 53.33,169.84L63.2,155.08A66.24,66.24 0 0 0 74.65,161.2ZM40.6,159.4A84,84 0 0 1 30.16,146.67L44.92,136.8A66.24,66.24 0 0 0 53.16,146.84ZM22.39,132.15A84,84 0 0 1 17.61,116.39L35.03,112.92A66.24,66.24 0 0 0 38.8,125.35ZM16,100A84,84 0 0 1 17.61,83.61L35.03,87.08A66.24,66.24 0 0 0 33.76,100ZM22.39,67.85A84,84 0 0 1 30.16,53.33L44.92,63.2A66.24,66.24 0 0 0 38.8,74.65ZM40.6,40.6A84,84 0 0 1 53.33,30.16L63.2,44.92A66.24,66.24 0 0 0 53.16,53.16ZM67.85,22.39A84,84 0 0 1 83.61,17.61L87.08,35.03A66.24,66.24 0 0 0 74.65,38.8Z"/>
+          <path fill="#fff" fill-rule="evenodd" d="M157.37,100A57.37,57.37 0 1 1 42.63,100A57.37,57.37 0 1 1 157.37,100ZM100,57.66L110.62,89.38L142.34,100L110.62,110.62L100,142.34L89.38,110.62L57.66,100L89.38,89.38Z"/>
         </svg>
       </div>
     </div>
@@ -553,6 +558,59 @@
   </section>
 
   <!-- 4 · KEY PARAMETERS -->
+
+  <!-- 3c · SPEND IT: AI CONTROL -->
+  <section id="spend">
+    <div class="wrap">
+      <span class="kicker">Where you can spend it</span>
+      <h2>Mine PCoin on your phone. Pay for your AI with it.</h2>
+      <p class="lede">
+        <a href="https://aicontrol.pc.am" rel="noopener">AI&nbsp;Control</a> is a Claude-powered agent
+        that operates your Windows PCs and Android phones through ordinary conversation. It is adding
+        PCoin as a way to top up your balance &mdash; so the same phone that runs the agent can mine
+        the credit it spends.
+      </p>
+
+      <div class="cards">
+        <div class="card">
+          <h3>Point the miner at your deposit address</h3>
+          <p>
+            Put your AI&nbsp;Control deposit address in the miner's <span class="mono">Forward</span>
+            setting. Mined PCN then arrives on its own &mdash; no manual sending, no exchange, no
+            intermediate step.
+          </p>
+        </div>
+        <div class="card">
+          <h3>It never touches your keys</h3>
+          <p>
+            AI&nbsp;Control never asks for your PCoin keys and never holds them. The deposit address
+            is constructed so their server can <em>receive</em> to it and cannot spend from it. That
+            is a property of the address itself, not a promise in a terms page.
+          </p>
+        </div>
+        <div class="card">
+          <h3>A rate, not a market</h3>
+          <p>
+            <strong>1,000&nbsp;PCN = $1.00</strong> of AI&nbsp;Control balance. This is a rate
+            AI&nbsp;Control sets and reviews periodically. <strong>It is not a market price</strong>
+            &mdash; PCN is not traded on any exchange, so no market price exists.
+          </p>
+        </div>
+      </div>
+
+      <div class="honest-box" style="max-width:100%;margin-top:26px">
+        <b>Status: coming soon, not live yet.</b>
+        The integration is announced and the rate is published, but redemption has not opened. When it
+        does, expect real limits: PCoin is a young chain, so confirmations are slow and there will be
+        per-account deposit caps. We would rather say that now than have you discover it later.
+        <br><br>
+        This is also the honest answer to <em>&ldquo;where can I actually use PCN?&rdquo;</em> &mdash;
+        one place, run by the same people who build PCoin, at a rate they set. It is a real use, not a
+        market. Anything that calls it a price is overselling it.
+      </div>
+    </div>
+  </section>
+
   <section id="parameters">
     <div class="wrap">
       <span class="kicker">Key parameters</span>
