@@ -257,8 +257,12 @@ namespace PCoinTray
         {
             _dir = Path.GetDirectoryName(Application.ExecutablePath);
             _cfgPath = Path.Combine(_dir, "pcoin-tray.cfg");
-            _iconMining = MakeIcon(Color.FromArgb(139, 92, 246), Color.White);
-            _iconIdle = MakeIcon(Color.FromArgb(90, 96, 110), Color.FromArgb(210, 210, 215));
+            // Both states share the graphite field so the app is recognisable at
+            // a glance; mining vs idle is carried by the brightness of the mark.
+            // Graphite is nearly invisible against a dark taskbar, which is the
+            // point -- what you see is the coin floating, not a dark square.
+            _iconMining = MakeIcon(Color.FromArgb(0x26, 0x2B, 0x33), Color.White);
+            _iconIdle = MakeIcon(Color.FromArgb(0x26, 0x2B, 0x33), Color.FromArgb(0x7C, 0x87, 0x94));
 
             LoadConfig();
             _rpc = new RpcClient(_datadir);
@@ -1748,23 +1752,71 @@ namespace PCoinTray
         }
 
         //! Draw the tray icon at runtime so no .ico file has to ship.
+        // The PCoin mark: a struck coin, drawn from the same geometry as the
+        // Android drawables and the website SVG (scratchpad/make_icons.ps1 is
+        // the source those are generated from). Kept as code rather than an
+        // embedded .ico because the tray needs two tinted states and build.bat
+        // compiles a bare file list with no resource step.
+        //
+        // Coordinates are the 108-unit icon canvas of which only the middle 72
+        // is ever shown, mapped onto whatever pixel size the shell asks for.
         static Icon MakeIcon(Color disc, Color glyph)
         {
-            using (var bmp = new Bitmap(32, 32))
+            const int Px = 32;
+            using (var bmp = new Bitmap(Px, Px))
             using (var g = Graphics.FromImage(bmp))
             {
                 g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
-                using (var b = new SolidBrush(disc)) g.FillEllipse(b, 1, 1, 30, 30);
-                using (var f = new Font("Segoe UI", 17, FontStyle.Bold, GraphicsUnit.Pixel))
-                using (var b = new SolidBrush(glyph))
+                g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+
+                // 108-canvas -> pixels, showing the central 72 window.
+                float s = Px / 72f;
+                g.ScaleTransform(s, s);
+                g.TranslateTransform(-18f, -18f);
+
+                using (var field = new SolidBrush(disc))
+                using (var mark = new SolidBrush(glyph))
                 {
-                    var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-                    g.DrawString("P", f, b, new RectangleF(0, 0, 32, 32), sf);
+                    g.FillEllipse(field, 18f, 18f, 72f, 72f);
+
+                    // milled edge: 16 teeth, each half of its 22.5 degree step
+                    const float ringIn = 27.5f - 6.5f / 2f;
+                    const float ringOut = 27.5f + 6.5f / 2f;
+                    for (int i = 0; i < 16; i++)
+                    {
+                        float a0 = -90f + i * (360f / 16f);
+                        using (var p = new System.Drawing.Drawing2D.GraphicsPath())
+                        {
+                            p.AddArc(54f - ringOut, 54f - ringOut, ringOut * 2, ringOut * 2, a0, 11.25f);
+                            p.AddArc(54f - ringIn, 54f - ringIn, ringIn * 2, ringIn * 2, a0 + 11.25f, -11.25f);
+                            p.CloseFigure();
+                            g.FillPath(mark, p);
+                        }
+                    }
+
+                    g.FillEllipse(mark, 54f - 21f, 54f - 21f, 42f, 42f);
+
+                    // four-point star, struck back out of the face in the field
+                    // colour -- at 16px a cut star still reads, a thin one does not
+                    var star = new PointF[8];
+                    for (int i = 0; i < 8; i++)
+                    {
+                        double r = (i % 2 == 0) ? 15.5 : 5.5;
+                        double a = (-90 + i * 45) * Math.PI / 180.0;
+                        star[i] = new PointF((float)(54 + r * Math.Cos(a)), (float)(54 + r * Math.Sin(a)));
+                    }
+                    g.FillPolygon(field, star);
                 }
+
                 IntPtr h = bmp.GetHicon();
-                return (Icon)Icon.FromHandle(h).Clone();
+                try { return (Icon)Icon.FromHandle(h).Clone(); }
+                finally { DestroyIcon(h); }
             }
         }
+
+        // GetHicon allocates an icon handle the GC never frees. One leak per
+        // call is harmless, but this runs on every theme change on some shells.
+        [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+        static extern bool DestroyIcon(IntPtr hIcon);
     }
 }

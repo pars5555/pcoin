@@ -1,0 +1,46 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<!--
+  PCoin wallet launcher foreground: a struck coin.
+
+  GENERATED. Do not hand-edit. Regenerate from scratchpad/make_icons.ps1,
+  which emits this file, the SVG the website uses, every PNG and the Windows
+  .ico from one set of constants. Editing here silently desyncs the platforms.
+
+  108x108 is the adaptive viewport; a launcher shows only the middle 72x72 and
+  only the central 66x66 circle survives every OEM mask, so the whole mark sits
+  inside that circle.
+
+  The shapes are CUT, not overpainted: the star is a hole in the face and the
+  lettering is a hole in the base, both via evenOdd. That keeps the foreground
+  genuinely transparent there, which is what makes the Android 13 monochrome
+  layer render as a coin rather than a solid blob.
+
+  VectorDrawable has no <text>, so WALLET ships as outlines. Changing the word
+  means regenerating, not editing a string.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+  <!-- milled edge, 70% -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillType="nonZero"
+        android:pathData="M54,20.98A21.53,21.53 0 0 1 58.2,21.39L57.31,25.85A16.98,16.98 0 0 0 54,25.53ZM62.24,22.61A21.53,21.53 0 0 1 65.96,24.6L63.43,28.39A16.98,16.98 0 0 0 60.5,26.82ZM69.22,27.28A21.53,21.53 0 0 1 71.9,30.54L68.11,33.07A16.98,16.98 0 0 0 66,30.5ZM73.89,34.26A21.53,21.53 0 0 1 75.11,38.3L70.65,39.19A16.98,16.98 0 0 0 69.68,36ZM75.53,42.5A21.53,21.53 0 0 1 75.11,46.7L70.65,45.81A16.98,16.98 0 0 0 70.98,42.5ZM73.89,50.74A21.53,21.53 0 0 1 71.9,54.46L68.11,51.93A16.98,16.98 0 0 0 69.68,49ZM69.22,57.72A21.53,21.53 0 0 1 65.96,60.4L63.43,56.61A16.98,16.98 0 0 0 66,54.5ZM62.24,62.39A21.53,21.53 0 0 1 58.2,63.61L57.31,59.15A16.98,16.98 0 0 0 60.5,58.18ZM54,64.03A21.53,21.53 0 0 1 49.8,63.61L50.69,59.15A16.98,16.98 0 0 0 54,59.48ZM45.76,62.39A21.53,21.53 0 0 1 42.04,60.4L44.57,56.61A16.98,16.98 0 0 0 47.5,58.18ZM38.78,57.72A21.53,21.53 0 0 1 36.1,54.46L39.89,51.93A16.98,16.98 0 0 0 42,54.5ZM34.11,50.74A21.53,21.53 0 0 1 32.89,46.7L37.35,45.81A16.98,16.98 0 0 0 38.32,49ZM32.48,42.5A21.53,21.53 0 0 1 32.89,38.3L37.35,39.19A16.98,16.98 0 0 0 37.03,42.5ZM34.11,34.26A21.53,21.53 0 0 1 36.1,30.54L39.89,33.07A16.98,16.98 0 0 0 38.32,36ZM38.78,27.28A21.53,21.53 0 0 1 42.04,24.6L44.57,28.39A16.98,16.98 0 0 0 42,30.5ZM45.76,22.61A21.53,21.53 0 0 1 49.8,21.39L50.69,25.85A16.98,16.98 0 0 0 47.5,26.82Z" />
+
+  <!-- face, star cut out -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M68.7,42.5A14.7,14.7 0 1 1 39.3,42.5A14.7,14.7 0 1 1 68.7,42.5ZM54,31.65L56.72,39.78L64.85,42.5L56.72,45.22L54,53.35L51.28,45.22L43.15,42.5L51.28,39.78Z" />
+
+  <!-- base plate, WALLET knocked out as outlines -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M0,64L108,64L108,108L0,108ZM42.92,69.15L40.89,76.85L38.96,76.85L37.69,71.91C37.62,71.65 37.58,71.36 37.56,71.04L37.54,71.04C37.51,71.4 37.46,71.68 37.4,71.91L36.09,76.85L34.09,76.85L32.06,69.15L33.96,69.15L35.04,74.28C35.09,74.5 35.12,74.79 35.14,75.16L35.18,75.16C35.19,74.88 35.24,74.58 35.33,74.26L36.73,69.15L38.59,69.15L39.85,74.32C39.9,74.51 39.94,74.79 39.97,75.15L39.99,75.15C40.01,74.87 40.05,74.58 40.11,74.29L41.17,69.15ZM51.62,76.85L49.73,76.85L49.18,75.14L46.44,75.14L45.9,76.85L44.02,76.85L46.83,69.15L48.88,69.15ZM48.79,73.81L47.96,71.22C47.9,71.02 47.86,70.79 47.83,70.52L47.79,70.52C47.77,70.75 47.72,70.97 47.65,71.2L46.82,73.81ZM57.31,76.85L52.72,76.85L52.72,69.15L54.46,69.15L54.46,75.44L57.31,75.44ZM63,76.85L58.41,76.85L58.41,69.15L60.14,69.15L60.14,75.44L63,75.44ZM68.72,76.85L64.1,76.85L64.1,69.15L68.54,69.15L68.54,70.56L65.83,70.56L65.83,72.27L68.35,72.27L68.35,73.68L65.83,73.68L65.83,75.44L68.72,75.44ZM75.94,70.56L73.74,70.56L73.74,76.85L72,76.85L72,70.56L69.82,70.56L69.82,69.15L75.94,69.15Z" />
+
+</vector>
+

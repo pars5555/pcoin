@@ -46,6 +46,13 @@ WizardStyle=modern
 UninstallDisplayName={#MyAppName} {#MyVersion}
 LicenseFile=..\..\COPYING
 
+; The struck-coin mark, six resolutions from 16 to 256 so it stays sharp on a
+; scaled display. Generated with the Android drawables and the website SVG from
+; scratchpad/make_icons.ps1 -- never redraw it here, or Windows ends up with a
+; subtly different logo from the phone.
+SetupIconFile=pcoin.ico
+UninstallDisplayIcon={app}\PCoinTray.exe
+
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
@@ -57,6 +64,7 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 Source: "payload\bitcoind.exe";    DestDir: "{app}"; Flags: ignoreversion
 Source: "payload\bitcoin-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "PCoinTray.exe";           DestDir: "{app}"; Flags: ignoreversion
+Source: "pcoin.ico";               DestDir: "{app}"; Flags: ignoreversion
 Source: "README.md";               DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion isreadme
 
 [Dirs]
@@ -99,11 +107,14 @@ begin
 end;
 
 [Icons]
-Name: "{group}\PCoin";              Filename: "{app}\PCoinTray.exe"
+; PCoinTray.exe carries no embedded icon -- build.bat is a bare csc.exe file
+; list with no resource step -- so the shortcuts point at pcoin.ico explicitly.
+; Without IconFilename they would show the generic .NET application icon.
+Name: "{group}\PCoin";              Filename: "{app}\PCoinTray.exe"; IconFilename: "{app}\pcoin.ico"
 Name: "{group}\PCoin data folder";  Filename: "{app}\data"
 Name: "{group}\Uninstall PCoin";    Filename: "{uninstallexe}"
-Name: "{userdesktop}\PCoin";        Filename: "{app}\PCoinTray.exe"; Tasks: desktopicon
-Name: "{userstartup}\PCoin";        Filename: "{app}\PCoinTray.exe"; Tasks: startupicon
+Name: "{userdesktop}\PCoin";        Filename: "{app}\PCoinTray.exe"; IconFilename: "{app}\pcoin.ico"; Tasks: desktopicon
+Name: "{userstartup}\PCoin";        Filename: "{app}\PCoinTray.exe"; IconFilename: "{app}\pcoin.ico"; Tasks: startupicon
 
 [Run]
 Filename: "{app}\PCoinTray.exe"; Description: "Start PCoin now"; Flags: nowait postinstall skipifsilent

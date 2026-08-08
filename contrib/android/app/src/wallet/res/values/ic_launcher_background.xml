@@ -1,9 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Wallet launcher colour. Deliberately different from the miner's, because both
-  apps can be installed on the same phone and share the same monogram.
-  Matches @color/brand on the wallet's own screens.
+  Launcher field colour, wallet.
+
+  Deliberately IDENTICAL to the miner's. The two apps are meant to read as one
+  family; what separates them is the silhouette, not the hue. The wallet's
+  foreground carries a base plate with WALLET cut out of it, which survives
+  greyscale, a 48dp launcher slot and a colour-blind user in a way that a
+  different colour does not.
+
+  Note this is not @color/brand. The wallet's in-app teal (#0D5C63 light,
+  #4ECDC4 dark) is for its own screens; the launcher icon belongs to the
+  product family, not to one app's UI palette.
 -->
 <resources>
-    <color name="ic_launcher_background">#0F6E5C</color>
+    <color name="ic_launcher_background">#262B33</color>
 </resources>

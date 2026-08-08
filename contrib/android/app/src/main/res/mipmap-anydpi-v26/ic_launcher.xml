@@ -2,13 +2,25 @@
 <!--
   Adaptive launcher icon, API 26+.
 
-  `ic_launcher_background` is defined per FLAVOUR, which is the whole point: the
-  miner and the wallet are designed to sit on the same phone, and before this
-  they showed the identical stock compass glyph distinguishable only by caption.
-  Same monogram, different colour, so they are told apart at a glance.
+  This file stays shared; everything it references is per FLAVOUR. Both apps
+  are a struck coin on graphite, and the wallet adds a base plate with WALLET
+  cut out of it. They are told apart by silhouette rather than by colour, so
+  the distinction survives greyscale, a 48dp launcher slot, and a colour-blind
+  user.
 
-  API 24-25 falls back to mipmap/ic_launcher.xml, which has to exist for those
-  two API levels since minSdk is 24.
+  `monochrome` is not decoration. Android 13+ themed icons tint a single layer
+  and discard colour entirely, so an app that omits this gets a filled blob.
+  Reusing the foreground works here only because its shapes are CUT rather than
+  overpainted: the star is a genuine hole in the face and the lettering is a
+  genuine hole in the base, both via evenOdd. Paint them instead of cutting
+  them and the themed icon silently degrades to a disc.
+
+  API 24-25 predate adaptive icons and fall back to mipmap/ic_launcher.xml,
+  which is per-flavour and NOT optional at minSdk 24.
+
+  The drawables are GENERATED. Regenerate with scratchpad/make_icons.ps1, which
+  emits the Android XML, the website SVG, every PNG and the Windows .ico from
+  one set of constants. Hand-editing one of them desyncs the platforms.
 -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@color/ic_launcher_background" />

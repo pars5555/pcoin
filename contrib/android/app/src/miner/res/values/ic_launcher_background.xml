@@ -1,8 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Miner launcher colour. Deliberately different from the wallet's, because both
-  apps can be installed on the same phone and share the same monogram.
+  Launcher field colour, miner.
+
+  Graphite, shared with the wallet. The two apps used to differ only by this
+  colour, which meant they were indistinguishable in greyscale and to a
+  colour-blind user. They are now told apart by SHAPE instead: the wallet
+  carries a base plate with WALLET struck out of it, the miner does not.
+
+  14.2:1 against the white mark, the highest of the ten fields that were
+  measured. That matters more than it sounds: the milled edge is fine detail,
+  and below roughly 3:1 the teeth stop resolving at 48dp and read as a smudge.
 -->
 <resources>
-    <color name="ic_launcher_background">#B4530A</color>
+    <color name="ic_launcher_background">#262B33</color>
 </resources>
