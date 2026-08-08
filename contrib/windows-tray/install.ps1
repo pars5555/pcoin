@@ -20,8 +20,8 @@ param(
     # Bump both together at every release. The hash is of pcoin-<ver>-win64.zip
     # and the install aborts on a mismatch, so a forgotten bump here breaks
     # every new install rather than failing quietly.
-    [string]$Version = '1.2.2',
-    [string]$Sha256 = '695ad2729ce9254219cfd12fb72909e624b59c70d02ee0753db853fa586460b4',
+    [string]$Version = '1.2.3',
+    [string]$Sha256 = 'ba06161803244ea567f6e3f1212499e7f08b352da23b970c3b4820a3d4cad318',
     # All three seeds, not just one. The node also carries them compiled in as
     # of v1.2.1, so this is belt and braces rather than the only route in.
     [string[]]$AddNode = @('35.239.156.16:9444', '35.238.47.14:9444', '178.105.3.51:9444'),

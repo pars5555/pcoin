@@ -84,8 +84,8 @@ android {
             // Reset to 1 with the new applicationId: this is a new app as far as
             // Android is concerned, and carrying 2 over would claim an upgrade
             // history it does not have.
-            versionCode = 1
-            versionName = "0.3.0"
+            versionCode = 2
+            versionName = "0.3.1"
 
             buildConfigField("boolean", "MINING", "true")
             // The miner keeps 9443. This half of the change is a provable no-op
@@ -105,8 +105,8 @@ android {
             // R/BuildConfig package; renaming it would touch 29 source files
             // and buy nothing a user can see.
             applicationId = "am.pc.pcoinwallet"
-            versionCode = 1
-            versionName = "0.1.0"
+            versionCode = 2
+            versionName = "0.1.1"
 
             buildConfigField("boolean", "MINING", "false")
             // The ONLY genuine collision between the two apps. bitcoind is
