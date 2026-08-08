@@ -51,9 +51,9 @@ Run the whole suite. It is device-free.
 gradlew.bat :app:testWalletDebugUnitTest
 ```
 
-125 cases across seven classes: `UserSendTest` (24), `ForwardPolicyTest` (62),
+141 cases across ten classes: `UserSendTest` (24), `ForwardPolicyTest` (62),
 `AmountsTest` (10), `BalanceTrustTest` (11) in package `org.pcoin.miner`, plus
-`DerivationVectorsTest` (13), `PublishedVectorsTest` (1) and `RedactTest` (4) in
+`QrTest` (11) and `QrDumpTest` (2), plus `DerivationVectorsTest` (13), `PublishedVectorsTest` (1), `RedactTest` (4) and `WordlistIntegrityTest` (3) in
 `org.pcoin.miner.wallet`.
 
 > Earlier revisions of this file told you to scope every run to

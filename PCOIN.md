@@ -9,7 +9,7 @@ network, and PCN cannot collide with BTC addresses or transactions.
 
 Consensus economics are deliberately **identical to Bitcoin**: 21 million coin cap,
 50 PCN block subsidy, halving every 210,000 blocks, 10-minute target spacing,
-2016-block difficulty retarget. The proof of work, however, is **RandomX** (the
+per-block LWMA difficulty retarget from height 2800. The proof of work, however, is **RandomX** (the
 CPU-friendly, ASIC-resistant algorithm pioneered by Monero) instead of SHA-256d
 — see §5 and "Why RandomX" below. Beyond the PoW function, what changed is the
 network *identity*, not the monetary rules.
@@ -20,13 +20,13 @@ network *identity*, not the monetary rules.
 |---|---|
 | Name | PCoin |
 | Ticker / currency unit | PCN |
-| Client name | PCoin Core (binaries still named `bitcoind.exe` etc. — see §7) |
+| Client name | PCoin Core (binaries still named `bitcoind.exe` etc. — see §8) |
 | Forked from | Bitcoin Core v29.4 |
 | Proof of work | RandomX (v1: fixed key `PCoin/RandomX/v1`, light-mode verification). Block **IDs** remain double-SHA256 — only the PoW validity check uses RandomX. |
 | Max supply | 21,000,000 PCN |
 | Block subsidy | 50 PCN, halving every 210,000 blocks |
 | Block target spacing | 600 s (10 minutes) |
-| Difficulty retarget | every 2016 blocks |
+| Difficulty retarget | LWMA, **every block**, from height 2800 on mainnet (`lwmaHeight`); legacy 2016-block retarget below that height. LWMA from height 1 on testnet/testnet4/signet; disabled on regtest (`INT_MAX`) |
 | Genesis timestamp string | `PCoin 01/Aug/2026 an independent chain is born` |
 | Genesis nTime | `1785600628` (all networks) |
 | Genesis merkle root | `a7cf99f4692673756afae432320aaa2fcc3a50638b50962bcf12d37b3a56171f` (all networks) |
@@ -82,7 +82,7 @@ Note: `0x1f0fffff` (target `000fffff` followed by 56 zeros) means **~4096
 expected hashes per block** at genesis. A normal CPU does hundreds of RandomX
 hashes per second in light mode, so that's seconds per block — even a phone can
 bootstrap the chain. Regtest keeps `0x207fffff` (~1–2 hashes per block).
-Difficulty then self-adjusts every 2016 blocks (max 4× per period).
+Difficulty then self-adjusts: every 2016 blocks below height 2800, and every block via LWMA at and above 2800 (increase capped at 3x/block, decrease at 12x/block).
 
 ### Why RandomX
 
@@ -111,24 +111,22 @@ mode; the desktop's real advantage comes from the 2 GB dataset phones cannot
 hold. All devices produced bit-identical RandomX results, so phones validate
 consensus exactly as x86 does.
 
-Difficulty
-self-adjusts every 2016 blocks, so the network settles at whatever hashrate its
-CPUs actually provide.
+Difficulty self-adjusts every block under LWMA (from height 2800 on mainnet), so the network settles at whatever hashrate its CPUs actually provide.
 
 ## 2. What was changed vs upstream v29.4
 
 No monetary or script consensus rules were altered. Besides identity/bootstrap
-changes there is exactly **one** real consensus change: the proof-of-work
+changes there are **two** real consensus changes: the proof-of-work
 function (SHA-256d → RandomX, rows marked below).
 
 | File | Change |
 |---|---|
-| `src/kernel/chainparams.cpp` | The core of the fork, for all five chains (main/testnet/testnet4/signet/regtest): new `pszTimestamp`; new genesis parameters (`nTime=1785600628`, per-network `nNonce`/`nBits` as in the tables above) and updated genesis-hash/merkle-root asserts; new `pchMessageStart` magic bytes (signet magic remains derived from the challenge); new `nDefaultPort` per network; `powLimit` set to `000fff...` (regtest keeps `7fffff...`); base58 prefixes (55/56/183 main, 117/118/245 testnets); bech32 HRPs `pc`/`tpc`/`pcrt`; **DNS seeds (`vSeeds`): mainnet carries a single entry, `seed.pc.am` (the project's initial seed) — all other networks cleared**; **fixed seeds (`vFixedSeeds`) cleared**; **checkpoints cleared**; `nMinimumChainWork` and `defaultAssumeValid` zeroed; `chainTxData` zeroed; buried softfork deployments (BIP34, BIP65, BIP66, CSV, SegWit) set active from height 1 (regtest keeps upstream defaults, incl. SegWit from height 0; Taproot active from genesis on every chain via the usual `ALWAYS_ACTIVE` mechanism). |
+| `src/kernel/chainparams.cpp` | The core of the fork, for all five chains (main/testnet/testnet4/signet/regtest): new `pszTimestamp`; new genesis parameters (`nTime=1785600628`, per-network `nNonce`/`nBits` as in the tables above) and updated genesis-hash/merkle-root asserts; new `pchMessageStart` magic bytes (signet magic remains derived from the challenge); new `nDefaultPort` per network; `powLimit` set to `000fff...` (regtest keeps `7fffff...`); base58 prefixes (55/56/183 main, 117/118/245 testnets); bech32 HRPs `pc`/`tpc`/`pcrt`; **DNS seeds (`vSeeds`): mainnet carries a single entry, `seed.pc.am` (the project's initial seed) — all other networks cleared**; **fixed seeds (`vFixedSeeds`): mainnet loads PCoin's own three entries from `chainparamsseeds.h`; testnet/testnet4/signet/regtest cleared**; **checkpoints cleared**; `nMinimumChainWork` and `defaultAssumeValid` zeroed; `chainTxData` zeroed; buried softfork deployments (BIP34, BIP65, BIP66, CSV, SegWit) set active from height 1 (regtest keeps upstream defaults, incl. SegWit from height 0; Taproot active from genesis on every chain via the usual `ALWAYS_ACTIVE` mechanism). |
 | `src/chainparamsbase.cpp` | Default RPC ports: 9443 / 19443 / 29443 / 39443 / 49443 (P2P−1; P2P+1 stays free for the default Tor onion listener). |
-| `src/chainparamsseeds.h` | File itself is unmodified (still contains Bitcoin's seed IPs), but it is no longer `#include`d anywhere — `chainparams.cpp` dropped the include and every chain calls `vFixedSeeds.clear()`, so no Bitcoin seed address is ever used (PCoin's own bootstrap is the mainnet DNS seed `seed.pc.am` instead; see §4). |
+| `src/chainparamsseeds.h` | Rewritten: Bitcoin's ~2031 mainnet seeds replaced by PCoin's own three BIP155-encoded fixed seeds (35.239.156.16, 35.238.47.14, 178.105.3.51, all :9444). The file **is** `#include`d by `kernel/chainparams.cpp` and mainnet loads it into `vFixedSeeds` as a fallback for when DNS seeding yields nothing; only the test networks and regtest call `vFixedSeeds.clear()`. Regenerate from `contrib/seeds/nodes_main.txt` via `contrib/seeds/generate-seeds.py`. |
 | `src/randomx/` **(PoW)** | Vendored RandomX v1.2.x (tevador/RandomX) — the PoW hash library, built as part of the tree. |
 | `src/crypto/pow_randomx.{h,cpp}` **(PoW)** | RandomX wrapper. Fixed key (the RandomX "K" input): the ASCII string `PCoin/RandomX/v1` (16 bytes, no NUL terminator), identical on **all** networks including regtest; key rotation would be a later hard fork — v1 is fixed-key. Verification uses RandomX **light mode** (256 MB cache, no 2 GB dataset): `randomx_alloc_cache()` with the machine-appropriate flags from `randomx_get_flags()` (auto-detected JIT / hardware AES / Argon2 SSSE3/AVX2; falls back to `RANDOMX_FLAG_DEFAULT` if that allocation fails) + `randomx_init_cache(key)` once under `std::call_once`, then a `thread_local` `randomx_vm` per thread sharing that cache. `RANDOMX_FLAG_JIT` is used when available, with a mandatory fallback to the interpreter (`RANDOMX_FLAG_DEFAULT`) if JIT allocation fails — some environments block W^X pages. |
-| `src/pow.cpp`, `src/validation.cpp` **(PoW)** | PoW *check* routed to RandomX: a block satisfies PoW iff `RandomX_hash(80-byte serialized header)`, interpreted as a **little-endian** 256-bit integer (exactly the same byte-order convention as the existing uint256-from-bytes + `UintToArith256` path), is ≤ the nBits target. The block **ID** (`CBlockHeader::GetHash`, prev-block links, genesis asserts, RPC block hashes) stays double-SHA256 and was deliberately not touched. |
+Row is accurate but incomplete, and the §2 table omits every LWMA and miner change. Missing rows (all confirmed changed vs v29.4): `src/pow.{h,cpp}` (+264/+38, LwmaGetNextWorkRequired and the DO-NOT-MODIFY legacy overflow), `src/consensus/params.h` (+40, lwmaHeight/nLwmaAveragingWindow/nLwmaMaxSolvetime/nLwmaMaxFutureBlockTime), `src/chain.h` (+27, LWMA_MAX_FUTURE_BLOCK_TIME), `src/deploymentinfo.cpp` (+4, DEPLOYMENT_LWMA), `src/node/cpuminer.{h,cpp}` (new, +437), `src/rpc/mining.cpp` (+129, startmining/stopmining/getcpuminerinfo), `src/init.cpp` (+18, RandomXPowInit), `src/net_processing.cpp` (+19), `src/node/blockstorage.cpp` (+23), `src/rpc/client.cpp` (+2), `src/chainparams.cpp` (+1), `src/kernel/chainparams.h` (+7), `src/CMakeLists.txt`/`src/crypto/CMakeLists.txt`/`src/kernel/CMakeLists.txt`. (exactly the same byte-order convention as the existing uint256-from-bytes + `UintToArith256` path), is ≤ the nBits target. The block **ID** (`CBlockHeader::GetHash`, prev-block links, genesis asserts, RPC block hashes) stays double-SHA256 and was deliberately not touched. |
 | `src/common/args.cpp` | `BITCOIN_CONF_FILENAME = "pcoin.conf"`; `GetDefaultDataDir()` returns `AppData\Local\PCoin` (Windows), `~/.pcoin` (Unix), `~/Library/Application Support/PCoin` (macOS). |
 | `src/common/signmessage.cpp` | `MESSAGE_MAGIC = "PCoin Signed Message:\n"` — PCN message signatures are not valid Bitcoin signatures and vice versa. |
 | `src/policy/feerate.h` | `CURRENCY_UNIT = "PCN"` (fee rates display as PCN/kvB). |
@@ -136,7 +134,7 @@ function (SHA-256d → RandomX, rows marked below).
 | `CMakeLists.txt` | `CLIENT_NAME` set to `PCoin Core` (shows up in version strings and the user agent); `project()` renamed `PCoinCore`; `HOMEPAGE_URL` set to the placeholder `https://pcoin.example/` (RFC 2606 reserved TLD, feeds `CLIENT_URL` in `--version` output and the Windows installer — replace once a real project site exists). |
 
 **Not** changed: executable names (`bitcoind`, `bitcoin-cli`, `bitcoin-qt`,
-`bitcoin-wallet`, ...), Qt icons/artwork, tests, docs. See §7.
+`bitcoin-wallet`, ...), Qt icons/artwork. See §8.
 
 ## 3. Building
 
@@ -152,7 +150,7 @@ Open a **Developer PowerShell for VS** (this sets up the compiler and
 ```powershell
 cd D:\xampp\htdocs\pcoin
 
-# See available presets (all set BUILD_GUI=ON by default)
+# See available presets (the vs2022 presets set BUILD_GUI=ON; the project default is OFF)
 cmake --list-presets
 
 # Static linking, with GUI:
@@ -284,8 +282,7 @@ Check it:
 
 **Mainnet has automatic peer discovery.** `vSeeds` in
 `src/kernel/chainparams.cpp` contains the project's initial DNS seed,
-**`seed.pc.am`** — currently a plain A record pointing at one public node
-(`35.239.156.16`), which is all a starter seed needs to be. On startup, when a
+**`seed.pc.am`** — currently resolving to three public nodes (`35.239.156.16`, `35.238.47.14`, `178.105.3.51`), the same three that ship as compiled-in fixed seeds. Re-confirm the live record with `dig +short seed.pc.am` before editing, since DNS state is not settled by the source tree. On startup, when a
 fresh node has no peers to try, Bitcoin Core's `ThreadDNSAddressSeed` resolves
 that name and uses the returned addresses as candidate peers, so a fresh
 mainnet node finds the network on its own. `-connect`/`-addnode` remain
@@ -293,7 +290,7 @@ available as a manual fallback (e.g. `-addnode=seed.pc.am`) if DNS is blocked
 or the seed is down.
 
 **Testnet/testnet4/signet/regtest still have zero automatic peer discovery** —
-their `vSeeds` are empty and all hard-coded fixed seeds were removed on every
+their `vSeeds` and `vFixedSeeds` are both empty (mainnet does carry three hard-coded fixed seeds; the test networks do not)
 network. On those chains a node will sit alone forever unless you tell it where
 a peer is, via `-connect`, `-addnode`, or the `addnode` RPC. The same manual
 wiring is how you build a deliberately private two-node setup on any network.
@@ -325,7 +322,7 @@ need**: `bitcoin-cli generatetoaddress` grinds *real* RandomX blocks on **any**
 network, mainnet included. It is single-threaded and uses the light-mode
 verifier (256 MB cache, hundreds of hashes/second), which is perfectly adequate
 at the launch difficulty of ~4096 expected hashes per block. A dedicated
-multi-threaded miner is future work.
+multi-threaded miner is built in: `startmining "address" ( threads ttl )`, `stopmining` and `getcpuminerinfo` (RPC category "mining"). `generatetoaddress` remains the single-threaded path.
 
 Do **not** reach for external miners:
 
@@ -378,9 +375,7 @@ At launch difficulty (`0x1f0fffff`, ~4096 expected hashes) each call takes
 **seconds to a few minutes** on a typical CPU — the single light-mode thread
 does a few hundred hashes per second, and mining is a lottery, so individual
 blocks vary. Don't be alarmed if one call sits for a while. Repeat (or loop)
-`generatetoaddress 1 $addr` to keep building the chain; difficulty climbs at
-each 2016-block retarget (capped at 4× per period) until it matches the
-network's actual hashrate, so blocks get progressively slower to grind. Watch
+`generatetoaddress 1 $addr` to keep building the chain; below height 2800 difficulty moves only at each 2016-block retarget, and from height 2800 LWMA retargets every block (increase capped at 3x/block, decrease at 12x/block) until it matches the network's actual hashrate. Watch
 progress with:
 
 ```powershell
@@ -616,14 +611,17 @@ correctly returns a later address than index 0.
     `bitcoin-qt.exe`, `bitcoin-wallet.exe` (rename = CMake target churn, left
     for later).
   * Qt GUI still shows Bitcoin icons/artwork/splash (only unit labels changed).
-  * No real DNS seeder (crawler) — mainnet bootstraps off a single static DNS
-    seed, `seed.pc.am` (a plain A record pointing at one node); testnets still
-    need manual `-addnode`/`-connect` (§4).
+  * No real DNS seeder (crawler) — mainnet bootstraps off the static DNS seed
+    `seed.pc.am` plus three compiled-in fixed seeds in `src/chainparamsseeds.h`
+    that are used when DNS seeding yields nothing; testnets still need manual
+    `-addnode`/`-connect` (§4).
   * No block explorer, no checkpoints, no `assumevalid`/minimum-chainwork
     anchors (they're zeroed — fine for a young chain, revisit once there's
     history worth anchoring).
-  * No release/packaging pipeline, no code signing, no reproducible-build
-    attestations.
+  * Releases are cut manually (there is no CI), but packaging scripts do exist:
+    `contrib/windows-tray/installer.iss` (Inno Setup) and
+    `contrib/linux-deb/build-deb.sh`. Still missing: code signing and
+    reproducible-build attestations.
 * **Sensible order of next steps:** run two VPS nodes → mine a few thousand
   blocks → back up wallets → add more seed nodes behind `seed.pc.am` and stand
   up a proper crawling DNS seeder + explorer → re-brand binaries and GUI →

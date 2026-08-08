@@ -1,6 +1,6 @@
 # PCoin — Windows always-on full node setup
 
-Package: `pcoin-1.0.0-win64.zip` (PCoin Core v29.4.0, x86-64, statically linked).
+Package: `pcoin-1.2.2-win64.zip` (PCoin Core v29.4.0, x86-64, statically linked). — or link the version-less `pcoin-win64.zip` under /releases/latest/download/ so the doc never goes stale again
 Contents: `bitcoind.exe`, `bitcoin-cli.exe`, `PCOIN.md`, `pcoin.conf.example`.
 
 The binaries are fully static (no MSVC runtime, no MinGW DLLs). Windows 10 /
@@ -36,11 +36,10 @@ mkdir D:\PCoinData
 
 ## 2. The config file
 
-The config file must be named **`bitcoin.conf`** (PCoin Core is a Bitcoin Core
-fork and kept the filename). Copy `pcoin.conf.example` to:
+The config file must be named **`pcoin.conf`** (PCoin Core renamed it; it is NOT `bitcoin.conf`). Copy the example config to:
 
 ```
-D:\PCoinData\bitcoin.conf
+D:\PCoinData\pcoin.conf
 ```
 
 Minimum contents for an always-on node:
@@ -70,8 +69,7 @@ Notes:
 - Change `rpcpassword`. For something better than a plaintext password, use
   `share/rpcauth/rpcauth.py` from the source tree and put the resulting
   `rpcauth=` line in the config instead of `rpcuser`/`rpcpassword`.
-- Since all three PCs are separate nodes, give each of them `addnode=` lines
-  pointing at the other two, otherwise they may never discover each other.
+- The node finds the network on its own: it resolves the DNS seed `seed.pc.am` and, if that yields nothing, falls back to compiled-in fixed seeds. `addnode=` lines pointing at the seeds (35.239.156.16:9444, 35.238.47.14:9444, 178.105.3.51:9444) or at each other are belt-and-braces, not a requirement.
 
 ## 3. First run (foreground, to check it works)
 
@@ -113,7 +111,7 @@ to 127.0.0.1 only, which is what you want.
 
 If the PCs are behind a router and you want inbound peers from the internet,
 forward TCP 9444 to each machine (use a different external port per machine if
-they share one public IP, and set `port=`/`externalport=` accordingly).
+they share one public IP, and set `port=` accordingly; advertise the mapped address with `externalip=<ip>`).
 
 Port reference:
 
@@ -230,7 +228,7 @@ Get-Content D:\PCoinData\debug.log -Wait -Tail 50
 
 ## 7. Troubleshooting
 
-- **No peers**: add `addnode=<other-pc-ip>:9444` lines to `bitcoin.conf` and
+- **No peers**: add `addnode=<other-pc-ip>:9444` lines to `pcoin.conf` and
   restart, or add at runtime with
   `bitcoin-cli -datadir=D:\PCoinData addnode <ip>:9444 add`.
 - **No inbound peers**: firewall rule missing, or router port-forward missing.

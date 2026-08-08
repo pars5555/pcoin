@@ -1,8 +1,6 @@
 # PCoin (PCN) — the coin anyone can mine
 
-PCoin is an independent Layer-1 blockchain — a fork of Bitcoin Core v29.4 with one
-consensus change: proof-of-work is **RandomX**, the CPU-fair algorithm, so an ordinary
-phone or laptop is a first-class miner. No ASIC farms, no premine, no investors.
+PCoin is an independent Layer-1 blockchain — a fork of Bitcoin Core v29.4 with three consensus changes: proof-of-work is **RandomX**, the CPU-fair algorithm, so an ordinary phone or laptop is a first-class miner; difficulty is **LWMA**, retargeting every block from height 2800; and the future-block-time limit tightens from 2 hours to 15 minutes at and above that height. No ASIC farms, no premine, no investors.
 
 Website: **https://pc.am** · Full technical manual: **[PCOIN.md](PCOIN.md)**
 
@@ -25,7 +23,7 @@ Money creation for ordinary people. If you own a phone or a laptop, you can mine
 | Launch | August 2026 |
 | Consensus | Proof-of-work: RandomX, fixed key `PCoin/RandomX/v1`, light-mode (256 MB) verification; block IDs remain double-SHA256 |
 | Supply | 21,000,000 PCN — 50 PCN subsidy, halving every 210,000 blocks |
-| Blocks | 10-minute target, difficulty retarget every 2016 blocks |
+| Blocks | 10-minute target, LWMA difficulty retarget every block from height 2800 (the legacy 2016-block retarget applies only below that height) |
 | Mainnet ports | P2P 9444, RPC 9443 |
 | Network magic | `cf a2 d1 b8` |
 | Addresses | legacy start with `P` (base58 prefix 55); bech32 `pc1...` |
@@ -64,8 +62,7 @@ ADDR=$(./bitcoin-cli getnewaddress)
 
 At launch difficulty each block takes seconds to a few minutes on a typical CPU —
 even on a phone. Rewards mature after 100 confirmations (`bitcoin-cli getbalance`).
-Difficulty self-adjusts every 2016 blocks to whatever hashrate the network's CPUs
-actually provide.
+Difficulty self-adjusts every block (LWMA, from height 2800) to whatever hashrate the network's CPUs actually provide.
 
 ## Roadmap (near term)
 

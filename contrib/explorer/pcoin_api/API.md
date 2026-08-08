@@ -59,7 +59,7 @@ containing a field named `mnemonic`, `seed`, `privkey`, `private_key`, `wif` or
 `xprv` is refused with a `400 refused` before anything else happens.
 
 **Do not run it on the seed host.** `seed.pc.am` is the only DNS seed and
-`vFixedSeeds` is empty: if that box gets loaded off the network, nobody new can
+`vFixedSeeds` holds three hardcoded fallback peers: if that box gets loaded off the network, new nodes lose their main bootstrap path and
 bootstrap PCoin.
 
 ---
@@ -1063,7 +1063,7 @@ per-client limit becomes decorative.
 ## Deployment
 
 * **Separate host from the seed.** `seed.pc.am` is the only DNS seed and
-  `vFixedSeeds` is empty (CLAUDE.md §5, §11).
+  `vFixedSeeds` holds three hardcoded fallback peers (CLAUDE.md §5, §11).
 * **Point it at a `-disablewallet` node.** Broadcast refuses anything else unless
   `--allow-wallet-node` is passed.
 * **Bind 127.0.0.1 and terminate TLS in front.** This is `http.server`: a

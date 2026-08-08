@@ -45,7 +45,7 @@ shared-memory file from a read-only connection).
 
 It binds `127.0.0.1` by default. `http.server` is not a hardened edge server —
 put a reverse proxy in front of anything public. **Not on the seed host:**
-`seed.pc.am` is PCoin's only DNS seed and `vFixedSeeds` is empty, so loading
+`seed.pc.am` is PCoin's only DNS seed and `vFixedSeeds` holds only three fallback peers, so loading
 that box off the network stops anyone new from bootstrapping the chain.
 
 ---

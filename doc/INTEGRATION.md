@@ -255,7 +255,7 @@ anyway, stated up front:
   <https://explorer.pc.am/api/addresses/top>.
 * **There is no market.** PCN is not listed anywhere and has no price.
 * **Difficulty changes behaviour at height 2800**, switching from Bitcoin's
-  2016-block retarget to per-block LWMA. Nodes older than v1.2.1 will fork
+  2016-block retarget to per-block LWMA. Nodes older than v1.2.0 will fork
   there.
 
 ---

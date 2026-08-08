@@ -49,7 +49,7 @@ P2P minus one**, so regtest is 49443, not Bitcoin's 18443 and not testnet3's
 19443.
 
 **Do not deploy this on the seed host.** `seed.pc.am` is the only DNS seed and
-`vFixedSeeds` is empty (CLAUDE.md §5, §11): if that box gets loaded off the
+`vFixedSeeds` holds three hardcoded fallback peers (CLAUDE.md §5, §11): if that box gets loaded off the
 network nobody new can bootstrap PCoin. Separate host.
 
 **It never generates an address, holds a key or signs anything.** Clients derive
@@ -331,7 +331,7 @@ filesystem, node at height 2125):
 | — of which RPC | 0.65 s, 4 254 calls, 6.7 MB |
 | Database size | **5 828 608 bytes** (5.8 MB) |
 | Incremental resync, already caught up | 0.33 s |
-| `verify --deep` | 0.17 s |
+| `verify` (deep is the default) | 0.17 s |
 | Rows | blocks 2 126 · txs 2 136 · inputs 4 129 · outputs 4 263 · address_txs 2 153 · addresses 25 |
 | Index UTXO count / supply | 134 / 106 250.00000000 PCN |
 | Node `gettxoutsetinfo` | `txouts` **134**, `total_amount` **106250.00000000** — exact match |

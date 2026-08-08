@@ -679,11 +679,14 @@ Open items, roughly in order of how much damage they do if ignored:
 2. ~~Get the tray sources and the Android app into version control.~~ **Fixed.**
    Both are tracked, as are the two packaging scripts (`installer.iss`,
    `contrib/linux-deb/build-deb.sh`).
-3. **The docs are stale on difficulty.** `README.md:28,67` and
-   `PCOIN.md:12,29,85,115,382` still say "retarget every 2016 blocks".
-4. `doc/WINDOWS-NODE-SETUP.md:39,43,233` says the config file is `bitcoin.conf`.
-   It is `pcoin.conf` (`src/common/args.cpp:39`). A user following that document
-   gets a node that silently ignores its config.
+3. ~~The docs are stale on difficulty.~~ **Fixed.** 34 verified corrections
+   applied across `README.md`, `PCOIN.md`, `doc/INTEGRATION.md` and four
+   `contrib/*` READMEs. Every surviving mention of 2016 blocks is now explicitly
+   scoped to "below height 2800". Note `doc/bitcoin-conf.md`, `files.md`,
+   `init.md`, `build-osx.md` and `release-process.md` are **unmodified upstream
+   Bitcoin documents** and correctly say `bitcoin.conf` — do not "fix" those.
+4. ~~`doc/WINDOWS-NODE-SETUP.md` says `bitcoin.conf`.~~ **Fixed**, along with a
+   stale `pcoin-1.0.0-win64.zip` package name in the same file.
 5. **The single seed has no monitoring.** `restart=unless-stopped` covers a crash
    and a reboot; nothing watches for "container up, chain stalled", and if
    `seed.pc.am` dies no new participant can bootstrap. There is no cron job or
