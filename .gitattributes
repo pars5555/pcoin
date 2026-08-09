@@ -17,7 +17,8 @@ contrib/android/app/src/test/resources/qr_vectors.txt -text
 
 # Anything that RUNS on Linux keeps LF whatever the checkout platform does.
 # Not cosmetic: build-deb.sh copies these scripts verbatim into the .deb, and a
-# shebang arriving as "#!/bin/sh" fails with a bare "No such file or
+# shebang arriving as "#!/bin/sh
+" fails with a bare "No such file or
 # directory" that names the interpreter rather than the carriage return -- one
 # of the least obvious errors in packaging. The extensionless three are the
 # wizard, the live view and the miner supervisor.
@@ -25,6 +26,12 @@ contrib/android/app/src/test/resources/qr_vectors.txt -text
 contrib/linux-deb/pcoin-setup             text eol=lf
 contrib/linux-deb/pcoin-mine              text eol=lf
 contrib/linux-deb/pcoin-miner-supervisor  text eol=lf
+contrib/seed-monitoring/pcoin-seed-watch    text eol=lf
+contrib/seed-monitoring/pcoin-fork-watch    text eol=lf
+contrib/seed-monitoring/pcoin-notify        text eol=lf
+# systemd tolerates CRLF, but there is no reason to ship it to a Linux box.
+*.service  text eol=lf
+*.timer    text eol=lf
 
 # Windows-only sources keep CRLF, which is what the in-box csc and Inno Setup
 # expect to see.
