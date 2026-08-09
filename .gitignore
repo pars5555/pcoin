@@ -30,6 +30,17 @@ PCOIN-SECRETS.md
 *.pem
 wallet.dat
 *wallet-backup*
+# Signing material. contrib/android/.gitignore covers the app tree, but a
+# keystore dropped anywhere else in the repo would sail straight past it, and
+# this repo is public.
+*.jks
+*.keystore
+*.p12
+*.pfx
+signing.properties
+local.properties
+# Build chatter, not source.
+contrib/windows-tray/build.log
 
 
 # Icon generator scratch output. The SVG/PNG/ICO that actually ship are tracked

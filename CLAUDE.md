@@ -297,6 +297,41 @@ alone does nothing. Packaging requires renaming `bitcoind` →
 `jniLibs/arm64-v8a/libbitcoind.so` and exec-ing it from `nativeLibraryDir`,
 because Android 10+ blocks exec from app-writable storage.
 
+### The Linux user path
+`contrib/linux-deb/` is not just `build-deb.sh` any more. The whole install is
+
+```
+curl -fsSL https://pc.am/dl/install.sh | sudo sh
+```
+
+which verifies the download against the release's `SHA256SUMS`, installs, and
+execs the wizard. Four tracked files, all shipped inside the `.deb` except the
+first:
+
+| file | what it is |
+|---|---|
+| `install.sh` | the one-liner. Hosted at `pc.am/dl/install.sh`; **not** version-pinned, it resolves through `/releases/latest/download/` so it never needs a release-time bump (contrast `install.ps1`, which does — §4 "Cutting a release") |
+| `pcoin-setup` | wizard: asks for the payout address, **validates it via the node's `validateaddress`** rather than a regex, asks thread count, writes `/etc/pcoin/miner.conf`, enables `pcoin-miner` |
+| `pcoin-miner-supervisor` | `ExecStart` of `pcoin-miner.service`. Waits for RPC, waits for `initialblockdownload == false`, then `startmining` with **ttl=120** and polls `getcpuminerinfo` every 30 s — the poll *is* the keep-alive |
+| `pcoin-mine` | live terminal dashboard: hashrate, share of network, block ETA, `b` scans the UTXO set for the payout address and splits mature from immature |
+
+Three design points that must survive any edit:
+
+1. **`pcoin-miner.service` must NOT use `BindsTo=`/`PartOf=` on `pcoind`.**
+   Propagation is one-way: a `systemctl restart pcoind` would stop mining and
+   never restart it, silently, until the next reboot. The supervisor rides out
+   a node restart itself — measured recovery is ~20 s.
+2. **The wizard reads from `/dev/tty`, not stdin.** When `install.sh` is piped
+   into `sh`, stdin *is* the script; reading it would consume the rest of the
+   file. `install.sh:…` reopens the terminal explicitly before `exec`.
+3. **A failed `validateaddress` is not a rejection and not an acceptance.** Both
+   the wizard and the supervisor loop and retry rather than resolve it either
+   way — the §7.1 doctrine, applied to the one input that costs money.
+
+Because the miner pays a bare address, **the machine holds no key**. That is why
+mining to the treasury address directly is the right shape on Linux, and why
+none of this needs the Windows tray's forward-and-sweep machinery.
+
 ### Cutting a release
 Entirely manual — there is no CI. Six artifacts per release, from three builds:
 
@@ -362,8 +397,11 @@ records which boxes are shared production (one runs Odoo, one runs pc.am and
 
 **Seed node + website** — GCP, `35.239.156.16`, Debian 11.11, 2 vCPU / 8 GB RAM
 (≈7 GB usable), 49 GB disk with **18 GB free**, uptime ~1450 days.
-`ssh -i ~/.ssh/id_rsa rba@35.239.156.16` (`rba` has passwordless sudo; root login
-denied). This is a **shared production box**: 13 enabled Apache vhost files (15
+SSH login (username and key) is in `D:\pc.am\PCOIN-SERVERS.md`; the account there
+has passwordless sudo and root login is denied. The username is deliberately not
+written here — this repo is public, and §5 already says usernames live on `D:`,
+so naming one in this file contradicted the rule it states. This is a **shared
+production box**: 13 enabled Apache vhost files (15
 available), 12 of them not `pc.am`, together declaring **215 distinct
 ServerName/ServerAlias hostnames** — plus MariaDB, Docker, coturn, frps and about
 ten PHP-FPM pools. PHP is **7.4.33, end of life since November 2022**. Treat it
@@ -617,6 +655,20 @@ These are real incidents, not hypotheticals. Each one cost hours or money.
     call** when only one worked (`PCOIN.md` §6.6). A wallet that imported the
     receive descriptor but not the change one accepts coins and cannot build
     change — invisible until the first send. Check every `success`.
+
+12. **The `.deb` declared `Depends: libc6` and nothing else, so it installed
+    fine and then never ran.** The binaries link libevent dynamically; Ubuntu
+    26.04 ships only `libevent_core`, so `bitcoind` died at every start with
+    `libevent_extra-2.1.so.7: cannot open shared object file` and systemd
+    crash-looped it 43 times. dpkg reported success throughout, because a
+    missing *undeclared* dependency is not a packaging error — it is a
+    packaging omission, and nothing checks for it. Fixed at
+    `contrib/linux-deb/build-deb.sh:52`, which now declares all three libevent
+    modules with `-7t64 | -7` alternatives for the 64-bit-time_t rename, and
+    prints `objdump -p … NEEDED` at build time so the declared list can be
+    compared against the real one. **Rule: an install that succeeds proves the
+    files were copied, nothing more. Test a package on a machine that has never
+    had the software's dependencies — a dev box always has them already.**
 
 ## 8. Operating rules
 
