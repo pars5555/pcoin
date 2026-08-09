@@ -316,17 +316,18 @@
   </defs>
 </svg>
 
-<!-- Consensus change at height 2800. Removed once the fork has landed and
-     100 blocks have passed cleanly. There are miners on this network whose
-     operators cannot be contacted, so this banner is the only upgrade notice
-     that reaches them. -->
+<!-- Consensus change at height 2800 — LANDED. The banner stays until 100
+     blocks have passed cleanly past the fork, because there are miners on this
+     network whose operators cannot be contacted and this is the only upgrade
+     notice that reaches them. An old node is still mining a worthless branch,
+     so the warning is MORE useful after the fork than before it, not less.
+     Delete the whole block once the chain is comfortably past 2900. -->
 <div id="forknotice" role="alert">
   <div class="fn-inner">
-    <strong>Upgrade before block 2800.</strong>
-    <span>PCoin switches to per-block LWMA difficulty at height <b>2800</b>.
-    A node older than <b>v1.2.0</b> will reject the new blocks and keep mining a
-    branch of its own &mdash; those coins are worth nothing. Upgrading takes a
-    minute and needs no resync.</span>
+    <strong>LWMA is active as of block 2800.</strong>
+    <span>Difficulty now retargets every block. A node older than <b>v1.2.0</b>
+    is rejecting these blocks and mining a branch of its own &mdash; those coins
+    are worth nothing. Upgrading takes a minute and needs no resync.</span>
     <a class="fn-cta" href="#download">Get v1.2.3</a>
   </div>
 </div>
@@ -628,10 +629,16 @@
       </div>
 
       <div class="honest-box" style="max-width:100%;margin-top:26px">
-        <b>Status: coming soon, not live yet.</b>
-        The integration is announced and the rate is published, but redemption has not opened. When it
-        does, expect real limits: PCoin is a young chain, so confirmations are slow and there will be
-        per-account deposit caps. We would rather say that now than have you discover it later.
+        <b>Status: live.</b>
+        Open AI&nbsp;Control, choose <b>PCoin</b> in the menu, and you get <b>your own deposit
+        address</b> with a QR code. Send PCN to it and the balance appears on your account after
+        <b>20 confirmations</b>. The address is yours alone &mdash; that is how a deposit is matched
+        to an account, since a PCN transfer carries no sender identity and no memo.
+        <br><br>
+        Two things to know before you send. It is <b>one-way</b>: PCN converts to AI&nbsp;Control
+        balance and cannot be converted back or withdrawn. And confirmations are <b>slow</b> &mdash;
+        PCoin is a young chain, so 20 confirmations can take hours, not minutes. Deposits are
+        recorded the moment they confirm; the balance follows.
         <br><br>
         This is also the honest answer to <em>&ldquo;where can I actually use PCN?&rdquo;</em> &mdash;
         one place, run by the same people who build PCoin, at a rate they set. It is a real use, not a
