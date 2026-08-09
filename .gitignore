@@ -48,6 +48,16 @@ local.properties
 # Build chatter, not source.
 contrib/windows-tray/build.log
 
+# pcoin-seed-vault writes its output into the working directory, so a run
+# started from inside a clone would otherwise leave an encrypted wallet backup
+# staged for commit. Encrypted is not published: the blob plus a guessed
+# passphrase is the money, and a public repo is the wrong place to start that
+# race. The xpub is harmless but is excluded too, because a wallet's full
+# deposit history is nobody else's business.
+*-seed.enc.json
+*-xpub.txt
+contrib/vault/node_modules/
+
 
 # Icon generator scratch output. The SVG/PNG/ICO that actually ship are tracked
 # in contrib/branding/ and contrib/windows-tray/; this is just the working dir.

@@ -1,0 +1,15 @@
+{
+  "name": "pcoin-seed-vault",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Create a system's PCN wallet offline and back it up encrypted, without putting a spendable key on a server.",
+  "type": "module",
+  "scripts": {
+    "test": "node pcoin-seed-vault.mjs --selftest"
+  },
+  "dependencies": {
+    "@scure/base": "^2.3.0",
+    "@scure/bip32": "^2.3.0",
+    "@scure/bip39": "^2.3.0"
+  }
+}

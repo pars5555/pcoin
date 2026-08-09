@@ -14,6 +14,7 @@ restating it, because a duplicated fact is a fact that will go stale.
 | LWMA reference model | `contrib/lwma/README.md`, `contrib/lwma/lwma_ref.py` |
 | Tray app design | `contrib/windows-tray/README.md` |
 | Windows always-on node | `doc/WINDOWS-NODE-SETUP.md` (has a known error, §10.1) |
+| Custody for integrated systems | `contrib/vault/README.md`; the operational procedure is `D:\pc.am\PCOIN-CUSTODY-RUNBOOK.md` (off-repo — it names the vault hosts) |
 
 ---
 

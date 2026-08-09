@@ -32,6 +32,11 @@ contrib/seed-monitoring/pcoin-notify        text eol=lf
 # systemd tolerates CRLF, but there is no reason to ship it to a Linux box.
 *.service  text eol=lf
 *.timer    text eol=lf
+# pcoin-seed-vault.mjs carries a shebang and is meant to be runnable on a vault
+# host (`verify` is the backup check), so it inherits the same reasoning as the
+# .deb scripts above: a CRLF checkout turns `./pcoin-seed-vault.mjs` into "No
+# such file or directory" naming the interpreter rather than the stray return.
+*.mjs      text eol=lf
 
 # Windows-only sources keep CRLF, which is what the in-box csc and Inno Setup
 # expect to see.
