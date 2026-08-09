@@ -52,7 +52,7 @@ namespace PCoinTray
                     return FleetProvision.Run(rest);
                 }
             }
-            Run();
+            Run(args);
             return 0;
         }
 
@@ -82,7 +82,7 @@ namespace PCoinTray
             return ok ? 0 : 1;
         }
 
-        static void Run()
+        static void Run(string[] args)
         {
             // Refuse to run in session 0.
             //
@@ -110,20 +110,64 @@ namespace PCoinTray
             }
             catch { /* if the session cannot be read, carry on rather than not start */ }
 
+            // --minimized means "started by the autostart shortcut": take the
+            // tray icon and stay quiet. Any other launch is a person asking for
+            // the app, so it opens the window.
+            bool minimized = false;
+            foreach (var a in args)
+            {
+                if (string.Equals(a, "--minimized", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(a, "/minimized", StringComparison.OrdinalIgnoreCase))
+                    minimized = true;
+            }
+
             // One instance only: a second tray icon would be confusing and the
             // two would fight over the mining mode.
             //
-            // Exit silently rather than showing a dialog. This app is launched
-            // by an autostart shortcut and by remote deployment, where a modal
-            // message box has nobody to dismiss it and the "duplicate" process
-            // then hangs around forever.
+            // But exiting silently was wrong. Someone who double-clicks the
+            // desktop shortcut while the app is already running gets nothing at
+            // all and reasonably concludes it is broken -- the same class of
+            // mistake as the session-0 bug above, where the app was running fine
+            // and simply could not be seen. So a second instance now hands the
+            // request to the first one and leaves.
             bool created;
             using (var mutex = new Mutex(true, "PCoinTraySingleInstance", out created))
             {
-                if (!created) return;
+                if (!created)
+                {
+                    if (!minimized) SignalExistingInstance();
+                    return;
+                }
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
-                Application.Run(new TrayApp());
+                Application.Run(new TrayApp(minimized));
+            }
+        }
+
+        //! Named event the running instance waits on. A named EventWaitHandle is
+        //! the whole IPC mechanism: no sockets, no window messages, no second
+        //! file to keep in sync, and it works across the two integrity levels an
+        //! installer-launched copy can end up on.
+        internal const string SHOW_EVENT = "PCoinTrayShowWindow";
+
+        /**
+         * Ask the already-running copy to show itself.
+         *
+         * Best-effort by design. If the event cannot be opened -- the other copy
+         * is starting up, or is running as a different user -- there is nothing
+         * useful to say and nothing safe to do, and starting a second tray
+         * anyway would be worse than doing nothing.
+         */
+        static void SignalExistingInstance()
+        {
+            try
+            {
+                using (var ev = EventWaitHandle.OpenExisting(SHOW_EVENT))
+                    ev.Set();
+            }
+            catch (Exception ex)
+            {
+                Note("could not signal the running instance: " + ex.Message);
             }
         }
 
@@ -134,7 +178,7 @@ namespace PCoinTray
          * the one case that matters here - session 0 - is only ever hit from a
          * remote or service context where there is nobody to show a dialog to.
          */
-        static void Note(string message)
+        internal static void Note(string message)
         {
             try
             {
@@ -253,7 +297,9 @@ namespace PCoinTray
             return Math.Max(1, Math.Min(_cores, t));
         }
 
-        public TrayApp()
+        public TrayApp() : this(false) { }
+
+        public TrayApp(bool minimized)
         {
             _dir = Path.GetDirectoryName(Application.ExecutablePath);
             _cfgPath = Path.Combine(_dir, "pcoin-tray.cfg");
@@ -296,6 +342,53 @@ namespace PCoinTray
             _timer.Interval = 1000;
             _timer.Tick += (s, e) => Refresh();
             _timer.Start();
+
+            StartShowListener();
+
+            // Launched by a person, so show the window. Autostart passes
+            // --minimized and lands here with minimized=true, because a window
+            // appearing on every sign-in is a different product.
+            if (!minimized) ShowWindow();
+        }
+
+        /**
+         * Wait for a second copy of the app to ask us to show ourselves.
+         *
+         * The wait is on a background thread and the response is marshalled onto
+         * the UI thread through _sync: touching a WPF window from the waiting
+         * thread would throw, and the failure would be invisible because nobody
+         * is watching this thread's exceptions.
+         */
+        void StartShowListener()
+        {
+            EventWaitHandle ev;
+            try
+            {
+                // AutoReset: each request is consumed by exactly one wait, so two
+                // rapid double-clicks cannot leave the event permanently signalled.
+                ev = new EventWaitHandle(false, EventResetMode.AutoReset, Program.SHOW_EVENT);
+            }
+            catch (Exception ex)
+            {
+                // Losing this costs the "activate the running copy" behaviour and
+                // nothing else, so it must never stop the miner from starting.
+                Program.Note("show-listener unavailable: " + ex.Message);
+                return;
+            }
+
+            var t = new Thread(() =>
+            {
+                for (; ; )
+                {
+                    try
+                    {
+                        ev.WaitOne();
+                        _sync.BeginInvoke((Action)(() => ShowWindow()), null);
+                    }
+                    catch { return; }
+                }
+            }) { IsBackground = true, Name = "pcoin-show-listener" };
+            t.Start();
         }
 
         // ---------- settings ----------

@@ -1,4 +1,4 @@
-; PCoin for Windows - installer
+﻿; PCoin for Windows - installer
 ;
 ; Bundles the node, the CLI and the tray app so a user gets a working install
 ; from one double-click, with no PowerShell and no separate download step.
@@ -58,7 +58,10 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "startupicon"; Description: "Start PCoin automatically when I sign in"; GroupDescription: "Startup:"
-Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: unchecked
+; Ticked by default. It was "unchecked" and the result was an app that
+; installs, starts, hides in the notification area and leaves no trace on
+; the desktop -- people could not find it again.
+Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"
 
 [Files]
 Source: "payload\bitcoind.exe";    DestDir: "{app}"; Flags: ignoreversion
@@ -114,7 +117,9 @@ Name: "{group}\PCoin";              Filename: "{app}\PCoinTray.exe"; IconFilenam
 Name: "{group}\PCoin data folder";  Filename: "{app}\data"
 Name: "{group}\Uninstall PCoin";    Filename: "{uninstallexe}"
 Name: "{userdesktop}\PCoin";        Filename: "{app}\PCoinTray.exe"; IconFilename: "{app}\pcoin.ico"; Tasks: desktopicon
-Name: "{userstartup}\PCoin";        Filename: "{app}\PCoinTray.exe"; IconFilename: "{app}\pcoin.ico"; Tasks: startupicon
+; --minimized: signing in should give you the tray icon, not a window in
+; your face. Every other shortcut omits it and therefore opens the window.
+Name: "{userstartup}\PCoin";        Filename: "{app}\PCoinTray.exe"; Parameters: "--minimized"; IconFilename: "{app}\pcoin.ico"; Tasks: startupicon
 
 [Run]
 Filename: "{app}\PCoinTray.exe"; Description: "Start PCoin now"; Flags: nowait postinstall skipifsilent

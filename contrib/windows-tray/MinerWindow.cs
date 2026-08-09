@@ -446,6 +446,17 @@ namespace PCoinTray
             _slider.LargeChange = 10;
             _slider.Foreground = Accent;
             _slider.Value = 50;
+            // Click anywhere on the rail to set the value there. Without this,
+            // WPF's default is to page by LargeChange via the track's repeat
+            // buttons -- and with this custom template those buttons never fired
+            // at all, so the only way to change the mining rate was to drag the
+            // 16-pixel thumb. Tested on a real desktop: track clicks and arrow
+            // keys both did nothing.
+            _slider.IsMoveToPointEnabled = true;
+            // Arrow keys need the control to be able to take focus, and a click
+            // on the rail is the natural way to give it.
+            _slider.Focusable = true;
+            _slider.PreviewMouseLeftButtonDown += (s, e) => _slider.Focus();
             StyleSlider(_slider);
             // Track the drag live in the label, but only restart the miner when
             // the user lets go. Committing on every ValueChanged would stop and
