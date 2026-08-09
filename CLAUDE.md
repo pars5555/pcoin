@@ -749,6 +749,23 @@ and writes with `newline=''` silently rewrites the whole file to LF, so anchor
 strings spanning a line break will not match on the next edit. Anchor on a single
 line, or read as bytes and preserve the ending.
 
+**A commit subject containing `DO NOT DEPLOY YET` means the repo copy is AHEAD
+of reality.** `site/index.html` is sometimes staged with copy that only becomes
+true after an event — a "LWMA is active" banner written before the fork, a
+feature page written before the feature ships. Deploying it early publishes a
+claim that is simply false, on the one page every user reads.
+
+So before any deploy:
+
+```bash
+git log --oneline -8 -- site/index.html | grep -i "do not deploy"
+```
+
+If that matches, read the commit body for the condition it is waiting on and
+either deploy only up to the last safe commit, or wait. Do not assume the newest
+commit is publishable just because it is committed — this repo deliberately uses
+commits to *stage* website copy, and more than one session edits this file.
+
 Announcements are a separate act from alerts. Telegram `@PCoinPCN` and X
 `@PCoinPCN` are public and written deliberately; monitoring alerts go to a
 private destination (`ALERT_CHAT`) and must never reach the channel — that
