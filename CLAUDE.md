@@ -713,6 +713,48 @@ These are real incidents, not hypotheticals. Each one cost hours or money.
   (`scratchpad/cdp_lite.py` is that client) or every request times out on a page
   that is perfectly healthy.
 
+## 8b. pc.am is part of the deliverable, not documentation of it
+
+**Every change that a user could notice must reach https://pc.am in the same
+session that makes it.** The site is not a README that can lag; it is the only
+channel most people will ever read, and the only one that reaches miners whose
+operators cannot be contacted. It went live with **no link to Telegram or X at
+all** — both accounts existed for days and the website never mentioned them.
+
+Deploy is one file: copy `site/index.html` to `/var/www/pc.am/index.html` on the
+GCP box (see §5 for access), owned `www-data:www-data`, mode 644, keeping a
+timestamped `.bak`. **No Apache reload is needed for a static file** — and on
+that box a restart is forbidden anyway, it serves ~215 other vhosts.
+
+Always verify by fetching the public URL back and comparing against the repo
+copy, not by trusting the upload:
+
+```bash
+curl -fsSL https://pc.am/ -o /tmp/live.html
+cmp -s site/index.html /tmp/live.html && echo match || echo DIFFERS
+```
+
+Things that MUST trigger a site update:
+
+| change | what to update |
+|---|---|
+| a release | nothing — links resolve through `/releases/latest/download/` (§4). If you are editing a download URL, something has regressed |
+| a consensus change or activation height | a banner, and remove it once the fork has landed and 100 blocks have passed |
+| a new account, channel or service | the Community column in the footer |
+| a new platform or install method | the `#download` cards and the `#get-started` terminal block |
+| checksums | `pc.am/dl/SHA256SUMS.txt` — the site links to it and it is a second, independent channel to GitHub's copy |
+
+`site/index.html` uses **CRLF**. A Python edit that reads with `encoding='utf-8'`
+and writes with `newline=''` silently rewrites the whole file to LF, so anchor
+strings spanning a line break will not match on the next edit. Anchor on a single
+line, or read as bytes and preserve the ending.
+
+Announcements are a separate act from alerts. Telegram `@PCoinPCN` and X
+`@PCoinPCN` are public and written deliberately; monitoring alerts go to a
+private destination (`ALERT_CHAT`) and must never reach the channel — that
+mistake has already been made once and published `status=3/NOTIMPLEMENTED` plus
+an internal hostname to subscribers.
+
 ## 9. Current state, and what is next
 
 State measured on the seed, **2026-08-04** — **re-measure before relying on any
