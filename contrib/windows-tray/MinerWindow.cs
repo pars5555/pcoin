@@ -139,6 +139,8 @@ namespace PCoinTray
         public string PhraseBalance;    // null when there is no phrase wallet
         public string OldBalance;       // null when it cannot be read
         public string NodeVersion = "";
+        public bool FastMode;           // the user's saved intent for this PC
+        public long AvailableMib = -1;  // -1 = not measured yet
         public string Problem;          // why the node is unreachable, in words
         public int NodePid;
         public double NodeMemoryMb;
@@ -198,6 +200,14 @@ namespace PCoinTray
         readonly TextBlock _diff = new TextBlock();
 
         readonly Slider _slider = new Slider();
+        readonly StackPanel _fastPanel = new StackPanel();
+        readonly CheckBox   _fastCheck = new CheckBox();
+        readonly TextBlock  _fastNote  = new TextBlock();
+        //! Guards the same way _sliderEcho does: when the app pushes state INTO
+        //! the checkbox, its Checked/Unchecked handlers must not fire back out
+        //! and be mistaken for the user clicking it.
+        bool _fastEcho;
+        readonly Action<bool> _setFastMode;
         readonly TextBlock _sliderLabel = new TextBlock();
         readonly Button _toggle = new Button();
 
@@ -235,8 +245,10 @@ namespace PCoinTray
         MinerSnapshot _last = new MinerSnapshot();
 
         public MinerWindow(RateHistory history, Action<int> setPercent, Action openPhrase, Action openFolder,
-                           Action openForward, Action ackProbe)
+                           Action openForward, Action ackProbe,
+                           Action<bool> setFastMode)
         {
+            _setFastMode = setFastMode;
             _history = history;
             _setPercent = setPercent;
             _openPhrase = openPhrase;
@@ -486,6 +498,41 @@ namespace PCoinTray
             };
             StyleButton(_toggle, true);
             stack.Children.Add(_toggle);
+
+            // ---- fast mode -------------------------------------------------
+            // RandomX has two modes that produce IDENTICAL hashes and differ
+            // only in memory. Light mode keeps a ~256 MiB cache and recomputes
+            // dataset items on the fly; fast mode builds the whole ~2 GiB
+            // dataset once and then just reads it, which is several times
+            // quicker per hash.
+            //
+            // The node verifies in light mode always and that never changes --
+            // a phone with 2 GB has to be able to check every block. This
+            // switch affects MINING on this PC only.
+            //
+            // Shown to everyone rather than hidden behind a command line
+            // argument, because a miner running at a fraction of their hardware
+            // and never being told is the whole problem. On a machine that
+            // cannot take it, the row still appears and explains why -- an
+            // option that silently vanishes reads as a bug.
+            _fastPanel.Margin = new Thickness(0, 12, 0, 0);
+
+            _fastCheck.Content = "Use fast mode (more memory, several times faster)";
+            _fastCheck.Foreground = Text;
+            _fastCheck.FontSize = 12;
+            _fastCheck.Cursor = Cursors.Hand;
+            _fastCheck.Checked   += (s, e) => { if (!_fastEcho) _setFastMode(true); };
+            _fastCheck.Unchecked += (s, e) => { if (!_fastEcho) _setFastMode(false); };
+            _fastPanel.Children.Add(_fastCheck);
+
+            _fastNote.FontSize = 11;
+            _fastNote.Foreground = Muted;
+            _fastNote.TextWrapping = TextWrapping.Wrap;
+            _fastNote.Margin = new Thickness(0, 4, 0, 0);
+            _fastPanel.Children.Add(_fastNote);
+
+            stack.Children.Add(_fastPanel);
+
 
             return Panel(stack);
         }
@@ -780,6 +827,8 @@ namespace PCoinTray
             if (s == null) return;
             _last = s;
 
+            UpdateFastMode(s.FastMode, s.AvailableMib);
+
             bool starting = s.NodeUp && s.WantMining && !s.Hashing;
             if (!s.NodeUp)
             {
@@ -963,6 +1012,57 @@ namespace PCoinTray
         {
             int s = (int)(Math.Round(v / 5.0) * 5);
             return Math.Max(10, Math.Min(100, s));
+        }
+
+        //! The RandomX dataset. 2080 MiB is the real figure from the library,
+        //! not a round number -- see randomx.h RANDOMX_DATASET_BASE_SIZE +
+        //! RANDOMX_DATASET_EXTRA_SIZE.
+        const long FAST_MODE_MIB = 2080;
+        //! Headroom on top. Allocating right up to the last free megabyte on a
+        //! machine that is also doing something else is how the OOM killer gets
+        //! involved, and on Windows how everything starts swapping.
+        const long FAST_MODE_HEADROOM_MIB = 900;
+
+        /**
+         * Decide what the fast-mode row says, from what this machine actually has.
+         *
+         * Three outcomes, and the disabled one still explains itself. An option
+         * that is simply absent on some machines reads as a bug or a missing
+         * feature; one that says "this PC has 2.0 GB free and needs about 3.0"
+         * tells the owner exactly what would change it.
+         */
+        void UpdateFastMode(bool enabled, long availableMib)
+        {
+            long need = FAST_MODE_MIB + FAST_MODE_HEADROOM_MIB;
+            bool eligible = availableMib >= need;
+
+            _fastEcho = true;
+            _fastCheck.IsEnabled = eligible;
+            _fastCheck.IsChecked = enabled && eligible;
+            _fastEcho = false;
+
+            _fastCheck.Opacity = eligible ? 1.0 : 0.55;
+
+            if (!eligible)
+            {
+                _fastNote.Text = string.Format(CultureInfo.InvariantCulture,
+                    "Needs about {0:0.0} GB of free memory; this PC has {1:0.0} GB right now. "
+                    + "Mining still works in the normal mode.",
+                    need / 1024.0, availableMib / 1024.0);
+            }
+            else if (enabled)
+            {
+                _fastNote.Text = string.Format(CultureInfo.InvariantCulture,
+                    "On. Uses about {0:0.0} GB while mining. The first start takes a "
+                    + "few seconds to build the table.", FAST_MODE_MIB / 1024.0);
+            }
+            else
+            {
+                _fastNote.Text = string.Format(CultureInfo.InvariantCulture,
+                    "Off. Turning it on uses about {0:0.0} GB of memory and mines "
+                    + "several times faster. Same coins, same rules — only this PC "
+                    + "changes.", FAST_MODE_MIB / 1024.0);
+            }
         }
 
         void UpdateSliderLabel(int percent, bool pending)

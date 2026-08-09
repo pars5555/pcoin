@@ -202,6 +202,10 @@ namespace PCoinTray
 
         //! Mining effort is expressed as a percentage of the machine, which is
         //! meaningful on any CPU, unlike a raw core count. 0 means not mining.
+        //! Fast mode is a per-PC choice, not a network one: it changes how this
+        //! machine computes hashes, never what the chain accepts. Off by default
+        //! because it costs ~2 GB and the owner should opt in knowingly.
+        bool _fastMode;
         const int DEFAULT_PERCENT = 50;
         static readonly int[] PERCENT_STEPS = { 10, 25, 50, 75, 100 };
 
@@ -439,7 +443,8 @@ namespace PCoinTray
                     "addresswallet=" + _addressWallet + "\r\n" +
                     "datadir=" + _datadir + "\r\n" +
                     "percent=" + (_mining ? _percent : 0).ToString(CultureInfo.InvariantCulture) + "\r\n" +
-                    "seedprompt=" + (_seedDeclined ? "declined" : "") + "\r\n");
+                    "seedprompt=" + (_seedDeclined ? "declined" : "") + "\r\n" +
+                    "fastmode=" + (_fastMode ? "1" : "0") + "\r\n");
             }
             catch { }
         }
@@ -660,7 +665,12 @@ namespace PCoinTray
         //! always agree about which datadir and network they are talking about.
         string NodeArgs()
         {
-            return string.IsNullOrEmpty(_datadir) ? "" : "-datadir=\"" + _datadir + "\"";
+            var args = string.IsNullOrEmpty(_datadir) ? "" : "-datadir=\"" + _datadir + "\"";
+            // Mining-only. The verification path stays in light mode whatever
+            // this says, so the worst case of getting it wrong is a slower or a
+            // hungrier miner -- never a different view of the chain.
+            if (_fastMode) args += " -randomxfastmode";
+            return args;
         }
 
         string EnsureAddress()
@@ -1607,6 +1617,102 @@ namespace PCoinTray
 
         // ---------- main window ----------
 
+        [StructLayout(LayoutKind.Sequential)]
+        struct MEMORYSTATUSEX
+        {
+            public uint dwLength, dwMemoryLoad;
+            public ulong ullTotalPhys, ullAvailPhys, ullTotalPageFile, ullAvailPageFile,
+                         ullTotalVirtual, ullAvailVirtual, ullAvailExtendedVirtual;
+        }
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX s);
+
+        /**
+         * Physical memory available right now, in MiB, or -1 if it cannot be read.
+         *
+         * Available, not total: a 32 GB machine with 30 GB in use cannot host a
+         * 2 GB dataset either, and quoting total would tell the owner they are
+         * eligible right up until the allocation fails.
+         *
+         * -1 means unknown, and unknown is NOT treated as eligible.
+         */
+        static long AvailableMib()
+        {
+            try
+            {
+                var m = new MEMORYSTATUSEX();
+                m.dwLength = (uint)Marshal.SizeOf(typeof(MEMORYSTATUSEX));
+                if (!GlobalMemoryStatusEx(ref m)) return -1;
+                return (long)(m.ullAvailPhys / (1024UL * 1024UL));
+            }
+            catch { return -1; }
+        }
+
+        /**
+         * Turn fast mode on or off for this PC.
+         *
+         * The dataset is built by the NODE at startup, so the flag only takes
+         * effect on a node restart. Saying so is the whole job here: a switch
+         * that appears to do nothing for ten minutes is worse than one that
+         * explains it will take a moment.
+         */
+        void SetFastMode(bool on)
+        {
+            if (_fastMode == on) return;
+            _fastMode = on;
+            SaveConfig();
+            Balloon("PCoin",
+                on ? "Fast mode on. Restarting the node to build the table - mining resumes in a moment."
+                   : "Fast mode off. Restarting the node.",
+                false);
+            var t = new Thread(() =>
+            {
+                try
+                {
+                    // Stop mining first so no worker is mid-batch, then ask the
+                    // node to stop. `stop` is a clean shutdown -- killing the
+                    // process instead risks the unclean-shutdown rescan that
+                    // EnsureNode already has to wait minutes for.
+                    Cli("stopmining");
+                    Cli("stop");
+                    for (int i = 0; i < 120; i++)
+                    {
+                        if (Process.GetProcessesByName("bitcoind").Length == 0) break;
+                        Thread.Sleep(1000);
+                    }
+                    _nodeUp = false;
+                    // EnsureNode reads NodeArgs() afresh, so the new flag is
+                    // picked up here without any other plumbing.
+                    EnsureNode();
+
+                    // If the node refused to come back, put the setting back and
+                    // start it again without the flag.
+                    //
+                    // Core rejects an UNKNOWN -argument at startup and exits, so
+                    // a tray that is newer than its bundled node -- or a user who
+                    // copied a new PCoinTray.exe over an old install -- would
+                    // otherwise turn a checkbox into a permanently dead node,
+                    // with the cause invisible. Reverting costs one more restart
+                    // and cannot leave the machine worse than it started.
+                    if (!_nodeUp && on)
+                    {
+                        Program.Note("fast mode: node did not start, reverting");
+                        _fastMode = false;
+                        SaveConfig();
+                        EnsureNode();
+                        Balloon("PCoin",
+                                "This node does not support fast mode yet, so it has been "
+                                + "turned back off. Mining continues normally.", true);
+                    }
+
+                    if (_nodeUp && _mining) SetMode(_percent);
+                }
+                catch (Exception ex) { Program.Note("fast-mode restart: " + ex.Message); }
+            }) { IsBackground = true, Name = "pcoin-fastmode" };
+            t.Start();
+        }
+
         void ShowWindow()
         {
             try
@@ -1619,7 +1725,8 @@ namespace PCoinTray
                         () => OnRecoveryPhrase(),
                         () => { try { Process.Start("explorer.exe", _dir); } catch { } },
                         () => OpenForwardSettings(),
-                        () => OnAckProbe());
+                        () => OnAckProbe(),
+                        on => SetFastMode(on));
                 }
                 _window.Reveal();
                 PushToWindow(_nodeUp);
@@ -1660,6 +1767,8 @@ namespace PCoinTray
                     PhraseBalance = _balPhraseText,
                     OldBalance = _balOldText,
                     NodeVersion = _nodeVersion,
+                    FastMode = _fastMode,
+                    AvailableMib = AvailableMib(),
                     Problem = _problem,
                     Forward = ForwardForDisplay(nodeUp)
                 };
