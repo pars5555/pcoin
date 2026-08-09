@@ -1,0 +1,113 @@
+#!/bin/sh
+# Keep the node mining, and stop it mining the moment nothing is supervising.
+#
+# The node's miner has a dead-man's switch: startmining takes a ttl, and mining
+# halts unless getcpuminerinfo or startmining is called at least that often.
+# That is a safety feature, not an inconvenience -- it means a node cannot be
+# left grinding every core after whatever was managing it has gone away. This
+# script is that supervisor, so it must do the keep-alive rather than pass ttl=0
+# and disable the protection.
+#
+# It also owns the two rules that mining must never break:
+#   * never mine during initial block download (that builds on unverified work),
+#   * never mine to an address the node has not confirmed is valid.
+set -eu
+
+DATADIR=/var/lib/pcoin
+CLI="/opt/pcoin/bin/bitcoin-cli -datadir=$DATADIR"
+CONF=/etc/pcoin/miner.conf
+
+TTL=120       # mining stops this long after the last keep-alive
+POLL=30       # keep-alive interval, comfortably inside TTL
+
+log() { printf '%s\n' "$*"; }   # journald captures stdout
+
+[ -f "$CONF" ] || { log "no $CONF -- run: sudo pcoin-setup"; exit 1; }
+# shellcheck disable=SC1090
+ADDR=$(sed -n 's/^PAYOUT_ADDRESS=//p' "$CONF" | tail -1)
+THREADS=$(sed -n 's/^THREADS=//p' "$CONF" | tail -1)
+[ -n "$ADDR" ] || { log "no PAYOUT_ADDRESS in $CONF -- run: sudo pcoin-setup"; exit 1; }
+[ -n "$THREADS" ] || THREADS=1
+
+# Stop mining on the way out. Without this a systemctl stop would leave the node
+# hashing until the TTL happened to expire.
+cleanup() {
+    log "stopping mining"
+    $CLI stopmining >/dev/null 2>&1 || true
+    exit 0
+}
+trap cleanup TERM INT
+
+log "payout $ADDR, $THREADS thread(s)"
+
+# --- wait for the node ------------------------------------------------------
+until $CLI getblockcount >/dev/null 2>&1; do
+    log "waiting for the node to answer RPC"
+    sleep 5
+done
+
+# --- confirm the address with the node, every time --------------------------
+# Cheap, and it is the difference between mining to your wallet and mining into
+# the void. If the check cannot be made, that is not permission to proceed.
+until RES=$($CLI validateaddress "$ADDR" 2>/dev/null); do
+    log "cannot check the payout address yet; retrying"
+    sleep 10
+done
+case "$RES" in
+    *'"isvalid": true'*) : ;;
+    *) log "REFUSING TO MINE: the node says $ADDR is not a valid address."
+       log "Fix it with: sudo pcoin-setup"
+       exit 1 ;;
+esac
+
+# --- wait for sync ----------------------------------------------------------
+while :; do
+    INFO=$($CLI getblockchaininfo 2>/dev/null) || { sleep 10; continue; }
+    case "$INFO" in
+        *'"initialblockdownload": false'*) break ;;
+    esac
+    H=$(printf '%s' "$INFO" | sed -n 's/.*"blocks": *\([0-9]*\).*/\1/p')
+    log "syncing (height ${H:-?}) -- not mining yet"
+    sleep 20
+done
+log "chain is synced; starting the miner"
+
+# --- start, then keep alive -------------------------------------------------
+start() {
+    OUT=$($CLI startmining "$ADDR" "$THREADS" "$TTL" 2>&1) || {
+        log "startmining failed: $OUT"
+        return 1
+    }
+    log "mining with $THREADS thread(s) to $ADDR"
+    return 0
+}
+start || exit 1
+
+MISSES=0
+NEXT="$POLL"
+while :; do
+    sleep "$NEXT"
+    # Polling this is itself the keep-alive, so the read is never wasted.
+    if INFO=$($CLI getcpuminerinfo 2>/dev/null); then
+        [ "$MISSES" -gt 0 ] && log "node is answering again"
+        MISSES=0
+        NEXT="$POLL"
+        case "$INFO" in
+            *'"mining": true'*) : ;;
+            *) log "miner had stopped; restarting it"; start || true ;;
+        esac
+    else
+        # A failed read says nothing about whether mining is running, so do not
+        # treat it as "stopped". Only a run of failures means the node probably
+        # restarted underneath us, which is worth acting on. Back off to a short
+        # retry meanwhile: a node restart should cost seconds of lost hashing,
+        # not the best part of the TTL.
+        MISSES=$((MISSES + 1))
+        NEXT=5
+        log "no answer from the node ($MISSES)"
+        if [ "$MISSES" -ge 3 ]; then
+            log "node looks like it restarted; re-issuing startmining"
+            if start; then MISSES=0; NEXT="$POLL"; fi
+        fi
+    fi
+done

@@ -707,54 +707,69 @@
   <section id="get-started" class="alt">
     <div class="wrap">
       <span class="kicker">Get started</span>
-      <h2>Run a node. Mine a block. Five minutes.</h2>
+      <h2>One command. Then watch it mine.</h2>
       <p class="lede">
-        PCoin ships as standard Bitcoin Core binaries (<span class="mono">bitcoind</span>,
-        <span class="mono">bitcoin-cli</span>) with PCoin's network built in. You do not need any
-        mining software — the miner is in the node.
+        There is no mining software to find, configure or trust — the miner is inside the node,
+        and the node is what you just installed. Point it at an address and it runs.
       </p>
 
       <div class="steps">
-        <div class="step"><span class="num">1</span><h4>Get the binaries</h4><p>Use the <a href="#download">downloads above</a> &mdash; an installer for Windows, a .deb for Debian/Ubuntu, APKs for Android, or a portable archive. On any other platform, build from source; the repo's PCOIN.md walks you through it.</p></div>
-        <div class="step"><span class="num">2</span><h4>Run the node</h4><p>Start <span class="mono">bitcoind</span> — it finds the network via <span class="mono">seed.pc.am</span>.</p></div>
-        <div class="step"><span class="num">3</span><h4>Create a wallet</h4><p>One command. Your keys stay on your machine, in your datadir.</p></div>
-        <div class="step"><span class="num">4</span><h4>Mine</h4><p>The built-in miner grinds real RandomX blocks on your CPU.</p></div>
+        <div class="step"><span class="num">1</span><h4>Get an address</h4><p>Install the <a href="#download">wallet app</a> and write down the twelve words it gives you. That address is where your mining pays, and those words are the only way back to it.</p></div>
+        <div class="step"><span class="num">2</span><h4>Install</h4><p>An installer for Windows, one command for Debian/Ubuntu, an APK for Android. Each one verifies its own download before it runs.</p></div>
+        <div class="step"><span class="num">3</span><h4>Paste the address in</h4><p>Setup checks it against the node, so a typo is caught before it costs you a block rather than after.</p></div>
+        <div class="step"><span class="num">4</span><h4>Wait for sync, then mine</h4><p>Mining starts by itself once the node is caught up. Starting sooner would build on blocks it has not checked.</p></div>
       </div>
 
       <div class="term">
         <div class="term-bar"><i></i><i></i><i></i><span>quickstart — bash (Linux)</span></div>
-        <pre><span class="c"># 1) On Debian or Ubuntu, the package is the easy route.</span>
-<span class="c">#    It installs pcoind + pcoin-cli and a systemd unit.</span>
-wget https://github.com/pars5555/pcoin/releases/latest/download/pcoin-linux-amd64.deb
-sudo apt install ./pcoin-linux-amd64.deb
+        <pre><span class="c"># On Debian or Ubuntu, this is the whole thing.</span>
+<span class="c"># It checks the download against the published SHA-256, installs the</span>
+<span class="c"># node, then asks where to pay your block rewards.</span>
+curl -fsSL https://pc.am/dl/install.sh | sudo sh
 
-<span class="c"># 2) Start the node. It finds the network via seed.pc.am.</span>
-sudo systemctl enable --now pcoind
+<span class="o">  checksum verified
+  installed
 
-<span class="c">#    Prefer no packages? Take the portable archive instead:</span>
-<span class="c">#    .../releases/latest/download/pcoin-linux-x86_64.tar.gz</span>
-<span class="c">#    then run ./bitcoind -daemon from inside it.</span>
+  PCoin miner setup
+  ------------------------------------------------------------
+  + node running, at height 2566
 
-<span class="c"># The package runs the node as the 'pcoin' user, so talk to it as that</span>
-<span class="c"># user. Save yourself the typing:</span>
-<span class="k">alias</span> pcli=<span class="s">'sudo -u pcoin pcoin-cli -datadir=/var/lib/pcoin'</span>
+  Where should block rewards be paid?
+  Payout address: pc1q…
+  + address checked by the node and valid
 
-<span class="c"># 3) Create a wallet and get a fresh address.</span>
-pcli createwallet <span class="s">"main"</span>
-ADDR=$(pcli getnewaddress)
-echo <span class="s">"$ADDR"</span>
-<span class="o">pc1q...</span>
+  Mining threads [3]:
+  Run at low priority so other software always wins? [Y/n]:
+  ------------------------------------------------------------
+  + payout address : pc1q…
+  + mining threads : 3 of 4
+  + priority       : background (nice 15, idle IO)
+  ------------------------------------------------------------
+  Mining.</span>
 
-<span class="c"># 4) Mine a block with the built-in miner. Repeat or loop it.</span>
-<span class="c">#    Wait until you are synced first - mining on a chain you have</span>
-<span class="c">#    not verified builds on nothing.</span>
-pcli generatetoaddress 1 <span class="s">"$ADDR"</span>
-<span class="o">[ "…your block hash…" ]</span>
+<span class="c"># Watch it work. Press b for your balance, q to quit.</span>
+pcoin-mine
 
-<span class="c"># Watch your chain grow.</span>
-pcli getblockcount
-pcli getmininginfo
-pcli getbalance    <span class="c"># block rewards mature after 100 blocks</span></pre>
+<span class="o">  PCoin miner
+  Status         * mining with 3 of 4 cores
+  Hashrate       128 H/s   of 2.49 kH/s on the whole network -- 5.14%
+  A block every  3h 14m    estimate, and luck swings it wildly
+  Blocks found   0
+
+  Chain          2566   up to date, 8 peers
+  Paying to      pc1q…</span>
+
+<span class="c"># Rewards go straight to the address you gave — this machine never</span>
+<span class="c"># holds a key, so there is nothing on it worth stealing. Point as</span>
+<span class="c"># many machines at one address as you like.</span>
+
+<span class="c"># Change your mind later, or stop mining without stopping the node:</span>
+sudo pcoin-setup
+sudo systemctl stop pcoin-miner
+
+<span class="c"># Prefer no packages? Take the portable archive instead:</span>
+<span class="c">#   .../releases/latest/download/pcoin-linux-x86_64.tar.gz</span>
+<span class="c"># then run ./bitcoind -daemon from inside it.</span></pre>
       </div>
 
       <div class="honest-box" style="max-width:100%">

@@ -18,10 +18,40 @@ OUT="${3:-/tmp/debbuild}"
 rm -rf "$OUT"; mkdir -p "$OUT/pkg/DEBIAN" "$OUT/pkg/opt/pcoin/bin" \
   "$OUT/pkg/usr/bin" "$OUT/pkg/lib/systemd/system" "$OUT/pkg/usr/share/doc/pcoin"
 
+HERE="$(cd "$(dirname "$0")" && pwd)"
+
 install -m 755 "$SRC/bitcoind"    "$OUT/pkg/opt/pcoin/bin/bitcoind"
 install -m 755 "$SRC/bitcoin-cli" "$OUT/pkg/opt/pcoin/bin/bitcoin-cli"
 ln -s /opt/pcoin/bin/bitcoind    "$OUT/pkg/usr/bin/pcoind"
 ln -s /opt/pcoin/bin/bitcoin-cli "$OUT/pkg/usr/bin/pcoin-cli"
+
+# The friendly layer. Without these, mining on Linux meant editing a config,
+# enabling a unit, watching for sync by hand, and then calling startmining with
+# an address and re-calling getcpuminerinfo forever to feed the dead-man's
+# switch. Two steps in that sequence lose money when done wrong, so they are
+# now a wizard and a supervisor rather than instructions in a README.
+for f in pcoin-setup pcoin-mine pcoin-miner-supervisor; do
+    [ -f "$HERE/$f" ] || { echo "missing $HERE/$f" >&2; exit 1; }
+    install -m 755 "$HERE/$f" "$OUT/pkg/opt/pcoin/bin/$f"
+done
+ln -s /opt/pcoin/bin/pcoin-setup "$OUT/pkg/usr/bin/pcoin-setup"
+ln -s /opt/pcoin/bin/pcoin-mine  "$OUT/pkg/usr/bin/pcoin-mine"
+
+# The binaries link libevent dynamically. The first published .deb declared only
+# libc6, so on any distro that does not already carry libevent's extra and
+# pthreads modules the install SUCCEEDED and then bitcoind died on every start
+# with "libevent_extra-2.1.so.7: cannot open shared object file". Ubuntu 26.04
+# ships libevent_core only, so it hit this immediately.
+#
+# The alternatives (A | B) cover the 64-bit time_t rename: Debian 12 and older
+# Ubuntu use libevent-*-2.1-7, newer Ubuntu uses the -7t64 names.
+#
+# Sanity check the assumption rather than trusting it: if the binary stops
+# needing libevent one day (a static build), this list should shrink too.
+if command -v objdump >/dev/null 2>&1; then
+    echo "shared libraries the binary actually needs:"
+    objdump -p "$SRC/bitcoind" | awk '/NEEDED/ {print "  " $2}'
+fi
 
 SIZE=$(du -sk "$OUT/pkg" | cut -f1)
 
@@ -33,7 +63,7 @@ Priority: optional
 Architecture: amd64
 Maintainer: PCoin Project <pcoin@pc.am>
 Installed-Size: $SIZE
-Depends: libc6 (>= 2.31)
+Depends: libc6 (>= 2.31), libevent-core-2.1-7t64 | libevent-core-2.1-7, libevent-extra-2.1-7t64 | libevent-extra-2.1-7, libevent-pthreads-2.1-7t64 | libevent-pthreads-2.1-7
 Homepage: https://pc.am
 Description: PCoin full node and CLI
  PCoin (PCN) is an independent Layer-1 blockchain: Bitcoin's economics with
@@ -43,10 +73,9 @@ Description: PCoin full node and CLI
  upstream names inside /opt/pcoin/bin, so this package never collides with
  Bitcoin Core.
  .
- A systemd unit is provided but NOT enabled: run
- "sudo systemctl enable --now pcoind" when you are ready. Mining is off by
- default, because a node that mines before it has synced builds on a chain it
- has not verified.
+ Run "sudo pcoin-setup" to choose a payout address and start mining, then
+ "pcoin-mine" to watch it. Nothing mines until you do: a node that mines
+ before it has synced builds on a chain it has not verified.
 EOF
 
 cat > "$OUT/pkg/lib/systemd/system/pcoind.service" <<'EOF'
@@ -66,6 +95,37 @@ ExecStop=/opt/pcoin/bin/bitcoin-cli -datadir=/var/lib/pcoin stop
 Restart=on-failure
 RestartSec=15
 TimeoutStopSec=300
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/pcoin
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Mining is a SEPARATE unit from the node on purpose. Stopping mining should
+# never mean stopping the node -- a node that leaves the network when its owner
+# turns mining off makes the chain weaker for everyone else too.
+cat > "$OUT/pkg/lib/systemd/system/pcoin-miner.service" <<'EOF'
+[Unit]
+Description=PCoin miner
+After=pcoind.service
+Wants=pcoind.service
+# Deliberately NOT BindsTo/PartOf. Those propagate a pcoind stop into a miner
+# stop, and propagation is one-way: `systemctl restart pcoind` would leave
+# mining off until the next reboot, silently. The supervisor already rides out
+# a node restart on its own, so coupling the units only adds a failure mode.
+
+[Service]
+Type=simple
+User=pcoin
+Group=pcoin
+ExecStart=/opt/pcoin/bin/pcoin-miner-supervisor
+Restart=always
+RestartSec=10
 
 NoNewPrivileges=true
 PrivateTmp=true
@@ -109,15 +169,29 @@ CONF
     chmod 640 /var/lib/pcoin/pcoin.conf
 fi
 
+mkdir -p /etc/pcoin
+
 if [ -d /run/systemd/system ]; then
     systemctl daemon-reload || true
+    # On an UPGRADE the binaries under the running services just changed, so
+    # restart whatever was already enabled. Never enable anything here: mining
+    # is opt-in, and an install that silently starts mining is not acceptable.
+    if systemctl is-enabled --quiet pcoind 2>/dev/null; then
+        systemctl restart pcoind || true
+        if systemctl is-enabled --quiet pcoin-miner 2>/dev/null; then
+            systemctl restart pcoin-miner || true
+        fi
+    fi
 fi
 
 echo ""
-echo "PCoin installed. The node is NOT running yet."
-echo "  start it:      sudo systemctl enable --now pcoind"
-echo "  check on it:   pcoin-cli -datadir=/var/lib/pcoin getblockchaininfo"
-echo "  explorer:      https://explorer.pc.am"
+echo "  PCoin installed."
+echo ""
+echo "    sudo pcoin-setup     choose a payout address and start mining"
+echo "    pcoin-mine           watch it work"
+echo ""
+echo "  Nothing is mining yet. pcoin-setup starts the node, waits for it to"
+echo "  sync, and only then begins -- mining sooner builds on unverified blocks."
 echo ""
 exit 0
 EOF
@@ -126,7 +200,10 @@ chmod 755 "$OUT/pkg/DEBIAN/postinst"
 cat > "$OUT/pkg/DEBIAN/prerm" <<'EOF'
 #!/bin/sh
 set -e
+# Stop the miner before the node: the supervisor's shutdown path calls
+# stopmining, which needs the node still answering RPC to do anything.
 if [ -d /run/systemd/system ]; then
+    systemctl stop pcoin-miner >/dev/null 2>&1 || true
     systemctl stop pcoind >/dev/null 2>&1 || true
 fi
 exit 0

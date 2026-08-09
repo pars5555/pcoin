@@ -1,0 +1,166 @@
+#!/bin/bash
+# pcoin-mine - watch this machine mine, live.
+#
+# Exists because "is it actually working?" was otherwise answered by reading
+# journalctl and mentally joining three RPC outputs. A miner you cannot see is
+# a miner you stop trusting.
+#
+# bash rather than sh for one reason: `read -t` gives a refresh loop that still
+# responds to a keypress. bash is Essential on Debian and Ubuntu, so this costs
+# no dependency.
+set -u
+
+DATADIR=/var/lib/pcoin
+CLI="/opt/pcoin/bin/bitcoin-cli -datadir=$DATADIR"
+CONF=/etc/pcoin/miner.conf
+REFRESH=3
+
+if [ -t 1 ]; then
+    B=$'\033[1m'; D=$'\033[2m'; G=$'\033[32m'; Y=$'\033[33m'; R=$'\033[31m'
+    C=$'\033[36m'; N=$'\033[0m'; CLR=$'\033[H\033[2J'; HIDE=$'\033[?25l'; SHOW=$'\033[?25h'
+else
+    B=''; D=''; G=''; Y=''; R=''; C=''; N=''; CLR=''; HIDE=''; SHOW=''
+fi
+
+# The datadir is mode 710 and the RPC cookie is 0600, both owned by the pcoin
+# user. Say that plainly instead of letting bitcoin-cli fail with a bare
+# "Could not locate RPC credentials", which sends people editing config files.
+if ! $CLI getblockcount >/dev/null 2>&1; then
+    if [ "$(id -u)" != 0 ]; then
+        printf '%sCannot read the node.%s The RPC cookie in %s is readable only by\n' "$R" "$N" "$DATADIR"
+        printf 'the pcoin user. Run:  %ssudo pcoin-mine%s\n' "$B" "$N"
+    else
+        printf '%sThe node is not answering.%s  sudo systemctl status pcoind\n' "$R" "$N"
+    fi
+    exit 1
+fi
+
+cleanup() { printf '%s' "$SHOW"; printf '\n'; exit 0; }
+trap cleanup INT TERM
+printf '%s' "$HIDE"
+
+# Pull one scalar out of Core's pretty-printed JSON. Fine for flat top-level
+# fields, which is all this reads; anything structural goes through awk below.
+field() { printf '%s' "$1" | sed -n "s/.*\"$2\": *\"\\{0,1\\}\\([^\",]*\\)\"\\{0,1\\},\\{0,1\\}.*/\\1/p" | head -1; }
+
+human_hs() {
+    awk -v h="$1" 'BEGIN{
+        if (h >= 1000000) printf "%.2f MH/s", h/1000000;
+        else if (h >= 1000) printf "%.2f kH/s", h/1000;
+        else printf "%.0f H/s", h;
+    }'
+}
+
+human_dur() {
+    awk -v s="$1" 'BEGIN{
+        if (s <= 0 || s != s) { print "-"; exit }
+        d=int(s/86400); s-=d*86400; h=int(s/3600); s-=h*3600; m=int(s/60);
+        if (d > 0) printf "%dd %dh", d, h;
+        else if (h > 0) printf "%dh %dm", h, m;
+        else printf "%dm", (m < 1 ? 1 : m);
+    }'
+}
+
+BAL_LINE="${D}press b to scan the chain for this address${N}"
+
+# Balance for an address the node has no wallet for. There is no address index,
+# so the only honest answer is a UTXO-set scan -- slow enough that it is never
+# in the refresh loop, only on demand. Immature coinbase is split out because
+# it is the number people misread: it is real, it is theirs, and it cannot be
+# spent for 100 blocks.
+scan_balance() {
+    local addr="$1" tip="$2"
+    printf '\n  %sscanning the UTXO set...%s' "$Y" "$N"
+    local out
+    out=$($CLI scantxoutset start "[\"addr($addr)\"]" 2>&1)
+    case "$out" in
+        *'"success": true'*) ;;
+        *) BAL_LINE="${R}scan failed${N}"; return ;;
+    esac
+    BAL_LINE=$(printf '%s' "$out" | awk -v tip="$tip" '
+        /"unspents"/ { inlist=1 }
+        inlist && /"amount":/ { a=$2; sub(/,$/,"",a); amt=a+0 }
+        inlist && /"height":/ { h=$2; sub(/,$/,"",h); h=h+0;
+                                if (h + 100 <= tip) mat+=amt; else imm+=amt; n++ }
+        END {
+            if (n == 0) { printf "nothing yet"; exit }
+            printf "%.8f PCN spendable", mat;
+            if (imm > 0) printf "   %.8f maturing", imm;
+            printf "   (%d output%s)", n, (n==1?"":"s");
+        }')
+}
+
+ADDR=''
+[ -f "$CONF" ] && ADDR=$(sed -n 's/^PAYOUT_ADDRESS=//p' "$CONF" | tail -1)
+
+while :; do
+    CHAIN=$($CLI getblockchaininfo 2>/dev/null)
+    MINE=$($CLI getcpuminerinfo 2>/dev/null)
+    NET=$($CLI getmininginfo 2>/dev/null)
+    PEERS=$($CLI getconnectioncount 2>/dev/null)
+
+    HEIGHT=$(field "$CHAIN" blocks); HEADERS=$(field "$CHAIN" headers)
+    IBD=$(field "$CHAIN" initialblockdownload)
+    MINING=$(field "$MINE" mining); THREADS=$(field "$MINE" threads)
+    HPS=$(field "$MINE" hashespersec); FOUND=$(field "$MINE" blocksfound)
+    CORES=$(field "$MINE" cores)
+    NETHPS=$(field "$NET" networkhashps); DIFF=$(field "$NET" difficulty)
+    [ -z "${HPS:-}" ] && HPS=0
+    [ -z "${NETHPS:-}" ] && NETHPS=0
+
+    # The supervisor is what keeps the dead-man's switch fed, so its state is
+    # part of the answer to "why am I not mining".
+    SUP=$(systemctl is-active pcoin-miner 2>/dev/null || echo unknown)
+
+    printf '%s' "$CLR"
+    printf '  %sPCoin%s %sminer%s %s%s%s\n\n' "$B" "$N" "$D" "$N" "$D" "$(hostname)" "$N"
+
+    if [ "$MINING" = true ]; then
+        printf '  %-14s %s* mining%s with %s of %s cores\n' "Status" "$G" "$N" "${THREADS:-?}" "${CORES:-?}"
+    elif [ "$IBD" = true ]; then
+        printf '  %-14s %ssyncing the chain first%s\n' "Status" "$Y" "$N"
+        printf '  %-14s %s\n' "" "${D}mining starts by itself once this finishes${N}"
+    elif [ "$SUP" != active ]; then
+        printf '  %-14s %snot mining%s  %s(pcoin-miner is %s -- try: sudo pcoin-setup)%s\n' \
+               "Status" "$R" "$N" "$D" "$SUP" "$N"
+    else
+        printf '  %-14s %sstarting...%s\n' "Status" "$Y" "$N"
+    fi
+
+    if [ "$MINING" = true ]; then
+        SHARE=$(awk -v a="$HPS" -v b="$NETHPS" 'BEGIN{ if (b>0) printf "%.2f", 100*a/b; else printf "0" }')
+        ETA=$(awk -v a="$HPS" -v b="$NETHPS" 'BEGIN{ if (a>0 && b>0) printf "%d", 600*b/a; else print 0 }')
+        printf '  %-14s %s%s%s   %sof %s on the whole network -- %s%%%s\n' \
+               "Hashrate" "$C" "$(human_hs "$HPS")" "$N" "$D" "$(human_hs "$NETHPS")" "$SHARE" "$N"
+        printf '  %-14s %s   %sestimate, and luck swings it wildly%s\n' \
+               "A block every" "$(human_dur "$ETA")" "$D" "$N"
+    fi
+    printf '  %-14s %s\n' "Blocks found" "${FOUND:-0}"
+
+    printf '\n'
+    if [ -n "$HEIGHT" ] && [ "$HEIGHT" = "$HEADERS" ]; then
+        printf '  %-14s %s   %sup to date, %s peers%s\n' "Chain" "$HEIGHT" "$D" "${PEERS:-0}" "$N"
+    else
+        printf '  %-14s %s of %s   %s%s peers%s\n' "Chain" "${HEIGHT:-?}" "${HEADERS:-?}" "$D" "${PEERS:-0}" "$N"
+    fi
+    # Raw difficulty arrives as a full double (0.0003401078181484832). Nobody
+    # reads the 16th digit; trim it without pretending to more precision.
+    printf '  %-14s %s\n' "Difficulty" \
+        "$(awk -v d="${DIFF:-0}" 'BEGIN{ if (d >= 1) printf "%.2f", d; else printf "%.8f", d }')"
+    if [ -n "$ADDR" ]; then
+        printf '  %-14s %s\n' "Paying to" "$ADDR"
+        printf '  %-14s %s\n' "Balance" "$BAL_LINE"
+    else
+        printf '  %-14s %sno payout address set -- run: sudo pcoin-setup%s\n' "Paying to" "$R" "$N"
+    fi
+
+    printf '\n  %sb%s %sbalance%s   %sq%s %squit%s        %srefreshing every %ss%s\n' \
+           "$B" "$N" "$D" "$N" "$B" "$N" "$D" "$N" "$D" "$REFRESH" "$N"
+
+    if read -rs -t "$REFRESH" -n 1 key; then
+        case "$key" in
+            q|Q) cleanup ;;
+            b|B) [ -n "$ADDR" ] && scan_balance "$ADDR" "${HEIGHT:-0}" ;;
+        esac
+    fi
+done

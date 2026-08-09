@@ -1,0 +1,228 @@
+#!/bin/sh
+# pcoin-setup - point a freshly installed node at a payout address and start mining.
+#
+# Why a wizard exists at all: the raw sequence a Linux user had to perform was
+# "edit pcoin.conf, enable pcoind, wait for sync, then call startmining with an
+# address and a thread count, and keep calling getcpuminerinfo forever so the
+# dead-man's switch does not stop you". Every step there is a place to get it
+# wrong silently, and two of them lose money:
+#
+#   * mining before the node has synced builds on a chain it has not verified,
+#   * a mistyped payout address pays every block to a key nobody has.
+#
+# So this script refuses to guess. The address is checked by the NODE, not by a
+# regex here, and mining does not begin until the node itself says it is out of
+# initial block download.
+#
+# Deliberately POSIX sh with no dependencies beyond coreutils and systemd: the
+# whole point is that it runs on a minimal server image.
+set -eu
+
+DATADIR=/var/lib/pcoin
+CLI="/opt/pcoin/bin/bitcoin-cli -datadir=$DATADIR"
+CONF=/etc/pcoin/miner.conf
+DROPIN=/etc/systemd/system/pcoind.service.d/nice.conf
+
+# Colour only when talking to a terminal, so piping this into a log stays clean.
+if [ -t 1 ]; then
+    B=$(printf '\033[1m'); DIM=$(printf '\033[2m'); G=$(printf '\033[32m')
+    Y=$(printf '\033[33m'); R=$(printf '\033[31m'); N=$(printf '\033[0m')
+else
+    B=''; DIM=''; G=''; Y=''; R=''; N=''
+fi
+
+say()  { printf '%s\n' "$*"; }
+ok()   { printf '  %s+%s %s\n' "$G" "$N" "$*"; }
+warn() { printf '  %s!%s %s\n' "$Y" "$N" "$*"; }
+bad()  { printf '  %sx%s %s\n' "$R" "$N" "$*"; }
+rule() { printf '%s------------------------------------------------------------%s\n' "$DIM" "$N"; }
+
+if [ "$(id -u)" != 0 ]; then
+    bad "pcoin-setup has to write /etc and control systemd."
+    say "  Run:  sudo pcoin-setup"
+    exit 1
+fi
+
+say ""
+say "${B}PCoin miner setup${N}"
+rule
+
+# --- 1. the node ------------------------------------------------------------
+# Mining needs a running, synced node. Start it here rather than telling the
+# user to, because "enable --now" is the step people skip.
+if ! systemctl is-active --quiet pcoind; then
+    say "Starting the node..."
+    systemctl enable --now pcoind >/dev/null 2>&1 || true
+    i=0
+    while [ $i -lt 30 ]; do
+        $CLI getblockcount >/dev/null 2>&1 && break
+        i=$((i + 1)); sleep 2
+    done
+fi
+
+if ! $CLI getblockcount >/dev/null 2>&1; then
+    bad "The node is not answering RPC."
+    say "  Look at why:  sudo journalctl -u pcoind -n 40 --no-pager"
+    exit 1
+fi
+ok "node running, at height $($CLI getblockcount)"
+
+# --- 2. the payout address --------------------------------------------------
+# An address is either confirmed valid BY THE NODE, or it is not used. A failed
+# validateaddress call is not a "no" and is not a "yes" -- it is unknown, and
+# unknown loops round and asks again rather than quietly accepting the input.
+CUR_ADDR=''
+[ -f "$CONF" ] && CUR_ADDR=$(sed -n 's/^PAYOUT_ADDRESS=//p' "$CONF" | tail -1)
+
+say ""
+say "${B}Where should block rewards be paid?${N}"
+say "${DIM}  A PCoin address, starting pc1. Get one from the PCoin wallet app${N}"
+say "${DIM}  (https://pc.am) or from any PCoin node with getnewaddress.${N}"
+say "${DIM}  This machine never holds a key -- rewards go straight to that${N}"
+say "${DIM}  address, so nothing here is worth stealing.${N}"
+say ""
+
+ADDR=''
+while [ -z "$ADDR" ]; do
+    if [ -n "$CUR_ADDR" ]; then
+        printf 'Payout address [%s]: ' "$CUR_ADDR"
+    else
+        printf 'Payout address: '
+    fi
+    read -r IN || exit 1
+    [ -z "$IN" ] && IN="$CUR_ADDR"
+    if [ -z "$IN" ]; then
+        warn "An address is required."
+        continue
+    fi
+
+    RES=$($CLI validateaddress "$IN" 2>&1) || {
+        warn "Could not reach the node to check that address -- not accepting it"
+        warn "on trust. Try again in a moment."
+        continue
+    }
+    case "$RES" in
+        *'"isvalid": true'*)
+            ADDR="$IN"
+            ok "address checked by the node and valid"
+            ;;
+        *'"isvalid": false'*)
+            bad "The node says that is not a valid PCoin address."
+            # Two different mistakes, two different hints. Telling someone who
+            # typo'd a pc1 address that "PCoin uses pc1" sends them looking in
+            # the wrong place.
+            case "$IN" in
+                bc1*|1*|3*) say "     ${DIM}That looks like a Bitcoin address. PCoin addresses start pc1.${N}" ;;
+                pc1*)       say "     ${DIM}The prefix is right, so it is likely a typo -- the checksum${N}"
+                            say "     ${DIM}at the end catches a single wrong character. Paste it instead.${N}" ;;
+            esac
+            ;;
+        *)
+            warn "Unexpected reply from validateaddress; not accepting the address."
+            ;;
+    esac
+done
+
+# --- 3. how hard to mine ----------------------------------------------------
+CORES=$(nproc 2>/dev/null || echo 1)
+if [ "$CORES" -gt 1 ]; then DEF=$((CORES - 1)); else DEF=1; fi
+CUR_THREADS=''
+[ -f "$CONF" ] && CUR_THREADS=$(sed -n 's/^THREADS=//p' "$CONF" | tail -1)
+[ -n "$CUR_THREADS" ] && DEF="$CUR_THREADS"
+
+say ""
+say "${B}How many CPU cores should mine?${N}"
+say "${DIM}  This machine has $CORES. Leaving one free keeps the box responsive;${N}"
+say "${DIM}  RandomX will use every core you give it, flat out.${N}"
+say ""
+THREADS=''
+while [ -z "$THREADS" ]; do
+    printf 'Mining threads [%s]: ' "$DEF"
+    read -r IN || exit 1
+    [ -z "$IN" ] && IN="$DEF"
+    case "$IN" in
+        ''|*[!0-9]*) warn "Enter a whole number." ; continue ;;
+    esac
+    if [ "$IN" -lt 1 ]; then
+        warn "Use at least 1, or leave mining off by not running this script."
+        continue
+    fi
+    if [ "$IN" -gt "$CORES" ]; then
+        warn "$IN is more than the $CORES cores here; the node will cap it at $CORES."
+    fi
+    THREADS="$IN"
+done
+
+# --- 4. stay out of the way? ------------------------------------------------
+# Most people running this are adding PCoin to a box that already does a job.
+# Default to losing every contest for CPU rather than winning one.
+say ""
+printf 'Run at low priority so other software always wins? [Y/n]: '
+read -r IN || IN=''
+case "$IN" in
+    [Nn]*) NICE=no ;;
+    *)     NICE=yes ;;
+esac
+
+# --- 5. write it down -------------------------------------------------------
+mkdir -p /etc/pcoin
+umask 022
+cat > "$CONF" <<EOF
+# Written by pcoin-setup. Safe to edit by hand.
+# Apply changes with: sudo systemctl restart pcoin-miner
+PAYOUT_ADDRESS=$ADDR
+THREADS=$THREADS
+EOF
+
+mkdir -p /etc/systemd/system/pcoind.service.d
+if [ "$NICE" = yes ]; then
+    cat > "$DROPIN" <<'EOF'
+# Written by pcoin-setup: PCoin loses every contest for CPU and disk.
+[Service]
+Nice=15
+IOSchedulingClass=idle
+CPUWeight=20
+EOF
+else
+    rm -f "$DROPIN"
+fi
+systemctl daemon-reload
+
+say ""
+rule
+ok "payout address : $ADDR"
+ok "mining threads : $THREADS of $CORES"
+if [ "$NICE" = yes ]; then ok "priority       : background (nice 15, idle IO)"
+else                       warn "priority       : normal -- PCoin competes with everything else"; fi
+rule
+
+# --- 6. go ------------------------------------------------------------------
+say ""
+say "Starting the miner..."
+systemctl enable pcoin-miner >/dev/null 2>&1 || true
+systemctl restart pcoin-miner
+
+# Report what actually happened rather than what was asked for. The supervisor
+# holds off until the node leaves initial block download, so "started" here can
+# legitimately mean "waiting to sync", and saying so beats a false success.
+sleep 4
+if ! systemctl is-active --quiet pcoin-miner; then
+    bad "The miner service did not stay up."
+    say "  sudo journalctl -u pcoin-miner -n 40 --no-pager"
+    exit 1
+fi
+
+IBD=$($CLI getblockchaininfo 2>/dev/null | sed -n 's/.*"initialblockdownload": *\([a-z]*\).*/\1/p')
+say ""
+if [ "$IBD" = true ]; then
+    say "  ${Y}The node is still downloading the chain.${N}"
+    say "  Mining starts by itself the moment it is caught up -- mining sooner"
+    say "  would build on blocks this node has not checked."
+else
+    say "  ${G}Mining.${N}"
+fi
+
+say ""
+say "  ${B}pcoin-mine${N}   watch it live"
+say "  ${B}sudo systemctl stop pcoin-miner${N}   stop mining (the node keeps running)"
+say ""
