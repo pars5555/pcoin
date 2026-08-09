@@ -24,6 +24,12 @@ test/lint/test_runner/target/
 
 # PCoin: never publish credentials from this public repo
 PCOIN-SECRETS.md
+# Fleet inventories name SSH accounts, key paths and device IDs. They live on
+# D: with the other secrets; these patterns are the net under the tightrope,
+# not permission to keep a copy here.
+MYMINERS.md
+PCOIN-SERVERS.md
+*SERVERS.md
 *SECRETS*
 *credential*
 *.key

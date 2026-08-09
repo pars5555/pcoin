@@ -1,0 +1,80 @@
+#!/bin/bash
+# Send one alert somewhere a human will actually see it.
+#
+# Kept separate from the checks on purpose. pcoin-seed-watch and
+# pcoin-fork-watch decide WHAT is wrong; this decides WHERE that goes, and it
+# reads the destination from a config file that is not in the repository. No
+# script that detects a problem should also contain a credential.
+#
+#   /etc/pcoin/alert.conf   (0600 root)
+#     TELEGRAM_TOKEN=123456:ABC...
+#     TELEGRAM_CHAT=-1001234567890
+#
+# If that file is absent this exits 0 after logging. A missing notifier must
+# never turn into a failing check -- the check already failed, and burying its
+# exit code under a delivery problem is how the original failure gets lost.
+#
+# DEDUPE IS THE POINT. These run from a ten-minute timer. A condition that
+# persists -- and a chain split persists by definition -- would otherwise post
+# 144 identical messages a day, and a channel that does that gets muted, taking
+# the one message that mattered with it. The same text is sent at most once
+# every REPEAT_HOURS.
+set -u
+
+CONF=/etc/pcoin/alert.conf
+SEEN_DIR=/var/lib/pcoin-monitor/sent
+REPEAT_HOURS="${REPEAT_HOURS:-6}"
+
+SUBJECT="${1:-PCoin alert}"
+BODY="${2:-}"
+
+log() { logger -t pcoin-notify -- "$*" 2>/dev/null || printf '%s\n' "$*"; }
+
+if [ ! -r "$CONF" ]; then
+    log "no $CONF -- alert not delivered: $SUBJECT"
+    exit 0
+fi
+# shellcheck disable=SC1090
+. "$CONF"
+
+if [ -z "${TELEGRAM_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT:-}" ]; then
+    log "$CONF has no TELEGRAM_TOKEN/TELEGRAM_CHAT -- alert not delivered: $SUBJECT"
+    exit 0
+fi
+
+mkdir -p "$SEEN_DIR" 2>/dev/null
+KEY=$(printf '%s' "$SUBJECT$BODY" | sha256sum | cut -c1-32)
+STAMP="$SEEN_DIR/$KEY"
+NOW=$(date +%s)
+if [ -f "$STAMP" ]; then
+    LAST=$(cat "$STAMP" 2>/dev/null || echo 0)
+    if [ $((NOW - LAST)) -lt $((REPEAT_HOURS * 3600)) ]; then
+        log "suppressed (sent $(( (NOW-LAST)/60 )) min ago): $SUBJECT"
+        exit 0
+    fi
+fi
+
+HOST=$(hostname)
+TEXT=$(printf '*%s*\n%s\n\n_%s — %s_' \
+        "$SUBJECT" "$BODY" "$HOST" "$(date -u '+%Y-%m-%d %H:%M UTC')")
+
+# --data-urlencode so a message containing & or = cannot truncate itself.
+RESP=$(curl -s --max-time 25 \
+        -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+        --data-urlencode "chat_id=${TELEGRAM_CHAT}" \
+        --data-urlencode "text=${TEXT}" \
+        --data-urlencode "parse_mode=Markdown" \
+        --data-urlencode "disable_web_page_preview=true" 2>&1)
+
+case "$RESP" in
+    *'"ok":true'*)
+        printf '%s' "$NOW" > "$STAMP"
+        log "sent: $SUBJECT"
+        ;;
+    *)
+        # Deliberately do NOT write the stamp: an undelivered message must be
+        # retried on the next run, not suppressed as though it had arrived.
+        log "delivery FAILED: $(printf '%s' "$RESP" | head -c 200)"
+        exit 1
+        ;;
+esac

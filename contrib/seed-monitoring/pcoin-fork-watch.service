@@ -1,0 +1,27 @@
+[Unit]
+Description=PCoin chain-split detector
+Documentation=https://github.com/pars5555/pcoin/blob/main/doc/SEED-MONITORING.md
+# Failure here means the chain may have split. Unlike pcoin-seed-watch, which
+# grades this node against itself, this one grades it against the network -- so
+# it is the only check that can notice all three seeds being healthy on three
+# different chains.
+OnFailure=pcoin-alert@%n.service
+
+[Service]
+Type=oneshot
+# QUOTED. Without the quotes systemd splits on whitespace and PCOIN_CLI becomes
+# the single word "docker", which then fails to talk to anything and reports
+# "node did not answer RPC" on a node that is answering perfectly.
+Environment="PCOIN_CLI=docker exec pcoin-seed bitcoin-cli"
+ExecStart=/usr/local/bin/pcoin-fork-watch
+
+# Exit 3 is "the node did not answer, so I am drawing no conclusion". That is
+# NOT a chain split, and paging about it would mean every RPC blip wakes
+# somebody with a fork alarm. Whether the node is up is pcoin-seed-watch's job,
+# and it already alerts on exactly that.
+SuccessExitStatus=3
+
+Nice=10
+MemoryMax=64M
+CPUQuota=10%
+TimeoutStartSec=90

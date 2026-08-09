@@ -1,0 +1,196 @@
+#!/bin/bash
+# Detect a chain split from a single node, using only local RPC.
+#
+# WHY THIS EXISTS SEPARATELY FROM pcoin-seed-watch. That script grades one seed
+# against itself: is RPC up, are there peers, did the tip move, is 9444 open. All
+# four can pass on every seed simultaneously while the three of them sit on three
+# different chains, each perfectly healthy and each wrong. Height 2800 activates
+# LWMA, and any node below v1.2.0 will reject the new blocks and keep mining its
+# own branch -- so "healthy" is exactly what a split looks like from the inside.
+#
+# The node will NOT warn about it. A rejected header never reaches
+# AddToBlockIndex, so m_best_invalid is never set and LARGE_WORK_INVALID_CHAIN
+# cannot fire; UNKNOWN_NEW_RULES_ACTIVATED is versionbits-only and LWMA is a
+# plain height check. getnetworkinfo.warnings stays empty through the whole
+# event. Nothing built on the node's own warning machinery will see this.
+#
+# THREE CHECKS, none of which needs credentials for any other host:
+#
+#   tips     getchaintips reports a competing branch that keeps growing. A split
+#            is precisely a valid-fork/headers-only tip whose branchlen climbs.
+#            Short forks are routine on this chain -- see BRANCH_WARN.
+#   peers    getpeerinfo carries each peer's synced_headers. Peers stuck well
+#            below the tip are the ones that forked away; peers well above mean
+#            THIS node is the one that forked.
+#   spread   the gap between the highest and lowest peer. A healthy network
+#            clusters within a couple of blocks.
+#
+# Exit non-zero on trouble so systemd records it and OnFailure= can carry it
+# somewhere. State is written as JSON so a dashboard can read it without
+# re-deriving anything.
+set -u
+
+CLI="${PCOIN_CLI:-docker exec pcoin-seed bitcoin-cli}"
+STATE="${PCOIN_FORK_STATE:-/var/lib/pcoin-monitor/fork-watch.json}"
+
+# A branch 2 long is ordinary here: the chain has a ~3% lifetime stale rate from
+# its fast early era. Six is not ordinary -- at 600 s spacing that is an hour of
+# somebody else's work on a chain we are not on.
+BRANCH_WARN="${BRANCH_WARN:-6}"
+# How far a peer may lag before it is presumed to have stopped following us.
+PEER_LAG="${PEER_LAG:-10}"
+
+mkdir -p "$(dirname "$STATE")" 2>/dev/null
+
+fail=0
+notes=()
+
+say()  { printf '%s\n' "$*"; }
+bad()  { notes+=("$*"); fail=1; printf 'ALERT: %s\n' "$*" >&2; }
+
+TIPS=$($CLI getchaintips 2>/dev/null)
+INFO=$($CLI getblockchaininfo 2>/dev/null)
+PEERS=$($CLI getpeerinfo 2>/dev/null)
+
+# An RPC that did not answer resolves nothing. It is not evidence of a split and
+# not evidence of health -- pcoin-seed-watch already owns "is the node up", so
+# this script declines to guess and exits distinctly.
+if [ -z "$TIPS" ] || [ -z "$INFO" ] || [ -z "$PEERS" ]; then
+    say "node did not answer RPC; no conclusion drawn (see pcoin-seed-watch)"
+    exit 3
+fi
+
+read -r HEIGHT BESTHASH < <(printf '%s' "$INFO" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+print(d["blocks"], d["bestblockhash"])
+')
+
+# --- competing branches ------------------------------------------------------
+# Two filters, both learned by running this and being lied to:
+#
+#   * headers-only tips are headers this node accepted but never validated. The
+#     chain carries a permanent one with branchlen 2015 rooted at genesis, a
+#     relic of the early fast era. It is not a live fork and never will be.
+#   * a branch that forked hundreds of blocks ago is history, not news. What
+#     matters is a branch splitting off NEAR the tip and still growing -- which
+#     is exactly the shape of a consensus split at an activation height.
+FORKS=$(printf '%s' "$TIPS" | HEIGHT="$HEIGHT" python3 -c '
+import sys, json, os
+warn = int(os.environ.get("BRANCH_WARN", "6"))
+near = int(os.environ.get("FORK_NEAR", "200"))
+h = int(os.environ["HEIGHT"])
+tips = json.load(sys.stdin)
+bad = []
+for t in tips:
+    if t.get("status") in ("active", "headers-only", "invalid"):
+        continue
+    bl = t.get("branchlen", 0)
+    if bl < warn:
+        continue
+    # Where the branch left our chain. Far-back splits are settled history.
+    if h - (t["height"] - bl) > near:
+        continue
+    bad.append(t)
+print(len(bad))
+for t in sorted(bad, key=lambda x: -x["branchlen"])[:5]:
+    print("  branchlen=%d height=%d forked_at=%d status=%s %s"
+          % (t["branchlen"], t["height"], t["height"] - t["branchlen"],
+             t["status"], t["hash"][:16]))
+' 2>/dev/null)
+NFORK=$(printf '%s' "$FORKS" | head -1)
+[ -z "$NFORK" ] && NFORK=0
+if [ "$NFORK" -gt 0 ]; then
+    bad "$NFORK competing branch(es) at least $BRANCH_WARN blocks long"
+    printf '%s\n' "$FORKS" | tail -n +2 >&2
+fi
+
+# --- what the peers think ----------------------------------------------------
+PEERSTAT=$(printf '%s' "$PEERS" | HEIGHT="$HEIGHT" python3 -c '
+import sys, json, os
+h = int(os.environ["HEIGHT"])
+peers = json.load(sys.stdin)
+hs = [p.get("synced_headers", -1) for p in peers if p.get("synced_headers", -1) > 0]
+if not hs:
+    print("0 0 0 0")
+    sys.exit()
+lag = int(os.environ.get("PEER_LAG", "10"))
+behind = sum(1 for x in hs if x < h - lag)
+ahead  = sum(1 for x in hs if x > h + 2)
+print(len(hs), max(hs) - min(hs), behind, ahead)
+' 2>/dev/null)
+read -r NPEER SPREAD BEHIND AHEAD <<< "${PEERSTAT:-0 0 0 0}"
+
+# A peer below our tip is usually just syncing, and a node that joins mid-run
+# will always look "stuck" for one reading. One observation resolves nothing --
+# the same rule this project applies to every other unreliable reading. So a
+# peer condition has to survive TWO consecutive checks, ten minutes apart,
+# before it is worth waking anyone. A genuine fork does not heal in ten minutes;
+# a syncing peer does.
+PREV_BEHIND=0
+if [ -f "$STATE" ]; then
+    PREV_BEHIND=$(python3 -c '
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get("peers_behind", 0))
+except Exception:
+    print(0)
+' "$STATE" 2>/dev/null || echo 0)
+fi
+
+# Peers ahead of us matters more than peers behind: it means WE are the branch
+# nobody else is on, which is the failure this node cannot otherwise notice.
+# That one is alerted immediately -- it is never normal.
+if [ "${AHEAD:-0}" -gt 0 ]; then
+    bad "$AHEAD peer(s) are ahead of this node -- this node may be the one that forked"
+fi
+# Peers behind us are somebody else's node, and there is nothing to do about
+# them at 3am -- you cannot upgrade a stranger's machine. So this is recorded
+# and printed, but it does NOT fail the unit, because an alarm that fires every
+# ten minutes about a condition you cannot fix is an alarm that gets masked, and
+# then the one that matters gets masked with it.
+#
+# The exception is scale: if MOST of the network has stopped following us, the
+# most likely explanation is that WE are the odd one out, and that is
+# actionable.
+if [ "${BEHIND:-0}" -gt 0 ] && [ "${PREV_BEHIND:-0}" -gt 0 ]; then
+    HALF=$(( ${NPEER:-0} / 2 ))
+    if [ "${BEHIND:-0}" -gt "$HALF" ] && [ "${NPEER:-0}" -gt 3 ]; then
+        bad "$BEHIND of ${NPEER} peers are behind after two checks -- more than half the network disagrees with this node"
+    else
+        say "note: $BEHIND of ${NPEER} peer(s) persistently >$PEER_LAG blocks behind."
+        say "      Those are other operators' nodes. Nothing to do here, but they are"
+        say "      the population that forks at an activation height."
+    fi
+elif [ "${BEHIND:-0}" -gt 0 ]; then
+    say "note: $BEHIND peer(s) behind on this check only; probably syncing"
+fi
+
+# --- record ------------------------------------------------------------------
+# Written every run, not only on failure, so a dashboard can show "last checked"
+# and distinguish "healthy" from "the checker itself stopped running".
+NOTE_JSON=$(printf '%s\n' "${notes[@]:-}" | python3 -c '
+import sys, json
+print(json.dumps([l for l in sys.stdin.read().splitlines() if l.strip()]))
+')
+cat > "$STATE" <<EOF
+{
+  "checked_at": $(date +%s),
+  "height": $HEIGHT,
+  "besthash": "$BESTHASH",
+  "peers": ${NPEER:-0},
+  "peer_height_spread": ${SPREAD:-0},
+  "peers_behind": ${BEHIND:-0},
+  "peers_ahead": ${AHEAD:-0},
+  "long_forks": ${NFORK:-0},
+  "ok": $([ "$fail" -eq 0 ] && echo true || echo false),
+  "alerts": $NOTE_JSON
+}
+EOF
+
+if [ "$fail" -eq 0 ]; then
+    say "ok: height $HEIGHT, $NPEER peers, spread $SPREAD, no long forks"
+else
+    say "PROBLEM: see alerts above; state in $STATE"
+fi
+exit "$fail"

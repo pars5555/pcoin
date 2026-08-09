@@ -164,6 +164,39 @@ case "$IN" in
     *)     NICE=yes ;;
 esac
 
+# --- 4b. a hard ceiling, not just a preference ------------------------------
+# Nice and CPUWeight only decide who wins when two things want the CPU at once.
+# On an otherwise idle machine they change nothing, and one mining thread sits
+# at a flat 100% of a core forever. On shared-vCPU hosting (Hetzner, most cheap
+# VPS plans) that sustained load is what earns a fair-use warning or a shutdown.
+# CPUQuota is the only setting here that caps absolute usage.
+#
+# systemd counts 100% as one whole core, so a ceiling of P percent of an
+# N-core machine is N*P.
+say ""
+say "${B}What share of this machine may PCoin use at most?${N}"
+say "${DIM}  A hard ceiling, enforced by systemd. Mining threads decide how many${N}"
+say "${DIM}  cores are asked for; this decides how much CPU they may actually${N}"
+# say() is printf '%s\n', so a literal percent needs no doubling here.
+say "${DIM}  have. On a shared VPS keep this low -- a thread pinned at 100% of a${N}"
+say "${DIM}  core for days is what gets an account flagged.${N}"
+say ""
+CAP=''
+while [ -z "$CAP" ]; do
+    printf 'Maximum share of this machine, %% [20]: '
+    read -r IN || exit 1
+    [ -z "$IN" ] && IN=20
+    case "$IN" in
+        ''|*[!0-9]*) warn "Enter a whole number between 1 and 100." ; continue ;;
+    esac
+    if [ "$IN" -lt 1 ] || [ "$IN" -gt 100 ]; then
+        warn "Enter a whole number between 1 and 100."
+        continue
+    fi
+    CAP="$IN"
+done
+QUOTA=$((CORES * CAP))
+
 # --- 5. write it down -------------------------------------------------------
 mkdir -p /etc/pcoin
 umask 022
@@ -175,18 +208,23 @@ THREADS=$THREADS
 EOF
 
 mkdir -p /etc/systemd/system/pcoind.service.d
-if [ "$NICE" = yes ]; then
-    cat > "$DROPIN" <<'EOF'
-# Written by pcoin-setup: PCoin loses every contest for CPU and disk.
-[Service]
-Nice=15
-IOSchedulingClass=idle
-CPUWeight=20
-EOF
-else
-    rm -f "$DROPIN"
-fi
+{
+    echo "# Written by pcoin-setup. Re-run it to change these."
+    echo "[Service]"
+    if [ "$NICE" = yes ]; then
+        echo "# Lose every contest for CPU and disk against whatever else runs here."
+        echo "Nice=15"
+        echo "IOSchedulingClass=idle"
+        echo "CPUWeight=20"
+    fi
+    echo "# Hard ceiling: ${CAP}% of a ${CORES}-core machine. systemd counts one"
+    echo "# whole core as 100%, hence ${CORES} x ${CAP} = ${QUOTA}."
+    echo "CPUQuota=${QUOTA}%"
+    echo "MemoryHigh=1G"
+} > "$DROPIN"
 systemctl daemon-reload
+# The ceiling belongs to the node process, so it only takes effect on a restart.
+systemctl try-restart pcoind >/dev/null 2>&1 || true
 
 say ""
 rule
@@ -194,6 +232,7 @@ ok "payout address : $ADDR"
 ok "mining threads : $THREADS of $CORES"
 if [ "$NICE" = yes ]; then ok "priority       : background (nice 15, idle IO)"
 else                       warn "priority       : normal -- PCoin competes with everything else"; fi
+ok "cpu ceiling    : ${CAP}% of this machine (CPUQuota=${QUOTA}%)"
 rule
 
 # --- 6. go ------------------------------------------------------------------

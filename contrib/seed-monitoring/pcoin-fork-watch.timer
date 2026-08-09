@@ -1,0 +1,13 @@
+[Unit]
+Description=Look for a chain split every 10 minutes
+
+[Timer]
+OnBootSec=6min
+OnUnitActiveSec=10min
+# Offset from pcoin-seed-watch so the two checks never contend for the same RPC
+# at the same instant on a box that also serves 215 vhosts.
+RandomizedDelaySec=90
+Persistent=true
+
+[Install]
+WantedBy=timers.target

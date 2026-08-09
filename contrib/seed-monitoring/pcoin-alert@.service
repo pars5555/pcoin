@@ -1,0 +1,13 @@
+[Unit]
+Description=Deliver a PCoin monitor failure to the alert channel (%i)
+
+[Service]
+Type=oneshot
+# %i is the failing unit's name, passed in by OnFailure=. The body is the last
+# few journal lines from that unit, so the alert carries the actual reason
+# rather than "something failed" -- the alert that only says a name is the
+# alert nobody acts on.
+ExecStart=/bin/sh -c '/usr/local/bin/pcoin-notify "PCoin: %i failed" "$(journalctl -u %i -n 12 --no-pager -o cat 2>/dev/null | tail -12)"'
+Nice=10
+MemoryMax=64M
+TimeoutStartSec=60
