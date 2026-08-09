@@ -316,6 +316,34 @@
   </defs>
 </svg>
 
+<!-- Consensus change at height 2800. Removed once the fork has landed and
+     100 blocks have passed cleanly. There are miners on this network whose
+     operators cannot be contacted, so this banner is the only upgrade notice
+     that reaches them. -->
+<div id="forknotice" role="alert">
+  <div class="fn-inner">
+    <strong>Upgrade before block 2800.</strong>
+    <span>PCoin switches to per-block LWMA difficulty at height <b>2800</b>.
+    A node older than <b>v1.2.0</b> will reject the new blocks and keep mining a
+    branch of its own &mdash; those coins are worth nothing. Upgrading takes a
+    minute and needs no resync.</span>
+    <a class="fn-cta" href="#download">Get v1.2.3</a>
+  </div>
+</div>
+
+<style>
+#forknotice{background:linear-gradient(90deg,#7c2d12,#9a3412);border-bottom:1px solid #c2410c;
+  font-size:14px;line-height:1.5;color:#ffedd5}
+#forknotice .fn-inner{max-width:1100px;margin:0 auto;padding:11px 20px;
+  display:flex;gap:12px;align-items:baseline;flex-wrap:wrap}
+#forknotice strong{color:#fff;white-space:nowrap}
+#forknotice b{color:#fff}
+#forknotice span{flex:1 1 420px;min-width:0}
+#forknotice .fn-cta{white-space:nowrap;background:#fff;color:#7c2d12;font-weight:600;
+  padding:5px 13px;border-radius:6px;text-decoration:none}
+#forknotice .fn-cta:hover{background:#ffedd5}
+</style>
+
 <header class="nav">
   <div class="nav-inner">
     <a class="brand" href="#top" aria-label="PCoin home">
