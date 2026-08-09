@@ -337,11 +337,32 @@ Entirely manual — there is no CI. Six artifacts per release, from three builds
 
 | artifact | built by |
 |---|---|
-| `pcoin-<ver>-win64.zip` | mingw cross-compile, packed with a **Python** `zipfile` script |
+| `pcoin-<ver>-win64.zip` | mingw cross-compile, packed with a **Python** `zipfile` script. **Must contain `PCoinTray.exe` beside the two node binaries** — see below |
 | `pcoin-<ver>-win64-setup.exe` | `contrib/windows-tray/installer.iss` via Inno Setup 6 ISCC |
 | `pcoin-<ver>-linux-x86_64.tar.gz` | the Linux build tree |
 | `pcoin-<ver>-linux-amd64.deb` | `contrib/linux-deb/build-deb.sh <ver> <bindir>` |
 | `pcoin-<ver>-android-{miner,wallet}.apk` | `gradlew.bat assemble{Miner,Wallet}Release` |
+
+**The win64 zip must include the tray app.** Up to v1.2.3 it held only
+`bitcoin-cli.exe`, `bitcoind.exe` and `COPYING`, while `install.ps1` — the
+one-liner advertised on pc.am — downloads *only* that zip. The result was an
+install that reported success and produced a node with no miner UI, a desktop
+shortcut pointing at a file that had never been installed, and a scheduled task
+launching the same missing exe. `install.ps1` now refuses rather than
+half-installing, but the real fix is to pack the tray. Doing so also needs no
+second download, which matters because of the next paragraph.
+
+**Windows Defender quarantines `pcoin-<ver>-win64-setup.exe` as
+`Trojan:Script/Wacatac.H!ml`.** The `!ml` suffix means a machine-learning
+heuristic, not a signature: it is a reputation false positive on the **Inno
+Setup stub**, not a coin-mining detection and not anything in the code.
+Measured on a real desktop: the setup exe is blocked, while
+`pcoin-win64.zip`, a bare unsigned `PCoinTray.exe` and `install.ps1` all
+download untouched. So the zip and the one-liner are the channels that work
+today. Two fixes, in order of durability: submit the installer to Microsoft as
+a false positive (free, usually cleared in a few days) and buy a code-signing
+certificate, which also removes SmartScreen's four separate prompts (§7.3 is
+about a different Windows trap; this is its own).
 
 The archives each contain a top-level `pcoin-<ver>/`. **Never build the zip with
 PowerShell `Compress-Archive`** — it writes entry names containing backslashes,

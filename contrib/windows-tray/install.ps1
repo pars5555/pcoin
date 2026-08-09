@@ -113,6 +113,18 @@ foreach ($n in $AddNode) { $conf += "addnode=$n" }
 $conf | Set-Content -Encoding ascii (Join-Path $DataDir 'pcoin.conf')
 Write-Output "  data directory: $DataDir"
 
+# The tray app must actually be here. Until v1.2.4 the release zip contained
+# only bitcoind.exe, bitcoin-cli.exe and COPYING, so this script produced a node
+# with no miner UI, a desktop shortcut pointing at a file that was never
+# installed, and a scheduled task launching the same missing exe -- an install
+# that reported success and could not mine. Fail loudly instead.
+if (-not (Test-Path (Join-Path $InstallDir 'PCoinTray.exe'))) {
+    throw ("PCoinTray.exe is missing from $name. This archive predates the tray " +
+           "being bundled; use the Windows installer from https://pc.am, or a " +
+           "release from v1.2.4 onward.")
+}
+Write-Output '  tray app present'
+
 # Keep the payout address that is already configured. Blanking it would make
 # the tray app hand out a fresh one on the next start, orphaning the address
 # whoever runs this machine has already written down. pcoin-seed.dat and
