@@ -690,9 +690,9 @@
       <div class="dl-grid">
         <div class="dl-card">
           <h3>Windows</h3>
-          <p class="dl-sub">Node, CLI and tray app. Writes a working config and adds an uninstall entry.</p>
-          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-win64-setup.exe" rel="noopener">Installer (.exe)</a>
-          <a class="dl-alt" href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-win64.zip" rel="noopener">or portable .zip</a>
+          <p class="dl-sub">Node, CLI and tray app in one archive. Unzip and run, or use the one command below.</p>
+          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-win64.zip" rel="noopener">Download (.zip)</a>
+          <a class="dl-alt" href="#get-started">or install with one command</a>
         </div>
 
         <div class="dl-card">
@@ -757,7 +757,24 @@
       </div>
 
       <div class="term">
-        <div class="term-bar"><i></i><i></i><i></i><span>quickstart — bash (Linux)</span></div>
+        <div class="term" style="margin-bottom:22px">
+        <div class="term-bar"><i></i><i></i><i></i><span>quickstart &mdash; PowerShell (Windows)</span></div>
+        <pre><span class="c"># One command. Downloads the archive, checks it against the published</span>
+<span class="c"># SHA-256, installs the node and miner, and puts a shortcut on your desktop.</span>
+<span class="c"># -Threads is how many cores mine; 0 installs without mining.</span>
+&amp; ([scriptblock]::Create((irm https://pc.am/dl/install.ps1))) -Threads 4
+
+<span class="o">  PCoin 1.2.4 installer
+  sha256 ok
+  tray app present
+  desktop shortcut created
+  configured to mine with 4 cores</span>
+
+<span class="c"># Prefer to do it by hand? Download the .zip above, unzip it anywhere and</span>
+<span class="c"># run PCoinTray.exe. Same files, same result.</span></pre>
+      </div>
+
+      <div class="term-bar"><i></i><i></i><i></i><span>quickstart — bash (Linux)</span></div>
         <pre><span class="c"># On Debian or Ubuntu, this is the whole thing.</span>
 <span class="c"># It checks the download against the published SHA-256, installs the</span>
 <span class="c"># node, then asks where to pay your block rewards.</span>

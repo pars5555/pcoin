@@ -1031,10 +1031,18 @@ namespace PCoinTray
          * feature; one that says "this PC has 2.0 GB free and needs about 3.0"
          * tells the owner exactly what would change it.
          */
+        //! The node side of fast mode (-randomxfastmode) is written and reviewed
+        //! but not released, and Core exits on an unknown argument. Until the two
+        //! ship together this stays visibly disabled rather than hidden: a
+        //! control that appears in one build and vanishes in the next reads as a
+        //! bug, and a checkbox that kills the node reads as a worse one. Flip
+        //! this to true in the same release that adds the node flag.
+        const bool FAST_MODE_AVAILABLE = false;
+
         void UpdateFastMode(bool enabled, long availableMib)
         {
             long need = FAST_MODE_MIB + FAST_MODE_HEADROOM_MIB;
-            bool eligible = availableMib >= need;
+            bool eligible = FAST_MODE_AVAILABLE && availableMib >= need;
 
             _fastEcho = true;
             _fastCheck.IsEnabled = eligible;
@@ -1043,7 +1051,12 @@ namespace PCoinTray
 
             _fastCheck.Opacity = eligible ? 1.0 : 0.55;
 
-            if (!eligible)
+            if (!FAST_MODE_AVAILABLE)
+            {
+                _fastNote.Text = "Coming in the next update. It builds a 2 GB table in "
+                               + "memory and mines several times faster on this PC.";
+            }
+            else if (!eligible)
             {
                 _fastNote.Text = string.Format(CultureInfo.InvariantCulture,
                     "Needs about {0:0.0} GB of free memory; this PC has {1:0.0} GB right now. "

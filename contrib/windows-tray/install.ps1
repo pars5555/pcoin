@@ -15,13 +15,17 @@
 
 param(
     [int]$Threads = 0,
-    [string]$InstallDir = 'C:\PCoin',
+    # C:\PCoin when it already exists or we can create it; otherwise a
+    # per-user location, because creating a folder at the root of C: needs
+    # administrator rights and a one-liner that demands elevation is a one-liner
+    # most people will not run.
+    [string]$InstallDir = '',
     [string]$DataDir = '',
     # Bump both together at every release. The hash is of pcoin-<ver>-win64.zip
     # and the install aborts on a mismatch, so a forgotten bump here breaks
     # every new install rather than failing quietly.
-    [string]$Version = '1.2.3',
-    [string]$Sha256 = 'ba06161803244ea567f6e3f1212499e7f08b352da23b970c3b4820a3d4cad318',
+    [string]$Version = '1.2.4',
+    [string]$Sha256 = 'f092a9db21339ac58f5c361fea0a857647660fc3ae357a4730cb39f0fd7c606e',
     # All three seeds, not just one. The node also carries them compiled in as
     # of v1.2.1, so this is belt and braces rather than the only route in.
     [string[]]$AddNode = @('35.239.156.16:9444', '35.238.47.14:9444', '178.105.3.51:9444'),
@@ -29,8 +33,20 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$name = "pcoin-$Version-win64.zip"
-$url = "https://github.com/pars5555/pcoin/releases/download/v$Version/$name"
+
+if (-not $InstallDir) {
+    $InstallDir = 'C:\PCoin'
+    if (-not (Test-Path $InstallDir)) {
+        try {
+            New-Item -ItemType Directory -Path $InstallDir -Force -ErrorAction Stop | Out-Null
+        } catch {
+            $InstallDir = Join-Path $env:LOCALAPPDATA 'PCoin'
+            Write-Output "  C:\PCoin needs admin; installing to $InstallDir instead"
+        }
+    }
+}
+$name = "pcoin-win64.zip"   # version-less: resolves through /releases/latest/
+$url = "https://github.com/pars5555/pcoin/releases/latest/download/$name"
 
 # Keep the data directory beside the program by default. Remote management
 # tools often launch with a service's environment block, so %LOCALAPPDATA% can
@@ -210,6 +226,31 @@ try {
         Write-Output "  autostart shortcut created in $startup"
     } else {
         Write-Output '  autostart skipped: could not locate the user Startup folder'
+    }
+
+    # A desktop shortcut, because an app with no icon anywhere is an app the
+    # owner cannot find again. The installer .exe has always made one; this
+    # script never did, which is why script-installed machines looked
+    # half-installed even while they were mining perfectly.
+    $desk = [Environment]::GetFolderPath('Desktop')
+    if (-not $desk -or $desk -match 'systemprofile') {
+        if ($env:USERNAME) {
+            $c = Join-Path (Join-Path $env:SystemDrive 'Users') (Join-Path $env:USERNAME 'Desktop')
+            if (Test-Path $c) { $desk = $c }
+        }
+    }
+    if ($desk -and (Test-Path $desk)) {
+        $ws2 = New-Object -ComObject WScript.Shell
+        $d = $ws2.CreateShortcut((Join-Path $desk 'PCoin.lnk'))
+        $d.TargetPath = (Join-Path $InstallDir 'PCoinTray.exe')
+        $d.WorkingDirectory = $InstallDir
+        $d.Description = 'PCoin node and miner'
+        $ic = Join-Path $InstallDir 'pcoin.ico'
+        if (Test-Path $ic) { $d.IconLocation = $ic }
+        $d.Save()
+        Write-Output ('  desktop shortcut created in ' + $desk)
+    } else {
+        Write-Output '  desktop shortcut skipped: no Desktop folder found'
     }
 } catch {
     Write-Output ('  autostart skipped: ' + $_.Exception.Message)
