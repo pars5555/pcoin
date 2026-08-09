@@ -638,6 +638,28 @@ These are real incidents, not hypotheticals. Each one cost hours or money.
 * **Do not modify the Android app directory** while another workflow is editing
   it, and remember it has no version control — there is no undo.
 * **Never import a scratchpad helper to read it.** See §5 on `deploy_tray.py`.
+* **Browser automation always uses the dedicated Edge instance on port 9136.**
+  Never 9222, never the user's normal Edge. Two sessions sharing one browser
+  produced mixed-up state — Play Console tabs from another session appearing in
+  the middle of a form this session was filling. Check first, launch if absent:
+
+  ```powershell
+  # reuse if alive, otherwise start it
+  if (-not (Get-NetTCPConnection -LocalPort 9136 -State Listen -EA SilentlyContinue)) {
+      Start-Process 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe' -ArgumentList @(
+        '--remote-debugging-port=9136',
+        '--user-data-dir=C:\Users\pars\AppData\Local\Temp\edge-claude-9136',
+        '--no-first-run','--no-default-browser-check','--start-maximized')
+  }
+  ```
+
+  The profile at `edge-claude-9136` persists logins between runs, so the user
+  signs in once per site rather than every session. Two things that cost time
+  before: **the browser exits on its own** and every call then times out — check
+  the port before blaming the page; and **x.com floods CDP with events**, so use
+  a client that does NOT call `Runtime.enable` / `Page.enable` / `DOM.enable`
+  (`scratchpad/cdp_lite.py` is that client) or every request times out on a page
+  that is perfectly healthy.
 
 ## 9. Current state, and what is next
 
