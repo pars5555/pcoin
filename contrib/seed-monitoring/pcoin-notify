@@ -8,7 +8,13 @@
 #
 #   /etc/pcoin/alert.conf   (0600 root)
 #     TELEGRAM_TOKEN=123456:ABC...
-#     TELEGRAM_CHAT=-1001234567890
+#     ALERT_CHAT=-1001234567890
+#
+# ALERT_CHAT MUST BE PRIVATE. This was once pointed at the public announcement
+# channel and subscribers received "Main process exited, code=exited,
+# status=3/NOTIMPLEMENTED" plus the internal hostname. An operational alert is
+# addressed to whoever fixes it. Announcements are a separate act, written by a
+# person; nothing on a ten-minute timer should ever reach an audience.
 #
 # If that file is absent this exits 0 after logging. A missing notifier must
 # never turn into a failing check -- the check already failed, and burying its
@@ -37,8 +43,8 @@ fi
 # shellcheck disable=SC1090
 . "$CONF"
 
-if [ -z "${TELEGRAM_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT:-}" ]; then
-    log "$CONF has no TELEGRAM_TOKEN/TELEGRAM_CHAT -- alert not delivered: $SUBJECT"
+if [ -z "${TELEGRAM_TOKEN:-}" ] || [ -z "${ALERT_CHAT:-}" ]; then
+    log "$CONF has no TELEGRAM_TOKEN/ALERT_CHAT -- alert not delivered: $SUBJECT"
     exit 0
 fi
 
@@ -61,7 +67,7 @@ TEXT=$(printf '*%s*\n%s\n\n_%s — %s_' \
 # --data-urlencode so a message containing & or = cannot truncate itself.
 RESP=$(curl -s --max-time 25 \
         -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
-        --data-urlencode "chat_id=${TELEGRAM_CHAT}" \
+        --data-urlencode "chat_id=${ALERT_CHAT}" \
         --data-urlencode "text=${TEXT}" \
         --data-urlencode "parse_mode=Markdown" \
         --data-urlencode "disable_web_page_preview=true" 2>&1)
