@@ -224,6 +224,50 @@ async function cmdNew(system) {
   console.log('  they are the money, apart neither is.\n');
 }
 
+/**
+ * Derive a batch of receive addresses from the account xpub.
+ *
+ * checker and webbuilderbot hand each user a row from a PRE-DERIVED pool, so
+ * they need a list to paste into their admin import box. AiControl derives on
+ * demand from the stored xpub and needs none of this.
+ *
+ * Deliberately takes only the xpub file: no passphrase, no phrase, nothing that
+ * can spend. This is the one step of the whole procedure that is safe to run on
+ * any machine, including a server.
+ */
+async function cmdPool(system, count, start) {
+  if (!system) die('--system <name> is required, e.g. --system checker');
+  const xpubFile = system + '-xpub.txt';
+  if (!existsSync(xpubFile)) die(xpubFile + ' not found. Run `new --system ' + system + '` first.');
+
+  const n = Number(count ?? 1000);
+  const from = Number(start ?? 0);
+  if (!Number.isInteger(n) || n < 1 || n > 100000) die('--count must be 1..100000');
+  if (!Number.isInteger(from) || from < 0) die('--start must be 0 or more');
+
+  const xpub = readFileSync(xpubFile, 'utf8').trim();
+  // An xprv here would still derive correct addresses, so nothing downstream
+  // would notice -- and a spendable key would be sitting in a file destined for
+  // a paste box. Refuse loudly.
+  if (!xpub.startsWith('xpub')) die(xpubFile + ' does not contain an xpub. Refusing.');
+  if (HDKey.fromExtendedKey(xpub).privateKey) die(xpubFile + ' contains a PRIVATE key. Refusing.');
+
+  const out = [];
+  for (let i = from; i < from + n; i++) out.push(addressFromXpub(xpub, i));
+
+  const outFile = system + '-pool-' + from + '-' + (from + n - 1) + '.txt';
+  writeFileSync(outFile, out.join('\n') + '\n');
+
+  console.log('\n  Wrote ' + outFile);
+  console.log('  ' + n + ' addresses, derivation index ' + from + '..' + (from + n - 1) + '\n');
+  console.log('  first : ' + out[0] + '   (index ' + from + ')');
+  console.log('  last  : ' + out[out.length - 1] + '   (index ' + (from + n - 1) + ')');
+  console.log('  sha256: ' + createHash('sha256').update(readFileSync(outFile)).digest('hex'));
+  console.log('\n  Paste into the admin import box with START INDEX = ' + from + '.');
+  console.log('  The order is load-bearing: the row a user is handed is identified by');
+  console.log('  its index, and an off-by-one sends their deposit to a different row.\n');
+}
+
 async function cmdVerify(file) {
   if (!file || !existsSync(file)) die('--file <blob.json> is required');
   const blob = JSON.parse(readFileSync(file, 'utf8'));
@@ -322,14 +366,17 @@ const cmd = argv[0];
 
 if (argv.includes('--selftest')) selftest();
 else if (cmd === 'new') await cmdNew(flag('--system'));
+else if (cmd === 'pool') await cmdPool(flag('--system'), flag('--count'), flag('--start'));
 else if (cmd === 'verify') await cmdVerify(flag('--file'));
 else if (cmd === 'restore') await cmdRestore(flag('--file'));
 else {
   console.log('\n  pcoin-seed-vault - create and back up a system\'s PCN wallet\n');
   console.log('    node pcoin-seed-vault.mjs --selftest');
   console.log('    node pcoin-seed-vault.mjs new     --system <name>');
+  console.log('    node pcoin-seed-vault.mjs pool    --system <name> --count 1000 [--start 0]');
   console.log('    node pcoin-seed-vault.mjs verify  --file <name>-seed.enc.json');
   console.log('    node pcoin-seed-vault.mjs restore --file <name>-seed.enc.json\n');
   console.log('  Run "new" yourself, in your own terminal. The twelve words show once');
-  console.log('  and the passphrase is typed, so neither reaches a log or transcript.\n');
+  console.log('  and the passphrase is typed, so neither reaches a log or transcript.');
+  console.log('  "pool" needs only the xpub and can safely run anywhere.\n');
 }

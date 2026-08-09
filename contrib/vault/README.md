@@ -37,12 +37,29 @@ wallet backup staged for commit.
 
 ## Commands
 
-| command | does |
-|---|---|
-| `--selftest` | derivation vectors, encryption round-trip, tamper detection |
-| `new --system <name>` | generate, verify the paper copy, encrypt, write both files |
-| `verify --file <blob>` | decrypt and prove it reproduces the recorded xpub. Exit 0/1, so it works in a cron check |
-| `restore --file <blob>` | print the twelve words. Only when about to sign |
+| command | does | needs a secret? |
+|---|---|---|
+| `--selftest` | derivation vectors, encryption round-trip, tamper detection | no |
+| `new --system <name>` | generate, verify the paper copy, encrypt, write both files | creates one |
+| `pool --system <name> --count N [--start 0]` | derive receive addresses to paste into an admin import box | **no** — xpub only |
+| `verify --file <blob>` | decrypt and prove it reproduces the recorded xpub. Exit 0/1, so it works in a cron check | passphrase |
+| `restore --file <blob>` | print the twelve words. Only when about to sign | passphrase |
+
+### Which systems need `pool`
+
+| system | how it issues addresses | needs `pool`? |
+|---|---|---|
+| AiControl | derives on demand from the stored xpub | no |
+| checker.pc.am | hands out a row from a pre-derived pool | **yes** |
+| webbuilderbot | hands out a row from a pre-derived pool | **yes** |
+
+`pool` reads only `<system>-xpub.txt` and refuses if that file contains a
+private key — an `xprv` would derive the same addresses, so nothing downstream
+would notice a spendable key sitting in a file headed for a paste box.
+
+The **start index is load-bearing**. A user's row is identified by its
+derivation index, so importing a batch at the wrong offset points deposits at a
+different row than the one the user was shown.
 
 ## Three things that are deliberate
 

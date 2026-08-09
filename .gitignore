@@ -56,6 +56,10 @@ contrib/windows-tray/build.log
 # deposit history is nobody else's business.
 *-seed.enc.json
 *-xpub.txt
+# Pool listings are only public addresses, so this is privacy rather than
+# custody: one file linking every address a system will ever issue hands an
+# observer the whole deposit history in one read.
+*-pool-*.txt
 contrib/vault/node_modules/
 
 
