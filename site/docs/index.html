@@ -1,0 +1,276 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Accept PCoin — integration guide</title>
+<meta name="description" content="How to accept PCN payments: deposit addresses from an xpub, the explorer API, and the rules that stop you crediting money that is not there.">
+
+<style>
+  :root{
+    --bg:#0F1014; --panel:#171922; --edge:#242734; --ink:#ECEDF2; --dim:#9AA0B0;
+    --accent:#8B5CF6; --teal:#2DD4BF; --warn:#FBBF24; --bad:#F87171; --good:#34D399;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme: light){
+    :root{ --bg:#FBFBFD; --panel:#fff; --edge:#E4E6ED; --ink:#14161C; --dim:#5B6172; }
+  }
+  :root[data-theme="dark"]{ --bg:#0F1014; --panel:#171922; --edge:#242734; --ink:#ECEDF2; --dim:#9AA0B0; }
+  :root[data-theme="light"]{ --bg:#FBFBFD; --panel:#fff; --edge:#E4E6ED; --ink:#14161C; --dim:#5B6172; }
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif;
+       -webkit-font-smoothing:antialiased}
+  .wrap{max-width:56rem;margin:0 auto;padding:0 24px}
+  a{color:var(--accent)}
+  code,pre{font-family:var(--mono)}
+  code{background:var(--panel);border:1px solid var(--edge);border-radius:4px;padding:.1em .35em;font-size:.88em}
+  pre{background:var(--panel);border:1px solid var(--edge);border-radius:10px;padding:16px 18px;
+      overflow-x:auto;font-size:13.5px;line-height:1.6}
+  pre code{background:none;border:0;padding:0;font-size:inherit}
+
+  header{border-bottom:1px solid var(--edge);padding:30px 0 26px;margin-bottom:8px}
+  .brand{display:flex;align-items:center;gap:11px;font-weight:700;font-size:19px;text-decoration:none;color:var(--ink)}
+  h1{font-size:clamp(30px,5vw,42px);line-height:1.12;letter-spacing:-.022em;margin:26px 0 12px;text-wrap:balance}
+  .lede{font-size:18px;color:var(--dim);max-width:44rem;margin:0 0 6px}
+  h2{font-size:24px;letter-spacing:-.012em;margin:52px 0 14px;padding-top:14px;border-top:1px solid var(--edge);text-wrap:balance}
+  h3{font-size:17px;margin:30px 0 8px}
+  p,li{color:var(--ink)}
+  li{margin:.3em 0}
+
+  .note{border:1px solid var(--edge);border-left:3px solid var(--accent);background:var(--panel);
+        border-radius:0 10px 10px 0;padding:14px 18px;margin:20px 0}
+  .note.warn{border-left-color:var(--warn)}
+  .note.bad{border-left-color:var(--bad)}
+  .note p:first-child{margin-top:0} .note p:last-child{margin-bottom:0}
+  .note strong{color:var(--ink)}
+
+  table{width:100%;border-collapse:collapse;margin:18px 0;font-size:14.5px;display:block;overflow-x:auto}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--edge);vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;white-space:nowrap}
+  td code{white-space:nowrap}
+
+  .toc{background:var(--panel);border:1px solid var(--edge);border-radius:12px;padding:18px 22px;margin:28px 0}
+  .toc ol{margin:0;padding-left:1.25em;columns:2;column-gap:32px}
+  .toc a{text-decoration:none}
+  .toc a:hover{text-decoration:underline}
+  @media(max-width:640px){ .toc ol{columns:1} }
+
+  footer{border-top:1px solid var(--edge);margin-top:64px;padding:26px 0 60px;color:var(--dim);font-size:14px}
+  .k{color:var(--teal)} .c{color:var(--dim)} .s{color:var(--warn)}
+</style>
+
+<header>
+  <div class="wrap">
+    <a class="brand" href="https://pc.am">
+      <svg viewBox="18 18 72 72" width="30" height="30" aria-hidden="true"><circle cx="54" cy="54" r="36" fill="#262B33"/><path fill="#fff" fill-rule="evenodd" d="M75,54A21,21 0 1 1 33,54A21,21 0 1 1 75,54ZM54,38.5L57.89,50.11L69.5,54L57.89,57.89L54,69.5L50.11,57.89L38.5,54L50.11,50.11Z"/></svg>
+      PCoin
+    </a>
+  </div>
+</header>
+
+<div class="wrap">
+  <h1>Accept PCN payments</h1>
+  <p class="lede">Everything needed to take PCoin in your own product: deposit
+  addresses derived from an xpub you keep offline, one HTTP API to watch them,
+  and the rules that stop you crediting money that is not there.</p>
+
+  <div class="note">
+    <p><strong>Two production integrations already follow this guide</strong> —
+    AiControl and checker.pc.am. Every rule below exists because it was got wrong
+    once, usually expensively. Where a rule looks paranoid, the reason is stated.</p>
+  </div>
+
+  <div class="toc">
+    <ol>
+      <li><a href="#model">The model</a></li>
+      <li><a href="#addresses">Deposit addresses</a></li>
+      <li><a href="#api">The explorer API</a></li>
+      <li><a href="#gates">The gates</a></li>
+      <li><a href="#unknown">Failure resolves nothing</a></li>
+      <li><a href="#idem">Idempotency</a></li>
+      <li><a href="#reorg">Reorgs</a></li>
+      <li><a href="#amounts">Amounts</a></li>
+      <li><a href="#checklist">Before you go live</a></li>
+    </ol>
+  </div>
+
+  <h2 id="model">1. The model</h2>
+  <p>PCN top-up is <strong>one-way and custody-free</strong>. Your server derives
+  a deposit address per user, watches it, and credits when the payment is deep
+  enough. It never holds a private key, so it is <em>cryptographically incapable</em>
+  of moving funds. That is the design, not a limitation.</p>
+
+  <ol>
+    <li>Generate a BIP39 seed <strong>offline</strong>.</li>
+    <li>Derive the account xpub at <code>m/84'/9444'/0'</code>.</li>
+    <li>Put <strong>only the xpub</strong> on the server.</li>
+    <li>Derive one address per user from it — non-hardened children, so the xpub alone suffices.</li>
+    <li>Poll the explorer. Credit when the gates in §4 pass.</li>
+  </ol>
+
+  <div class="note bad">
+    <p><strong>Coin type <code>9444'</code> is load-bearing.</strong> PCoin kept
+    Bitcoin's xprv/xpub version bytes, so the same seed under coin type
+    <code>0'</code> derives <strong>live Bitcoin keys</strong>. Get this wrong and
+    you are generating real Bitcoin addresses you cannot spend from.</p>
+  </div>
+
+  <h2 id="addresses">2. Deposit addresses</h2>
+  <p>Addresses are BIP84 native SegWit, hrp <code>pc</code>, so they look like
+  <code>pc1q…</code>. Derive <code>m/84'/9444'/0'/0/<em>index</em></code>, one index
+  per user, allocated <code>MAX(index)+1</code>.</p>
+
+  <div class="note warn">
+    <p><strong>Index order is signup order.</strong> Anyone holding your xpub can
+    derive every address, query them all, and read your entire customer payment
+    history in order. Treat the xpub as confidential — and note it cannot be
+    rotated without orphaning every address you have already issued.</p>
+    <p style="margin-top:8px">Never put a <em>child private key</em> on the server
+    either: an account xpub plus one child privkey lets an attacker derive every
+    sibling private key.</p>
+  </div>
+
+  <h2 id="api">3. The explorer API</h2>
+  <p><code>https://explorer.pc.am/api</code> — HTTP, no auth, no key, no rate limit
+  worth worrying about at this size.</p>
+
+  <table>
+    <tr><th>Endpoint</th><th>Use</th></tr>
+    <tr><td><code>GET /api/status</code></td><td>tip height, index health</td></tr>
+    <tr><td><code>GET /api/address/{addr}</code></td><td>confirmed / unconfirmed / lifetime balances</td></tr>
+    <tr><td><code>GET /api/address/{addr}/txs</code></td><td>transactions — see the shape trap below</td></tr>
+    <tr><td><code>GET /api/tx/{txid}</code></td><td>authoritative height and <code>is_coinbase</code></td></tr>
+    <tr><td><code>POST /api/addresses</code></td><td>batch: which of these have activity</td></tr>
+  </table>
+
+  <h3>Do not use node RPC</h3>
+  <p>Two concrete reasons, both of which have cost real time:</p>
+  <ul>
+    <li><strong>There is no address index in the node.</strong> The only way to ask
+    "what did this address receive" is <code>scantxoutset</code>, which is O(entire
+    UTXO set) and globally serialised behind a process-wide flag. One HTTP request
+    could stall every other RPC on that node.</li>
+    <li><strong>Wallet RPCs are <code>-rpcwallet</code> scoped.</strong>
+    <code>getaddressinfo</code>, <code>gettransaction</code> and
+    <code>getbalances</code> will answer confidently about the wrong wallet if two
+    are loaded.</li>
+  </ul>
+
+  <h3>Response shapes</h3>
+  <ul>
+    <li>Transactions live under <code>confirmed.items[]</code>, not at the top level.</li>
+    <li>The address summary has <strong>no <code>is_coinbase</code></strong> — its
+    keys stop at <code>net_pcn</code>. Fetch <code>/api/tx/{txid}</code> for that.</li>
+  </ul>
+
+  <h2 id="gates">4. The gates</h2>
+  <p>All of them. None optional.</p>
+
+  <table>
+    <tr><th>Gate</th><th>Value</th><th>Why</th></tr>
+    <tr><td>confirmations</td><td>20 recommended, 5 minimum</td><td>~69 chain tips seen; ~3% lifetime stale rate</td></tr>
+    <tr><td>deposit height</td><td>&ge; 2800</td><td>below it difficulty is frozen</td></tr>
+    <tr><td>coinbase maturity</td><td>100</td><td>mined output, not spendable sooner</td></tr>
+    <tr><td>index health</td><td><code>blocks_unwound == 0</code></td><td>reorg in flight = untrustworthy counts</td></tr>
+  </table>
+
+  <h3>Gate on the deposit's height, not the tip</h3>
+  <p>Below height 2800 the difficulty is <strong>frozen</strong> at
+  <code>1e0b7c33</code> — the legacy retarget fires only every 2016 blocks and does
+  not run again until 4032. Anyone renting hashrate can rewrite that stretch of
+  history cheaply and the chain cannot push back. A tip-based gate credits a
+  pre-LWMA deposit the instant the tip crosses 2800, which is exactly wrong.</p>
+
+<pre><code><span class="c">// wrong: credits old, cheap-to-reorg coins once the tip moves</span>
+<span class="k">if</span> (tipHeight &gt;= MIN_HEIGHT) credit();
+
+<span class="c">// right: judge the deposit's own block, and assert it twice --</span>
+<span class="c">// once from the address summary, once from the authoritative /tx</span>
+<span class="k">if</span> (deposit.height &lt; MIN_HEIGHT) reject(<span class="s">"pre-LWMA"</span>);</code></pre>
+
+  <h3>Coinbase deposits need 100 confirmations</h3>
+  <p><code>startmining "&lt;address&gt;"</code> needs no wallet, so a user can point a
+  miner straight at their deposit address. Without a maturity check each 50 PCN
+  reward would credit ~95 blocks before it is spendable at all.</p>
+
+  <h2 id="unknown">5. Failure resolves nothing</h2>
+  <div class="note bad">
+    <p><strong>A call that failed, timed out, or answered "I do not know" resolves
+    NOTHING.</strong> It can never advance a record, never clear one, and never
+    authorise a credit.</p>
+  </div>
+  <p><code>optInt("confirmations", 0)</code> on a call that may not have happened is
+  a bug: an unanswerable question silently becomes a definite "not confirmed".
+  Model <em>unknown</em> as its own state. Every failure path must <strong>hold</strong>,
+  never credit.</p>
+
+  <div class="note warn">
+    <p><strong>Validate addresses locally.</strong> Do not rely on the API to
+    reject bad input — an integration that trusts a remote service to validate is
+    one outage away from crediting nonsense. Check the bech32 checksum yourself,
+    and reject a Bitcoin <code>bc1…</code> address on its hrp.</p>
+  </div>
+
+  <h2 id="idem">6. Idempotency</h2>
+  <p>Key the ledger on the <strong>outpoint</strong> — <code>txid</code> plus
+  <code>vout</code> — with a unique index, and treat a duplicate-key error as
+  <em>already applied</em> rather than an error. A retrying poller must be a no-op.</p>
+  <p>Do <strong>not</strong> put <code>UNIQUE(ref_type, ref_id)</code> on a shared
+  credit ledger: a debit and a refund both legitimately write
+  <code>('card', &lt;same id&gt;)</code>. Use a separate nullable idempotency column.</p>
+  <p>If your credits are <strong>integers</strong>, carry the sub-credit remainder
+  forward per address. Flooring each deposit silently eats up to a whole credit
+  every time.</p>
+
+  <h2 id="reorg">7. Reorgs: detect, never auto-reverse</h2>
+  <p>Store <code>block_hash</code> at credit time and re-check it for deposits
+  credited in the last ~7 days. If the funding transaction is no longer in that
+  block, <strong>flag and alert</strong> — do not claw back automatically. A
+  reversal is itself exploitable, and on this chain it will eventually hit an
+  honest user. A human posts the compensating entry.</p>
+  <ul>
+    <li>Never judge a reorg on an unreachable or reorg-in-flight index — skip instead.</li>
+    <li>Never flag on a <strong>truncated</strong> history: if the fetch hit its row
+    limit, an absent transaction may simply be older than the window.</li>
+  </ul>
+
+  <h2 id="amounts">8. Amounts</h2>
+  <p>Amounts arrive as <strong>bare JSON numbers</strong>. There is no string form —
+  <code>JSON_BIGINT_AS_STRING</code> only affects integers. Convert to satoshis with
+  integer arithmetic and round once, deliberately. Never accumulate in floats.</p>
+
+  <h2 id="checklist">9. Before you go live</h2>
+  <ul>
+    <li>Seed generated offline; paper backup <strong>verified by restoring it</strong>
+    — a backup is not a backup until it has been loaded</li>
+    <li>Only the xpub on the server</li>
+    <li>Deposit-height gate on the deposit's own height, asserted twice</li>
+    <li>Coinbase deposits require 100 confirmations</li>
+    <li>Every failure path holds rather than credits</li>
+    <li>Ledger idempotent on the outpoint</li>
+    <li><code>block_hash</code> re-checked for recent credits; flags, does not reverse</li>
+    <li>Addresses validated locally</li>
+    <li>Tested against the <strong>live</strong> chain, not only fixtures</li>
+  </ul>
+
+  <h2>Chain reference</h2>
+  <table>
+    <tr><th>Item</th><th>Value</th></tr>
+    <tr><td>Proof of work</td><td>RandomX (CPU)</td></tr>
+    <tr><td>Difficulty</td><td>LWMA, retargets every block from height 2800</td></tr>
+    <tr><td>Block reward</td><td>50 PCN, halving every 210,000</td></tr>
+    <tr><td>Coinbase maturity</td><td>100 blocks</td></tr>
+    <tr><td>Addresses</td><td><code>pc1…</code> bech32 · base58 55 / 56 / 183</td></tr>
+    <tr><td>Derivation</td><td><code>m/84'/9444'/account'/change/index</code></td></tr>
+    <tr><td>Ports</td><td>P2P 9444 · RPC 9443</td></tr>
+    <tr><td>Config file</td><td><code>pcoin.conf</code> — <em>not</em> bitcoin.conf</td></tr>
+  </table>
+
+  <footer>
+    <p><a href="https://pc.am">pc.am</a> ·
+       <a href="https://explorer.pc.am">explorer</a> ·
+       <a href="https://github.com/pars5555/pcoin">source</a> ·
+       <a href="https://t.me/PCoinPCN">Telegram</a></p>
+    <p>Questions are welcome on Telegram. Ask before you invent — most of the
+    rules here were learned the expensive way.</p>
+  </footer>
+</div>
