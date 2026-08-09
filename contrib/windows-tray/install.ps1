@@ -131,7 +131,24 @@ $addrWallet = ''
 if ($keep.ContainsKey('addresswallet')) { $addrWallet = $keep['addresswallet'] }
 if ($addr) { Write-Output "  keeping existing payout address $addr" }
 
-@("address=$addr", "addresswallet=$addrWallet", "datadir=$DataDir", "threads=$Threads") |
+# Carry over every key the tray owns, not just the address.
+#
+# This rewrote the file wholesale and kept only two keys, so an upgrade silently
+# discarded `seedprompt` -- bringing the recovery-phrase dialog back on a machine
+# whose owner had already answered it -- and would have discarded `fastmode` the
+# same way. The installer only has an opinion about datadir and threads; every
+# other setting belongs to the user and must survive.
+$seedPrompt = ''
+if ($keep.ContainsKey('seedprompt')) { $seedPrompt = $keep['seedprompt'] }
+$fastMode = '0'
+if ($keep.ContainsKey('fastmode')) { $fastMode = $keep['fastmode'] }
+
+@("address=$addr",
+  "addresswallet=$addrWallet",
+  "datadir=$DataDir",
+  "threads=$Threads",
+  "seedprompt=$seedPrompt",
+  "fastmode=$fastMode") |
     Set-Content -Encoding ascii $trayCfg
 if ($Threads -gt 0) { Write-Output "  configured to mine with $Threads cores" }
 else { Write-Output '  configured; mining is OFF' }

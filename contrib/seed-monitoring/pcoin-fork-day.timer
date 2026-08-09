@@ -1,0 +1,13 @@
+[Unit]
+Description=Check the activation height every 2 minutes
+
+[Timer]
+OnBootSec=2min
+# Two minutes, not ten: the decisive check is only valid while the tip sits at
+# exactly ACTIVATION-1, and at ~400s per block that window is a single block.
+# A ten-minute timer could sleep straight through it.
+OnUnitActiveSec=2min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

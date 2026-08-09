@@ -1,0 +1,114 @@
+#!/bin/bash
+# Watch an activation height go by, and say what happened.
+#
+# WHY THIS IS SEPARATE FROM pcoin-fork-watch. That script asks "does the network
+# agree with me", every ten minutes, forever. This one asks a different question
+# that is only answerable in a narrow window around one specific block, and it
+# answers the thing nobody can check by hand at 4am.
+#
+# The only test that exercises the real consensus code path is: at height
+# ACTIVATION-1, does this node's `getmininginfo.next.bits` differ from the
+# current bits? Below that, both rule sets compute the SAME value and the check
+# proves nothing at all -- legacy retarget only recalculates on multiples of
+# 2016, and 2800 is not one, so an unpatched node returns the parent's bits
+# while an LWMA node returns something it worked out per-block.
+#
+# After activation it watches for the failure that has no warning attached: a
+# node below v1.2.0 rejects the LWMA block as bad-diffbits, the header never
+# reaches AddToBlockIndex, m_best_invalid is never set, and
+# getnetworkinfo.warnings stays empty. The visible symptom is a tip that stops
+# moving while peers advance -- so that is what this measures.
+set -u
+
+CLI="${PCOIN_CLI:-docker exec pcoin-seed bitcoin-cli}"
+ACTIVATION="${ACTIVATION:-2800}"
+STATE="${PCOIN_FORK_STATE:-/var/lib/pcoin-monitor/fork-day.json}"
+NOTIFY="${NOTIFY:-/usr/local/bin/pcoin-notify}"
+
+mkdir -p "$(dirname "$STATE")" 2>/dev/null
+
+say() { printf '%s\n' "$*"; }
+tell() { [ -x "$NOTIFY" ] && REPEAT_HOURS=0 "$NOTIFY" "$1" "$2" >/dev/null 2>&1 || true; }
+
+INFO=$($CLI getblockchaininfo 2>/dev/null)
+MINING=$($CLI getmininginfo 2>/dev/null)
+if [ -z "$INFO" ] || [ -z "$MINING" ]; then
+    say "node did not answer; drawing no conclusion"
+    exit 3
+fi
+
+read -r HEIGHT BITS NEXTBITS NEXTHEIGHT < <(printf '%s' "$MINING" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+n = d.get("next", {})
+print(d.get("blocks", 0), d.get("bits", "?"), n.get("bits", "?"), n.get("height", 0))
+')
+
+LAST_STAGE=none
+[ -f "$STATE" ] && LAST_STAGE=$(python3 -c '
+import json,sys
+try: print(json.load(open(sys.argv[1])).get("stage","none"))
+except Exception: print("none")
+' "$STATE" 2>/dev/null)
+
+STAGE=waiting
+NOTE=""
+
+if [ "$HEIGHT" -lt $((ACTIVATION - 1)) ]; then
+    STAGE=waiting
+    NOTE="height $HEIGHT, $((ACTIVATION - HEIGHT)) blocks to go. Nothing to check yet: below $((ACTIVATION-1)) both rule sets agree."
+
+elif [ "$HEIGHT" -eq $((ACTIVATION - 1)) ]; then
+    # THE moment. next.bits is computed for the activation block itself.
+    if [ "$NEXTBITS" = "$BITS" ]; then
+        STAGE=armed_bad
+        NOTE="AT HEIGHT $HEIGHT AND next.bits ($NEXTBITS) STILL EQUALS current bits. This node looks like it is NOT applying LWMA at $ACTIVATION. Stop mining on it now."
+    else
+        STAGE=armed_ok
+        NOTE="At $HEIGHT. next.bits=$NEXTBITS differs from current $BITS -- this node is applying LWMA at $ACTIVATION. This is the check that actually exercises the consensus path."
+    fi
+
+else
+    # Past activation. Are we still moving, and do peers agree?
+    PEERMAX=$($CLI getpeerinfo 2>/dev/null | python3 -c '
+import sys, json
+try:
+    p = json.load(sys.stdin)
+    hs = [x.get("synced_headers", 0) for x in p if x.get("synced_headers", 0) > 0]
+    print(max(hs) if hs else 0)
+except Exception:
+    print(0)
+' 2>/dev/null)
+    if [ "${PEERMAX:-0}" -gt $((HEIGHT + 5)) ]; then
+        STAGE=post_stalled
+        NOTE="Past $ACTIVATION at height $HEIGHT but peers are at $PEERMAX. This node is behind the network -- the shape of a node that rejected the activation block."
+    else
+        STAGE=post_ok
+        NOTE="Past $ACTIVATION. Height $HEIGHT, bits $BITS, peers agree. Difficulty now retargets every block."
+    fi
+fi
+
+cat > "$STATE" <<EOF
+{"checked_at": $(date +%s), "stage": "$STAGE", "height": $HEIGHT,
+ "bits": "$BITS", "next_bits": "$NEXTBITS", "next_height": $NEXTHEIGHT,
+ "activation": $ACTIVATION}
+EOF
+
+say "[$STAGE] $NOTE"
+
+# Announce each stage once. Crossing an activation height is a one-off event, so
+# the interesting thing is the TRANSITION, not the state -- repeating "still
+# waiting" every ten minutes for a day would train everyone to ignore it.
+if [ "$STAGE" != "$LAST_STAGE" ]; then
+    case "$STAGE" in
+        armed_ok)     tell "Fork check: this node is ready" "$NOTE" ;;
+        armed_bad)    tell "FORK ALARM: node not applying LWMA" "$NOTE" ;;
+        post_ok)      tell "Height $ACTIVATION passed cleanly" "$NOTE" ;;
+        post_stalled) tell "FORK ALARM: node stalled after $ACTIVATION" "$NOTE" ;;
+    esac
+fi
+
+case "$STAGE" in
+    armed_bad|post_stalled) exit 1 ;;
+    *) exit 0 ;;
+esac

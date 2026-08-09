@@ -411,6 +411,7 @@ namespace PCoinTray
                     if (k == "address") _address = v;
                     else if (k == "addresswallet") _addressWallet = v;
                     else if (k == "seedprompt") _seedDeclined = v == "declined";
+                    else if (k == "fastmode") _fastMode = v == "1";
                     else if (k == "datadir") _datadir = v;
                     else if (k == "percent")
                     {

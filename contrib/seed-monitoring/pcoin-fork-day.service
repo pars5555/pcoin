@@ -1,0 +1,15 @@
+[Unit]
+Description=PCoin activation-height watcher
+Documentation=https://github.com/pars5555/pcoin/blob/main/doc/SEED-MONITORING.md
+OnFailure=pcoin-alert@%n.service
+
+[Service]
+Type=oneshot
+Environment="PCOIN_CLI=docker exec pcoin-seed bitcoin-cli"
+Environment="ACTIVATION=2800"
+ExecStart=/usr/local/bin/pcoin-fork-day
+# Exit 3 is "the node did not answer", which is not a fork verdict.
+SuccessExitStatus=3
+Nice=10
+MemoryMax=64M
+TimeoutStartSec=90
