@@ -25,7 +25,7 @@ param(
     # and the install aborts on a mismatch, so a forgotten bump here breaks
     # every new install rather than failing quietly.
     [string]$Version = '1.2.4',
-    [string]$Sha256 = 'f092a9db21339ac58f5c361fea0a857647660fc3ae357a4730cb39f0fd7c606e',
+    [string]$Sha256 = '0acc1f07aae5099e7f7f3cb06d2f60416a9f8167a4c3d05df22652b052823c62',
     # All three seeds, not just one. The node also carries them compiled in as
     # of v1.2.1, so this is belt and braces rather than the only route in.
     [string[]]$AddNode = @('35.239.156.16:9444', '35.238.47.14:9444', '178.105.3.51:9444'),

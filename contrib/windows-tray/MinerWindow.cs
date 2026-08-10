@@ -1031,13 +1031,13 @@ namespace PCoinTray
          * feature; one that says "this PC has 2.0 GB free and needs about 3.0"
          * tells the owner exactly what would change it.
          */
-        //! The node side of fast mode (-randomxfastmode) is written and reviewed
-        //! but not released, and Core exits on an unknown argument. Until the two
-        //! ship together this stays visibly disabled rather than hidden: a
-        //! control that appears in one build and vanishes in the next reads as a
-        //! bug, and a checkbox that kills the node reads as a worse one. Flip
-        //! this to true in the same release that adds the node flag.
-        const bool FAST_MODE_AVAILABLE = false;
+        //! Enabled in v1.2.4 — the release that also adds -randomxfastmode to the
+        //! node. The two must ship together, and that is not a preference: Core
+        //! exits on an unknown argument, so a tray passing this flag to an older
+        //! bitcoind kills the node it just started. If this is ever true while the
+        //! node flag is absent, every user who ticks the box loses mining until
+        //! they untick it, and the cause is invisible from the UI.
+        const bool FAST_MODE_AVAILABLE = true;
 
         void UpdateFastMode(bool enabled, long availableMib)
         {
