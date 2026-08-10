@@ -334,12 +334,11 @@ mining to the treasury address directly is the right shape on Linux, and why
 none of this needs the Windows tray's forward-and-sweep machinery.
 
 ### Cutting a release
-Entirely manual — there is no CI. Six artifacts per release, from three builds:
+Entirely manual — there is no CI. Five artifacts per release, from three builds:
 
 | artifact | built by |
 |---|---|
 | `pcoin-<ver>-win64.zip` | mingw cross-compile, packed with a **Python** `zipfile` script. **Must contain `PCoinTray.exe` beside the two node binaries** — see below |
-| `pcoin-<ver>-win64-setup.exe` | `contrib/windows-tray/installer.iss` via Inno Setup 6 ISCC |
 | `pcoin-<ver>-linux-x86_64.tar.gz` | the Linux build tree |
 | `pcoin-<ver>-linux-amd64.deb` | `contrib/linux-deb/build-deb.sh <ver> <bindir>` |
 | `pcoin-<ver>-android-{miner,wallet}.apk` | `gradlew.bat assemble{Miner,Wallet}Release` |
@@ -353,17 +352,25 @@ launching the same missing exe. `install.ps1` now refuses rather than
 half-installing, but the real fix is to pack the tray. Doing so also needs no
 second download, which matters because of the next paragraph.
 
-**Windows Defender quarantines `pcoin-<ver>-win64-setup.exe` as
-`Trojan:Script/Wacatac.H!ml`.** The `!ml` suffix means a machine-learning
-heuristic, not a signature: it is a reputation false positive on the **Inno
-Setup stub**, not a coin-mining detection and not anything in the code.
-Measured on a real desktop: the setup exe is blocked, while
-`pcoin-win64.zip`, a bare unsigned `PCoinTray.exe` and `install.ps1` all
-download untouched. So the zip and the one-liner are the channels that work
-today. Two fixes, in order of durability: submit the installer to Microsoft as
-a false positive (free, usually cleared in a few days) and buy a code-signing
-certificate, which also removes SmartScreen's four separate prompts (§7.3 is
-about a different Windows trap; this is its own).
+**The Windows installer is gone. Ship the zip only.** `installer.iss` and both
+`*-win64-setup.exe` assets were deleted on 2026-08-10. The installer had been
+quarantined as `Trojan:Script/Wacatac.H!ml` — an `!ml` suffix means a
+machine-learning heuristic, so it was a reputation false positive on the **Inno
+Setup stub**, never a coin-mining detection and never anything in the code.
+
+**Do not confuse Defender with SmartScreen; users report both as "Defender".**
+Re-measured 2026-08-10 on a real desktop (real-time protection on, signatures
+one day old): the zip downloads, extracts, and survives a forced
+`Start-MpScan` with **no detection**, and so did the installer by then — the
+heuristic had aged out. An **EICAR control file dropped in the same folder was
+caught**, which is what proves the folder was not excluded and the scan was
+real. Always run that control; a clean result from a scanner that was not
+looking is worthless.
+
+What users actually hit is **SmartScreen**, because every binary is
+`NotSigned`: it warns about anything it has not seen downloaded widely,
+regardless of content. Only a code-signing certificate removes it. (§7.3 is a
+different Windows trap; this is its own.)
 
 The archives each contain a top-level `pcoin-<ver>/`. **Never build the zip with
 PowerShell `Compress-Archive`** — it writes entry names containing backslashes,
@@ -376,7 +383,7 @@ same name is deleted before re-upload), which matters because a 9 MB upload over
 a flaky link is exactly the thing that half-finishes.
 
 **Every asset is then uploaded a second time under a version-less name**
-(`pcoin-win64-setup.exe`, …) by `scratchpad/stable_names.py`. This is
+(`pcoin-win64.zip`, …) by `scratchpad/stable_names.py`. This is
 load-bearing, not tidiness: pc.am links through
 `/releases/latest/download/<name>`, and GitHub resolves `latest` to the newest
 release and then looks for that **exact** filename. A versioned name in that URL
@@ -832,8 +839,8 @@ Open items, roughly in order of how much damage they do if ignored:
    release without an edit. See §4 "Cutting a release" for why the names must
    stay version-less.
 2. ~~Get the tray sources and the Android app into version control.~~ **Fixed.**
-   Both are tracked, as are the two packaging scripts (`installer.iss`,
-   `contrib/linux-deb/build-deb.sh`).
+   Both are tracked, as is the packaging script `contrib/linux-deb/build-deb.sh`.
+   (`installer.iss` was removed with the installer — see §4 "Cutting a release".)
 3. ~~The docs are stale on difficulty.~~ **Fixed.** 34 verified corrections
    applied across `README.md`, `PCOIN.md`, `doc/INTEGRATION.md` and four
    `contrib/*` READMEs. Every surviving mention of 2016 blocks is now explicitly

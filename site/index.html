@@ -533,8 +533,9 @@
       <span class="kicker">Hashrate calculator</span>
       <h2>What would your device actually do?</h2>
       <p class="lede">
-        Pick a device and how much of it you want to give up. The figures for the listed devices are
-        <b>measured on those exact devices</b> running this software, not estimates. Difficulty is read live
+        Pick a device and how much of it you want to give up.
+        Entries under <b>measured</b> were read straight off those devices running this software; the rest
+            are estimates anchored on them, good to roughly 20%. Difficulty is read live
         from <a href="https://explorer.pc.am" rel="noopener">the explorer</a>, so the answer is against the
         real network as it is right now.
       </p>
@@ -547,7 +548,7 @@
           </label>
           <label class="calc-field">
             <span>Threads: <b id="calc-threads-out">2</b></span>
-            <input id="calc-threads" type="range" min="1" max="16" value="2" step="1">
+            <input id="calc-threads" type="range" min="1" max="32" value="2" step="1">
           </label>
         </div>
 
@@ -982,17 +983,44 @@ sudo systemctl stop pcoin-miner
   // 4-thread measurement out to 20 threads flatters the result. The UI says so
   // rather than pretending the scaling is linear.
   var DEVICES = [
-    { g: "Phones (measured)", n: "Moto G Play 2024 - Snapdragon 680", per: 22.5, t: 8,  mt: 2 },
-    { g: "Phones (measured)", n: "Galaxy Note9 - Snapdragon 845",     per: 19.5, t: 8,  mt: 2 },
-    { g: "Phones (measured)", n: "Pixel 4a - Snapdragon 730G",        per: 17.0, t: 8,  mt: 2 },
-    { g: "Desktops (measured)", n: "Intel i5-9600K - 6 cores",        per: 70.0, t: 6,  mt: 2 },
-    { g: "Desktops (measured)", n: "Intel i9-10900X - 10 cores",      per: 64.5, t: 20, mt: 4 },
-    { g: "Desktops (measured)", n: "Intel i9-9900K - 8 cores",        per: 63.0, t: 16, mt: 4 },
-    { g: "Rough estimates", n: "Recent flagship phone",  per: 25, t: 8,  mt: 2, est: 1 },
-    { g: "Rough estimates", n: "Mid-range phone",        per: 18, t: 8,  mt: 2, est: 1 },
-    { g: "Rough estimates", n: "Older / budget phone",   per: 12, t: 8,  mt: 2, est: 1 },
-    { g: "Rough estimates", n: "Laptop CPU",             per: 45, t: 8,  mt: 4, est: 1 },
-    { g: "Rough estimates", n: "Modern desktop CPU",     per: 65, t: 16, mt: 4, est: 1 }
+    { g: "Phones - measured", n: "Galaxy S20 FE - Snapdragon 865", per: 23.0, t: 8, mt: 2 },
+    { g: "Phones - measured", n: "Moto G Play 2024 - Snapdragon 680", per: 22.5, t: 8, mt: 2 },
+    { g: "Phones - measured", n: "Galaxy Note9 - Snapdragon 845", per: 19.5, t: 8, mt: 2 },
+    { g: "Phones - measured", n: "Pixel 4a - Snapdragon 730G", per: 17.0, t: 8, mt: 2 },
+    { g: "Phones - measured", n: "Galaxy Z Flip 4 - Snapdragon 8+ Gen 1", per: 13.5, t: 8, mt: 2 },
+    { g: "Phones - estimated", n: "Galaxy S24 Ultra - Snapdragon 8 Gen 3", per: 25.0, t: 8, mt: 2, est: 1 },
+    { g: "Phones - estimated", n: "Galaxy S23 - Snapdragon 8 Gen 2", per: 24.0, t: 8, mt: 2, est: 1 },
+    { g: "Phones - estimated", n: "Pixel 8 - Tensor G3", per: 22.0, t: 8, mt: 2, est: 1 },
+    { g: "Phones - estimated", n: "Pixel 7 - Tensor G2", per: 21.0, t: 8, mt: 2, est: 1 },
+    { g: "Phones - estimated", n: "Galaxy S22 - Snapdragon 8 Gen 1", per: 20.0, t: 8, mt: 2, est: 1 },
+    { g: "Phones - estimated", n: "OnePlus 11 - Snapdragon 8 Gen 2", per: 24.0, t: 8, mt: 2, est: 1 },
+    { g: "Phones - estimated", n: "Galaxy A54 - Exynos 1380", per: 16.0, t: 8, mt: 2, est: 1 },
+    { g: "Phones - estimated", n: "Redmi Note 12 - Snapdragon 685", per: 14.0, t: 8, mt: 2, est: 1 },
+    { g: "Desktop CPUs - measured", n: "Intel Core i5-9600K - 6 cores", per: 70.0, t: 6, mt: 2 },
+    { g: "Desktop CPUs - measured", n: "Intel Core i9-10900X - 10 cores", per: 64.5, t: 20, mt: 4 },
+    { g: "Desktop CPUs - measured", n: "Intel Core i9-9900K - 8 cores", per: 63.0, t: 16, mt: 4 },
+    { g: "Desktop CPUs - Intel", n: "Intel Core i9-14900K - 8 P-cores (+16 E)", per: 72.0, t: 16, mt: 4, est: 1 },
+    { g: "Desktop CPUs - Intel", n: "Intel Core i9-13900K - 8 P-cores (+16 E)", per: 70.0, t: 16, mt: 4, est: 1 },
+    { g: "Desktop CPUs - Intel", n: "Intel Core i7-13700K - 8 P-cores (+8 E)", per: 70.0, t: 16, mt: 4, est: 1 },
+    { g: "Desktop CPUs - Intel", n: "Intel Core i5-13600K - 6 P-cores (+8 E)", per: 69.0, t: 12, mt: 4, est: 1 },
+    { g: "Desktop CPUs - Intel", n: "Intel Core i7-12700K - 8 P-cores (+4 E)", per: 68.0, t: 16, mt: 4, est: 1 },
+    { g: "Desktop CPUs - Intel", n: "Intel Core i5-12400F - 6 cores", per: 66.0, t: 12, mt: 4, est: 1 },
+    { g: "Desktop CPUs - Intel", n: "Intel Core i7-11700K - 8 cores", per: 66.0, t: 16, mt: 4, est: 1 },
+    { g: "Desktop CPUs - Intel", n: "Intel Core i7-9700K - 8 cores", per: 65.0, t: 8, mt: 4, est: 1 },
+    { g: "Desktop CPUs - Intel", n: "Intel Core i5-10400 - 6 cores", per: 62.0, t: 12, mt: 4, est: 1 },
+    { g: "Desktop CPUs - Intel", n: "Intel Core i3-12100F - 4 cores", per: 66.0, t: 8, mt: 4, est: 1 },
+    { g: "Desktop CPUs - AMD", n: "AMD Ryzen 9 7950X - 16 cores", per: 68.1, t: 32, mt: 4, est: 1 },
+    { g: "Desktop CPUs - AMD", n: "AMD Ryzen 9 7900X - 12 cores", per: 68.1, t: 24, mt: 4, est: 1 },
+    { g: "Desktop CPUs - AMD", n: "AMD Ryzen 7 7700X - 8 cores", per: 74.0, t: 16, mt: 4, est: 1 },
+    { g: "Desktop CPUs - AMD", n: "AMD Ryzen 5 7600X - 6 cores", per: 73.0, t: 12, mt: 4, est: 1 },
+    { g: "Desktop CPUs - AMD", n: "AMD Ryzen 9 5950X - 16 cores", per: 64.4, t: 32, mt: 4, est: 1 },
+    { g: "Desktop CPUs - AMD", n: "AMD Ryzen 9 5900X - 12 cores", per: 64.4, t: 24, mt: 4, est: 1 },
+    { g: "Desktop CPUs - AMD", n: "AMD Ryzen 7 5800X - 8 cores", per: 69.0, t: 16, mt: 4, est: 1 },
+    { g: "Desktop CPUs - AMD", n: "AMD Ryzen 5 5600X - 6 cores", per: 69.0, t: 12, mt: 4, est: 1 },
+    { g: "Desktop CPUs - AMD", n: "AMD Ryzen 7 3700X - 8 cores", per: 58.0, t: 16, mt: 4, est: 1 },
+    { g: "Desktop CPUs - AMD", n: "AMD Ryzen 5 3600 - 6 cores", per: 57.0, t: 12, mt: 4, est: 1 },
+    { g: "Other", n: "Typical laptop CPU", per: 45, t: 8, mt: 4, est: 1 },
+    { g: "Other", n: "Small cloud VPS (2 vCPU, shared)", per: 16, t: 2, mt: 1, est: 1 }
   ];
 
   var SUBSIDY = 50;                 // PCN per block, until the first halving

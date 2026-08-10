@@ -618,10 +618,11 @@ correctly returns a later address than index 0.
   * No block explorer, no checkpoints, no `assumevalid`/minimum-chainwork
     anchors (they're zeroed — fine for a young chain, revisit once there's
     history worth anchoring).
-  * Releases are cut manually (there is no CI), but packaging scripts do exist:
-    `contrib/windows-tray/installer.iss` (Inno Setup) and
-    `contrib/linux-deb/build-deb.sh`. Still missing: code signing and
-    reproducible-build attestations.
+  * Releases are cut manually (there is no CI). The one packaging script is
+    `contrib/linux-deb/build-deb.sh`; Windows ships a plain zip, and the Inno
+    Setup installer was dropped in 2026-08 (it added a Defender false positive
+    and a second thing to keep in step, for no benefit the zip did not already
+    give). Still missing: code signing and reproducible-build attestations.
 * **Sensible order of next steps:** run two VPS nodes → mine a few thousand
   blocks → back up wallets → add more seed nodes behind `seed.pc.am` and stand
   up a proper crawling DNS seeder + explorer → re-brand binaries and GUI →
