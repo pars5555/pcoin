@@ -69,77 +69,174 @@
 
 <div class="wrap">
   <h1>Accept PCN payments</h1>
-  <p class="lede">Everything needed to take PCoin in your own product: deposit
-  addresses derived from an xpub you keep offline, one HTTP API to watch them,
-  and the rules that stop you crediting money that is not there.</p>
+  <p class="lede">Everything needed to take PCoin in your own product: a wallet you
+  generate offline, deposit addresses derived from an xpub, one HTTP API to watch
+  them, and the rules that stop you crediting money that is not there.</p>
 
   <div class="note">
-    <p><strong>Two production integrations already follow this guide</strong> —
-    AiControl and checker.pc.am. Every rule below exists because it was got wrong
-    once, usually expensively. Where a rule looks paranoid, the reason is stated.</p>
+    <p><strong>Three production integrations follow this guide</strong> — AiControl,
+    checker.pc.am and webbuilderbot. Every rule below exists because it was got
+    wrong once, usually expensively. Where a rule looks paranoid, the reason is
+    stated so you can judge it yourself.</p>
   </div>
 
   <div class="toc">
     <ol>
       <li><a href="#model">The model</a></li>
+      <li><a href="#custody">Custody: generate the wallet</a></li>
       <li><a href="#addresses">Deposit addresses</a></li>
       <li><a href="#api">The explorer API</a></li>
       <li><a href="#gates">The gates</a></li>
       <li><a href="#unknown">Failure resolves nothing</a></li>
-      <li><a href="#idem">Idempotency</a></li>
+      <li><a href="#ledger">Recording a deposit</a></li>
       <li><a href="#reorg">Reorgs</a></li>
       <li><a href="#amounts">Amounts</a></li>
-      <li><a href="#checklist">Before you go live</a></li>
+      <li><a href="#admin">The admin panel you need</a></li>
+      <li><a href="#sweep">Getting the money out</a></li>
+      <li><a href="#testing">Testing before you go live</a></li>
+      <li><a href="#checklist">Go-live checklist</a></li>
     </ol>
   </div>
 
   <h2 id="model">1. The model</h2>
-  <p>PCN top-up is <strong>one-way and custody-free</strong>. Your server derives
-  a deposit address per user, watches it, and credits when the payment is deep
+  <p>PCN top-up is <strong>one-way and custody-free</strong>. Your server derives a
+  deposit address per user, watches it, and credits when the payment is deep
   enough. It never holds a private key, so it is <em>cryptographically incapable</em>
-  of moving funds. That is the design, not a limitation.</p>
+  of moving funds. That is the design, not a limitation: a breach of your web
+  server costs an attacker nothing but a list of addresses.</p>
 
   <ol>
-    <li>Generate a BIP39 seed <strong>offline</strong>.</li>
+    <li>Generate a BIP39 seed <strong>offline</strong>. (§2)</li>
     <li>Derive the account xpub at <code>m/84'/9444'/0'</code>.</li>
     <li>Put <strong>only the xpub</strong> on the server.</li>
     <li>Derive one address per user from it — non-hardened children, so the xpub alone suffices.</li>
-    <li>Poll the explorer. Credit when the gates in §4 pass.</li>
+    <li>Poll the explorer. Credit when every gate in §5 passes.</li>
   </ol>
+
+  <div class="note">
+    <p><strong>There is nothing to "collect".</strong> Every user's deposit address is
+    a child of one account key, so all your deposits are already in a single wallet.
+    Your balance is a sum over the pool, not a transaction anybody has to make. This
+    is why no sweep code exists in any of the three integrations — see §11.</p>
+  </div>
 
   <div class="note bad">
     <p><strong>Coin type <code>9444'</code> is load-bearing.</strong> PCoin kept
-    Bitcoin's xprv/xpub version bytes, so the same seed under coin type
-    <code>0'</code> derives <strong>live Bitcoin keys</strong>. Get this wrong and
-    you are generating real Bitcoin addresses you cannot spend from.</p>
+    Bitcoin's xprv/xpub version bytes, so a PCoin extended key serialises literally
+    as <code>xpub…</code> and the same seed under coin type <code>0'</code> derives
+    <strong>live Bitcoin keys</strong>. Nothing in the encoding warns you. Get it
+    wrong and you are generating real Bitcoin addresses you cannot spend from.</p>
+    <p style="margin-top:8px">Never use <code>9444'</code> on a testnet either —
+    testnets use SLIP-44's universal coin type <code>1'</code>.</p>
   </div>
 
-  <h2 id="addresses">2. Deposit addresses</h2>
-  <p>Addresses are BIP84 native SegWit, hrp <code>pc</code>, so they look like
+  <h2 id="custody">2. Custody: generate the wallet</h2>
+  <p>This is the step that decides whether a bad day costs you an outage or costs
+  you every customer deposit. Do it first, and do it yourself.</p>
+
+  <h3>Use the tool, or match what it does</h3>
+  <p><a href="https://github.com/pars5555/pcoin/tree/main/contrib/vault">contrib/vault/pcoin-seed-vault.mjs</a>
+  in the PCoin repo does the whole procedure. Run it on your own machine, offline if
+  you can:</p>
+
+<pre><code>npm install
+node pcoin-seed-vault.mjs --selftest          <span class="c"># must print ALL CHECKS PASSED</span>
+node pcoin-seed-vault.mjs new --system myapp</code></pre>
+
+  <p>It produces exactly two files:</p>
+  <table>
+    <tr><th>File</th><th>Goes to</th><th>Can it spend?</th></tr>
+    <tr><td><code>myapp-xpub.txt</code></td><td>your server</td><td><strong>no</strong> — watch only</td></tr>
+    <tr><td><code>myapp-seed.enc.json</code></td><td>your backups</td><td>only with your passphrase</td></tr>
+  </table>
+
+  <p>Three of its behaviours are worth copying even if you write your own:</p>
+  <ul>
+    <li><strong>The paper copy is verified before anything is written.</strong> It
+    prints the twelve words, clears the screen, and makes you type them back. A
+    mismatch aborts without writing a file. This is the only moment when fixing a
+    misread word is free.</li>
+    <li><strong>Verification re-derives, it does not merely decrypt.</strong>
+    <code>verify</code> decrypts the phrase, derives the account xpub again, and
+    compares it against the xpub recorded in the blob — proving the file restores
+    <em>that specific wallet</em>, not merely that it is well-formed JSON. It exits
+    0/1 so it works in a cron check.</li>
+    <li><strong>Encryption is AES-256-GCM over scrypt.</strong> GCM authenticates, so
+    a wrong passphrase or a flipped bit throws instead of returning plausible
+    rubbish.</li>
+  </ul>
+
+  <div class="note bad">
+    <p><strong>A backup is not a backup until it has been loaded.</strong> Restore
+    your phrase into a throwaway wallet and confirm it reproduces the same first
+    address, <em>before</em> a single coin depends on it. This project has paid for
+    that lesson.</p>
+  </div>
+
+  <h3>Where the pieces live</h3>
+  <ul>
+    <li><strong>Paper</strong> — the twelve words. Not a screenshot, not a password
+    manager, not a chat message.</li>
+    <li><strong>Encrypted blob</strong> — on at least two machines that are not your
+    web server. Encrypted means a breach of those yields a blob, not money.</li>
+    <li><strong>Passphrase</strong> — stored <em>separately from the blob</em>.
+    Together they are the money; apart, neither is anything. Keeping both behind one
+    door defeats the encryption entirely.</li>
+    <li><strong>xpub</strong> — the only piece on the server.</li>
+  </ul>
+
+  <div class="note warn">
+    <p><strong>Never put a child private key on the server either.</strong> With
+    BIP32, an account xpub plus any one child private key lets an attacker derive
+    every sibling private key. The xpub is safe alone; the combination is not.</p>
+  </div>
+
+  <h2 id="addresses">3. Deposit addresses</h2>
+  <p>Addresses are BIP84 native SegWit with hrp <code>pc</code>, so they look like
   <code>pc1q…</code>. Derive <code>m/84'/9444'/0'/0/<em>index</em></code>, one index
-  per user, allocated <code>MAX(index)+1</code>.</p>
+  per user.</p>
+
+  <h3>Two ways to issue them</h3>
+  <table>
+    <tr><th>Approach</th><th>How</th><th>Trade-off</th></tr>
+    <tr><td><strong>Derive on demand</strong></td><td>keep the xpub in config, derive at request time, allocate <code>MAX(index)+1</code> under a row lock</td><td>no pool to run dry; needs a bech32 encoder in your language</td></tr>
+    <tr><td><strong>Pre-derived pool</strong></td><td>generate N addresses offline, import them in index order, hand out the next free row</td><td>no crypto library on the server at all; must top up before it empties</td></tr>
+  </table>
+
+  <p>Both are in production. If you use a pool, generate it from the xpub alone:</p>
+<pre><code>node pcoin-seed-vault.mjs pool --system myapp --count 2000</code></pre>
+
+  <div class="note warn">
+    <p><strong>The start index is load-bearing.</strong> A user's row is identified by
+    its derivation index, so importing a batch at the wrong offset points their
+    deposit at a different row than the one they were shown. Validate every line
+    before inserting and refuse the whole batch if any line is bad — a partial
+    import shifts every later index out of alignment with the wallet.</p>
+  </div>
 
   <div class="note warn">
     <p><strong>Index order is signup order.</strong> Anyone holding your xpub can
     derive every address, query them all, and read your entire customer payment
-    history in order. Treat the xpub as confidential — and note it cannot be
-    rotated without orphaning every address you have already issued.</p>
-    <p style="margin-top:8px">Never put a <em>child private key</em> on the server
-    either: an account xpub plus one child privkey lets an attacker derive every
-    sibling private key.</p>
+    history in sequence. Treat the xpub as confidential. It also cannot be rotated
+    without orphaning every address you have already issued — so decide once.</p>
   </div>
 
-  <h2 id="api">3. The explorer API</h2>
-  <p><code>https://explorer.pc.am/api</code> — HTTP, no auth, no key, no rate limit
-  worth worrying about at this size.</p>
+  <h3>Allocate the index under a lock</h3>
+  <p>Two concurrent first-time callers must not receive the same index. Take the
+  current maximum under a row lock, and put a <code>UNIQUE</code> constraint on both
+  the address and the index as a backstop — a collision should fail the insert, not
+  silently credit one user's deposit to another.</p>
+
+  <h2 id="api">4. The explorer API</h2>
+  <p><code>https://explorer.pc.am/api</code> — HTTP, no auth, no key.</p>
 
   <table>
     <tr><th>Endpoint</th><th>Use</th></tr>
     <tr><td><code>GET /api/status</code></td><td>tip height, index health</td></tr>
     <tr><td><code>GET /api/address/{addr}</code></td><td>confirmed / unconfirmed / lifetime balances</td></tr>
     <tr><td><code>GET /api/address/{addr}/txs</code></td><td>transactions — see the shape trap below</td></tr>
-    <tr><td><code>GET /api/tx/{txid}</code></td><td>authoritative height and <code>is_coinbase</code></td></tr>
-    <tr><td><code>POST /api/addresses</code></td><td>batch: which of these have activity</td></tr>
+    <tr><td><code>GET /api/tx/{txid}</code></td><td>authoritative height, <code>block_hash</code> and <code>is_coinbase</code></td></tr>
+    <tr><td><code>POST /api/addresses</code></td><td>batch, up to 500 — the intended polling path</td></tr>
   </table>
 
   <h3>Do not use node RPC</h3>
@@ -151,34 +248,65 @@
     could stall every other RPC on that node.</li>
     <li><strong>Wallet RPCs are <code>-rpcwallet</code> scoped.</strong>
     <code>getaddressinfo</code>, <code>gettransaction</code> and
-    <code>getbalances</code> will answer confidently about the wrong wallet if two
-    are loaded.</li>
+    <code>getbalances</code> will answer confidently about the wrong wallet when two
+    are loaded. That has already cost this project money.</li>
   </ul>
 
-  <h3>Response shapes</h3>
+  <h3>Poll in batches</h3>
+  <p><code>POST /api/addresses</code> takes up to 500 addresses, so a quiet fleet
+  costs one request per cycle. Prefer the POST form over the <code>?list=</code>
+  query string: a query string ends up in proxy logs, linking every address in it to
+  every other.</p>
+
+<pre><code>curl -s -X POST https://explorer.pc.am/api/addresses \
+  -H 'Content-Type: application/json' \
+  -d '{"addresses":["pc1q…","pc1q…"]}'</code></pre>
+
+  <h3>Response shapes that have caught people</h3>
   <ul>
     <li>Transactions live under <code>confirmed.items[]</code>, not at the top level.</li>
-    <li>The address summary has <strong>no <code>is_coinbase</code></strong> — its
-    keys stop at <code>net_pcn</code>. Fetch <code>/api/tx/{txid}</code> for that.</li>
+    <li>The address-tx summary has <strong>no <code>vout</code></strong> and <strong>no
+    <code>is_coinbase</code></strong> — its keys stop at
+    <code>received_sat</code> / <code>net_sat</code> / <code>n_out</code>. Both facts
+    drive §7. Fetch <code>/api/tx/{txid}</code> when you need them.</li>
+    <li>Balances are split into <code>confirmed</code> (with
+    <code>mature_sat</code>, <code>immature_sat</code>, <code>spendable_sat</code>),
+    <code>unconfirmed</code>, and <code>lifetime</code>. Each carries both a
+    <code>_sat</code> integer and a <code>_pcn</code> string — use the integer.</li>
+    <li><code>unconfirmed.known</code> tells you whether the mempool was actually
+    readable. <strong>An unknown mempool is not an empty mempool.</strong></li>
   </ul>
 
-  <h2 id="gates">4. The gates</h2>
+  <div class="note warn">
+    <p><strong>The API answers 200 for any string.</strong> It returns a healthy
+    zero-balance body for <code>notanaddress</code> and for a valid Bitcoin address.
+    Validate locally (§6) — an integration that trusts a remote service to reject bad
+    input is one outage from crediting nonsense.</p>
+  </div>
+
+  <h2 id="gates">5. The gates</h2>
   <p>All of them. None optional.</p>
 
   <table>
     <tr><th>Gate</th><th>Value</th><th>Why</th></tr>
-    <tr><td>confirmations</td><td>20 recommended, 5 minimum</td><td>~69 chain tips seen; ~3% lifetime stale rate</td></tr>
+    <tr><td>confirmations</td><td><strong>6</strong></td><td>~69 chain tips seen; ~3% lifetime stale rate</td></tr>
     <tr><td>deposit height</td><td>&ge; 2800</td><td>below it difficulty is frozen</td></tr>
     <tr><td>coinbase maturity</td><td>100</td><td>mined output, not spendable sooner</td></tr>
     <tr><td>index health</td><td><code>blocks_unwound == 0</code></td><td>reorg in flight = untrustworthy counts</td></tr>
+    <tr><td>minimum deposit</td><td>your call</td><td>ignore dust rather than write a row per satoshi</td></tr>
   </table>
+
+  <p>All three production integrations run <strong>6 confirmations</strong> — roughly
+  half an hour of work behind a deposit at current spacing. Make it a config value,
+  not a constant, and raise it for large amounts. Pair a low value with a per-user
+  monthly cap: the cap is what bounds your loss between reviews.</p>
 
   <h3>Gate on the deposit's height, not the tip</h3>
   <p>Below height 2800 the difficulty is <strong>frozen</strong> at
   <code>1e0b7c33</code> — the legacy retarget fires only every 2016 blocks and does
-  not run again until 4032. Anyone renting hashrate can rewrite that stretch of
-  history cheaply and the chain cannot push back. A tip-based gate credits a
-  pre-LWMA deposit the instant the tip crosses 2800, which is exactly wrong.</p>
+  not run again until 4032. Anyone renting hashrate can rewrite that history cheaply
+  and the chain cannot push back. A tip-based gate credits a pre-LWMA deposit the
+  instant the tip crosses 2800, which is exactly wrong.</p>
 
 <pre><code><span class="c">// wrong: credits old, cheap-to-reorg coins once the tip moves</span>
 <span class="k">if</span> (tipHeight &gt;= MIN_HEIGHT) credit();
@@ -190,66 +318,215 @@
   <h3>Coinbase deposits need 100 confirmations</h3>
   <p><code>startmining "&lt;address&gt;"</code> needs no wallet, so a user can point a
   miner straight at their deposit address. Without a maturity check each 50 PCN
-  reward would credit ~95 blocks before it is spendable at all.</p>
+  reward would credit about 95 blocks before it is spendable at all. Read
+  <code>is_coinbase</code> from <code>/api/tx/{txid}</code> and require
+  <code>max(min_conf, 100)</code> for those.</p>
 
-  <h2 id="unknown">5. Failure resolves nothing</h2>
+  <h2 id="unknown">6. Failure resolves nothing</h2>
   <div class="note bad">
     <p><strong>A call that failed, timed out, or answered "I do not know" resolves
     NOTHING.</strong> It can never advance a record, never clear one, and never
     authorise a credit.</p>
   </div>
-  <p><code>optInt("confirmations", 0)</code> on a call that may not have happened is
-  a bug: an unanswerable question silently becomes a definite "not confirmed".
-  Model <em>unknown</em> as its own state. Every failure path must <strong>hold</strong>,
-  never credit.</p>
+  <p><code>optInt("confirmations", 0)</code> on a call that may not have happened is a
+  bug: an unanswerable question silently becomes a definite "not confirmed", and in a
+  send path that authorises spending the same coins twice. Model <em>unknown</em> as
+  its own state, distinct from <em>no</em>. Every failure path must
+  <strong>hold</strong>, never credit.</p>
+
+  <p>Concretely, distinguish these three outcomes and never collapse them:</p>
+  <table>
+    <tr><th>Outcome</th><th>Means</th><th>Do</th></tr>
+    <tr><td>request threw</td><td>nothing is known</td><td>hold, retry later</td></tr>
+    <tr><td>200, tx absent</td><td>a real fact: not seen</td><td>act on it</td></tr>
+    <tr><td>200, tx present</td><td>a real fact: seen</td><td>act on it</td></tr>
+  </table>
 
   <div class="note warn">
-    <p><strong>Validate addresses locally.</strong> Do not rely on the API to
-    reject bad input — an integration that trusts a remote service to validate is
-    one outage away from crediting nonsense. Check the bech32 checksum yourself,
-    and reject a Bitcoin <code>bc1…</code> address on its hrp.</p>
+    <p><strong>Validate addresses locally.</strong> Check the bech32 checksum
+    yourself and reject a Bitcoin <code>bc1…</code> address on its hrp. Do not rely on
+    the API, which answers 200 for anything.</p>
   </div>
 
-  <h2 id="idem">6. Idempotency</h2>
-  <p>Key the ledger on the <strong>outpoint</strong> — <code>txid</code> plus
-  <code>vout</code> — with a unique index, and treat a duplicate-key error as
-  <em>already applied</em> rather than an error. A retrying poller must be a no-op.</p>
+  <h2 id="ledger">7. Recording a deposit</h2>
+
+  <div class="note bad">
+    <p><strong>Key the ledger on <code>(txid, address)</code> — never on
+    <code>(txid, vout)</code>.</strong> This is the single most expensive mistake
+    made in these integrations, and all three shipped it before it was found.</p>
+  </div>
+
+  <p>The explorer's address-tx summary carries <strong>no vout at all</strong>. Faced
+  with a <code>vout</code> column, every implementation wrote a hardcoded
+  <code>0</code>. A unique index on <code>(txid, vout)</code> with a constant vout
+  degenerates to <code>UNIQUE(txid)</code> — so when one transaction pays
+  <strong>two</strong> of your addresses, the second lookup finds the first user's
+  row, concludes the deposit is already recorded, and credits nobody.</p>
+
+  <p>It never double-credits — it fails safe — but the second user silently loses
+  their deposit, and nothing in your logs says so.</p>
+
+  <p><code>received_sat</code> is already aggregated per address per transaction, so
+  one row per <code>(txid, address)</code> is exactly the right grain:</p>
+
+<pre><code><span class="c">-- right</span>
+UNIQUE KEY uq_txaddr (txid, address)
+
+<span class="c">-- wrong, when vout is always 0</span>
+UNIQUE KEY uq_outpoint (txid, vout)</code></pre>
+
+  <div class="note warn">
+    <p><strong>Fixing the lookup is only half the fix.</strong> If your schema uses
+    <code>CREATE TABLE IF NOT EXISTS</code>, an existing install keeps the old index
+    and the code change never reaches the database — turning a silent dropped deposit
+    into a duplicate-key error instead. Write an explicit migration, add the new key
+    <em>before</em> dropping the old one so the table is never briefly unguarded, and
+    refuse outright if real duplicate rows exist rather than deleting money rows to
+    force an index through. Verify with <code>SHOW INDEX</code>, not by reading the
+    schema file.</p>
+  </div>
+
+  <h3>Idempotency</h3>
+  <p>Treat a duplicate-key error as <em>already applied</em> rather than an error. A
+  retrying poller must be a no-op.</p>
   <p>Do <strong>not</strong> put <code>UNIQUE(ref_type, ref_id)</code> on a shared
   credit ledger: a debit and a refund both legitimately write
   <code>('card', &lt;same id&gt;)</code>. Use a separate nullable idempotency column.</p>
   <p>If your credits are <strong>integers</strong>, carry the sub-credit remainder
-  forward per address. Flooring each deposit silently eats up to a whole credit
-  every time.</p>
+  forward per address. Flooring each deposit independently silently eats up to a
+  whole credit every time.</p>
 
-  <h2 id="reorg">7. Reorgs: detect, never auto-reverse</h2>
+  <h2 id="reorg">8. Reorgs: detect, never auto-reverse</h2>
   <p>Store <code>block_hash</code> at credit time and re-check it for deposits
   credited in the last ~7 days. If the funding transaction is no longer in that
-  block, <strong>flag and alert</strong> — do not claw back automatically. A
-  reversal is itself exploitable, and on this chain it will eventually hit an
-  honest user. A human posts the compensating entry.</p>
+  block, <strong>flag and alert</strong> — do not claw back automatically. A reversal
+  is itself exploitable, and on a chain with this many tips it will eventually hit an
+  honest user during a routine reorg. A human posts the compensating entry.</p>
   <ul>
     <li>Never judge a reorg on an unreachable or reorg-in-flight index — skip instead.</li>
     <li>Never flag on a <strong>truncated</strong> history: if the fetch hit its row
     limit, an absent transaction may simply be older than the window.</li>
   </ul>
+  <div class="note warn">
+    <p><strong>Flagging only works if somebody can see the flag.</strong> If your
+    watcher sets a <code>reorg_flagged</code> column and no screen ever renders it,
+    you have chosen "a human reviews" and then removed the human. Put it on the admin
+    page as a banner, not a column nobody scrolls to.</p>
+  </div>
 
-  <h2 id="amounts">8. Amounts</h2>
+  <h2 id="amounts">9. Amounts</h2>
   <p>Amounts arrive as <strong>bare JSON numbers</strong>. There is no string form —
   <code>JSON_BIGINT_AS_STRING</code> only affects integers. Convert to satoshis with
   integer arithmetic and round once, deliberately. Never accumulate in floats.</p>
+  <p>21 million PCN is 2.1&times;10<sup>15</sup> satoshis, which fits a 64-bit
+  integer comfortably and a IEEE-754 double only by luck. Use
+  <code>BigInt</code>/<code>int64</code> and serialise totals as strings if they
+  cross a JSON boundary — <code>BigInt</code> does not survive
+  <code>JSON.stringify</code>.</p>
 
-  <h2 id="checklist">9. Before you go live</h2>
+  <h2 id="admin">10. The admin panel you need</h2>
+  <p>Two numbers, and they are not the same number.</p>
+
+  <table>
+    <tr><th>Figure</th><th>What it is</th></tr>
+    <tr><td><strong>Credited</strong></td><td>what your ledger converted to balance</td></tr>
+    <tr><td><strong>Treasury</strong></td><td>what the wallet actually holds on chain</td></tr>
+  </table>
+
+  <p>They differ by design, and <em>the difference is the interesting part</em>:
+  deposits below the height gate, still confirming, held for review or rejected are
+  real coins your ledger does not count. Sum the on-chain balance across your whole
+  address pool with the batch endpoint and show it. Before moving any money, the
+  treasury figure is the one to trust.</p>
+
+  <div class="note warn">
+    <p><strong>Refuse to show a partial total.</strong> If any page of the pool goes
+    unanswered, report the balance as <em>unknown</em> rather than a sum quietly short
+    by one chunk. A treasury figure missing a slice reads as "coins are missing" and
+    will send somebody hunting a theft that never happened.</p>
+  </div>
+
+  <p>Also worth putting on that page, because each answers a question you will
+  otherwise ask a database at 2am: which gate is currently closed and why; every
+  deposit with a link to the explorer; per-user totals aggregated <em>in SQL</em>, not
+  by summing a capped list in the browser; reorg-flagged credits; deposits held for
+  review; and address-pool depth.</p>
+
+  <h2 id="sweep">11. Getting the money out</h2>
+  <p>Your server cannot do this, and that is the point. Moving funds is a deliberate
+  offline act.</p>
+
+  <ol>
+    <li>Read the <strong>treasury</strong> figure, not the credited total.</li>
+    <li>Recover the phrase on a machine you trust:
+      <code>pcoin-seed-vault.mjs restore --file myapp-seed.enc.json</code></li>
+    <li>Create a temporary node wallet and import both descriptors:</li>
+  </ol>
+
+<pre><code>bitcoin-cli -named createwallet wallet_name=sweep-tmp descriptors=true blank=true
+bitcoin-cli getdescriptorinfo <span class="s">'wpkh([&lt;fingerprint&gt;/84h/9444h/0h]&lt;account-xprv&gt;/0/*)'</span>
+bitcoin-cli -rpcwallet=sweep-tmp importdescriptors <span class="s">'[
+  {"desc":"&lt;receive-with-checksum&gt;","timestamp":0,"active":true,"range":[0,2500],"internal":false},
+  {"desc":"&lt;change-with-checksum&gt;", "timestamp":0,"active":true,"range":[0,2500],"internal":true}
+]'</span>
+bitcoin-cli -rpcwallet=sweep-tmp rescanblockchain 0
+bitcoin-cli -rpcwallet=sweep-tmp getbalances
+bitcoin-cli -rpcwallet=sweep-tmp -named sendall recipients=<span class="s">'["&lt;your-address&gt;"]'</span>
+bitcoin-cli unloadwallet sweep-tmp</code></pre>
+
+  <div class="note bad">
+    <p><strong><code>importdescriptors</code> returns a result per descriptor and does
+    not fail the call when only one worked.</strong> Check every <code>success</code>.
+    A wallet that imported the receive descriptor but not the change one accepts coins
+    and cannot build change — invisible until the first send.</p>
+  </div>
+
+  <p>Two node settings a spend depends on, both mandatory:</p>
   <ul>
-    <li>Seed generated offline; paper backup <strong>verified by restoring it</strong>
-    — a backup is not a backup until it has been loaded</li>
-    <li>Only the xpub on the server</li>
+    <li><code>fallbackfee=0.00001</code> — Core's default is 0 and PCoin has no fee
+    history, so without it every mainnet send fails with <em>"Fee estimation
+    failed"</em>.</li>
+    <li><code>changetype=bech32</code> — a phrase-backed wallet holds only
+    <code>wpkh</code> descriptors, so sending to a taproot <code>pc1p…</code> address
+    fails while allocating change.</li>
+  </ul>
+
+  <p>Other traps: a descriptor <code>range</code> smaller than your address pool
+  silently misses coins on higher indexes; skipping <code>rescanblockchain</code>
+  reports a zero balance you will believe; and immature coinbase output cannot be
+  swept at all until 100 confirmations.</p>
+
+  <h2 id="testing">12. Testing before you go live</h2>
+  <ul>
+    <li><strong>Test against the live chain, not only fixtures.</strong> Fixtures
+    encode your assumptions about the API, which is precisely what you are trying to
+    check.</li>
+    <li><strong>Send yourself a real deposit</strong> and watch it move through every
+    state: spotted in mempool, first confirmation, credited.</li>
+    <li><strong>Point a miner at a deposit address</strong> to exercise the coinbase
+    path. It is the branch least likely to be covered and most likely to be wrong.</li>
+    <li><strong>Kill the explorer mid-poll</strong> — block it in your firewall — and
+    confirm nothing credits and nothing is marked resolved.</li>
+    <li><strong>Feed the watcher a deposit below the height gate</strong> and confirm
+    it is finalised as rejected with a note, not parked forever.</li>
+    <li><strong>Run your poller twice concurrently</strong> and confirm the ledger is
+    unchanged. If it is not, your idempotency is wrong.</li>
+  </ul>
+
+  <h2 id="checklist">13. Go-live checklist</h2>
+  <ul>
+    <li>Seed generated offline; paper backup <strong>verified by restoring it</strong></li>
+    <li>Encrypted backup on two machines that are not the web server; passphrase stored separately</li>
+    <li>Only the xpub on the server — no child private keys</li>
+    <li>Address index allocated under a lock, with UNIQUE on address and index</li>
+    <li>Ledger keyed on <code>(txid, address)</code>, and the migration verified with <code>SHOW INDEX</code></li>
     <li>Deposit-height gate on the deposit's own height, asserted twice</li>
     <li>Coinbase deposits require 100 confirmations</li>
     <li>Every failure path holds rather than credits</li>
-    <li>Ledger idempotent on the outpoint</li>
-    <li><code>block_hash</code> re-checked for recent credits; flags, does not reverse</li>
+    <li><code>block_hash</code> re-checked for recent credits; flags, does not reverse — and the flag is visible</li>
     <li>Addresses validated locally</li>
-    <li>Tested against the <strong>live</strong> chain, not only fixtures</li>
+    <li>Treasury figure on the admin page, and it refuses to show a partial sum</li>
+    <li>Tested against the <strong>live</strong> chain, including a real end-to-end credit</li>
   </ul>
 
   <h2>Chain reference</h2>
@@ -263,14 +540,17 @@
     <tr><td>Derivation</td><td><code>m/84'/9444'/account'/change/index</code></td></tr>
     <tr><td>Ports</td><td>P2P 9444 · RPC 9443</td></tr>
     <tr><td>Config file</td><td><code>pcoin.conf</code> — <em>not</em> bitcoin.conf</td></tr>
+    <tr><td>Explorer API</td><td><a href="https://explorer.pc.am/api">explorer.pc.am/api</a></td></tr>
+    <tr><td>Custody tool</td><td><a href="https://github.com/pars5555/pcoin/tree/main/contrib/vault">contrib/vault</a></td></tr>
   </table>
 
   <footer>
     <p><a href="https://pc.am">pc.am</a> ·
+       <a href="https://pc.am/download/">download</a> ·
        <a href="https://explorer.pc.am">explorer</a> ·
        <a href="https://github.com/pars5555/pcoin">source</a> ·
        <a href="https://t.me/PCoinPCN">Telegram</a></p>
-    <p>Questions are welcome on Telegram. Ask before you invent — most of the
-    rules here were learned the expensive way.</p>
+    <p>Questions are welcome on Telegram. Ask before you invent — most of the rules
+    here were learned the expensive way.</p>
   </footer>
 </div>
