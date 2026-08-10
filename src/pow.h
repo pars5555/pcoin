@@ -14,6 +14,7 @@ class CBlockHeader;
 class CBlockIndex;
 class uint256;
 class arith_uint256;
+class RandomXMiningVm;
 
 /**
  * Convert nBits value to target.
@@ -64,8 +65,20 @@ bool CheckProofOfWorkImpl(uint256 hash, unsigned int nBits, const Consensus::Par
  * intentionally NOT the PoW hash; consensus validation must call this
  * function, not the hash-based CheckProofOfWork() above (which is retained
  * for tests and tools that reason about raw hashes).
+ *
+ * `mining_vm` is an optional accelerator and carries NO consensus meaning. It
+ * is null on every verification path -- validation.cpp, blockstorage.cpp,
+ * rpc/mining.cpp -- which therefore hash exactly as before, in RandomX light
+ * mode, forever. PCoin's built-in miner is the only caller that passes one,
+ * and only when the operator opted into -randomxfastmode; a fast-mode VM and
+ * a light-mode VM produce identical hashes by construction (they share the
+ * one keyed cache), and the node cross-checks that at runtime before any
+ * worker is allowed to use one. The parameter exists so that the
+ * proof-of-work STATEMENT is written down exactly once: a miner that restated
+ * the target rule by hand could drift from it.
  */
-bool CheckProofOfWorkRandomX(const CBlockHeader& header, unsigned int nBits, const Consensus::Params&);
+bool CheckProofOfWorkRandomX(const CBlockHeader& header, unsigned int nBits, const Consensus::Params&,
+                             RandomXMiningVm* mining_vm = nullptr);
 
 /**
  * Return false if the proof-of-work requirement specified by new_nbits at a

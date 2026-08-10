@@ -4,7 +4,9 @@
 
 #include <chain.h>
 #include <chainparams.h>
+#include <crypto/pow_randomx.h>
 #include <pow.h>
+#include <primitives/block.h>
 #include <test/util/random.h>
 #include <test/util/setup_common.h>
 #include <util/chaintype.h>
@@ -12,7 +14,10 @@
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
 #include <limits>
+#include <thread>
 #include <vector>
 
 BOOST_FIXTURE_TEST_SUITE(pow_tests, BasicTestingSetup)
@@ -1089,6 +1094,169 @@ BOOST_AUTO_TEST_CASE(pcoin_lwma_permitted_difficulty_transition)
     BOOST_CHECK(PermittedDifficultyTransition(consensus, H + 1, TIP_BITS, 0x1e44e931U));
     BOOST_CHECK(PermittedDifficultyTransition(consensus, H + 7, TIP_BITS, 0x1e03d410U));
     BOOST_CHECK(PermittedDifficultyTransition(consensus, H + 1000, 0x1f0fffffU, 0x1d00ffffU));
+}
+
+namespace {
+
+//! A deterministic 80-byte header with every field non-trivial, so the
+//! RandomX input actually varies across the sample.
+CBlockHeader ProbeHeader(uint32_t nonce)
+{
+    CBlockHeader header;
+    header.nVersion = 0x20000000;
+    std::fill(header.hashPrevBlock.begin(), header.hashPrevBlock.end(), static_cast<unsigned char>(nonce & 0xff));
+    std::fill(header.hashMerkleRoot.begin(), header.hashMerkleRoot.end(), static_cast<unsigned char>((nonce >> 8) & 0xff));
+    header.nTime = 1785600628 + nonce;
+    header.nBits = TIP_BITS;
+    header.nNonce = nonce;
+    return header;
+}
+
+const std::vector<uint32_t> PROBE_NONCES{0, 1, 2, 7, 0x0000ffff, 0x7fffffff, 0x80000000, 0xffffffff};
+
+} // namespace
+
+/**
+ * The mining VM handle must be a pure pass-through to the ordinary light-mode
+ * verification path until fast mode is explicitly enabled -- and fast mode
+ * must be OFF unless somebody asked for it.
+ *
+ * This is the cheap half of the fast-mode guarantee and it runs by default:
+ * it locks in that adding the handle to CheckProofOfWorkRandomX() changed
+ * nothing for any caller that does not pass one, which is every verification
+ * call site in the tree (validation.cpp, blockstorage.cpp, rpc/mining.cpp).
+ */
+BOOST_AUTO_TEST_CASE(pcoin_randomx_mining_vm_light_passthrough)
+{
+    const auto chainParams = CreateChainParams(*m_node.args, ChainType::MAIN);
+    const auto& consensus = chainParams->GetConsensus();
+
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(RandomXPowInit(error), error);
+
+    // Default-off. Nothing in a plain node, or a plain test run, may allocate
+    // a 2080 MiB dataset.
+    if (std::getenv("PCOIN_TEST_RANDOMX_FASTMODE") == nullptr) {
+        BOOST_CHECK(RandomXFastModeGetStatus().state == RandomXFastModeState::DISABLED);
+    }
+
+    RandomXMiningVm vm;
+    BOOST_CHECK(!vm.IsFast());
+    BOOST_CHECK(!vm.TryAcquire()); // nothing to acquire: fast mode is opt-in
+    BOOST_CHECK(!vm.IsFast());
+
+    for (const uint32_t nonce : PROBE_NONCES) {
+        const CBlockHeader header{ProbeHeader(nonce)};
+        BOOST_CHECK_EQUAL(vm.Hash(header).GetHex(), RandomXPowHash(header).GetHex());
+        // And the consensus function gives the same verdict whether or not a
+        // handle is passed.
+        BOOST_CHECK_EQUAL(CheckProofOfWorkRandomX(header, TIP_BITS, consensus, &vm),
+                          CheckProofOfWorkRandomX(header, TIP_BITS, consensus));
+    }
+}
+
+/**
+ * THE CONSENSUS CLAIM: RandomX fast mode and light mode produce IDENTICAL
+ * hashes for the same header. If they ever did not, PCoin's miner would build
+ * blocks every other node rejects -- or, far worse, accept a proof no
+ * validator agrees with.
+ *
+ * Gated behind PCOIN_TEST_RANDOMX_FASTMODE because it allocates ~2.3 GiB and
+ * spends tens of seconds to minutes building the dataset; running that by
+ * default would wreck ctest on any modest machine, and there is no CI here to
+ * absorb it. Note that this test is a backstop, not the enforcement
+ * mechanism: the node cross-checks fast against light at runtime, on the
+ * actual machine with the actual dataset, and refuses fast mode on a
+ * mismatch (FinishDatasetBuild() in crypto/pow_randomx.cpp).
+ *
+ *   PCOIN_TEST_RANDOMX_FASTMODE=1 ./build/bin/test_bitcoin \
+ *       --run_test=pow_tests/pcoin_randomx_fast_mode_matches_light
+ */
+BOOST_AUTO_TEST_CASE(pcoin_randomx_fast_mode_matches_light)
+{
+    if (std::getenv("PCOIN_TEST_RANDOMX_FASTMODE") == nullptr) {
+        BOOST_TEST_MESSAGE("skipped: set PCOIN_TEST_RANDOMX_FASTMODE=1 to run "
+                           "(needs ~2.3 GiB of RAM and a multi-second dataset build)");
+        return;
+    }
+
+    const auto chainParams = CreateChainParams(*m_node.args, ChainType::MAIN);
+    const auto& consensus = chainParams->GetConsensus();
+
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(RandomXPowInit(error), error);
+
+    std::string reason;
+    if (!RandomXFastModeStart(/*threads=*/0, reason)) {
+        // A refusal is the feature working, not a test failure: this machine
+        // is one where fast mode must not run.
+        BOOST_TEST_MESSAGE("skipped: fast mode refused on this machine: " + reason);
+        return;
+    }
+
+    for (;;) {
+        if (RandomXFastModeGetStatus().state != RandomXFastModeState::BUILDING) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds{250});
+    }
+    const RandomXFastModeStatus status{RandomXFastModeGetStatus()};
+    BOOST_REQUIRE_MESSAGE(status.state == RandomXFastModeState::READY,
+                          "dataset build did not complete: " + status.reason);
+    BOOST_CHECK_EQUAL(status.percent, 100);
+
+    RandomXMiningVm fast;
+    BOOST_REQUIRE(fast.TryAcquire());
+    BOOST_REQUIRE(fast.IsFast());
+
+    for (const uint32_t nonce : PROBE_NONCES) {
+        const CBlockHeader header{ProbeHeader(nonce)};
+        const uint256 fast_hash{fast.Hash(header)};
+        // RandomXPowHash() is the verification path, untouched by fast mode.
+        const uint256 light_hash{RandomXPowHash(header)};
+        BOOST_CHECK_EQUAL(fast_hash.GetHex(), light_hash.GetHex());
+        // The full consensus statement must also agree, both ways round.
+        BOOST_CHECK_EQUAL(CheckProofOfWorkRandomX(header, TIP_BITS, consensus, &fast),
+                          CheckProofOfWorkRandomX(header, TIP_BITS, consensus));
+    }
+
+    // A second handle must produce the same values as the first: this catches
+    // a VM whose state leaked across hashes rather than a bad dataset.
+    RandomXMiningVm fast2;
+    BOOST_REQUIRE(fast2.TryAcquire());
+    for (const uint32_t nonce : PROBE_NONCES) {
+        const CBlockHeader header{ProbeHeader(nonce)};
+        BOOST_CHECK_EQUAL(fast2.Hash(header).GetHex(), RandomXPowHash(header).GetHex());
+    }
+
+    // The miner's last line of defence must be TERMINAL, not decorative. When
+    // a worker catches a fast/light disagreement it calls this; from that
+    // moment no further handle may acquire a fast VM, the status must say why
+    // (that string is the only thing the fleet supervisors can see -- they
+    // poll getcpuminerinfo and never read a log), and the dataset must NOT be
+    // freed, because handles already in flight are still dereferencing it.
+    RandomXFastModeDisable("test: simulated fast/light disagreement");
+    const RandomXFastModeStatus off{RandomXFastModeGetStatus()};
+    BOOST_CHECK(off.state == RandomXFastModeState::UNAVAILABLE);
+    BOOST_CHECK(off.reason.find("simulated fast/light disagreement") != std::string::npos);
+
+    RandomXMiningVm after;
+    BOOST_CHECK(!after.TryAcquire()); // gate closed
+    BOOST_CHECK(!after.IsFast());
+    BOOST_CHECK_EQUAL(after.Hash(ProbeHeader(1)).GetHex(), RandomXPowHash(ProbeHeader(1)).GetHex());
+
+    // `fast` still holds a VM into the dataset. If Disable() had released it,
+    // this would read freed memory; it must keep answering, and correctly.
+    BOOST_REQUIRE(fast.IsFast());
+    BOOST_CHECK_EQUAL(fast.Hash(ProbeHeader(2)).GetHex(), RandomXPowHash(ProbeHeader(2)).GetHex());
+    fast.Release();
+    BOOST_CHECK(!fast.IsFast());
+    BOOST_CHECK(!fast.TryAcquire()); // released handles never re-acquire
+
+    // And shutdown is a latch: a start arriving afterwards must be refused
+    // rather than spawn builder threads nobody will ever join.
+    RandomXFastModeShutdown();
+    std::string after_reason;
+    BOOST_CHECK(!RandomXFastModeStart(/*threads=*/1, after_reason));
+    BOOST_CHECK(!after_reason.empty());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

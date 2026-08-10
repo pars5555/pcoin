@@ -398,13 +398,19 @@ bool CheckProofOfWork(uint256 hash, unsigned int nBits, const Consensus::Params&
 // PCoin consensus PoW check: RandomX hash of the serialized header vs target.
 // The target logic (and its fuzzing bypass, keyed on the cheap block hash so
 // fuzz harnesses that grind GetHash() keep working) mirrors CheckProofOfWork.
-bool CheckProofOfWorkRandomX(const CBlockHeader& header, unsigned int nBits, const Consensus::Params& params)
+bool CheckProofOfWorkRandomX(const CBlockHeader& header, unsigned int nBits, const Consensus::Params& params,
+                             RandomXMiningVm* mining_vm)
 {
     if constexpr (G_FUZZING) return (header.GetHash().data()[31] & 0x80) == 0;
     // Reject malformed/out-of-range nBits before paying for a RandomX hash
     // (light-mode hashing costs ~ms; this keeps garbage headers cheap).
     if (!DeriveTarget(nBits, params.powLimit)) return false;
-    return CheckProofOfWorkImpl(RandomXPowHash(header), nBits, params);
+    // mining_vm is null on every verification call site, so this is the
+    // unchanged light-mode path and the branch folds away at those call sites.
+    // RandomXMiningVm::Hash() returns the same value RandomXPowHash() does;
+    // it just may compute it from the opt-in mining dataset instead.
+    const uint256 pow_hash{mining_vm != nullptr ? mining_vm->Hash(header) : RandomXPowHash(header)};
+    return CheckProofOfWorkImpl(pow_hash, nBits, params);
 }
 
 std::optional<arith_uint256> DeriveTarget(unsigned int nBits, const uint256 pow_limit)

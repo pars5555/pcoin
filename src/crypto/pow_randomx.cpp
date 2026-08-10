@@ -11,12 +11,25 @@
 
 #include <randomx.h>
 
+#include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <exception>
+#include <fstream>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <system_error>
+#include <thread>
+#include <vector>
+
+#ifdef WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -159,5 +172,826 @@ uint256 RandomXPowHash(const CBlockHeader& header)
         std::lock_guard lock{g_fallback_mutex};
         randomx_calculate_hash(g_fallback_vm, ss.data(), ss.size(), hash.begin());
     }
+    return hash;
+}
+
+/* =========================================================================
+ * OPT-IN RANDOMX FAST MODE -- MINING ONLY
+ *
+ * NOTHING BELOW THIS LINE IS REACHABLE FROM THE VERIFICATION PATH. Everything
+ * above -- InitCache(), CreateVM(), GetThreadVM(), RandomXPowHash(), g_flags --
+ * is untouched by this feature and stays light mode forever. In particular
+ * RANDOMX_FLAG_FULL_MEM is never OR-ed into g_flags: it is added only at the
+ * randomx_create_vm() call in CreateMiningVM(), so a verification VM is
+ * structurally incapable of becoming a fast VM. If you are tempted to "unify"
+ * the two hash paths, read the light-mode-only contract at the top of
+ * InitCache() first -- PCoin validates on phones with ~2 GB of RAM.
+ *
+ * There is no logging here on purpose: bitcoin_crypto links only
+ * core_interface and randomx (src/crypto/CMakeLists.txt), and dragging the
+ * logging machinery into libbitcoinkernel for a mining accelerator is the
+ * wrong trade. State is published through RandomXFastModeGetStatus() and the
+ * node layer (init.cpp, node/cpuminer.cpp) does the talking.
+ * ========================================================================= */
+
+namespace {
+
+constexpr uint64_t ONE_MIB{1024 * 1024};
+
+//! The dataset is 2,181,038,016 bytes: RANDOMX_DATASET_BASE_SIZE (2147483648)
+//! + RANDOMX_DATASET_EXTRA_SIZE (33554368), see randomx/src/configuration.h.
+//! That is 2080 MiB minus 64 bytes -- NOT "2 GiB", which understates it by
+//! 32 MiB. Rounded up here so every check is conservative.
+constexpr uint64_t FAST_MODE_DATASET_MIB{2080};
+
+//! Refuse to allocate right up against the last free megabyte. On Linux that
+//! is how the OOM killer gets invited onto a box that is also running someone
+//! else's database; on Windows it is how the whole desktop starts swapping,
+//! and RandomX's 16384 random dataset reads per hash are pathological against
+//! a pagefile. Matches FAST_MODE_HEADROOM_MIB in contrib/windows-tray, so the
+//! tray and the node agree about eligibility.
+constexpr uint64_t FAST_MODE_HEADROOM_MIB{900};
+
+//! Hard floor on physically installed memory, independent of what happens to
+//! be free right now. A 4 GB machine that currently looks empty is still a
+//! machine where a 2080 MiB dataset is most of the RAM.
+constexpr uint64_t FAST_MODE_MIN_TOTAL_MIB{4096};
+
+//! Items initialised per randomx_init_dataset() call. That call has no
+//! progress callback and no cancellation point -- it returns only when the
+//! whole requested range is done -- so THE CHUNK SIZE IS THE SHUTDOWN LATENCY,
+//! and shutdown blocks on the slowest chunk in flight. 32768 items is 2 MiB of
+//! dataset: measured at well under a second on the machine this was developed
+//! on, and it will be longer on slower hardware -- which is the reason for the
+//! small number rather than the 16 MiB it started at. The shared claim counter
+//! is nowhere near a bottleneck at this granularity.
+constexpr unsigned long DATASET_CHUNK_ITEMS{1UL << 15};
+
+//! The 2080 MiB dataset. Allocated at most once and, once READY, never
+//! released -- the same rationale as g_cache above, one order of magnitude
+//! larger: a fast VM dereferences dataset memory on every single hash
+//! (randomx/src/vm_compiled.cpp), and worker threads are torn down at
+//! unpredictable moments. Releasing it is only ever done on the failure path
+//! below, where no VM can exist yet because the state never became READY.
+//!
+//! Atomic not because the hot path needs it -- builders only ever read a value
+//! written before they were created -- but so that misuse is a defined race
+//! rather than undefined behaviour if someone ever adds a second entry point.
+std::atomic<randomx_dataset*> g_dataset{nullptr};
+
+//! The one variable the mining hot path reads. Set with release ordering
+//! after every dataset byte is written AND the light/fast cross-check has
+//! passed, so an acquiring reader sees a complete, verified dataset.
+std::atomic<bool> g_dataset_ready{false};
+
+//! Mutable fast-mode bookkeeping, allocated once and intentionally never
+//! destroyed -- the same doctrine as g_cache and g_fallback_vm, for a sharper
+//! reason: `builders` holds std::thread objects, and destroying a joinable
+//! std::thread calls std::terminate. A node that exited without running
+//! Interrupt() would otherwise die at static-destruction time in exactly the
+//! way the CPU miner already died once in the field. The mutex and the reason
+//! string are kept in here too so that a builder thread outliving main() can
+//! still touch them safely.
+struct FastModeState {
+    std::mutex mutex; //!< guards every field below
+    RandomXFastModeState state{RandomXFastModeState::DISABLED};
+    std::string reason;
+    std::vector<std::thread> builders;
+};
+
+FastModeState& Fast()
+{
+    static FastModeState* state{new FastModeState()};
+    return *state;
+}
+
+std::atomic<unsigned long> g_next_item{0}; //!< next chunk to claim
+std::atomic<unsigned long> g_items_done{0};
+std::atomic<int> g_builders_live{0};
+
+//! Set once, never cleared. RandomXFastModeStart() must NOT reset this:
+//! shutdown would then be a one-shot cancel rather than a latch, and a start
+//! arriving after Interrupt() would spawn builder threads that nothing joins,
+//! running 2080 MiB of dataset initialisation through static destruction.
+std::atomic<bool> g_build_cancel{false};
+
+//! Sticky. Once shutdown has run, fast mode is closed for this process.
+std::atomic<bool> g_shutdown_requested{false};
+
+void SetFastState(RandomXFastModeState state, const std::string& reason)
+{
+    std::lock_guard lock{Fast().mutex};
+    Fast().state = state;
+    Fast().reason = reason;
+}
+
+/**
+ * Create a fast-mode VM on the shared cache and the completed dataset.
+ *
+ * Deliberately NOT CreateVM(): that ladder's last resort is a light VM, so a
+ * fast VM that failed to allocate would come back light and look like
+ * success. This one never degrades. It returns nullptr and lets the caller
+ * make the fall-back-to-light decision explicitly and visibly.
+ *
+ * Passing g_cache alongside the dataset is correct and required by nothing:
+ * randomx_create_vm() records the cache key and then points the VM at the
+ * dataset (randomx/src/randomx.cpp), and a full-memory VM's setCache is a
+ * no-op. Reusing the very same cache is also what makes the fast and light
+ * hashes provably the same value -- there is exactly one place in this
+ * process where RANDOMX_KEY is used, and it is InitCache().
+ */
+randomx_vm* CreateMiningVM()
+{
+    randomx_dataset* dataset{g_dataset.load(std::memory_order_acquire)};
+    if (dataset == nullptr) return nullptr; // never call with FULL_MEM and no dataset
+    const randomx_flags fast{g_flags | RANDOMX_FLAG_FULL_MEM};
+    randomx_vm* vm{randomx_create_vm(fast, g_cache, dataset)};
+    if (vm == nullptr && (g_flags & RANDOMX_FLAG_JIT) == RANDOMX_FLAG_JIT) {
+        vm = randomx_create_vm(fast | RANDOMX_FLAG_SECURE, g_cache, dataset);
+    }
+    return vm;
+}
+
+//! How many distinct headers the fast-vs-light cross-check hashes.
+//!
+//! One is not enough. A single RandomX hash performs RANDOMX_PROGRAM_COUNT (8)
+//! x RANDOMX_PROGRAM_ITERATIONS (2048) = 16384 dataset reads against
+//! 34,078,719 items -- under 0.05% of the dataset. A region corrupted outside
+//! those reads would pass. 32 headers is ~1.5% and costs ~32 light hashes
+//! (tens of milliseconds) against a build measured in minutes.
+constexpr int FAST_MODE_PROBE_HEADERS{32};
+
+//! Fixed, arbitrary 80-byte headers used only to cross-check fast against
+//! light. Their content is irrelevant; only that both modes hash the same
+//! bytes, and that they land in different places in the dataset.
+std::vector<CBlockHeader> FastModeProbeHeaders()
+{
+    std::vector<CBlockHeader> headers;
+    headers.reserve(FAST_MODE_PROBE_HEADERS);
+    for (int i = 0; i < FAST_MODE_PROBE_HEADERS; ++i) {
+        CBlockHeader header; // CBlockHeader() calls SetNull(): all fields zeroed
+        header.nVersion = 0x20000000;
+        header.nTime = 1785600628 + static_cast<uint32_t>(i); // PCoin's genesis timestamp
+        header.nBits = 0x1f0fffff;                            // PCoin's powLimit in compact form
+        header.nNonce = 0x50436f69 + static_cast<uint32_t>(i) * 0x9e3779b9u; // "PCoi", spread
+        headers.push_back(header);
+    }
+    return headers;
+}
+
+/* ---------------------- host memory interrogation ----------------------- */
+
+struct HostMemory {
+    uint64_t total_bytes{0};
+    uint64_t available_bytes{0};
+    //! Memory that is genuinely unused right now, as opposed to reclaimable.
+    //! UINT64_MAX means "this platform will not tell us", which disables the
+    //! working-set test below rather than failing it.
+    uint64_t free_bytes{UINT64_MAX};
+};
+
+enum class FileRead { ABSENT, UNREADABLE, OK };
+
+//! Read a single unsigned integer from the first line of `path`. The literal
+//! "max" (cgroup v2's no-limit sentinel) reads as UINT64_MAX.
+FileRead ReadU64File(const char* path, uint64_t& out)
+{
+    std::ifstream f{path};
+    if (!f.is_open()) return FileRead::ABSENT;
+    std::string token;
+    if (!(f >> token)) return FileRead::UNREADABLE;
+    if (token == "max") {
+        out = UINT64_MAX;
+        return FileRead::OK;
+    }
+    try {
+        size_t consumed{0};
+        const unsigned long long v{std::stoull(token, &consumed)};
+        if (consumed != token.size()) return FileRead::UNREADABLE;
+        out = static_cast<uint64_t>(v);
+        return FileRead::OK;
+    } catch (const std::exception&) {
+        return FileRead::UNREADABLE;
+    }
+}
+
+#ifdef __linux__
+//! Parse MemTotal, MemAvailable and MemFree out of /proc/meminfo (all in kB).
+//!
+//! BOTH MemAvailable and MemFree are needed, and they answer different
+//! questions:
+//!
+//!  - MemAvailable is the kernel's estimate of what a new workload can take
+//!    without swapping. It counts reclaimable page cache, so it is the right
+//!    metric for a TRANSIENT allocation.
+//!  - This allocation is not transient. The dataset is held for the life of
+//!    the process and there is no RPC to drop it. Satisfying it out of
+//!    reclaimable cache means permanently evicting somebody else's working
+//!    set -- on a box running a 10 GB MariaDB with no swap, that is not a
+//!    "free" 2 GB, it is a database that now reads from disk forever.
+//!
+//! So MemFree gates the permanent part: the dataset must fit in memory nobody
+//! is currently using. MemAvailable still gates the total, headroom included.
+bool ReadProcMemInfo(HostMemory& mem)
+{
+    std::ifstream f{"/proc/meminfo"};
+    if (!f.is_open()) return false;
+    std::string key;
+    uint64_t value{0};
+    std::string unit;
+    bool have_total{false};
+    bool have_avail{false};
+    bool have_free{false};
+    while (f >> key >> value >> unit) {
+        if (unit != "kB") continue;
+        if (key == "MemTotal:") {
+            mem.total_bytes = value * 1024;
+            have_total = true;
+        } else if (key == "MemAvailable:") {
+            mem.available_bytes = value * 1024;
+            have_avail = true;
+        } else if (key == "MemFree:") {
+            mem.free_bytes = value * 1024;
+            have_free = true;
+        }
+        if (have_total && have_avail && have_free) return true;
+    }
+    return have_total && have_avail;
+}
+
+//! This process's own path within a cgroup hierarchy, from /proc/self/cgroup.
+//! v2 lines are "0::/user.slice/pcoind.service"; v1 lines are
+//! "7:memory:/docker/abc123". Returns false if there is no such line.
+bool ReadSelfCgroupPath(bool v2, std::string& out)
+{
+    std::ifstream f{"/proc/self/cgroup"};
+    if (!f.is_open()) return false;
+    std::string line;
+    while (std::getline(f, line)) {
+        const size_t c1{line.find(':')};
+        if (c1 == std::string::npos) continue;
+        const size_t c2{line.find(':', c1 + 1)};
+        if (c2 == std::string::npos) continue;
+        const std::string controllers{line.substr(c1 + 1, c2 - c1 - 1)};
+        const bool match{v2 ? controllers.empty()
+                            : controllers.find("memory") != std::string::npos};
+        if (match) {
+            out = line.substr(c2 + 1);
+            if (out.empty()) out = "/";
+            return true;
+        }
+    }
+    return false;
+}
+
+//! Fold any cgroup memory limit into the figures.
+//!
+//! /proc/meminfo reports the HOST's memory inside a container, so a node in a
+//! `docker run -m 2g` would happily read 8 GB, allocate 2080 MiB, and then be
+//! killed by the cgroup's own OOM handler rather than the global one. PCoin's
+//! only seed node runs in Docker. The same applies to a systemd unit with
+//! MemoryMax=, which is the obvious thing for someone to add to
+//! pcoind.service on a small box.
+//!
+//! A limit set anywhere ABOVE this process in the hierarchy binds it just as
+//! hard as one set on its own cgroup, so walk to the root and take the
+//! tightest. An absent file means "no limit at this level" and is fine; a
+//! file that is present but cannot be parsed is UNKNOWN, and unknown is its
+//! own state -- it refuses rather than collapsing into "plenty of room".
+bool ApplyCgroupLimit(HostMemory& mem)
+{
+    struct Layout {
+        bool v2;
+        const char* root;
+        const char* limit;
+        const char* usage;
+    };
+    const Layout layouts[]{
+        {true, "/sys/fs/cgroup", "memory.max", "memory.current"},
+        {false, "/sys/fs/cgroup/memory", "memory.limit_in_bytes", "memory.usage_in_bytes"},
+    };
+
+    for (const auto& layout : layouts) {
+        std::string path;
+        if (!ReadSelfCgroupPath(layout.v2, path)) continue;
+
+        // This cgroup, then each ancestor, then the hierarchy root.
+        std::vector<std::string> dirs;
+        for (;;) {
+            dirs.push_back(std::string{layout.root} + (path == "/" ? "" : path));
+            if (path == "/") break;
+            const size_t slash{path.rfind('/')};
+            path = (slash == std::string::npos || slash == 0) ? "/" : path.substr(0, slash);
+        }
+
+        bool found_controller{false};
+        for (const auto& dir : dirs) {
+            uint64_t limit{0};
+            const FileRead lr{ReadU64File((dir + "/" + layout.limit).c_str(), limit)};
+            if (lr == FileRead::UNREADABLE) return false;
+            if (lr == FileRead::ABSENT) continue;
+            found_controller = true;
+            // cgroup v1 spells "no limit" as a huge sentinel, v2 as "max"
+            // (already mapped to UINT64_MAX by ReadU64File).
+            if (limit == UINT64_MAX || limit >= (uint64_t{1} << 62)) continue;
+
+            uint64_t usage{0};
+            if (ReadU64File((dir + "/" + layout.usage).c_str(), usage) != FileRead::OK) return false;
+
+            const uint64_t headroom{usage >= limit ? 0 : limit - usage};
+            mem.total_bytes = std::min(mem.total_bytes, limit);
+            mem.available_bytes = std::min(mem.available_bytes, headroom);
+            mem.free_bytes = std::min(mem.free_bytes, headroom);
+        }
+        if (found_controller) return true;
+    }
+    return true; // no cgroup memory controller in sight
+}
+#endif // __linux__
+
+/**
+ * Best available answer to "how much physical memory does this machine have,
+ * and how much of it could a new 2 GiB workload actually take".
+ *
+ * Returns false when the platform cannot be interrogated honestly. That is a
+ * refusal, not a shrug: on Linux a 2080 MiB allocation SUCCEEDS under the
+ * default heuristic overcommit whether or not the memory exists, and the
+ * process (or an innocent neighbour like MariaDB) is SIGKILLed a minute later
+ * while the pages are being touched. There is no exception to catch, no log
+ * line and no destructor. This check is the only real protection there is.
+ */
+bool QueryHostMemory(HostMemory& mem, std::string& reason)
+{
+#if defined(__ANDROID__)
+    // Not a memory question. bitcoind runs as a child of the app under the
+    // app's oom_score_adj on ~2 GB devices, where the dataset alone exceeds
+    // RAM; the app already trims dbcache to 50 MiB to leave room for the
+    // 256 MiB light cache. A kill here costs the user a full chain resync.
+    (void)mem;
+    reason = "fast mode is not supported on Android";
+    return false;
+#elif defined(WIN32)
+    MEMORYSTATUSEX status{};
+    status.dwLength = sizeof(status);
+    if (!GlobalMemoryStatusEx(&status)) {
+        reason = "could not read this machine's memory status";
+        return false;
+    }
+    // ullAvailPhys, never ullAvailPageFile/ullTotalPageFile: those are the
+    // commit limit, and a commit satisfied out of the pagefile is worse than
+    // no fast mode at all.
+    mem.total_bytes = static_cast<uint64_t>(status.ullTotalPhys);
+    mem.available_bytes = static_cast<uint64_t>(status.ullAvailPhys);
+    // ullAvailPhys is free + zeroed + standby, i.e. it includes the file
+    // cache, and Windows exposes no cheap free-versus-standby split. Rather
+    // than invent a number, the working-set test below is skipped here and
+    // free_bytes stays UNKNOWN. That is acceptable because the machines this
+    // runs on are dedicated miners; it would NOT be acceptable on the Linux
+    // boxes, which is exactly where MemFree is available.
+    return true;
+#elif defined(__linux__)
+    if (!ReadProcMemInfo(mem)) {
+        reason = "could not read MemTotal/MemAvailable from /proc/meminfo";
+        return false;
+    }
+    if (!ApplyCgroupLimit(mem)) {
+        reason = "could not read this process's cgroup memory limit";
+        return false;
+    }
+    return true;
+#elif defined(_SC_PHYS_PAGES) && defined(_SC_AVPHYS_PAGES)
+    const long pages{sysconf(_SC_PHYS_PAGES)};
+    const long avail{sysconf(_SC_AVPHYS_PAGES)};
+    const long page_size{sysconf(_SC_PAGESIZE)};
+    if (pages <= 0 || avail < 0 || page_size <= 0) {
+        reason = "could not determine this machine's memory size";
+        return false;
+    }
+    mem.total_bytes = static_cast<uint64_t>(pages) * static_cast<uint64_t>(page_size);
+    mem.available_bytes = static_cast<uint64_t>(avail) * static_cast<uint64_t>(page_size);
+    return true;
+#else
+    (void)mem;
+    reason = "cannot determine available memory on this platform";
+    return false;
+#endif
+}
+
+/* --------------------------- the dataset build -------------------------- */
+
+//! Run once, by whichever builder thread finishes last. Decides whether the
+//! dataset may be used, and this is the check that enforces the whole
+//! feature's central promise: fast and light must agree, bit for bit, on this
+//! actual machine with this actual dataset.
+void FinishDatasetBuild()
+{
+    const unsigned long total{randomx_dataset_item_count()};
+    std::string failure;
+
+    if (g_build_cancel.load(std::memory_order_relaxed)) {
+        failure = "dataset build cancelled";
+    } else if (g_items_done.load(std::memory_order_relaxed) != total) {
+        // A gap or an overlap in the item split does not crash and does not
+        // look wrong: it produces a miner whose every solution is rejected as
+        // high-hash, silently burning the machine's entire hashrate. Refuse.
+        failure = "dataset incomplete (" + std::to_string(g_items_done.load()) +
+                  " of " + std::to_string(total) + " items initialised)";
+    } else {
+        std::string existing_failure;
+        {
+            std::lock_guard lock{Fast().mutex};
+            if (Fast().state == RandomXFastModeState::UNAVAILABLE) existing_failure = Fast().reason;
+        }
+        if (!existing_failure.empty()) {
+            failure = existing_failure;
+        }
+    }
+
+    if (failure.empty()) {
+        // THE CROSS-CHECK. Hash a spread of fixed headers both ways and
+        // require bit equality on every one before any worker is allowed near
+        // this dataset. The library documents the two modes as interchangeable
+        // and the code agrees structurally, but a wrong answer here would be a
+        // consensus split, so it is verified at runtime rather than trusted.
+        randomx_vm* probe{CreateMiningVM()};
+        if (probe == nullptr) {
+            failure = "could not create a fast-mode VM";
+        } else {
+            for (const CBlockHeader& header : FastModeProbeHeaders()) {
+                DataStream ss{};
+                ss << header;
+                assert(ss.size() == 80);
+                uint256 fast_hash;
+                randomx_calculate_hash(probe, ss.data(), ss.size(), fast_hash.begin());
+                const uint256 light_hash{RandomXPowHash(header)};
+                if (fast_hash != light_hash) {
+                    failure = "fast mode disagrees with light mode (" + fast_hash.GetHex() +
+                              " vs " + light_hash.GetHex() + ") -- refusing to mine on it";
+                    break;
+                }
+            }
+            randomx_destroy_vm(probe); // before any chance of releasing the dataset
+        }
+    }
+
+    if (!failure.empty()) {
+        // Safe to release here and only here: the state never became READY,
+        // so RandomXMiningVm::TryAcquire() has never handed out a VM that
+        // points into this memory, and the probe VM above is destroyed. That
+        // -- not the worker join in CpuMiner::StopLocked() -- is the whole
+        // lifetime argument, so assert the precondition rather than trust it.
+        assert(!g_dataset_ready.load(std::memory_order_acquire));
+        if (randomx_dataset* dataset{g_dataset.exchange(nullptr, std::memory_order_acq_rel)}) {
+            randomx_release_dataset(dataset);
+        }
+        SetFastState(RandomXFastModeState::UNAVAILABLE, failure);
+        return;
+    }
+
+    SetFastState(RandomXFastModeState::READY, "");
+    g_dataset_ready.store(true, std::memory_order_release); // publishes the dataset
+}
+
+void DatasetBuilder()
+{
+    // Nothing may escape this function. An exception leaving a std::thread's
+    // entry point calls std::terminate, and taking a node carrying real
+    // chainstate down because an optional mining accelerator failed would be
+    // absurd.
+    try {
+        const unsigned long total{randomx_dataset_item_count()};
+        randomx_dataset* const dataset{g_dataset.load(std::memory_order_acquire)};
+        for (;;) {
+            if (dataset == nullptr) break;
+            if (g_build_cancel.load(std::memory_order_relaxed)) break;
+            const unsigned long start{g_next_item.fetch_add(DATASET_CHUNK_ITEMS, std::memory_order_relaxed)};
+            if (start >= total) break;
+            // count is derived from the remaining range, never a fixed
+            // stride, so the last chunk is exact. randomx_init_dataset()
+            // asserts start < total and start + count <= total, and those
+            // asserts are LIVE in release builds here (the build system
+            // removes -DNDEBUG on purpose), so an off-by-one would abort the
+            // node rather than corrupt the dataset. Neither is acceptable;
+            // this arithmetic cannot produce either.
+            const unsigned long count{std::min<unsigned long>(DATASET_CHUNK_ITEMS, total - start)};
+            randomx_init_dataset(dataset, g_cache, start, count);
+            g_items_done.fetch_add(count, std::memory_order_relaxed);
+        }
+    } catch (const std::exception& e) {
+        SetFastState(RandomXFastModeState::UNAVAILABLE, std::string{"dataset build failed: "} + e.what());
+        g_build_cancel.store(true, std::memory_order_relaxed);
+    } catch (...) {
+        SetFastState(RandomXFastModeState::UNAVAILABLE, "dataset build failed with an unknown exception");
+        g_build_cancel.store(true, std::memory_order_relaxed);
+    }
+
+    // Last one out finalises. Avoids a separate coordinator thread that would
+    // itself have to be joined at shutdown.
+    if (g_builders_live.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        try {
+            FinishDatasetBuild();
+        } catch (const std::exception& e) {
+            SetFastState(RandomXFastModeState::UNAVAILABLE, std::string{"dataset verification failed: "} + e.what());
+        } catch (...) {
+            SetFastState(RandomXFastModeState::UNAVAILABLE, "dataset verification failed");
+        }
+    }
+}
+
+} // namespace
+
+bool RandomXFastModeEligible(std::string& reason)
+{
+    // The cache must exist first: its flags decide whether the dataset build
+    // is JIT-compiled or interpreted, and fast mode reuses the very same
+    // cache rather than allocating a second one.
+    try {
+        std::call_once(g_cache_once, InitCache);
+    } catch (const std::exception& e) {
+        reason = std::string{"RandomX is not initialised: "} + e.what();
+        return false;
+    }
+
+    if ((g_flags & RANDOMX_FLAG_JIT) != RANDOMX_FLAG_JIT) {
+        // Without the JIT the dataset is built by the portable interpreter,
+        // roughly an order of magnitude slower, AND the resulting full-memory
+        // interpreter VM is slower than a light-mode JIT VM while using
+        // 2080 MiB more. Fast mode here is worse on every axis. This is a
+        // permanent property of the machine, so say so plainly.
+        reason = "this machine has no RandomX JIT, where fast mode would be slower than light mode";
+        return false;
+    }
+
+    HostMemory mem;
+    std::string mem_reason;
+    if (!QueryHostMemory(mem, mem_reason)) {
+        reason = mem_reason;
+        return false;
+    }
+
+    // Everything the decision was made from, in one string, reported whether
+    // the answer is yes or no. Two nodes disagreeing about fast mode with no
+    // way to find out why is its own kind of outage.
+    const std::string measured{
+        "total " + std::to_string(mem.total_bytes / ONE_MIB) + " MiB, available " +
+        std::to_string(mem.available_bytes / ONE_MIB) + " MiB, unused " +
+        (mem.free_bytes == UINT64_MAX ? std::string{"unknown"}
+                                      : std::to_string(mem.free_bytes / ONE_MIB) + " MiB")};
+
+    const uint64_t needed{(FAST_MODE_DATASET_MIB + FAST_MODE_HEADROOM_MIB) * ONE_MIB};
+    if (mem.total_bytes < FAST_MODE_MIN_TOTAL_MIB * ONE_MIB) {
+        reason = "fast mode needs at least " + std::to_string(FAST_MODE_MIN_TOTAL_MIB) +
+                 " MiB of RAM installed; this machine has " +
+                 std::to_string(mem.total_bytes / ONE_MIB) + " MiB (" + measured + ")";
+        return false;
+    }
+    if (mem.available_bytes < needed) {
+        reason = "fast mode needs " + std::to_string(needed / ONE_MIB) +
+                 " MiB free (a " + std::to_string(FAST_MODE_DATASET_MIB) +
+                 " MiB dataset plus " + std::to_string(FAST_MODE_HEADROOM_MIB) +
+                 " MiB of headroom); only " + std::to_string(mem.available_bytes / ONE_MIB) +
+                 " MiB is available (" + measured + ")";
+        return false;
+    }
+    // The working-set test. `available` counts reclaimable page cache, and a
+    // PERMANENT reservation satisfied out of cache is somebody else's hot data
+    // evicted forever -- on a swapless box with a large resident database,
+    // that is the difference between "fast mode" and "the database now reads
+    // from disk". The dataset must fit in memory that is genuinely unused.
+    if (mem.free_bytes != UINT64_MAX && mem.free_bytes < FAST_MODE_DATASET_MIB * ONE_MIB) {
+        reason = "fast mode needs " + std::to_string(FAST_MODE_DATASET_MIB) +
+                 " MiB of genuinely unused memory (its dataset is never released, so taking it "
+                 "out of reclaimable cache would permanently evict whatever else is running here); "
+                 "only " + std::to_string(mem.free_bytes / ONE_MIB) + " MiB is unused (" + measured + ")";
+        return false;
+    }
+    reason = "fast mode eligible: " + measured;
+    return true;
+}
+
+bool RandomXFastModeStart(int threads, std::string& reason)
+{
+    // THE WHOLE DISABLED->BUILDING TRANSITION HAPPENS UNDER THIS LOCK.
+    //
+    // It used to read the state, drop the lock, and only publish BUILDING
+    // after eligibility (milliseconds of /proc I/O) and a 2080 MiB
+    // allocation. Two callers landing in that window would both pass the
+    // idempotency check: two datasets allocated, g_dataset overwritten while
+    // the first cohort of builders was writing through it, g_builders_live
+    // clobbered so the wrong thread runs the finaliser, and
+    // randomx_release_dataset() called on memory a live builder is touching.
+    // That is CLAUDE.md 7.5 one level down -- "an RPC entry point is a
+    // concurrent entry point" -- and there is now more than one caller
+    // (cpuminer's supervisor, plus the unit test), so it is not hypothetical.
+    //
+    // Cost of holding it: the allocation is a reservation, not a touch, and
+    // eligibility is a few small file reads. Everything that contends for this
+    // mutex is a status read. Correctness is worth the microseconds.
+    {
+        std::lock_guard lock{Fast().mutex};
+
+        if (g_shutdown_requested.load(std::memory_order_relaxed)) {
+            // Shutdown is a latch, not a one-shot cancel. Spawning builders
+            // now would leave threads nobody joins running 2080 MiB of dataset
+            // initialisation through chainstate teardown and static
+            // destruction, lazily constructing thread_local VMs on the way.
+            reason = "the node is shutting down";
+            return false;
+        }
+        if (Fast().state == RandomXFastModeState::BUILDING ||
+            Fast().state == RandomXFastModeState::READY) {
+            return true; // idempotent
+        }
+        if (Fast().state == RandomXFastModeState::UNAVAILABLE) {
+            // Sticky. One refusal per process: never auto-retry into the same
+            // out-of-memory condition on an unattended machine.
+            reason = Fast().reason;
+            return false;
+        }
+
+        if (!RandomXFastModeEligible(reason)) {
+            Fast().state = RandomXFastModeState::UNAVAILABLE;
+            Fast().reason = reason;
+            return false;
+        }
+
+        // Claim the transition before doing anything expensive. Any failure
+        // below moves the state to UNAVAILABLE; nothing leaves it BUILDING.
+        Fast().state = RandomXFastModeState::BUILDING;
+        Fast().reason = "building the RandomX dataset";
+    }
+
+    randomx_dataset* dataset{randomx_alloc_dataset(RANDOMX_FLAG_DEFAULT)};
+    // RANDOMX_FLAG_DEFAULT, not g_flags: randomx_alloc_dataset() reads exactly
+    // one flag, RANDOMX_FLAG_LARGE_PAGES, and large pages must never be
+    // required. Masking here means it cannot leak in even if g_flags changes.
+    if (dataset == nullptr) {
+        reason = "could not allocate the " + std::to_string(FAST_MODE_DATASET_MIB) + " MiB RandomX dataset";
+        SetFastState(RandomXFastModeState::UNAVAILABLE, reason);
+        return false;
+    }
+
+    const int max_threads{std::max(1, static_cast<int>(std::thread::hardware_concurrency()))};
+    if (threads <= 0) {
+        // Half the cores by default. These machines run other people's
+        // services; pinning every core for the length of the build is its own
+        // small outage, and the build is a one-off cost either way.
+        threads = std::max(1, max_threads / 2);
+    }
+    threads = std::min(threads, max_threads);
+
+    g_next_item.store(0, std::memory_order_relaxed);
+    g_items_done.store(0, std::memory_order_relaxed);
+    // g_build_cancel is deliberately NOT reset here; see its declaration.
+    //
+    // The spawner holds a ticket of its own (+1). The finaliser is elected by
+    // whichever fetch_sub returns 1, and without that extra ticket a builder
+    // that finished before the spawn loop had subtracted for its failed
+    // siblings would see a count above 1, decline to finalise, and the
+    // spawner's own corrections would then carry the counter to zero with
+    // nobody left to run FinishDatasetBuild(): 2080 MiB pinned forever, state
+    // stuck at BUILDING, and a progress field reading 100% for the life of the
+    // process. With the ticket, exactly one decrementer always observes 1.
+    g_builders_live.store(threads + 1, std::memory_order_relaxed);
+    g_dataset.store(dataset, std::memory_order_release);
+
+    int spawned{0};
+    {
+        std::lock_guard lock{Fast().mutex};
+        Fast().builders.reserve(static_cast<size_t>(threads));
+        for (int i = 0; i < threads; ++i) {
+            try {
+                Fast().builders.emplace_back(DatasetBuilder);
+                ++spawned;
+            } catch (const std::system_error&) {
+                // Could not spawn this thread. The ones already running still
+                // cover the whole range -- chunks are claimed from a shared
+                // counter rather than statically split, so coverage does not
+                // depend on how many threads exist.
+            }
+        }
+    }
+
+    if (spawned == 0) {
+        // No builder exists, so nobody races this: safe to unwind directly.
+        g_dataset.store(nullptr, std::memory_order_release);
+        randomx_release_dataset(dataset);
+        g_builders_live.store(0, std::memory_order_relaxed);
+        reason = "could not start any dataset build threads";
+        SetFastState(RandomXFastModeState::UNAVAILABLE, reason);
+        return false;
+    }
+
+    // Retire the spawner's ticket plus one for each spawn that failed. Done
+    // OUTSIDE the lock: FinishDatasetBuild() takes it via SetFastState().
+    bool finalise{false};
+    for (int i = 0; i < 1 + (threads - spawned); ++i) {
+        if (g_builders_live.fetch_sub(1, std::memory_order_acq_rel) == 1) finalise = true;
+    }
+    if (finalise) {
+        try {
+            FinishDatasetBuild();
+        } catch (const std::exception& e) {
+            SetFastState(RandomXFastModeState::UNAVAILABLE,
+                         std::string{"dataset verification failed: "} + e.what());
+        } catch (...) {
+            SetFastState(RandomXFastModeState::UNAVAILABLE, "dataset verification failed");
+        }
+    }
+    return true;
+}
+
+void RandomXFastModeDisable(const std::string& reason)
+{
+    // Order matters. Close the gate first so no further worker can acquire a
+    // VM, then publish the reason. The dataset is NOT released: workers that
+    // already hold VMs are still dereferencing it, and never-release is the
+    // invariant that makes that safe.
+    g_dataset_ready.store(false, std::memory_order_release);
+    SetFastState(RandomXFastModeState::UNAVAILABLE, reason);
+}
+
+RandomXFastModeStatus RandomXFastModeGetStatus()
+{
+    RandomXFastModeStatus out;
+    const unsigned long total{randomx_dataset_item_count()};
+    const unsigned long done{g_items_done.load(std::memory_order_relaxed)};
+    {
+        std::lock_guard lock{Fast().mutex};
+        out.state = Fast().state;
+        out.reason = Fast().reason;
+    }
+    if (out.state == RandomXFastModeState::READY) {
+        out.percent = 100;
+    } else if (out.state == RandomXFastModeState::BUILDING && total > 0) {
+        out.percent = static_cast<int>((static_cast<uint64_t>(done) * 100) / total);
+        out.reason = "building the RandomX dataset, " + std::to_string(out.percent) + "% done";
+    }
+    return out;
+}
+
+void RandomXFastModeShutdown()
+{
+    // Latch first, cancel second. Once this is set, RandomXFastModeStart()
+    // refuses for the rest of the process, so no cohort of builder threads can
+    // be created after the join below has already happened.
+    g_shutdown_requested.store(true, std::memory_order_relaxed);
+    g_build_cancel.store(true, std::memory_order_relaxed);
+    std::vector<std::thread> builders;
+    {
+        // Swap the handles out under the lock and join OUTSIDE it: a builder
+        // thread takes this same mutex when it publishes its result, so
+        // joining while holding it would deadlock.
+        std::lock_guard lock{Fast().mutex};
+        builders.swap(Fast().builders);
+    }
+    for (auto& t : builders) {
+        if (t.joinable()) t.join();
+    }
+    // A completed dataset is deliberately not released; see g_dataset above.
+}
+
+RandomXMiningVm::~RandomXMiningVm()
+{
+    if (m_vm != nullptr) randomx_destroy_vm(m_vm);
+}
+
+bool RandomXMiningVm::TryAcquire(bool* failed)
+{
+    if (m_vm != nullptr) return true;
+    if (m_tried) return false; // one attempt per handle; see the header
+    // One relaxed-ish atomic load in the common case. The acquire pairs with
+    // the release store in FinishDatasetBuild(), so if this reads true the
+    // dataset is complete, verified, and visible to this thread. It also goes
+    // back to false if fast mode is taken out of service, which is what makes
+    // every worker converge on light mode within one nonce batch.
+    if (!g_dataset_ready.load(std::memory_order_acquire)) return false;
+    m_tried = true;
+    m_vm = CreateMiningVM();
+    if (m_vm == nullptr && failed != nullptr) *failed = true;
+    return m_vm != nullptr;
+}
+
+void RandomXMiningVm::Release()
+{
+    if (m_vm != nullptr) {
+        randomx_destroy_vm(m_vm);
+        m_vm = nullptr;
+    }
+    m_tried = true; // never re-acquire under this handle
+}
+
+uint256 RandomXMiningVm::Hash(const CBlockHeader& header)
+{
+    if (m_vm == nullptr) {
+        // No fast VM: this is byte-for-byte the ordinary light path, which is
+        // the correct answer, just slower. Mixed fast/light workers are fine.
+        return RandomXPowHash(header);
+    }
+    DataStream ss{};
+    ss << header;
+    assert(ss.size() == 80);
+    uint256 hash;
+    randomx_calculate_hash(m_vm, ss.data(), ss.size(), hash.begin());
     return hash;
 }

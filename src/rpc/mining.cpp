@@ -15,6 +15,7 @@
 #include <consensus/params.h>
 #include <consensus/validation.h>
 #include <core_io.h>
+#include <crypto/pow_randomx.h>
 #include <deploymentinfo.h>
 #include <deploymentstatus.h>
 #include <interfaces/mining.h>
@@ -1151,6 +1152,7 @@ static RPCHelpMan startmining()
                 {RPCResult::Type::BOOL, "mining", "whether the miner is now running"},
                 {RPCResult::Type::NUM, "threads", "worker threads actually started"},
                 {RPCResult::Type::STR, "address", "address being paid"},
+                {RPCResult::Type::NUM, "ttl", "dead-man's switch in seconds, as requested (0 = disabled)"},
             }},
         RPCExamples{
             "\nMine with four cores\n"
@@ -1220,6 +1222,10 @@ static RPCHelpMan getcpuminerinfo()
                 {RPCResult::Type::NUM, "hashespersec", "current hash rate across all threads"},
                 {RPCResult::Type::NUM, "blocksfound", "blocks mined since the miner was started"},
                 {RPCResult::Type::NUM, "cores", "logical cores detected on this machine"},
+                {RPCResult::Type::STR, "mode", "RandomX mode the workers are actually hashing in: \"light\", \"fast\", or \"mixed\". This is observed, not requested: a node that refused fast mode reports \"light\". Block verification always uses light mode regardless."},
+                {RPCResult::Type::NUM, "fastthreads", "worker threads currently hashing from the fast-mode dataset"},
+                {RPCResult::Type::STR, "modereason", "why the miner is not in fast mode, or the dataset build progress. Empty ONLY when every worker is in fast mode, or when fast mode was never requested -- a node that is in light mode for any other reason always says why here."},
+                {RPCResult::Type::NUM, "datasetprogress", "RandomX fast-mode dataset build progress, 0-100. 0 when fast mode was never requested."},
             }},
         RPCExamples{HelpExampleCli("getcpuminerinfo", "") + HelpExampleRpc("getcpuminerinfo", "")},
         [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
@@ -1234,6 +1240,41 @@ static RPCHelpMan getcpuminerinfo()
     obj.pushKV("hashespersec", cpuminer.GetHashesPerSecond());
     obj.pushKV("blocksfound", cpuminer.GetBlocksFound());
     obj.pushKV("cores", static_cast<int>(std::max(1u, std::thread::hardware_concurrency())));
+
+    // Report the mode from what the workers are HOLDING, never from what
+    // anyone asked for. A UI that renders its own saved intent will happily
+    // tell someone they are mining several times faster on a node that
+    // refused fast mode; that is the same class of mistake as trusting an RPC
+    // that failed to answer.
+    //
+    // These are three separate loads, not a snapshot. During a startmining
+    // restart the fast count is zeroed after the workers are joined while the
+    // thread count is set before the new ones exist, so a call landing in
+    // between can briefly report "mixed". That is expected and transient, not
+    // a bug -- but read fast first and clamp it, so the pair can never claim
+    // more fast threads than there are threads.
+    const int fast_threads{std::min(cpuminer.GetFastThreads(), cpuminer.GetThreads())};
+    const int threads{cpuminer.GetThreads()};
+    const RandomXFastModeStatus rx{RandomXFastModeGetStatus()};
+    std::string mode{"light"};
+    if (fast_threads > 0) mode = (threads > 0 && fast_threads >= threads) ? "fast" : "mixed";
+
+    // "Light mode, no reason given, dataset 100% built" is not an answer, it is
+    // an unknown wearing an answer's clothes -- the exact shape CLAUDE.md 7.1
+    // forbids. If the dataset is READY and mining is running but no worker
+    // holds a fast VM, something is wrong and the RPC must say so, because the
+    // fleet supervisors read this and never read the log.
+    std::string reason{rx.reason};
+    if (mode != "fast" && reason.empty() && rx.state == RandomXFastModeState::READY &&
+        threads > 0 && fast_threads < threads) {
+        reason = "the fast-mode dataset is ready but " +
+                 std::to_string(threads - fast_threads) +
+                 " worker(s) could not create a fast-mode VM";
+    }
+    obj.pushKV("mode", mode);
+    obj.pushKV("fastthreads", fast_threads);
+    obj.pushKV("modereason", mode == "fast" ? std::string{} : reason);
+    obj.pushKV("datasetprogress", rx.percent);
     return obj;
 },
     };

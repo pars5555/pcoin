@@ -33,8 +33,20 @@ namespace node {
  *
  * A supervisor thread keeps a fresh block template (rebuilt when the tip moves
  * or the template goes stale) and N worker threads grind disjoint nonce batches
- * against it. Workers share one RandomX light-mode cache (~256 MiB) and hold a
- * VM each (a few MiB), so memory is essentially flat in the thread count.
+ * against it.
+ *
+ * Memory, both modes:
+ *  - Light mode (the default, and always what block VERIFICATION uses): workers
+ *    share one RandomX cache (256 MiB) and hold a VM each (2 MiB), so memory is
+ *    essentially flat in the thread count.
+ *  - Fast mode (opt-in, -randomxfastmode): additionally a 2080 MiB dataset,
+ *    shared by all workers and never released for the life of the process. The
+ *    cache stays too -- verification needs it -- so the RandomX footprint is
+ *    roughly 2.3 GiB plus 2 MiB per worker. Still flat in the thread count,
+ *    just a much larger constant.
+ *
+ * Both modes produce identical hashes; fast mode is a memory-for-speed trade
+ * with no consensus content. Workers may run in different modes side by side.
  *
  * Thread-safe. Start()/Stop() are idempotent and may be called from RPC.
  */
@@ -59,6 +71,22 @@ public:
     //! Refresh the dead-man's switch. Harmless when no TTL is set.
     void KeepAlive();
 
+    //! Record the operator's -randomxfastmode intent. Called once from init.cpp.
+    //!
+    //! Recording it is ALL init does. The 2080 MiB dataset is not allocated
+    //! until this miner actually starts, and it is kicked off from the
+    //! supervisor thread, which does not hold m_lifecycle_mutex. Two things
+    //! follow, and both are the point:
+    //!
+    //!  - A node that never mines never allocates it, whatever its config file
+    //!    says. The seed nodes are shared production boxes and the network's
+    //!    only bootstrap points; protecting them must not depend on a memory
+    //!    heuristic guessing right on a machine whose free memory moves.
+    //!  - Eligibility is measured after the node has taken its own dbcache,
+    //!    coins cache and mempool, instead of at the one moment in the
+    //!    process's life when it holds none of them.
+    void SetFastModeIntent(bool enabled, int build_threads);
+
     //! Stop all workers and join them. Safe to call when not running, and safe
     //! to call concurrently with Start() from another thread.
     //!
@@ -69,6 +97,14 @@ public:
     bool IsRunning() const { return m_running; }
     int GetThreads() const { return m_threads; }
     uint64_t GetBlocksFound() const { return m_blocks_found; }
+
+    //! How many workers are currently hashing from the fast-mode dataset.
+    //!
+    //! This is an OBSERVATION of what the workers actually hold, not a record
+    //! of what anyone asked for. A UI must render the mode from this, never
+    //! from its own saved intent: a node that refused fast mode would
+    //! otherwise be displayed as running it.
+    int GetFastThreads() const { return m_fast_threads; }
 
     //! Rolling average hashes per second across all workers.
     double GetHashesPerSecond() const;
@@ -103,6 +139,14 @@ private:
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_stop{true};
     std::atomic<int> m_threads{0};
+    //! Workers currently holding a fast-mode VM. Incremented by a worker when
+    //! it acquires one and decremented when it returns; never inferred.
+    std::atomic<int> m_fast_threads{0};
+
+    //! Operator intent from -randomxfastmode, not an observation of anything.
+    //! Never render a UI from these; render from GetFastThreads().
+    std::atomic<bool> m_fast_mode_requested{false};
+    std::atomic<int> m_fast_build_threads{0};
 
     //! Bumped whenever a new template is published; workers restart on change.
     std::atomic<uint64_t> m_generation{0};

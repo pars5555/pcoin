@@ -271,6 +271,11 @@ void Interrupt(NodeContext& node)
     // Join the CPU miner's threads before the chainstate they reference is torn
     // down in Shutdown().
     node::GetCpuMiner().Stop();
+    // Cancel and join any in-progress RandomX fast-mode dataset build. The
+    // build is chunked and checks for cancellation between chunks, so this
+    // returns in well under a second even mid-build. A finished dataset is
+    // deliberately not released -- see crypto/pow_randomx.cpp.
+    RandomXFastModeShutdown();
     InterruptHTTPServer();
     InterruptHTTPRPC();
     InterruptRPC();
@@ -657,6 +662,17 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
     argsman.AddArg("-blockreservedweight=<n>", strprintf("Reserve space for the fixed-size block header plus the largest coinbase transaction the mining software may add to the block. (default: %d).", DEFAULT_BLOCK_RESERVED_WEIGHT), ArgsManager::ALLOW_ANY, OptionsCategory::BLOCK_CREATION);
     argsman.AddArg("-blockmintxfee=<amt>", strprintf("Set lowest fee rate (in %s/kvB) for transactions to be included in block creation. (default: %s)", CURRENCY_UNIT, FormatMoney(DEFAULT_BLOCK_MIN_TX_FEE)), ArgsManager::ALLOW_ANY, OptionsCategory::BLOCK_CREATION);
     argsman.AddArg("-blockversion=<n>", "Override block version to test forking scenarios", ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::BLOCK_CREATION);
+
+    argsman.AddArg("-randomxfastmode", strprintf("PCoin: use RandomX fast mode for the built-in CPU miner (default: %u). "
+        "Fast mode hashes several times faster by keeping a 2080 MiB dataset in memory, on top of the 256 MiB verification cache -- roughly 2.3 GiB in total. "
+        "It affects MINING ONLY: block verification always uses light mode, so this changes nothing about which blocks this node accepts, and both modes produce identical hashes. "
+        "The dataset is allocated only when this node actually starts mining -- a node that never mines never pays for it -- built in the background, and then kept for the life of the process: THERE IS NO WAY TO RELEASE IT SHORT OF RESTARTING THE NODE, and stopmining does not release it. "
+        "Refused, with mining continuing in light mode, on a machine with less than %u MiB of RAM installed, less than %u MiB available, less than %u MiB genuinely unused, or where RandomX has no JIT. "
+        "Do not enable it on a machine that is also running something else you care about, and never on a seed node.",
+        DEFAULT_RANDOMX_FAST_MODE, 4096, 2980, 2080), ArgsManager::ALLOW_ANY, OptionsCategory::BLOCK_CREATION);
+    argsman.AddArg("-randomxfastmodethreads=<n>", "PCoin: threads used to build the RandomX fast-mode dataset (default: half the cores, at least one). "
+        "Only meaningful with -randomxfastmode. Separate from the mining thread count on purpose: building on every core saturates the memory subsystem of a small box for the length of the build.",
+        ArgsManager::ALLOW_ANY, OptionsCategory::BLOCK_CREATION);
 
     argsman.AddArg("-rest", strprintf("Accept public REST requests (default: %u)", DEFAULT_REST_ENABLE), ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
     argsman.AddArg("-rpcallowip=<ip>", "Allow JSON-RPC connections from specified source. Valid values for <ip> are a single IP (e.g. 1.2.3.4), a network/netmask (e.g. 1.2.3.4/255.255.255.0), a network/CIDR (e.g. 1.2.3.4/24), all ipv4 (0.0.0.0/0), or all ipv6 (::/0). This option can be specified multiple times", ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
@@ -1685,6 +1701,45 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
             return InitError(strprintf(_("Failed to initialize RandomX proof-of-work verification: %s. PCoin needs roughly 256 MiB of free memory to verify blocks."), randomx_error));
         }
         LogInfo("RandomX proof-of-work verification initialized (light mode)");
+    }
+
+    // PCoin: opt-in RandomX fast mode for the built-in CPU miner only.
+    //
+    // RECORDED HERE, ALLOCATED NOWHERE. All this does is hand the operator's
+    // intent to the CPU miner. The 2080 MiB dataset is requested from the
+    // miner's supervisor thread the first time this node actually mines
+    // (node/cpuminer.cpp), which is what makes two things true:
+    //
+    //  - A node that never mines can never allocate it, whatever is in its
+    //    config file. The seeds are shared production boxes and the only
+    //    bootstrap points this network has; "the memory gate will refuse on
+    //    that machine" is a guess about a number that moves, and a guess is
+    //    not a safety property.
+    //  - Eligibility is measured after the node has taken its own dbcache,
+    //    coins cache and mempool, rather than before -- the check used to run
+    //    at the one moment in the process's life when none of them exist.
+    //
+    // It is not built from CpuMiner::Start() either: that holds
+    // m_lifecycle_mutex, which stopmining and shutdown also take, and
+    // randomx_init_dataset() has no cancellation point.
+    //
+    // Never an InitError. Verification is untouched by fast mode, so refusing
+    // to run a validating node because an optional mining accelerator is
+    // unavailable would take a node off a live chain for a speed preference.
+    if (args.GetBoolArg("-randomxfastmode", DEFAULT_RANDOMX_FAST_MODE)) {
+        const int build_threads{static_cast<int>(args.GetIntArg("-randomxfastmodethreads", 0))};
+        node::GetCpuMiner().SetFastModeIntent(/*enabled=*/true, build_threads);
+        // Report the answer this machine would give TODAY, without allocating
+        // anything, so an operator learns at startup that a box is ineligible
+        // instead of discovering it the first time they mine. It is a preview,
+        // not the decision: the decision is re-taken, on live figures, when
+        // mining starts.
+        std::string fast_reason;
+        if (RandomXFastModeEligible(fast_reason)) {
+            LogInfo("RandomX fast mode requested; the 2080 MiB mining dataset will be built when mining starts (%s)", fast_reason);
+        } else {
+            InitWarning(strprintf(_("RandomX fast mode was requested but this machine does not qualify: %s. Mining will use light mode; block verification is unaffected."), fast_reason));
+        }
     }
 
     node.notifications = std::make_unique<KernelNotifications>(Assert(node.shutdown_request), node.exit_status, *Assert(node.warnings));
