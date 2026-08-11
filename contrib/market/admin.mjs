@@ -179,7 +179,21 @@ export function makeAdmin({ pool, cfg, settings, ladder, delivery, backing, noti
     if (!isFinite(exp) || Date.now() >= exp) return null;
     return email;
   }
-  const csrfFor = email => createHmac('sha256', secret() + '|csrf').update(email).digest('hex');
+  // CSRF bound to the SESSION, not to the identity.
+  //
+  // This used to be HMAC(email), which made it a constant: the same admin got
+  // the same token on every login, forever. It survived signing out, session
+  // expiry, and a password change — so one leak (a screenshot of the page
+  // source, a browser extension, a proxy log, a bug report with the HTML in it)
+  // was a token that stayed valid for the life of the account, with no way to
+  // revoke it short of rotating sessionSecret and logging everyone out.
+  //
+  // Deriving it from the session token instead ties its lifetime to the
+  // session's: signing in mints a new one, and every earlier token is dead the
+  // moment the session it belonged to is. The session payload already carries
+  // an expiry, so no two logins share a token.
+  const csrfFor = sessTok => createHmac('sha256', secret() + '|csrf')
+    .update(String(sessTok || '')).digest('hex');
 
   // ── flash messages across a redirect ─────────────────────────────────────
   // Every write answers with a redirect to a GET page (post/redirect/get), so
@@ -227,6 +241,25 @@ export function makeAdmin({ pool, cfg, settings, ladder, delivery, backing, noti
     const t = tries.get(key) || { n: 0, until: Date.now() + LOGIN_WINDOW_MS };
     t.n++; t.until = Date.now() + LOGIN_WINDOW_MS;
     tries.set(key, t);
+  }
+
+  // Send an alert at most once per key per window. Anything a stranger can
+  // trigger has to be rate-limited before it reaches Telegram, or the alert
+  // channel becomes the attack: a scanner posting the login form a thousand
+  // times would bury the float warning and the double-send alarm under its own
+  // noise, and Telegram would rate-limit the bot for hours afterwards.
+  const alerted = new Map();   // key -> expiry
+  async function alertOnce(key, build) {
+    const now = Date.now();
+    if (alerted.size > 5000) {
+      for (const [k, exp] of alerted) if (exp < now) alerted.delete(k);
+      if (alerted.size > 5000) alerted.clear();
+    }
+    const exp = alerted.get(key);
+    if (exp && exp > now) return false;
+    alerted.set(key, now + LOGIN_WINDOW_MS);
+    try { await notify(build()); } catch (e) { log.warn('[admin] alert failed:', e.message); }
+    return true;
   }
 
   // ── rendering ────────────────────────────────────────────────────────────
@@ -277,14 +310,14 @@ export function makeAdmin({ pool, cfg, settings, ladder, delivery, backing, noti
   const NAV = [['', 'Dashboard'], ['orders', 'Orders'], ['ladder', 'Ladder'], ['fills', 'Fills'],
                ['ipn', 'IPN log'], ['users', 'Users'], ['settings', 'Settings'], ['audit', 'Audit']];
 
-  const page = (title, active, body, email) => `<!DOCTYPE html><html lang="en"><head>
+  const page = (title, active, body, email, csrfTok = '') => `<!DOCTYPE html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)} · market admin</title><style>${CSS}</style></head><body>
 <header><b>market.pc.am</b><nav>${NAV.map(([h, l]) =>
   `<a class="${active === h ? 'on' : ''}" href="/admin/${h}">${l}</a>`).join('')}</nav>
 <span style="margin-left:auto" class="s">${esc(email || '')}</span>
 <form class="inline" method="POST" action="/admin/logout">
-<input type="hidden" name="csrf" value="${csrfFor(email || '')}">
+<input type="hidden" name="csrf" value="${csrfTok}">
 <button class="ghost">Sign out</button></form></header>
 <main>${body}</main></body></html>`;
 
@@ -346,7 +379,11 @@ ${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
     const xff = String(req.headers['x-forwarded-for'] || '').split(',').map(s => s.trim()).filter(Boolean);
     const ip = xff.length ? xff[xff.length - 1] : req.socket.remoteAddress;
     const cookie = (req.headers.cookie || '').split(/;\s*/).find(c => c.startsWith('mktadm='));
-    const email = verify(cookie ? cookie.slice(7) : '');
+    const sessTok = cookie ? cookie.slice(7) : '';
+    const email = verify(sessTok);
+    // Derived once per request and threaded into every page, so the token a
+    // form carries is always the one this session's POST will be checked against.
+    const csrfTok = csrfFor(sessTok);
 
     // ---- login ----
     if (sub === 'login' && req.method === 'POST') {
@@ -356,6 +393,11 @@ ${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
       const code = String(f.get('code') || '');
       if (throttled(`ip:${ip}`) || throttled(`em:${em}`)) {
         await audit(em, 'login.throttled', null, ip);
+        await alertOnce(`lock:${ip}`, () =>
+          `⛔️ <b>Admin login locked out</b>\n<code>${esc(ip)}</code> hit ${LOGIN_MAX_TRIES} ` +
+          `failed attempts and is blocked for 15 minutes.\nThis is someone guessing. If it ` +
+          `is not you, no action is required — but if it keeps up, say so and the panel can ` +
+          `be put behind an IP allowlist.`);
         return rawSendHtml(429, loginPage('Too many attempts. Wait 15 minutes.'));
       }
       const [acc] = await q(`SELECT email, salt, hash, totp_secret, totp_enabled FROM admins WHERE email=?`, [em]);
@@ -364,6 +406,16 @@ ${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
       const bad = async why => {
         noteFail(`ip:${ip}`); noteFail(`em:${em}`);
         await audit(em, 'login.fail', why, ip);
+        // The panel is reachable from the whole internet, so somebody guessing
+        // at it must reach the operator, not just the audit table nobody reads
+        // until after the fact. Rate-limited to one message per IP per window:
+        // an unthrottled alert on every failure is its own denial of service,
+        // against the one channel that carries the double-send alarm.
+        await alertOnce(`fail:${ip}`, () =>
+          `🚨 <b>Failed admin login</b>\n<code>${esc(em || '(blank)')}</code> from ` +
+          `<code>${esc(ip)}</code> — ${esc(why)}\nFurther failures from this address are ` +
+          `suppressed for 15 minutes. If this was not you, nothing is wrong yet: the ` +
+          `password is scrypt-hashed and 2FA is enrolled.`);
         return rawSendHtml(401, loginPage('Wrong email, password or code.'));
       };
       if (!acc) return bad('no such admin');
@@ -399,15 +451,24 @@ ${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
     // CSRF on every write. A GET can never change anything here.
     if (req.method === 'POST') {
       const f = new URLSearchParams(body);
-      const want = csrfFor(email);
+      const want = csrfTok;
       const got = String(f.get('csrf') || '');
       if (got.length !== want.length || !timingSafeEqual(Buffer.from(got), Buffer.from(want))) {
         await audit(email, 'csrf.fail', path, ip);
-        return sendHtml(403, page('Forbidden', '', `<div class="msg err">Bad CSRF token.</div>`, email));
+        // rawSendHtml, not sendHtml: the latter is declared further down and is
+        // in its temporal dead zone here, so this branch used to throw a
+        // ReferenceError and answer 500. The request was still refused and the
+        // audit row still written, so nothing was ever let through — but the
+        // operator saw an opaque crash instead of "Bad CSRF token", which is
+        // the difference between "I need to reload" and "the panel is broken".
+        // A rejection has no flash to clear, so the wrapper is not wanted here.
+        return rawSendHtml(403, page('Forbidden', '',
+          `<div class="msg err">Bad CSRF token — reload the page and try again. ` +
+          `This is normal if you left the tab open across a sign-out.</div>`, email, csrfTok));
       }
     }
 
-    const csrf = `<input type="hidden" name="csrf" value="${csrfFor(email)}">`;
+    const csrf = `<input type="hidden" name="csrf" value="${csrfTok}">`;
 
     // Any message left by the write that redirected us here. Read once, then
     // cleared, so it does not follow you around the panel.
@@ -598,7 +659,7 @@ ${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
         <p class="s">Sales are <b>${s.saleOpen ? 'open' : 'CLOSED'}</b> ·
            buyback <b>${s.buybackOpen ? 'open' : 'closed'}</b> ·
            auto-send at or below <b>$${s.autoMaxUsd}</b> ·
-           orders $${s.minOrderUsd}–$${s.maxOrderUsd}</p>`, email));
+           orders $${s.minOrderUsd}–$${s.maxOrderUsd}</p>`, email, csrfTok));
     }
 
     if (sub === 'orders') {
@@ -659,7 +720,7 @@ ${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
               ${csrf}<input type="hidden" name="order_id" value="${esc(o.order_id)}">
               <button class="ghost">Expire</button></form>` : ''}
           </td></tr>`).join('')}
-        </tbody></table></div>${pager(u, L2.page, rows.length, L2.per)}`, email));
+        </tbody></table></div>${pager(u, L2.page, rows.length, L2.per)}`, email, csrfTok));
     }
 
     if (sub === 'ladder') {
@@ -680,7 +741,7 @@ ${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
           <td>${r.rung_no}</td><td>$${money(r.price)}</td><td>${money(r.qty_total)}</td>
           <td>${money(r.qty_sold)}</td><td>${money(r.qty_reserved)}</td>
           <td><b>${money(r.qty_left)}</b></td></tr>`).join('')}
-        </tbody></table></div>`, email));
+        </tbody></table></div>`, email, csrfTok));
     }
 
     if (sub === 'fills') {
@@ -704,7 +765,7 @@ ${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
           <td class="s">${r.settled_at ? new Date(r.settled_at).toISOString().slice(0, 16).replace('T', ' ') : '—'}</td>
           <td><span class="pill ${r.state === 'sold' ? 'ok' : r.state === 'released' ? 'bad' : 'warn'}">${r.state}</span></td>
           </tr>`).join('')}
-        </tbody></table></div>${pager(u, L2.page, rows.length, L2.per)}`, email));
+        </tbody></table></div>${pager(u, L2.page, rows.length, L2.per)}`, email, csrfTok));
     }
 
     if (sub === 'ipn') {
@@ -720,7 +781,7 @@ ${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
         <div class="wrap"><table><thead><tr><th>#</th><th>Payment</th><th>Order</th><th>Status</th></tr></thead><tbody>
         ${rows.map(r => `<tr><td>${r.id}</td><td class="mono">${esc(r.payment_id)}</td>
           <td class="mono">${esc(r.order_id || '—')}</td><td>${statusPill(r.status)}</td></tr>`).join('')}
-        </tbody></table></div>${pager(u, L2.page, rows.length, L2.per)}`, email));
+        </tbody></table></div>${pager(u, L2.page, rows.length, L2.per)}`, email, csrfTok));
     }
 
     if (sub === 'users') {
@@ -739,7 +800,7 @@ ${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
         </tr></thead><tbody>
         ${rows.map(r => `<tr><td>${esc(r.email)}</td><td>${r.orders}</td>
           <td>$${Number(r.spent).toFixed(2)}</td></tr>`).join('')}
-        </tbody></table></div>${pager(u, L2.page, rows.length, L2.per)}`, email));
+        </tbody></table></div>${pager(u, L2.page, rows.length, L2.per)}`, email, csrfTok));
     }
 
     // GET: show the pending enrolment. Refreshing this shows the SAME secret,
@@ -773,7 +834,7 @@ ${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
               <button>Turn on 2FA</button></form>
             <p class="s"><a href="/admin/settings">Back to settings</a></p>
           </div>
-        </div>`, email));
+        </div>`, email, csrfTok));
     }
 
     if (sub === 'settings') {
@@ -814,7 +875,7 @@ ${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
              <form method="POST" action="/admin/totp/enrol">${csrf}<button>Set up 2FA</button></form>`}
         <h2>Password</h2>
         <p class="s">Changed from the host, never from a browser and never from a message:
-        <code>market-admin set-password ${esc(email)}</code></p>`, email));
+        <code>market-admin set-password ${esc(email)}</code></p>`, email, csrfTok));
     }
 
     if (sub === 'audit') {
@@ -830,10 +891,10 @@ ${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
           <td>${esc(r.email)}</td><td class="mono">${esc(r.action)}</td>
           <td class="s">${esc(String(r.detail || '').slice(0, 120))}</td>
           <td class="mono s">${esc(r.ip || '')}</td></tr>`).join('')}
-        </tbody></table></div>${pager(u, L2.page, rows.length, L2.per)}`, email));
+        </tbody></table></div>${pager(u, L2.page, rows.length, L2.per)}`, email, csrfTok));
     }
 
-    return sendHtml(404, page('Not found', '', '<p>No such page.</p>', email));
+    return sendHtml(404, page('Not found', '', '<p>No such page.</p>', email, csrfTok));
   }
 
   return { handle, ensureTable, setPassword, audit };
