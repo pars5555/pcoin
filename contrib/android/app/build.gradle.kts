@@ -112,8 +112,13 @@ android {
             // treasury phone. A different binary must never report the same
             // version as the one it replaces -- that is what this comment block
             // is here for.
-            versionCode = 4
-            versionName = "0.2.1"
+            // 0.2.2: the version is now on the home screen. Bumped rather than
+            // reusing 0.2.1 -- an 0.2.1 APK already exists on the build machine
+            // without this line, and shipping a second, different 0.2.1 while
+            // adding the feature whose job is telling builds apart would be an
+            // odd way to start.
+            versionCode = 5
+            versionName = "0.2.2"
 
             buildConfigField("boolean", "MINING", "false")
             // The ONLY genuine collision between the two apps. bitcoind is

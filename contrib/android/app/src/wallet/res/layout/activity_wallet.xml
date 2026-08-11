@@ -58,6 +58,24 @@
                 android:layout_weight="1"
                 android:textColor="@color/ink_muted"
                 android:textSize="15sp" />
+
+            <!--
+              The installed version, at the top where it can be read without
+              scrolling: its whole purpose is answering "did the update land?".
+
+              versionName AND versionCode. Two different builds have carried one
+              versionName in this project before, and one of them sat on a phone
+              stuck in setup for a day precisely because the version claimed it
+              was up to date. The code is also what Android compares when it
+              decides whether an install is an upgrade.
+            -->
+            <TextView
+                android:id="@+id/app_version"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:textColor="@color/ink_muted"
+                android:textSize="13sp" />
         </LinearLayout>
 
         <!-- ============================ money ============================ -->

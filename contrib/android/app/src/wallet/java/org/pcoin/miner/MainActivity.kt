@@ -48,6 +48,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var nodeDot: View
     private lateinit var nodeStatus: TextView
+    private lateinit var appVersion: TextView
     private lateinit var balanceAmount: TextView
     private lateinit var balanceNote: TextView
     private lateinit var balanceCheckedAt: TextView
@@ -107,6 +108,7 @@ class MainActivity : AppCompatActivity() {
 
         nodeDot = findViewById(R.id.node_dot)
         nodeStatus = findViewById(R.id.node_status)
+        appVersion = findViewById(R.id.app_version)
         balanceAmount = findViewById(R.id.balance_amount)
         balanceNote = findViewById(R.id.balance_note)
         balanceCheckedAt = findViewById(R.id.balance_checked_at)
@@ -126,6 +128,13 @@ class MainActivity : AppCompatActivity() {
 
         balanceAmount.text = getString(R.string.wallet_amount_unknown)
         balanceCheckedAt.text = getString(R.string.wallet_checked_never)
+
+        // Set once: it is compiled into the APK and cannot change while this
+        // process is alive. Read from BuildConfig rather than PackageManager so
+        // it reports the binary that is actually running.
+        appVersion.text = getString(
+            R.string.wallet_version, BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE,
+        )
 
         refreshButton.setOnClickListener { onRefresh() }
         sendButton.setOnClickListener { startActivity(Intent(this, SendActivity::class.java)) }
