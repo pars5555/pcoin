@@ -195,7 +195,13 @@ class NodeController(context: Context) {
 
         synchronized(logTail) { logTail.clear() }
 
-        val cmd = listOf(binary.absolutePath, NativeBinaries.dataDirArg(appContext))
+        // -reindex is added for exactly one start, when a previous one died
+        // asking for it. See [armReindexIfNeeded] for why this can never loop.
+        val cmd = buildList {
+            add(binary.absolutePath)
+            add(NativeBinaries.dataDirArg(appContext))
+            if (prefs.nodeReindexPending) add(REINDEX_ARG)
+        }
         Log.i(TAG, "spawning: ${cmd.joinToString(" ")}")
         val p = try {
             ProcessBuilder(cmd)
@@ -280,6 +286,69 @@ class NodeController(context: Context) {
      */
     fun startupError(): String =
         lastErrorLine() ?: logTailText(3).ifBlank { "no output" }
+
+    // ------------------------------------------------------- datadir repair
+
+    /** True while the next spawn will carry -reindex. */
+    val reindexArmed: Boolean get() = prefs.nodeReindexPending
+
+    /**
+     * Arm ONE rebuild when bitcoind has just died asking for one.
+     *
+     * A SIGKILL mid-flush -- which is what every `adb install -r` and every
+     * Android low-memory kill delivers -- can leave a datadir that Core refuses
+     * to open until it is rebuilt. Before this existed the service simply
+     * retried the same doomed start five times, gave up, and stopped: the wallet
+     * was then left with no node at all and no route back that did not involve a
+     * cable and someone who knew what a datadir was. On the phone holding the
+     * treasury that is an unbounded manual cost for a failure the node can
+     * repair by itself in seconds on a chain this size.
+     *
+     * WHY THIS CANNOT BECOME A REBUILD LOOP. The flag is a latch (see
+     * [Prefs.nodeReindexPending]): it is only set while it is false, and only
+     * [noteHealthy] clears it. So a rebuild that fixes the datadir clears the
+     * latch, and a rebuild that does NOT fix it leaves the latch set, arms
+     * nothing further, and lets the bring-up loop fail and stop exactly as it
+     * did before. One attempt, ever, per broken datadir.
+     *
+     * Nothing here touches the wallet. A reindex rebuilds blocks and chainstate
+     * from the block files; wallet.dat is a separate sqlite database that Core
+     * does not read during it, so keys and history are not at risk either way.
+     *
+     * @return true if a rebuild was just armed for the next attempt.
+     */
+    fun armReindexIfNeeded(): Boolean {
+        if (!demandedReindex()) return false
+        if (prefs.nodeReindexPending) {
+            // The rebuild already ran and the node still will not open the
+            // datadir. Retrying it would only burn battery on the same answer.
+            Log.w(TAG, "datadir still unusable after a $REINDEX_ARG run; not retrying")
+            return false
+        }
+        Log.w(TAG, "bitcoind asked for a rebuild; arming one $REINDEX_ARG")
+        prefs.nodeReindexPending = true
+        return true
+    }
+
+    /**
+     * A node is serving RPC, so whatever was wrong with the datadir is not wrong
+     * any more. Clearing the latch here rather than at spawn time is deliberate:
+     * a rebuild that was started but never finished must still count as owed.
+     */
+    fun noteHealthy() {
+        if (prefs.nodeReindexPending) {
+            Log.i(TAG, "node is up; clearing the $REINDEX_ARG flag")
+            prefs.nodeReindexPending = false
+        }
+    }
+
+    /**
+     * Did bitcoind ask to be restarted with -reindex? [NodeLog.demandsReindex]
+     * holds the patterns and the reasoning; it is pure so it can be tested
+     * against the exact strings Core prints.
+     */
+    private fun demandedReindex(): Boolean =
+        NodeLog.demandsReindex(synchronized(logTail) { logTail.toList() })
 
     /** Short, user-facing reason from bitcoind's own output, if it produced one. */
     private fun lastErrorLine(): String? =
@@ -880,6 +949,14 @@ class NodeController(context: Context) {
         private const val SHUTDOWN_RPC_TIMEOUT_MS = 5_000   // onDestroy joins for 8 s
         private const val ATTACHED_STOP_WAIT_MS = 30_000L
         private const val STALE_TERM_WAIT_MS = 10_000L
+
+        /**
+         * Full -reindex, not -reindex-chainstate. The cheaper flag only rebuilds
+         * the chainstate and cannot help when the block files themselves are the
+         * problem, and on a chain this size (~3k blocks, under a megabyte) the
+         * difference is seconds. Recovering from both causes beats saving them.
+         */
+        private const val REINDEX_ARG = "-reindex"
         private const val STATS_TIMEOUT_MS = 10_000
 
         /**

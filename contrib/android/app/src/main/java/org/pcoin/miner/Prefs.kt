@@ -189,6 +189,28 @@ class Prefs(context: Context) {
             sp.edit().putInt(KEY_NODE_PID, value).commit()
         }
 
+    /**
+     * One -reindex is owed to the node on its next start.
+     *
+     * Set when bitcoind exits asking to be restarted with -reindex, cleared the
+     * moment a node serves RPC again. Persisted with commit() because it must
+     * survive the process death it is most likely to follow -- a SIGKILL
+     * mid-flush is what creates the condition in the first place.
+     *
+     * It is a LATCH, not a counter, and that is the whole safety argument: it is
+     * only ever set while it is false, so a rebuild that does not fix the datadir
+     * cannot arm a second one. The bring-up loop then reaches its failure
+     * ceiling and stops with the reason on screen, which is the old behaviour --
+     * self-healing is attempted exactly once and never becomes a loop that
+     * rebuilds the chain forever on a phone.
+     */
+    var nodeReindexPending: Boolean
+        get() = sp.getBoolean(KEY_NODE_REINDEX, false)
+        @Suppress("ApplySharedPref")
+        set(value) {
+            sp.edit().putBoolean(KEY_NODE_REINDEX, value).commit()
+        }
+
     // --------------------------------------------------------- address book
 
     /**
@@ -386,6 +408,7 @@ class Prefs(context: Context) {
         private const val KEY_PHRASE_CONFIRMED = "phrase_confirmed"
         private const val KEY_PHRASE_DISMISSED = "phrase_prompt_dismissed"
         private const val KEY_HAS_LEGACY = "has_legacy_wallet"
+        private const val KEY_NODE_REINDEX = "node_reindex_pending"
         private const val KEY_ADDRESS_BOOK = "address_book"
         private const val KEY_ADDRESS_BOOK_CORRUPT = "address_book_corrupt"
 

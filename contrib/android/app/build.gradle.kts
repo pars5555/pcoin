@@ -84,8 +84,13 @@ android {
             // Reset to 1 with the new applicationId: this is a new app as far as
             // Android is concerned, and carrying 2 over would claim an upgrade
             // history it does not have.
-            versionCode = 2
-            versionName = "0.3.1"
+            // 0.3.2: the one-shot -reindex recovery lands in src/main, which
+            // both flavours compile. The miner's node bring-up genuinely
+            // changes, so its version moves too -- a shared-code fix that bumps
+            // only one flavour is how two different binaries end up claiming
+            // one version, which is the failure this block already records.
+            versionCode = 3
+            versionName = "0.3.2"
 
             buildConfigField("boolean", "MINING", "true")
             // The miner keeps 9443. This half of the change is a provable no-op
@@ -117,8 +122,10 @@ android {
             // without this line, and shipping a second, different 0.2.1 while
             // adding the feature whose job is telling builds apart would be an
             // odd way to start.
-            versionCode = 5
-            versionName = "0.2.2"
+            // 0.2.3: one-shot -reindex recovery, so a datadir Core refuses to
+            // open repairs itself instead of leaving the wallet with no node.
+            versionCode = 6
+            versionName = "0.2.3"
 
             buildConfigField("boolean", "MINING", "false")
             // The ONLY genuine collision between the two apps. bitcoind is

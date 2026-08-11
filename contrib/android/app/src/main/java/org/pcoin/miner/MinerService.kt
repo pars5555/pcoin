@@ -287,6 +287,28 @@ class MinerService : Service() {
                 // echoed a descriptor back would be about the worst place for
                 // it to land.
                 val why = Redact.text(t.message ?: t.javaClass.simpleName).take(200)
+
+                // A datadir that Core refuses to open is the one failure in this
+                // loop that retrying identically can never fix and that the node
+                // can fix itself. Arming resets the failure count so the rebuild
+                // gets a full budget rather than dying on the last attempt --
+                // safe because arming is a latch that can fire only once per
+                // broken datadir, so this cannot extend the loop indefinitely.
+                if (node.armReindexIfNeeded()) {
+                    bringUpFailures = 0
+                    MinerState.update {
+                        it.copy(
+                            gate = Gate.ERROR,
+                            detail = "rebuilding the block database after: $why",
+                            hashesPerSec = 0.0,
+                            threads = 0,
+                        )
+                    }
+                    pushNotification()
+                    if (!sleepInterruptibly(RETRY_DELAY_MS)) return
+                    continue
+                }
+
                 if (bringUpFailures >= MAX_BRINGUP_FAILURES) {
                     // Looping forever on an unrecoverable node (corrupt datadir
                     // asking for -reindex, for example) burns battery and tells
@@ -335,12 +357,19 @@ class MinerService : Service() {
                     "Stop it before mining from this app."
             )
             NodeController.Probe.NO_NODE -> {
-                setStarting("launching node")
+                // Say which one it is. A rebuild can hold RPC shut for a while,
+                // and "launching node" for a minute reads as a hang.
+                setStarting(
+                    if (node.reindexArmed) "rebuilding the block database" else "launching node"
+                )
                 node.spawn()
             }
         }
 
         node.awaitRpc { phase -> setStarting(phase) }
+
+        // RPC answered, so the datadir is usable. Retires any owed rebuild.
+        node.noteHealthy()
 
         // The node we just attached to may have been left mining by a previous
         // instance of this service (START_STICKY restart, process kill). Nothing
