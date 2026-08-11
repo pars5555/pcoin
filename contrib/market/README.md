@@ -15,7 +15,14 @@ contrib/market/
   ladder-test.mjs   40 cases against a real database. Refuses to run on a dirty ladder
   ladder-sim.mjs    simulate a sale to exercise the whole chain without spending money
   gen_ladder.mjs    generates the ladder and emits ladder.sql. Seeded, reproducible
-  ladder.sql        the generated schema + 100 rungs
+  ladder.sql        the generated schema + 100 rungs (current: $0.015 floor)
+  qr.mjs            dependency-free QR encoder for 2FA enrolment
+  qr-test.mjs       verifies qr.mjs against the reference library, module for module
+  admin.mjs         the admin panel: auth + TOTP, list views, settings, audit
+  settings.mjs      live settings, with bounds and meanings
+  delivery.mjs      hot wallet, auto-send, never-send-twice, backing
+  notify.mjs        Telegram, to a PRIVATE channel only
+  market-admin.mjs  the operator CLI
   index.html        the page, including the average-price calculator
   style.css
 ```
@@ -40,13 +47,12 @@ the curve and no purchase ever arrives at a stated price. There is no way to
 express that requirement on an AMM, at any parameterisation.
 
 A **finite order-book ladder** terminates. 100 rungs holding exactly 100,000 PCN
-between them, priced geometrically from $0.001 to $10.00. When the last rung is
+between them, priced geometrically from $0.015 to $10.00. When the last rung is
 empty the price *is* $10.00, because there is nothing left to sell.
 
 The second thing it buys is protection. On the AMM, 50,000 PCN cost about **$51**
 — one person could have taken half the inventory for the price of a meal. On the
-ladder the same 50,000 costs about **$1,084**, because it climbs 50 rungs. That
-twenty-fold gap is the point of the exercise.
+ladder the same 50,000 costs about **$5,735**, because it climbs 50 rungs.
 
 ## 2. The ladder itself
 
@@ -54,15 +60,44 @@ twenty-fold gap is the point of the exercise.
 |---|---|
 | inventory | exactly **100,000 PCN**, one-way |
 | rungs | **100** |
-| price of rung *i* | `0.001 × 10000^(i/99)` |
-| step | **+9.7499%** per rung |
-| first / last | **$0.001** → **$10.00** |
+| price of rung *i* | `0.015 × (10/0.015)^(i/99)` |
+| step | **+6.7885%** per rung |
+| first / last | **$0.015** → **$10.00** |
 | quantity per rung | ~1,000, randomised within 800–1,400 |
-| revenue if fully sold | **$112,572.36** (average **$1.1257**/PCN) |
+| revenue if fully sold | **$156,924.07** (average **$1.5692**/PCN) |
 
-Reproduce any of it with `node gen_ladder.mjs --report`. The generator is seeded,
-so re-running it emits byte-identical SQL — a ladder nobody can regenerate is a
-ladder nobody can audit.
+### Why the floor is $0.015 and not $0.001
+
+The first ladder started at $0.001 and **could not trade**. At that floor the
+smallest order a payment gateway will process (~$13) buys about 9% of the
+entire inventory, so a single $20 order climbed **12 rungs and moved the price
++178%**. The divergence interlock then paused sales for ~9 hours while
+`serviceRate` walked to catch up. One order, then the shop shut.
+
+$0.015 is not a preference. It is where the chain's own numbers meet:
+
+- mining issues **7,200 PCN/day** (144 blocks × 50)
+- the four services were expected to take **~$100/day** in PCN
+- $100 ÷ 7,200 = **$0.0139** — the price at which new supply is exactly
+  absorbed by real demand
+
+At that floor a $20 order buys ~1,300 PCN, moves **one rung (+6.8%)**, and
+three orders clear before the gate pauses. Measured, not predicted.
+
+The same arithmetic is the ongoing cost of the price: `serviceRate` × 7,200
+coins/day is what mining accrues against the services every day — about
+**$101/day** at $0.015, against $7.20/day at $0.001. That is what is being paid
+for network security, and it is why a floor far below utility value quietly
+kills the network it is trying to bootstrap.
+
+Reproduce any of it with `node gen_ladder.mjs --report`, which also prints what
+an ordinary order does to the price — the property the floor was chosen for. The
+generator is seeded, so re-running it emits byte-identical SQL: a ladder nobody
+can regenerate is a ladder nobody can audit.
+
+Replacing a live ladder is guarded. The swap refuses unless `qty_sold`,
+`qty_reserved` and the fills table are all zero, and it copies the old rungs to
+a timestamped `ladder_rungs_bak_*` table first.
 
 **Inventory is one-way.** Coins sold back through the buyback do **not** return
 to the ladder. If they did, a buyer could walk the marginal price up and then
@@ -77,7 +112,7 @@ both are worth keeping in mind if the ladder is ever regenerated.
 110,000 PCN against a 100,000 budget. The true-up then claws 10,000 back out of
 the tail, which pins the *most expensive* rungs at the 800 floor and shifts
 inventory into the cheap end. Revenue came out **$91.5k** instead of $112.5k, and
-50,000 PCN cost $767 instead of $1,084. Quantities are now drawn from a
+50,000 PCN cost far less than it should. Quantities are now drawn from a
 triangular distribution with its mode at 800, whose mean is exactly 1,000 and
 which still spans the whole stated band.
 
@@ -178,13 +213,15 @@ Four properties matter:
 `saleBlockedReason`, and the page greys the button out and explains, rather than
 refusing at the final click.
 
-> **Know the throughput consequence.** The bottom rungs are worth well under a
-> dollar, so the $10 minimum order consumes 8 rungs and moves the marginal price
-> from 0.001 to 0.00192 — 92% above the credit rate. Sales then pause until
-> `serviceRate` walks within 20%, roughly **5 hours** at 10%/hour. In practice
-> the ladder sells about one minimum order every five hours until price levels
-> rise. That is a deliberate throttle, and it is tunable: `MAX_DIVERGENCE_PCT`
-> here, `serviceRetuneIntervalHours` and `serviceMaxMovePct` on the oracle.
+> **Know the throughput consequence.** Each order moves the ladder, and
+> `serviceRate` only walks 10% an hour, so the gate throttles trade. At the
+> $0.015 floor a $20 order moves the price +6.8% and **three orders clear before
+> the gate pauses** — sustained, roughly 1.5 orders an hour. At the old $0.001
+> floor the same order moved it +178% and exactly ONE order could be placed
+> before sales stopped for ~9 hours. The floor, the band and the walk rate are
+> one system; changing any of them alone will surprise you. Tunable via
+> `maxDivergencePct` here, `serviceRetuneIntervalHours` and
+> `serviceMaxMovePct` on the oracle.
 
 ## 5. Delivery — how the buyer actually gets the coins
 

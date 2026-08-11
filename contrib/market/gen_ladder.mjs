@@ -1,10 +1,23 @@
 #!/usr/bin/env node
 // Generate the PCoin market ladder and emit it as SQL.
 //
-// Spec (agreed, do not re-derive):
-//   100,000 PCN total, 100 rungs, geometric prices 0.001 -> 10.00,
-//   ratio 10000^(1/99) ~= +9.75%/rung, qty per rung random in [800,1400],
+// Spec:
+//   100,000 PCN total, 100 rungs, geometric prices 0.015 -> 10.00,
+//   ratio (10/0.015)^(1/99) ~= +6.79%/rung, qty per rung random in [800,1400],
 //   totals trued up so the sum is EXACTLY 100,000.
+//
+// WHY THE FLOOR IS 0.015 AND NOT 0.001
+// The first ladder started at 0.001 and could not trade. At that floor the
+// smallest order a payment gateway will process (~$13) buys ~9% of the entire
+// inventory, so a single $20 order climbed 12 rungs and moved the price +178%.
+// The divergence interlock then paused sales for ~9 hours while serviceRate
+// walked to catch up: one order, then the market shut.
+//
+// 0.015 is not a preference, it is where the chain's own numbers meet. Mining
+// issues 7,200 PCN/day (144 blocks x 50). The four services were expected to
+// take ~$100/day in PCN. $100 / 7,200 = $0.0139 -- the price at which new
+// supply is exactly absorbed by real demand. At that floor a $20 order buys
+// ~1,300 PCN, moves about ONE rung, and the market trades continuously.
 //
 // The quantities are random but the generator is SEEDED, so the ladder is
 // reproducible and auditable: re-running this prints byte-identical SQL. A
@@ -12,7 +25,7 @@
 
 const N          = 100;
 const TOTAL      = 100000;      // PCN
-const P0         = 0.001;
+const P0         = 0.015;
 const P_END      = 10.00;
 const QMIN       = 800;
 const QMAX       = 1400;
@@ -106,7 +119,7 @@ const price = Array.from({ length: N }, (_, i) => priceAt(i));
 const sum = qty.reduce((a, b) => a + b, 0);
 if (sum !== TOTAL) throw new Error(`inventory is ${sum}, must be ${TOTAL}`);
 if (qty.some(v => v < QMIN || v > QMAX)) throw new Error('a rung is outside [800,1400]');
-if (Math.abs(price[0] - P0) > 1e-12) throw new Error('first rung is not 0.001');
+if (Math.abs(price[0] - P0) > 1e-12) throw new Error(`first rung is not ${P0}`);
 if (Math.abs(price[N - 1] - P_END) > 1e-9) throw new Error('last rung is not 10.00');
 
 const revenue = qty.reduce((a, v, i) => a + v * price[i], 0);
@@ -131,11 +144,31 @@ if (process.argv.includes('--report')) {
   console.log(`price last      ${price[N - 1].toFixed(10)}`);
   console.log(`revenue if all  $${revenue.toFixed(2)}  (avg $${(revenue / TOTAL).toFixed(6)}/PCN)`);
   const h = takePcn(50000);
-  console.log(`\n-- handoff sanity check: buy 50,000 PCN --`);
-  console.log(`rungs consumed  ${h.rungs}        (handoff: ~50)`);
-  console.log(`total cost      $${h.cost.toFixed(2)}   (handoff: ~$1,064)`);
-  console.log(`average price   ${h.avg.toFixed(6)}  (handoff: 0.0213)`);
-  console.log(`marginal after  ${h.marginal.toFixed(6)}  (handoff: ~0.0954-0.1047)`);
+  console.log(`\n-- half the ladder: buy 50,000 PCN --`);
+  console.log(`rungs consumed  ${h.rungs}`);
+  console.log(`total cost      $${h.cost.toFixed(2)}`);
+  console.log(`average price   ${h.avg.toFixed(6)}`);
+  console.log(`marginal after  ${h.marginal.toFixed(6)}`);
+  // The property the floor was chosen for: an ordinary order moves about one
+  // rung. At the old 0.001 floor a $20 order crossed twelve of them.
+  console.log(`\n-- what an ordinary order does (the reason for this floor) --`);
+  for (const usd of [20, 50, 100, 200]) {
+    let left = usd, got = 0, rungs = 0, i = 0;
+    const before = price[0];
+    for (; i < N && left > 1e-9; i++) {
+      const take = Math.min(qty[i], left / price[i]);
+      if (take <= 0) break;
+      got += take; left -= take * price[i]; rungs++;
+      // A partly-consumed rung is still the marginal one: the next buyer pays
+      // ITS price, not the next rung's. Using price[i+1] here overstated the
+      // move by a full rung.
+      if (take < qty[i] - 1e-9) break;
+    }
+    const after = (i < N) ? price[i] : price[N - 1];
+    console.log(`  $${String(usd).padEnd(4)} -> ${got.toFixed(0).padStart(6)} PCN over ` +
+                `${String(rungs).padStart(2)} rung(s), price ${before.toFixed(4)} -> ${after.toFixed(4)} ` +
+                `(+${((after / before - 1) * 100).toFixed(1)}%)`);
+  }
   console.log(`\n-- first 5 and last 3 rungs --`);
   for (const i of [0, 1, 2, 3, 4, N - 3, N - 2, N - 1])
     console.log(`  #${String(i).padStart(3)}  ${price[i].toFixed(10)}  x ${qty[i]}`);

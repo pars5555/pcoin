@@ -56,7 +56,9 @@
       <label for="usd">Amount in USD</label>
       <input id="usd" type="number" min="10" step="1" value="10" oninput="quote()">
       <label for="addr">Your PCN address</label>
-      <input id="addr" class="mono" placeholder="pc1q…" spellcheck="false">
+      <input id="addr" class="mono" placeholder="pc1q…" spellcheck="false"
+             autocapitalize="none" autocorrect="off" oninput="checkAddr()">
+      <div class="s" id="addrNote"></div>
       <div class="note" id="quoteBox">Enter an amount to see what you receive.</div>
       <button id="buyBtn" onclick="buy()">Continue to payment</button>
       <div class="msg" id="buyMsg"></div>
@@ -89,6 +91,10 @@
 
 <script>
 let mode = 'in';
+// Server-owned limits, fetched at load. The defaults only cover the instant
+// before that returns; every one is overwritten from /api/ladder/state.
+let LIMITS = { minOrderUsd: 20, maxOrderUsd: 2000, maxOrderPcn: 12000,
+               maxOrderUsdNow: null, autoMaxUsd: 25 };
 const $ = id => document.getElementById(id);
 const show = (el, cls, text) => { el.className = 'msg ' + cls; el.textContent = text; };
 
@@ -151,6 +157,62 @@ function renderOrders(list) {
 
 const money = n => n < 0.01 ? '$' + n.toFixed(6) : '$' + n.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
 
+// bech32, so a wrong address is caught while it is being typed rather than
+// after the amount has been chosen and the button pressed. Deliberately the
+// same rules as the server: this is a courtesy, never the authority.
+const B32 = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+const B32GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+function b32polymod(v) {
+  let chk = 1;
+  for (const x of v) {
+    const b = chk >> 25;
+    chk = ((chk & 0x1ffffff) << 5) ^ x;
+    for (let i = 0; i < 5; i++) if ((b >> i) & 1) chk ^= B32GEN[i];
+  }
+  return chk;
+}
+/** Strips whitespace AND the invisible characters that ride along with a
+ *  copy-paste from a chat window or a PDF — a zero-width space in an address
+ *  is indistinguishable from a typo on screen and rejects a perfectly good
+ *  address with no way for anyone to see why. */
+function cleanAddr(s) {
+  return String(s || '').replace(/[\s​-‏⁠﻿]/g, '').toLowerCase();
+}
+function addrValid(raw) {
+  const s = cleanAddr(raw);
+  if (s.length < 14 || s.length > 90) return false;
+  const pos = s.lastIndexOf('1');
+  if (pos < 1 || s.slice(0, pos) !== 'pc') return false;
+  const data = [];
+  for (const c of s.slice(pos + 1)) {
+    const i = B32.indexOf(c);
+    if (i < 0) return false;
+    data.push(i);
+  }
+  if (data.length < 6) return false;
+  const hrp = 'pc', a = [], b = [];
+  for (const c of hrp) { a.push(c.charCodeAt(0) >> 5); b.push(c.charCodeAt(0) & 31); }
+  const chk = b32polymod([...a, 0, ...b, ...data]);
+  return chk === 1 || chk === 0x2bc830a3;
+}
+function checkAddr() {
+  const raw = $('addr').value;
+  const s = cleanAddr(raw);
+  const note = $('addrNote');
+  if (!s) { note.textContent = ''; note.className = 's'; return true; }
+  if (raw.trim() !== raw || /[​-‏⁠﻿]/.test(raw)) {
+    // Fix it for them rather than complaining about something invisible.
+    $('addr').value = s;
+  }
+  const ok = addrValid(s);
+  note.textContent = ok ? '✓ valid PCN address'
+    : !s.startsWith('pc1') ? '✗ a PCN address starts with "pc1"'
+    : '✗ that address fails its checksum — a character is wrong';
+  note.className = ok ? 's ok' : 's err';
+  note.style.color = ok ? 'var(--ok, #2f6f43)' : 'var(--bad, #a3342a)';
+  return ok;
+}
+
 let calcTimer;
 function calc() {
   clearTimeout(calcTimer);
@@ -180,7 +242,14 @@ function quote() {
   clearTimeout(quoteTimer);
   quoteTimer = setTimeout(async () => {
     const usd = Number($('usd').value);
-    if (!(usd >= 10)) { $('quoteBox').innerHTML = 'Minimum order is <b>$10</b>.'; return; }
+    // LIMITS is filled from /api/ladder/state at load. Never hardcode a number
+    // the server owns: this line said $10 for hours after the minimum became
+    // $20, so the page argued with the API in front of a customer.
+    if (!(usd >= LIMITS.minOrderUsd)) {
+      $('quoteBox').innerHTML = 'Minimum order is <b>$' + LIMITS.minOrderUsd + '</b>.';
+      $('buyBtn').disabled = true;
+      return;
+    }
     try {
       const q = await api('/api/quote?usd=' + usd);
       $('quoteBox').innerHTML = 'You receive about <b>' + Math.round(q.pcn).toLocaleString()
@@ -198,10 +267,14 @@ function quote() {
 }
 
 async function buy() {
+  if (!checkAddr() || !$('addr').value.trim()) {
+    show($('buyMsg'), 'err', 'Enter a valid PCN address first — it starts with "pc1".');
+    return;
+  }
   const btn = $('buyBtn'); btn.disabled = true;
   try {
     const r = await api('/api/buy', { method: 'POST', body: JSON.stringify({
-      usd: Number($('usd').value), address: $('addr').value.trim() }) });
+      usd: Number($('usd').value), address: cleanAddr($('addr').value) }) });
     show($('buyMsg'), 'ok', 'Order created. Opening payment…');
     location.href = r.invoiceUrl;
   } catch (e) { show($('buyMsg'), 'err', e.message); }
@@ -223,6 +296,9 @@ $('signout').onclick = async () => { await fetch('/api/logout'); refresh(); };
     $('soldPct').textContent = l.pctSold.toFixed(2) + '% of 100,000 PCN sold';
     // Every limit comes from the server, never from the markup. A number typed
     // into the HTML goes stale the first time a setting changes.
+    LIMITS = { minOrderUsd: l.minOrderUsd, maxOrderUsd: l.maxOrderUsd,
+               maxOrderPcn: l.maxOrderPcn, maxOrderUsdNow: l.maxOrderUsdNow,
+               autoMaxUsd: l.autoMaxUsd };
     $('minOrder').textContent = '$' + l.minOrderUsd + ' \u2013 '
       + Number(l.maxOrderPcn).toLocaleString() + ' PCN';
     $('minOrderNote').textContent = 'minimum $' + l.minOrderUsd + ' \u00b7 at most '

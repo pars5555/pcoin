@@ -57,7 +57,32 @@ export const DEFS = {
     help: 'After this an unpaid order expires and its PCN goes back on the ladder.' },
   retireSpentCoins:    { type: 'bool', def: true,
     label: 'Retire spent coins',
-    help: 'Coins spent on the services never re-enter the sale inventory, so usage lifts the price.' },
+    help: 'When customers spend PCN on the services, withdraw a matching share of the ladder from ' +
+          'sale so usage lifts the price. The coins themselves stay in your treasury — this only ' +
+          'takes inventory off the ladder.' },
+  retireRatioPct:      { type: 'num', def: 10,   min: 0,    max: 100,
+    label: 'Retire ratio (% of PCN spent)',
+    help: 'A retired coin can never be sold for money, so this converts revenue into price. At ' +
+          '100% and $100/day of spending the whole ladder is gone in about a fortnight with ' +
+          'nobody having bought anything. At 10% it lasts around 150 days of usage.' },
+  retireDailyCapPcn:   { type: 'num', def: 2000, min: 0,    max: 100000,
+    label: 'Retire daily cap (PCN)',
+    help: 'The most usage may take off the ladder in one UTC day, whatever arrives. 2,000 PCN is ' +
+          '2% of the ladder — roughly two rungs, so the price can never leap on a single busy day.' },
+  retireMinConf:       { type: 'num', def: 6,    min: 1,    max: 100,
+    label: 'Retire confirmations',
+    help: 'How deep a block must be before its payments count. Reorgs are routine on this chain, ' +
+          'and inventory retired for a payment that later vanishes cannot be un-retired quietly.' },
+  retireSystems:       { type: 'list', def: '', max: 20, kind: 'names',
+    label: 'Systems whose spending counts',
+    help: 'Which address pools count as customers SPENDING. The market’s own pool must never ' +
+          'be here: payments there are people buying from us, not spending on a service.' },
+  backingCapPcn:       { type: 'num', def: 0,    min: 0,    max: 100000000,
+    label: 'Deliverable cap (PCN) — 0 = watch addresses instead',
+    help: 'The maximum PCN the market may owe at once. Set this and the server stops trying to ' +
+          'read your wallet: you know what you can deliver, it does not. Watching addresses ' +
+          'looks smarter and is not — every spend you make sends change to a NEW address the ' +
+          'server has never heard of, and the figure silently collapses. That happened twice.' },
   backingAddresses:    { type: 'list', def: '', max: 200,
     label: 'Backing addresses',
     help: 'One PCN address per line. Their combined balance, plus the hot wallet, is what the ' +
@@ -103,8 +128,14 @@ export function makeSettings(pool, log = console) {
     if (!d) throw new Error(`unknown setting ${key}`);
     if (d.type === 'list') {
       const items = String(raw ?? '').split(/[\s,;]+/).map(x => x.trim()).filter(Boolean);
-      const bad = items.filter(x => !ADDR_RE.test(x));
-      if (bad.length) throw new Error(`not PCN addresses: ${bad.slice(0, 3).join(', ')}`);
+      // Two kinds of list: PCN addresses, and plain system names.
+      const re = d.kind === 'names' ? /^[a-z0-9_-]{1,32}$/i : ADDR_RE;
+      const bad = items.filter(x => !re.test(x));
+      if (bad.length) {
+        throw new Error(d.kind === 'names'
+          ? `not valid system names: ${bad.slice(0, 3).join(', ')}`
+          : `not PCN addresses: ${bad.slice(0, 3).join(', ')}`);
+      }
       if (items.length > (d.max || 200)) throw new Error(`at most ${d.max || 200} entries`);
       return [...new Set(items)].join('\n');       // de-duplicated, one per line
     }

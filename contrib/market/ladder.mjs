@@ -7,17 +7,21 @@
 // 100,000 sold" is not a point on it and no purchase ever reaches a stated
 // price. The requirement was that the price be $10.00 when 100,000 PCN are
 // gone. That needs a finite instrument. 100 rungs, exactly 100,000 PCN,
-// geometric from $0.001 to $10.00 at +9.75% a rung.
+// geometric from $0.015 to $10.00 at +6.79% a rung.
 //
 // WHAT IT BUYS
-// 50,000 PCN costs ~$1,084 here against ~$51 on the AMM. Twenty times. The gap
-// is the whole point: it stops one buyer sweeping the inventory at the floor.
+// 50,000 PCN costs ~$5,735 here against ~$51 on the AMM. The gap is the whole
+// point: it stops one buyer sweeping the inventory at the floor.
 //
-// INVENTORY IS ONE-WAY
-// Coins sold back through the buyback do NOT return to the ladder. The buyback
-// is the AMM's reserve and stays there. Returning them would let a buyer walk
-// the marginal price back down after moving it up, and "exactly 100,000 PCN"
-// would stop being true.
+// INVENTORY ONLY EVER SHRINKS
+// Three things claim a rung and none of them ever gives it back:
+//   qty_sold      someone paid for it
+//   qty_reserved  an unpaid order holds it, until it expires
+//   qty_retired   customers spent PCN on the services, so that much came off
+//                 sale (see retire.mjs -- the coins are NOT destroyed, they sit
+//                 in the treasury; only the ladder shrinks)
+// Coins sold back through the buyback do NOT return either. Returning any of
+// them would let a buyer walk the marginal price up and then back down.
 //
 // ARITHMETIC
 // Quantities are integer units of 1e-8 PCN. Walking a ladder in floats and
@@ -31,8 +35,13 @@ export const ORDER_TTL_HOURS = 24;      // unpaid orders release their inventory
 export const toUnits = pcn => Math.round(Number(pcn) * UNITS);
 export const fromUnits = u => u / UNITS;
 
+// Retired inventory is withdrawn from sale as surely as sold inventory is, so
+// it comes off availability too. Without this the walk would happily sell coins
+// that usage has already taken off the ladder, and the CHECK constraint would
+// abort a transaction someone had paid for.
 const availUnits = r =>
-  toUnits(Number(r.qty_total)) - toUnits(Number(r.qty_sold)) - toUnits(Number(r.qty_reserved));
+  toUnits(Number(r.qty_total)) - toUnits(Number(r.qty_sold))
+  - toUnits(Number(r.qty_reserved)) - toUnits(Number(r.qty_retired ?? 0));
 
 function finish(rungs, fills, gotUnits, cost, usdLeft, pcnShort = 0) {
   // Marginal price AFTER this walk: the first rung still holding stock once
@@ -97,9 +106,9 @@ export function makeLadder(pool) {
    *  hitting one rung serialise instead of both being told it is available. */
   async function rungsWithStock(conn = pool, forUpdate = false) {
     const [rows] = await conn.query(
-      `SELECT rung_no, price, qty_total, qty_sold, qty_reserved
+      `SELECT rung_no, price, qty_total, qty_sold, qty_reserved, qty_retired
          FROM ladder_rungs
-        WHERE qty_sold + qty_reserved < qty_total
+        WHERE qty_sold + qty_reserved + qty_retired < qty_total
         ORDER BY rung_no` + (forUpdate ? ' FOR UPDATE' : ''));
     return rows;
   }
@@ -114,20 +123,31 @@ export function makeLadder(pool) {
    *  only the published number ignores them. */
   async function ladderState(conn = pool) {
     const [[agg]] = await conn.query(
-      `SELECT SUM(qty_total) tot, SUM(qty_sold) sold, SUM(qty_reserved) resv FROM ladder_rungs`);
+      `SELECT SUM(qty_total) tot, SUM(qty_sold) sold, SUM(qty_reserved) resv,
+              SUM(qty_retired) retd FROM ladder_rungs`);
+    // The published price counts SOLD and RETIRED, never reservations. Selling
+    // and usage are both real, irreversible reductions in what is for sale;
+    // a reservation is a promise that may expire, and letting it move the
+    // published number would let anyone walk the price with orders they never
+    // pay for.
     const [[marg]] = await conn.query(
-      `SELECT price FROM ladder_rungs WHERE qty_sold < qty_total ORDER BY rung_no LIMIT 1`);
+      `SELECT price FROM ladder_rungs WHERE qty_sold + qty_retired < qty_total
+        ORDER BY rung_no LIMIT 1`);
     const [[next]] = await conn.query(
-      `SELECT price FROM ladder_rungs WHERE qty_sold + qty_reserved < qty_total ORDER BY rung_no LIMIT 1`);
-    const tot = Number(agg.tot), sold = Number(agg.sold), resv = Number(agg.resv);
+      `SELECT price FROM ladder_rungs WHERE qty_sold + qty_reserved + qty_retired < qty_total
+        ORDER BY rung_no LIMIT 1`);
+    const tot = Number(agg.tot), sold = Number(agg.sold), resv = Number(agg.resv),
+          retd = Number(agg.retd || 0);
     return {
       marginalPrice: marg ? Number(marg.price) : null,   // null = inventory gone
       nextFillPrice: next ? Number(next.price) : null,   // what a buyer pays next
       totalPcn: tot,
       soldPcn: sold,
       reservedPcn: resv,
-      remainingPcn: tot - sold - resv,
+      retiredPcn: retd,
+      remainingPcn: tot - sold - resv - retd,
       pctSold: tot ? Number(((sold / tot) * 100).toFixed(4)) : 0,
+      pctRetired: tot ? Number(((retd / tot) * 100).toFixed(4)) : 0,
       at: new Date().toISOString(),
     };
   }

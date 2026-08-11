@@ -49,25 +49,40 @@ try {
   const rungs = await L.rungsWithStock();
   ok('100 rungs have stock', rungs.length === 100);
 
-  const w50k = walkPcn(rungs, 50000);
-  ok('50,000 PCN consumes 50 rungs', w50k.rungsConsumed === 50, `got ${w50k.rungsConsumed}`);
-  ok('50,000 PCN costs ~$1,084', near(w50k.cost, 1083.70, 1), `got ${w50k.cost.toFixed(2)}`);
-  ok('average price ~0.0217', near(w50k.avgPrice, 0.021674, 1e-4), `got ${w50k.avgPrice}`);
+  // Expectations are DERIVED from the rungs table, not hardcoded. The first
+  // version of this test pinned the dollar figures of the 0.001 ladder, so
+  // regenerating the ladder turned five passing tests into five failures that
+  // said nothing about correctness. What actually has to hold is that the walk
+  // agrees with the table it walks.
+  const [[agg]] = await pool.query(
+    `SELECT SUM(qty_total) tot, SUM(qty_total*price) rev, MIN(price) floor FROM ladder_rungs`);
+  const TOTAL_PCN = Number(agg.tot), TOTAL_REV = Number(agg.rev), FLOOR = Number(agg.floor);
+
+  const w50k = walkPcn(rungs, TOTAL_PCN / 2);
+  ok('half the inventory consumes half the rungs',
+     w50k.rungsConsumed >= 45 && w50k.rungsConsumed <= 55, `got ${w50k.rungsConsumed}`);
+  ok('half the inventory costs less than half the revenue (the ladder rises)',
+     w50k.cost < TOTAL_REV / 2, `${w50k.cost.toFixed(2)} vs ${(TOTAL_REV / 2).toFixed(2)}`);
+  ok('average price is above the floor and below the top',
+     w50k.avgPrice > FLOOR && w50k.avgPrice < 10, `got ${w50k.avgPrice}`);
   ok('nothing unfilled', w50k.pcnUnfilled === 0);
 
-  const wAll = walkPcn(rungs, 100000);
-  ok('100,000 PCN empties the ladder', wAll.exhausted === true);
-  ok('full ladder is ~$112,572', near(wAll.cost, 112572.36, 1), `got ${wAll.cost.toFixed(2)}`);
+  const wAll = walkPcn(rungs, TOTAL_PCN);
+  ok('the whole inventory empties the ladder', wAll.exhausted === true);
+  ok('a full sweep costs exactly what the table says',
+     near(wAll.cost, TOTAL_REV, 0.01), `walk ${wAll.cost.toFixed(2)} vs table ${TOTAL_REV.toFixed(2)}`);
   ok('marginal after full sweep is null', wAll.marginalAfter === null);
 
-  const wOver = walkPcn(rungs, 150000);
-  ok('over-buy reports the shortfall', near(wOver.pcnUnfilled, 50000, 1), `got ${wOver.pcnUnfilled}`);
-  ok('over-buy still only fills 100,000', near(wOver.pcn, 100000, 1));
+  const wOver = walkPcn(rungs, TOTAL_PCN * 1.5);
+  ok('over-buy reports the shortfall', near(wOver.pcnUnfilled, TOTAL_PCN / 2, 1),
+     `got ${wOver.pcnUnfilled}`);
+  ok('over-buy fills no more than the inventory', near(wOver.pcn, TOTAL_PCN, 1));
 
-  const wUsd = walkUsd(rungs, 10);
-  ok('$10 fills completely', wUsd.usdUnfilled < 0.001, `left ${wUsd.usdUnfilled}`);
-  ok('$10 buys ~7,700 PCN', wUsd.pcn > 5000 && wUsd.pcn < 12000, `got ${wUsd.pcn.toFixed(0)}`);
-  ok('$10 costs $10', near(wUsd.cost, 10, 0.01), `got ${wUsd.cost}`);
+  const wUsd = walkUsd(rungs, 20);
+  ok('$20 fills completely', wUsd.usdUnfilled < 0.001, `left ${wUsd.usdUnfilled}`);
+  ok('$20 buys roughly what the floor implies',
+     wUsd.pcn > 20 / FLOOR * 0.7 && wUsd.pcn < 20 / FLOOR, `got ${wUsd.pcn.toFixed(0)}`);
+  ok('$20 costs $20', near(wUsd.cost, 20, 0.01), `got ${wUsd.cost}`);
 
   // ── 2. reserve ───────────────────────────────────────────────────────────
   console.log('\n2. reserve');
@@ -81,8 +96,8 @@ try {
   ok('reservation shows as reserved', near(s1.reservedPcn, r1.pcn, 0.01), `${s1.reservedPcn} vs ${r1.pcn}`);
   ok('reservation does NOT count as sold', s1.soldPcn === 0);
   ok('published marginal price is unmoved by a reservation',
-     s1.marginalPrice === 0.001, `got ${s1.marginalPrice}`);
-  ok('next fill price HAS moved', s1.nextFillPrice > 0.001, `got ${s1.nextFillPrice}`);
+     s1.marginalPrice === FLOOR, `got ${s1.marginalPrice}, floor ${FLOOR}`);
+  ok('next fill price HAS moved', s1.nextFillPrice > FLOOR, `got ${s1.nextFillPrice}`);
   await invariants('after reserve');
 
   // ── 3. settle ────────────────────────────────────────────────────────────
@@ -92,7 +107,7 @@ try {
   const s2 = await L.ladderState();
   ok('sold now reflects the order', near(s2.soldPcn, r1.pcn, 0.01));
   ok('reserved is back to zero', near(s2.reservedPcn, 0, 0.0001), `got ${s2.reservedPcn}`);
-  ok('published marginal price moved once SOLD', s2.marginalPrice > 0.001, `got ${s2.marginalPrice}`);
+  ok('published marginal price moved once SOLD', s2.marginalPrice > FLOOR, `got ${s2.marginalPrice}`);
 
   const n1b = await L.settleLadder('TEST-A');
   ok('settle is idempotent (a retry is a no-op)', n1b === 0, `got ${n1b}`);

@@ -88,9 +88,17 @@ function hrpExpand(h) {
   for (const c of h) { a.push(c.charCodeAt(0) >> 5); b.push(c.charCodeAt(0) & 31); }
   return [...a, 0, ...b];
 }
+/** Strips whitespace and the invisible characters that survive a copy-paste
+ *  from a chat window, spreadsheet or PDF. A zero-width space inside an address
+ *  is impossible to see and rejects a perfectly good address, leaving the
+ *  customer staring at a field that looks exactly right. */
+export function cleanAddress(s) {
+  return String(s ?? '').replace(/[\s​-‏⁠﻿]/g, '');
+}
+
 function validAddress(addr) {
   if (typeof addr !== 'string') return false;
-  const s = addr.trim();
+  const s = cleanAddress(addr);
   if (s.length < 14 || s.length > 90) return false;
   if (s !== s.toLowerCase() && s !== s.toUpperCase()) return false;
   const l = s.toLowerCase();
@@ -202,6 +210,16 @@ function tooMuchPcn(rungs, pcn) {
          `$${atCap.cost.toFixed(2)} at today's prices. Larger holdings are built up over ` +
          `several orders, so no single buyer takes the ladder at the floor.`;
 }
+
+// ── retire-on-spend ────────────────────────────────────────────────────────
+// Watches the chain for customers paying the services and withdraws a share of
+// the ladder from sale, so real usage lifts the price. Every 10 minutes: often
+// enough to track demand, far less often than blocks arrive, and the scan is
+// idempotent so a missed run costs nothing but lag.
+import { makeRetire } from './retire.mjs';
+const R = makeRetire({ pool, node, settings: S, notify });
+setInterval(() => R.scan().catch(e => console.error('[retire]', e.message)),
+            10 * 60 * 1000).unref?.();
 
 // ── admin panel ────────────────────────────────────────────────────────────
 import { makeAdmin } from './admin.mjs';
@@ -560,10 +578,21 @@ createServer(async (req, res) => {
             // `awaiting_delivery` row -- so the same rungs could be handed out
             // twice, once here and once to whoever bought them after the
             // release. The state has to be visible where the decision is made.
-            await q(`UPDATE orders SET status='needs_review' WHERE order_id=?`, [d.order_id]);
+            // The reason has to reach the person who authorises the spend, and
+            // that person works from the orders table and Telegram -- not from
+            // journalctl. A console line here left the order looking like any
+            // other awaiting_delivery row.
+            await q(`UPDATE orders SET status='needs_review', delivery_error=? WHERE order_id=?`,
+                    ['UNBACKED: the ladder reservation was released before the payment confirmed, ' +
+                     'so these rungs may already have been sold to someone else', d.order_id]);
             console.error(`[ladder] UNBACKED PAID ORDER ${d.order_id} -- reservation was ` +
                           `released before payment confirmed. Marked needs_review. DO NOT DELIVER ` +
                           `until someone has decided what this customer is owed.`);
+            await notify(
+              `🚨 <b>UNBACKED PAID ORDER — do not deliver</b>\n<code>${d.order_id}</code>\n` +
+              `The customer paid, but the ladder reservation had already been released, so the ` +
+              `rungs behind this order may have been sold to somebody else.\n` +
+              `Marked <b>needs_review</b>. Decide what they are owed before sending anything.`);
           }
         }
 
@@ -666,6 +695,9 @@ createServer(async (req, res) => {
       try { capUsd = Number(L.walkPcn(await L.rungsWithStock(), capPcn).cost.toFixed(2)); } catch {}
       return json(res, 200, {
         ...(await L.ladderState()),
+        // The oracle mirrors this so it can stop advertising a buyback that is
+        // switched off. The market owns the switch; one source of truth.
+        buybackOpen: S.get('buybackOpen'),
         minOrderUsd: S.get('minOrderUsd'),
         maxOrderUsd: S.get('maxOrderUsd'),
         maxOrderPcn: capPcn,

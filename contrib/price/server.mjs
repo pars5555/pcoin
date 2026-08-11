@@ -55,6 +55,9 @@ const DEFAULTS = {
   supply: 1000000,          // PCN in the pool -> opening price 0.001
   feeBps: 150,              // 1.5% each way; the spread pays for inventory risk
   dailySellCapUsd: 20,      // one day of mining. Nobody drains a month in an hour
+  // Mirrored from the market every poll; the market owns the switch. Default
+  // FALSE so a fresh origin never advertises a buyback before it is told.
+  buybackOpen: false,
   serviceRate: 0.001,       // what the 4 products credit PCN at
   serviceMaxMovePct: 10,    // per retune step, either direction
   // The ceiling is the ladder's terminal price. It was 0.01, set when the AMM
@@ -329,6 +332,12 @@ async function pollLadder(force = false) {
       // an omitted field would be published as a real-looking value.
       ladderRemainingPcn: isFinite(Number(v.remainingPcn)) ? Number(v.remainingPcn) : null,
       ladderAt: Date.now(),
+      // Mirrored from the market, which owns the switch. Without it this
+      // service keeps publishing buybackPrice, feeBps and
+      // buybackRemainingToday for a facility that is CLOSED -- and anyone
+      // integrating against those would conclude they can sell PCN back at
+      // that price. They cannot.
+      ...(typeof v.buybackOpen === 'boolean' ? { buybackOpen: v.buybackOpen } : {}),
     };
     const snapshot = { ...st };
     Object.assign(st, next);
@@ -419,7 +428,25 @@ function retuneServiceRate(force = false) {
     return { moved: false, target, serviceRate: st.serviceRate, unusableTarget: true };
   }
   const waitMs = (st.serviceRetuneIntervalHours || 0) * 3600e3;
-  const due = force || !st.serviceRateAt || (Date.now() - st.serviceRateAt) >= waitMs;
+
+  // `serviceRateAt = 0` means UNKNOWN, not "go now". Treating it as "due"
+  // defeated the interval entirely: after a restart with 0 on disk, EVERY 60s
+  // poll was due, and the rate walked +10% a MINUTE -- 0.0011 to 0.015 in about
+  // 27 steps. It stopped only because it hit the ladder price. That is verbatim
+  // the failure the comment on serviceRetuneIntervalHours warns about, and it
+  // happened because this line said `!st.serviceRateAt`.
+  //
+  // Unknown now means WAIT a full interval. The clock is started here so it can
+  // never be unknown twice, and `force` (POST /admin/retune) stays the single
+  // deliberate way to step immediately.
+  if (!st.serviceRateAt) {
+    st.serviceRateAt = Date.now();
+    if (!force) {
+      return { moved: false, target, serviceRate: st.serviceRate,
+               armed: true, throttled: true };
+    }
+  }
+  const due = force || (Date.now() - st.serviceRateAt) >= waitMs;
   if (!due) return { moved: false, target, serviceRate: st.serviceRate, throttled: true };
 
   // The ceiling is applied to the TARGET, before the clamp -- not after it.
@@ -475,11 +502,19 @@ createServer(async (req, res) => {
         price: Number(postedPrice().toFixed(9)),
         serviceRate: st.serviceRate,
         currency: 'USD',
-        buybackPrice: Number(price().toFixed(9)),
+        // BUYBACK. Every field below describes selling PCN back to us, and it
+        // is CLOSED unless `buybackOpen` is true. When it is closed the price
+        // is published as null rather than as a number, because a number here
+        // is a quote -- and quoting a price for something you will not do is
+        // the kind of honest-looking lie that ends in an argument with a
+        // customer. The curve's own figures stay visible for transparency.
+        buybackOpen: !!st.buybackOpen,
+        buybackPrice: st.buybackOpen ? Number(price().toFixed(9)) : null,
+        buybackRemainingToday: st.buybackOpen
+          ? Number((st.dailySellCapUsd - st.soldToday).toFixed(2)) : 0,
         reserve: Number(st.reserve.toFixed(6)),
         poolSupply: Number(st.supply.toFixed(6)),
         feeBps: st.feeBps,
-        buybackRemainingToday: Number((st.dailySellCapUsd - st.soldToday).toFixed(2)),
         ladder: ladderKnown() ? {
           price: st.ladderPrice,
           soldPcn: st.ladderSoldPcn,
@@ -491,7 +526,10 @@ createServer(async (req, res) => {
         } : null,
         // Stated so nobody mistakes a posted price for a market price.
         note: 'Posted from a finite 100,000 PCN order-book ladder, not discovered on a market. ' +
-              'PCN is not exchange traded. Buyback is a separate constant-product curve.',
+              'PCN is not exchange traded. ' +
+              (st.buybackOpen
+                ? 'Buying PCN back is a separate constant-product curve at a much lower price.'
+                : 'There is currently NO buyback: PCN cannot be sold back at any price.'),
         role: ROLE,
         // A consumer can tell a fresh price from a remembered one. Both are
         // usable; only one is current, and pretending otherwise is how a stale

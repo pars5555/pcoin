@@ -96,11 +96,30 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
    *  our own bookkeeping, because the question that matters after a crash is
    *  "did a transaction leave", and only the wallet knows that. */
   async function findSentTx(orderId) {
-    // 200 is far more than a day of orders at any plausible volume, and the
-    // window only has to cover the gap between a claim and its record.
-    const txs = await node.wallet('listtransactions', ['*', 200, 0, true]);
-    const hit = (txs || []).find(t => t.comment === orderId && t.category === 'send');
+    // 1000, not 200: this is the ONLY way a crashed send is ever found again,
+    // and a window that silently scrolls past an order turns "already sent"
+    // into "send it again".
+    const txs = await node.wallet('listtransactions', ['*', 1000, 0, true]);
+    // A transaction that was abandoned or conflicted away did NOT pay anyone,
+    // so treating it as a delivery would strand the buyer with nothing while
+    // the order reads 'delivered'. Core marks these explicitly.
+    const hit = (txs || []).find(t =>
+      t.comment === orderId && t.category === 'send' &&
+      t.abandoned !== true && Number(t.confirmations) > -1);
     return hit ? hit.txid : null;
+  }
+
+  /** Did this order already leave the wallet? Three answers, not two.
+   *
+   *  `unknown` is the one that matters. The header of this file promises
+   *  "recovery never retries blind", but every caller that treated a THROWN
+   *  lookup as "nothing was sent" broke that promise — the operator Send
+   *  buttons most of all, since they exist precisely to re-send. An
+   *  unanswerable question must never resolve to the answer that spends money.
+   */
+  async function alreadySent(orderId) {
+    try { return { known: true, txid: await findSentTx(orderId) }; }
+    catch (e) { return { known: false, txid: null, why: e.message }; }
   }
 
   // ── deciding ─────────────────────────────────────────────────────────────
@@ -119,6 +138,37 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
            FROM orders WHERE order_id = ?`, [orderId]);
       if (!order) return { ok: false, why: 'unknown order' };
       if (order.delivered_txid) return { ok: true, already: true, txid: order.delivered_txid };
+
+      // An order that is not awaiting delivery must not be delivered, and must
+      // not be ANNOUNCED as awaiting delivery either. Without this test a
+      // needs_review order -- one flagged UNBACKED / DO NOT DELIVER, or
+      // underpaid -- still produced a cheerful "Manual delivery needed ... Send
+      // it, then record it" message, which is an instruction to hand over coins
+      // whose rungs may already have been re-sold to somebody else.
+      if (order.status !== 'awaiting_delivery') {
+        log.warn(`[delivery] ${orderId} is '${order.status}', not awaiting_delivery — refusing`);
+        return { ok: false, why: `order is '${order.status}', not awaiting delivery`,
+                 status: order.status };
+      }
+
+      // Never spend without looking first, and never let "I could not look"
+      // read as "nothing was sent".
+      const seen = await alreadySent(orderId);
+      if (!seen.known) {
+        await q(`UPDATE orders SET delivery_error=? WHERE order_id=?`,
+                [`could not check the wallet for a previous send: ${seen.why}`.slice(0, 2000), orderId]);
+        await notify(`🔴 <b>Delivery held</b>\n<code>${orderId}</code>\n` +
+                     `The wallet could not be asked whether this was already sent ` +
+                     `(<code>${String(seen.why).slice(0, 160)}</code>).\n` +
+                     `Nothing was sent. Retry once the node answers.`);
+        return { ok: false, why: `wallet unreadable: ${seen.why}` };
+      }
+      if (seen.txid) {
+        // It already went out; the record simply never caught up.
+        await recordSent(orderId, seen.txid);
+        log.warn(`[delivery] ${orderId} was already sent in ${seen.txid} — recorded, not resent`);
+        return { ok: true, already: true, txid: seen.txid, recovered: true };
+      }
 
       const pcn = Number(order.quoted_pcn);
       const usd = Number(order.usd);
@@ -154,7 +204,7 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
           `<code>${orderId}</code>  $${usd.toFixed(2)} → <b>${pcn.toFixed(8)} PCN</b>\n` +
           `to <code>${order.address}</code>\n` +
           `Hot wallet holds ${bal.toFixed(2)} PCN; this needs ${pcn.toFixed(2)} plus a ` +
-          `${FLOAT_STOP} reserve.\n\n` +
+          `${S.stop()} reserve.\n\n` +
           `Top up <code>${await receiveAddress()}</code> to ${S.target()} PCN, ` +
           `or send this one by hand:\n<code>market-deliver ${orderId} &lt;txid&gt;</code>`);
         return { ok: true, mode: 'manual', why: 'float too low' };
@@ -220,9 +270,25 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
     }
   }
 
+  /** Record a send. Guarded on delivered_txid IS NULL: overwriting an existing
+   *  txid would erase the evidence of the first payment, which is precisely the
+   *  record you need when two have gone out. If it does not match, something
+   *  sent twice and a human must see it. */
   async function recordSent(orderId, txid) {
-    await q(`UPDATE orders SET status='delivered', delivered_txid=?, delivered_at=NOW(),
-                    delivery_error=NULL WHERE order_id=?`, [txid, orderId]);
+    const r = await q(
+      `UPDATE orders SET status='delivered', delivered_txid=?, delivered_at=NOW(),
+              delivery_error=NULL
+        WHERE order_id=? AND delivered_txid IS NULL`, [txid, orderId]);
+    if (r.affectedRows !== 1) {
+      const [row] = await q(`SELECT delivered_txid FROM orders WHERE order_id=?`, [orderId]);
+      const existing = row?.delivered_txid;
+      if (existing && existing !== txid) {
+        log.error(`[delivery] DOUBLE SEND on ${orderId}: ${existing} and ${txid}`);
+        await notify(`🚨 <b>DOUBLE SEND</b>\n<code>${orderId}</code>\n` +
+                     `already recorded <code>${existing}</code>\n` +
+                     `and now <code>${txid}</code>\nBoth left the wallet. Investigate now.`);
+      }
+    }
   }
 
   async function receiveAddress() {
@@ -316,7 +382,7 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
 
   return { deliver, deliverForce: id => deliver(id, { force: true }),
            markDelivered, pendingDeliveries, checkFloat, reconcileSending,
-           floatBalance, receiveAddress, findSentTx, isAuto };
+           floatBalance, receiveAddress, findSentTx, alreadySent, isAuto };
 }
 
 // ── how much we can promise ────────────────────────────────────────────────
@@ -361,6 +427,14 @@ export function makeBacking({ pool, explorerUrl, ownerAddress, settings = null,
   }
 
   async function ownerSpendable() {
+    // A number you set beats a number the server infers. With a cap configured
+    // the explorer is not consulted at all: no address list to maintain, no
+    // change addresses to chase, nothing to go stale behind your back. The
+    // trade is that it does not fall on its own if you spend the coins
+    // elsewhere -- which is why it is YOUR number to keep honest.
+    const cap = settings ? Number(settings.get('backingCapPcn')) : 0;
+    if (cap > 0) return { pcn: cap, ageMs: 0, manual: true };
+
     try {
       const addrs = addressList();
       if (!addrs.length) throw new Error('no backing addresses configured');
@@ -402,7 +476,7 @@ export function makeBacking({ pool, explorerUrl, ownerAddress, settings = null,
     if (bal.pcn === null) return { pcn: null, error: bal.error };
     const owed = await outstandingOwed(conn);
     return { pcn: Math.max(0, bal.pcn - owed), ownerPcn: bal.pcn, owed,
-             ageMs: bal.ageMs, degraded: bal.degraded };
+             ageMs: bal.ageMs, degraded: bal.degraded, manual: !!bal.manual };
   }
 
   return { ownerSpendable, outstandingOwed, headroomPcn };

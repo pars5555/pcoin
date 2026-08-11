@@ -159,7 +159,9 @@ export function makeAdmin({ pool, cfg, settings, ladder, delivery, backing, noti
 
   // ── sessions ─────────────────────────────────────────────────────────────
   // Same HMAC shape as the customer session, with the delimiter bug already
-  // fixed: parsed from the right, and an admin email is validated on the way in.
+  // fixed: the payload is parsed from the RIGHT, so an identity containing the
+  // delimiter cannot masquerade as another. Admin rows are only ever created by
+  // root through the CLI, so there is no registration path to validate here.
   const secret = () => cfg.sessionSecret + '|admin';
   const sign = p => `${p}.${createHmac('sha256', secret()).update(p).digest('hex')}`;
   function verify(tok) {
@@ -214,6 +216,14 @@ export function makeAdmin({ pool, cfg, settings, ladder, delivery, backing, noti
     return t.n >= LOGIN_MAX_TRIES;
   }
   function noteFail(key) {
+    // Bounded, and swept. Anyone can post arbitrary emails at the login form,
+    // and an unbounded Map keyed by them is a memory-exhaustion primitive that
+    // needs no account at all.
+    if (tries.size > 5000) {
+      const now = Date.now();
+      for (const [k, v] of tries) if (v.until < now) tries.delete(k);
+      if (tries.size > 5000) tries.clear();   // last resort: lose the window, keep the process
+    }
     const t = tries.get(key) || { n: 0, until: Date.now() + LOGIN_WINDOW_MS };
     t.n++; t.until = Date.now() + LOGIN_WINDOW_MS;
     tries.set(key, t);
@@ -329,7 +339,12 @@ ${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
   async function handle(req, res, u, body, rawSendHtml, sendJson) {
     const path = u.pathname.replace(/\/+$/, '') || '/admin';
     const sub = path.replace(/^\/admin\/?/, '');
-    const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress;
+    // The LAST X-Forwarded-For entry, not the first. Caddy APPENDS the real
+    // client to whatever the client sent, so the first entry is attacker-chosen
+    // and using it let anyone reset their own rate limit by varying a header.
+    // The last hop is the only one our proxy wrote.
+    const xff = String(req.headers['x-forwarded-for'] || '').split(',').map(s => s.trim()).filter(Boolean);
+    const ip = xff.length ? xff[xff.length - 1] : req.socket.remoteAddress;
     const cookie = (req.headers.cookie || '').split(/;\s*/).find(c => c.startsWith('mktadm='));
     const email = verify(cookie ? cookie.slice(7) : '');
 
@@ -459,8 +474,32 @@ ${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
           await audit(email, 'order.deliver', `${f.get('order_id')} ${f.get('txid')}`, ip);
           return done('/admin/orders', 'ok', `Recorded ${f.get('order_id')} as delivered.`);
         } else if (act === 'order/send') {
-          const r = await delivery.deliverForce(f.get('order_id'));
-          await audit(email, 'order.send', `${f.get('order_id')} -> ${r.txid || r.why}`, ip);
+          const id = f.get('order_id');
+          // Ask the wallet BEFORE spending, and treat an unanswerable lookup as
+          // a refusal. This button exists to re-send, so it is exactly where a
+          // double payment would happen.
+          const seen = await delivery.alreadySent(id);
+          if (!seen.known) {
+            await audit(email, 'order.send.refused', `${id}: wallet unreadable`, ip);
+            return done('/admin/orders', 'err',
+              `Refused: the wallet could not be asked whether ${id} was already sent. Nothing was sent.`);
+          }
+          if (seen.txid) {
+            await audit(email, 'order.send.already', `${id} -> ${seen.txid}`, ip);
+            return done('/admin/orders', 'err',
+              `Refused: ${id} already left the wallet in ${seen.txid}. Record it instead.`);
+          }
+          const [ord] = await q(`SELECT status, delivery_error FROM orders WHERE order_id=?`, [id]);
+          if (ord?.status === 'needs_review' && f.get('reviewed') !== '1') {
+            return done('/admin/orders', 'err',
+              `${id} is flagged: ${ord.delivery_error || 'no reason recorded'} — ` +
+              `use the Send (reviewed) button if you still want to release it.`);
+          }
+          if (ord?.status === 'needs_review') {
+            await q(`UPDATE orders SET status='awaiting_delivery' WHERE order_id=? AND status='needs_review'`, [id]);
+          }
+          const r = await delivery.deliverForce(id);
+          await audit(email, 'order.send', `${id} -> ${r.txid || r.why}`, ip);
           return done('/admin/orders', r.ok ? 'ok' : 'err',
                       r.ok ? `Sent: ${r.txid || 'recorded'}` : r.why);
         } else if (act === 'order/expire') {
@@ -476,8 +515,22 @@ ${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
           // no GET handler; generating it on GET instead would issue a new
           // secret every refresh and invalidate the one just scanned.
           const secretB32 = base32Encode(randomBytes(20));
+          const [was] = await q(`SELECT totp_enabled FROM admins WHERE email=?`, [email]);
           await q(`UPDATE admins SET totp_secret=?, totp_enabled=0 WHERE email=?`, [secretB32, email]);
-          return done('/admin/totp/setup', 'ok', 'Scan the code below, then confirm it.');
+          // Starting an enrolment TURNS 2FA OFF until the new code is confirmed.
+          // That is a real weakening of the account and it used to happen with
+          // no audit row and no alert, so an abandoned enrolment left the panel
+          // password-only and nobody knew.
+          await audit(email, 'totp.enrol.start', was?.totp_enabled ? '2FA was ON and is now OFF until confirmed' : '2FA was already off', ip);
+          if (was?.totp_enabled) {
+            await notify(`⚠️ <b>2FA temporarily OFF</b> for ${esc(email)}
+` +
+                         `An enrolment was started, which disables the old code. If you did not ` +
+                         `do this, change the password now — the panel is password-only until ` +
+                         `the new code is confirmed.`);
+          }
+          return done('/admin/totp/setup', 'ok',
+                      'Scan the code below, then confirm it. 2FA is OFF until you do.');
         } else if (act === 'totp/confirm') {
           const [acc] = await q(`SELECT totp_secret FROM admins WHERE email=?`, [email]);
           if (!acc?.totp_secret) throw new Error('start the enrolment again');
@@ -590,9 +643,12 @@ ${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
           <td class="mono s">${o.delivered_txid ? esc(o.delivered_txid.slice(0, 14)) + '…' : '—'}</td>
           <td>${['awaiting_delivery', 'needs_review'].includes(o.status) ? `
             <form class="inline" method="POST" action="/admin/order/send"
-                  onsubmit="return confirm('Send ${money(o.quoted_pcn)} PCN from the hot wallet?')">
+                  onsubmit="return confirm(${o.status === 'needs_review'
+                    ? `'FLAGGED: ${esc(String(o.delivery_error || 'no reason recorded')).replace(/'/g, '')}\n\nSend ${money(o.quoted_pcn)} PCN anyway?'`
+                    : `'Send ${money(o.quoted_pcn)} PCN from the hot wallet?'`})">
               ${csrf}<input type="hidden" name="order_id" value="${esc(o.order_id)}">
-              <button>Send</button></form>
+              ${o.status === 'needs_review' ? '<input type="hidden" name="reviewed" value="1">' : ''}
+              <button>${o.status === 'needs_review' ? 'Send (reviewed)' : 'Send'}</button></form>
             <form class="inline" method="POST" action="/admin/order/deliver">
               ${csrf}<input type="hidden" name="order_id" value="${esc(o.order_id)}">
               <input name="txid" placeholder="txid" size="10" required>
