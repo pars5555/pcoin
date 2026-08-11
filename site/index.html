@@ -316,34 +316,10 @@
   </defs>
 </svg>
 
-<!-- Consensus change at height 2800 — LANDED. The banner stays until 100
-     blocks have passed cleanly past the fork, because there are miners on this
-     network whose operators cannot be contacted and this is the only upgrade
-     notice that reaches them. An old node is still mining a worthless branch,
-     so the warning is MORE useful after the fork than before it, not less.
-     Delete the whole block once the chain is comfortably past 2900. -->
-<div id="forknotice" role="alert">
-  <div class="fn-inner">
-    <strong>LWMA is active as of block 2800.</strong>
-    <span>Difficulty now retargets every block. A node older than <b>v1.2.0</b>
-    is rejecting these blocks and mining a branch of its own &mdash; those coins
-    are worth nothing. Upgrading takes a minute and needs no resync.</span>
-    <a class="fn-cta" href="#download">Get v1.2.3</a>
-  </div>
-</div>
-
-<style>
-#forknotice{background:linear-gradient(90deg,#7c2d12,#9a3412);border-bottom:1px solid #c2410c;
-  font-size:14px;line-height:1.5;color:#ffedd5}
-#forknotice .fn-inner{max-width:1100px;margin:0 auto;padding:11px 20px;
-  display:flex;gap:12px;align-items:baseline;flex-wrap:wrap}
-#forknotice strong{color:#fff;white-space:nowrap}
-#forknotice b{color:#fff}
-#forknotice span{flex:1 1 420px;min-width:0}
-#forknotice .fn-cta{white-space:nowrap;background:#fff;color:#7c2d12;font-weight:600;
-  padding:5px 13px;border-radius:6px;text-decoration:none}
-#forknotice .fn-cta:hover{background:#ffedd5}
-</style>
+<!-- The height-2800 fork banner lived here until 2026-08-11. Removed at
+     chain height 2913, per its own instruction to come out once the chain
+     was comfortably past 2900 (commit e91afe8). Kept as a marker so the
+     next fork notice starts from the same place. -->
 
 <header class="nav">
   <div class="nav-inner">
@@ -357,6 +333,7 @@
       <a href="#mining">Mining</a>
       <a href="#calculator">Calculator</a>
       <a href="#spend">Spend it</a>
+      <a href="https://market.pc.am" rel="noopener">Buy PCN</a>
         <a href="#parameters">Parameters</a>
       <a href="#get-started">Get started</a>
       <a href="#roadmap">Roadmap</a>
@@ -600,6 +577,13 @@
         that operates your Windows PCs and Android phones through ordinary conversation. It is adding
         PCoin as a way to top up your balance &mdash; so the same phone that runs the agent can mine
         the credit it spends.
+      </p>
+      <p class="lede">
+        Would rather not mine? You can buy PCN with ordinary crypto at
+        <a href="https://market.pc.am" rel="noopener">market.pc.am</a>. It is sold from a fixed
+        ladder of 100,000 coins that gets dearer as it empties, so the price rises with demand
+        rather than being set by anyone. <b>There is currently nowhere to sell PCN back</b> &mdash;
+        buy what you intend to spend.
       </p>
 
       <div class="cards">
@@ -938,6 +922,7 @@ sudo systemctl stop pcoin-miner
       <h5>Project</h5>
       <a href="https://pc.am">pc.am</a>
       <a href="https://explorer.pc.am" rel="noopener">Block explorer</a>
+      <a href="https://market.pc.am" rel="noopener">Buy PCN &mdash; market.pc.am</a>
       <a href="https://github.com/pars5555/pcoin" rel="noopener">GitHub — source code</a>
       <a href="https://github.com/pars5555/pcoin/releases" rel="noopener">Releases</a>
       <a href="https://pc.am/dl/SHA256SUMS.txt">Checksums (SHA-256)</a>
