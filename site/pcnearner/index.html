@@ -340,6 +340,9 @@
   details.faq summary{cursor:pointer;font-weight:600;color:var(--text)}
   details.faq > :not(summary){color:var(--muted);line-height:1.7;margin-top:10px}
   @media (max-width:640px){.step{grid-template-columns:28px 1fr;gap:12px}}
+  .stepstack{margin:26px 0 8px}
+  .stepstack .step{margin:0 0 22px}
+  .stepstack .step h3{margin:2px 0 8px}
 </style>
 </head>
 <body id="top">
@@ -367,7 +370,7 @@
 
 <section style="padding:56px 0 8px">
   <h1 style="font-size:clamp(30px,5vw,44px);line-height:1.15;margin:0 0 14px">Earn PCN with your graphics card</h1>
-  <p style="color:var(--muted);font-size:17px;line-height:1.7;max-width:70ch;margin:0">
+  <p style="color:var(--muted);font-size:17px;line-height:1.7;max-width:80ch;margin:0">
     The PCoin Earner runs AI work on your GPU when you are not using it, and pays you in PCN.
     It is not mining. Mining competes for a block that one machine wins; this is paid work that
     somebody actually requested, so <b>every completed job earns</b> &mdash; there is no lottery
@@ -395,71 +398,81 @@
 
 <section style="padding:30px 0 0">
   <h2 style="font-size:22px;margin:0 0 8px">Install it</h2>
-  <p style="color:var(--muted);line-height:1.7;max-width:70ch;margin:0 0 18px">
+  <p style="color:var(--muted);line-height:1.7;max-width:80ch;margin:0 0 18px">
     One file. No installer, no toolchain, nothing from an app store. Put it in a folder you
     choose and run it &mdash; it keeps everything it downloads inside that one folder, so
     removing it later is deleting the folder.
   </p>
 
-  <div class="steps">
+  <div class="stepstack">
     <div class="step">
-      <span class="num">1</span>
-      <h4>Download the app</h4>
-      <p>
-        <a class="btn btn-primary" href="https://pcnearner.pc.am/download/PCNEarner.exe" rel="noopener">PCNEarner.exe</a>
-        &nbsp;<span class="mono" style="color:var(--dim)">37&nbsp;KB</span>
-        <br><br>
-        It is small because it is only the control panel &mdash; the models it runs are
-        downloaded on first start, which is what the 60&nbsp;GB is for.
-      </p>
+      <div class="step-n">1</div>
+      <div>
+        <h3>Download the app</h3>
+          <p>
+            <a class="btn btn-primary" href="https://pcnearner.pc.am/download/PCNEarner.exe" rel="noopener">PCNEarner.exe</a>
+            &nbsp;<span class="mono" style="color:var(--dim)">37&nbsp;KB</span>
+            <br><br>
+            It is small because it is only the control panel &mdash; the models it runs are
+            downloaded on first start, which is what the 60&nbsp;GB is for.
+          </p>
+      </div>
     </div>
     <div class="step">
-      <span class="num">2</span>
-      <h4>Windows will warn you</h4>
-      <p>
-        The app is not code-signed, so SmartScreen shows a blue box on anything it has not seen
-        downloaded widely. Click <b>More info</b>, then <b>Run anyway</b>. This is a reputation
-        warning about the certificate, not a detection of anything in the file &mdash; the same
-        warning appears on the PCoin node itself. Every file's SHA-256 is published at
-        <a href="https://pc.am/dl/SHA256SUMS.txt">pc.am/dl/SHA256SUMS.txt</a> if you want to
-        check what you downloaded.
-      </p>
+      <div class="step-n">2</div>
+      <div>
+        <h3>Windows will warn you</h3>
+          <p>
+            The app is not code-signed, so SmartScreen shows a blue box on anything it has not seen
+            downloaded widely. Click <b>More info</b>, then <b>Run anyway</b>. This is a reputation
+            warning about the certificate, not a detection of anything in the file &mdash; the same
+            warning appears on the PCoin node itself. Every file's SHA-256 is published at
+            <a href="https://pc.am/dl/SHA256SUMS.txt">pc.am/dl/SHA256SUMS.txt</a> if you want to
+            check what you downloaded.
+          </p>
+      </div>
     </div>
     <div class="step">
-      <span class="num">3</span>
-      <h4>Create an account</h4>
-      <p>
-        Pick a username of five characters or more and a password. That account is what your
-        earnings accumulate against, and it lets you run more than one machine under the same
-        balance. The app stores its machine token encrypted with Windows DPAPI, tied to your
-        user profile.
-      </p>
+      <div class="step-n">3</div>
+      <div>
+        <h3>Create an account</h3>
+          <p>
+            Pick a username of five characters or more and a password. That account is what your
+            earnings accumulate against, and it lets you run more than one machine under the same
+            balance. The app stores its machine token encrypted with Windows DPAPI, tied to your
+            user profile.
+          </p>
+      </div>
     </div>
     <div class="step">
-      <span class="num">4</span>
-      <h4>Set where you get paid</h4>
-      <p>
-        Paste a PCN address into <b>Payout address</b>. It is checked against the node before it
-        is accepted, so a typo is caught immediately rather than after your first payout goes
-        somewhere unrecoverable. No address, no payout &mdash; the work still runs, but nothing
-        can be sent.
-      </p>
+      <div class="step-n">4</div>
+      <div>
+        <h3>Set where you get paid</h3>
+          <p>
+            Paste a PCN address into <b>Payout address</b>. It is checked against the node before it
+            is accepted, so a typo is caught immediately rather than after your first payout goes
+            somewhere unrecoverable. No address, no payout &mdash; the work still runs, but nothing
+            can be sent.
+          </p>
+      </div>
     </div>
     <div class="step">
-      <span class="num">5</span>
-      <h4>Press Start</h4>
-      <p>
-        The tray icon turns green while a job is running and amber while paused, so the state is
-        readable at a glance without opening the window. First start takes a while: it downloads
-        the models before it can accept its first job.
-      </p>
+      <div class="step-n">5</div>
+      <div>
+        <h3>Press Start</h3>
+          <p>
+            The tray icon turns green while a job is running and amber while paused, so the state is
+            readable at a glance without opening the window. First start takes a while: it downloads
+            the models before it can accept its first job.
+          </p>
+      </div>
     </div>
   </div>
 </section>
 
 <section style="padding:38px 0 0">
   <h2 style="font-size:22px;margin:0 0 8px">Does my machine qualify?</h2>
-  <p style="color:var(--muted);line-height:1.7;max-width:70ch;margin:0 0 16px">
+  <p style="color:var(--muted);line-height:1.7;max-width:80ch;margin:0 0 16px">
     The app checks all of this on first run and tells you which line fails, rather than
     installing and then quietly never being given work.
   </p>
@@ -505,13 +518,13 @@
 
 <section style="padding:38px 0 0">
   <h2 style="font-size:22px;margin:0 0 8px">How you are paid</h2>
-  <p style="color:var(--muted);line-height:1.7;max-width:70ch;margin:0 0 16px">
+  <p style="color:var(--muted);line-height:1.7;max-width:80ch;margin:0 0 16px">
     One anchor, one formula, and no per-task haggling:
   </p>
-  <pre class="code" style="max-width:70ch"><code>reference_seconds  =  how long the job takes on the reference card
+  <pre class="cmd"><code>reference_seconds  =  how long the job takes on the reference card
 cost_usd           =  reference_seconds / 3600 x $0.08333
 paid_in            =  PCN, converted at the rate when the job was quoted</code></pre>
-  <p style="color:var(--muted);line-height:1.7;max-width:70ch;margin:16px 0 0">
+  <p style="color:var(--muted);line-height:1.7;max-width:80ch;margin:16px 0 0">
     <b>Seconds are measured on the reference card, not on yours.</b> That sounds unfair and is
     the opposite: if you were paid for the seconds <i>your</i> card spent, anyone could underclock
     theirs and charge three times as much for the same job, and nothing observable would tell that
@@ -570,7 +583,7 @@ paid_in            =  PCN, converted at the rate when the job was quoted</code><
 
 <section style="padding:38px 0 0">
   <h2 style="font-size:22px;margin:0 0 8px">What your card is actually asked to do</h2>
-  <p style="color:var(--muted);line-height:1.7;max-width:70ch;margin:0 0 16px">
+  <p style="color:var(--muted);line-height:1.7;max-width:80ch;margin:0 0 16px">
     Jobs come from applications through a public API. Today that means AI text generation and
     text embeddings; 3D model generation and image generation are built and waiting on workers.
     You are only ever offered work your machine advertised it can do.
