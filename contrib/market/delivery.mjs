@@ -37,12 +37,31 @@ export const FLOAT_WARN     = 24000;   // PCN — below this, nag every 10 minut
 export const FLOAT_STOP     = 1000;    // PCN — below this, stop sending entirely
 export const OWNER_BAL_MAX_AGE_MS = 30 * 60 * 1000;   // stop selling past this
 
-/** Minimal JSON-RPC client for the local node, using cookie auth.
- *  Reads the cookie per call: bitcoind rewrites it on every restart, and a
- *  client that cached it would start failing silently after a node restart. */
-export function makeNodeRpc({ url, cookiePath, walletName }) {
+/** Minimal JSON-RPC client for the local node.
+ *
+ *  TWO CREDENTIALS, DELIBERATELY UNEQUAL.
+ *
+ *  `rpcAuth` ("user:pass") is the daemon's identity. On the server it is an
+ *  `rpcauth=` line whose `rpcwhitelist=` names exactly the seven methods this
+ *  file calls. That is the whole point: this process is web-facing — checkout,
+ *  the payment IPN, the admin panel — so a remote code execution here must not
+ *  be able to ask the node for `listdescriptors`, which would hand over the hot
+ *  wallet's xprv and with it every key it will ever derive, nor `dumpprivkey`,
+ *  `sethdseed`, `sendall`, `unloadwallet` or `stop`. The node refuses those with
+ *  a 403 before this code is consulted, so the restriction survives any bug in
+ *  it. Bounding the float bounds the loss; bounding the RPC bounds the reach.
+ *
+ *  `cookiePath` is the fallback and is FULL POWER — every RPC the node has. It
+ *  is root-only on disk, so it is what the human operator tool runs with, and
+ *  what a developer gets locally where no rpcauth line exists. The daemon must
+ *  never be the process holding it.
+ *
+ *  Either way the credential is read per call: bitcoind rewrites the cookie on
+ *  every restart, and a client that cached it would start failing silently the
+ *  first time the node came back. */
+export function makeNodeRpc({ url, cookiePath, walletName, rpcAuth = null }) {
   async function rpc(method, params = [], wallet = null) {
-    const auth = readFileSync(cookiePath, 'utf8').trim();
+    const auth = rpcAuth || readFileSync(cookiePath, 'utf8').trim();
     const endpoint = wallet ? `${url}/wallet/${encodeURIComponent(wallet)}` : url;
     const r = await fetch(endpoint, {
       method: 'POST',
@@ -461,11 +480,27 @@ export function makeBacking({ pool, explorerUrl, ownerAddress, settings = null,
   }
 
   /** PCN already sold and not yet in the buyer's hands. Includes 'pending'
-   *  because an unpaid order is still a live promise until it expires. */
-  async function outstandingOwed(conn = pool) {
+   *  because an unpaid order is still a live promise until it expires.
+   *
+   *  `lock` is not optional garnish when this is called inside a transaction
+   *  that is about to sell against the answer. InnoDB's default REPEATABLE READ
+   *  serves a plain SELECT from the snapshot taken at the transaction's FIRST
+   *  read — which, in the buy path, is back inside reserveLadder. So an
+   *  unlocked read here does not mean "what is owed now"; it means "what was
+   *  owed when this transaction started", and an order committed in between is
+   *  invisible. Two buyers could each be told the coins were free.
+   *
+   *  A locking read is exempt from that: it sees the latest committed row and
+   *  takes gap locks that block a concurrent INSERT into the range. Today the
+   *  rung locks in reserveLadder happen to serialise every buyer, so the
+   *  unlocked read was correct by accident — narrowing that lock to only the
+   *  rungs being filled, an obvious future optimisation, would silently
+   *  reintroduce the oversell. Correct by construction beats correct by luck. */
+  async function outstandingOwed(conn = pool, lock = false) {
     const [r] = await conn.query(
       `SELECT COALESCE(SUM(quoted_pcn),0) AS owed FROM orders
-        WHERE status IN ('pending','awaiting_delivery','sending','needs_review')`);
+        WHERE status IN ('pending','awaiting_delivery','sending','needs_review')` +
+      (lock ? ' FOR UPDATE' : ''));
     return Number(r[0].owed);
   }
 

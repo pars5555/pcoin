@@ -151,10 +151,14 @@ const notify = makeNotifier({
   prefix: '<b>market.pc.am</b>',
 });
 
+// `rpcAuth` in config.json is the least-privilege identity — see makeNodeRpc.
+// In production it is set and the cookie is unreadable by this process; the
+// cookie fallback exists so a developer can run this locally without one.
 const node = makeNodeRpc({
   url: cfg.nodeRpcUrl || 'http://127.0.0.1:9443',
   cookiePath: cfg.nodeCookie || '/var/lib/pcoin/.cookie',
   walletName: cfg.hotWallet || 'market-hot',
+  rpcAuth: cfg.rpcAuth || null,
 });
 
 const D = makeDelivery({ pool, node, notify, settings: S });
@@ -882,7 +886,7 @@ createServer(async (req, res) => {
         // Re-checked INSIDE the transaction, against the obligations as they
         // stand right now: two orders placed a second apart must not both be
         // sold against the same coins.
-        const owed = await B.outstandingOwed(conn);
+        const owed = await B.outstandingOwed(conn, true);   // locking: see the note there
         if (w.pcn > backing.ownerPcn - owed) {
           await conn.rollback();
           const left = Math.max(0, backing.ownerPcn - owed);
