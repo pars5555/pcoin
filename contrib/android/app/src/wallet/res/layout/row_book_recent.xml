@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  One address this wallet has paid that has no name yet. Nothing about this row
+  is stored: it comes from wallet history every time the screen is drawn.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginTop="12dp"
+    android:background="@drawable/bg_inset"
+    android:orientation="vertical"
+    android:padding="14dp">
+
+    <TextView
+        android:id="@+id/row_recent_address"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:ellipsize="middle"
+        android:fontFamily="monospace"
+        android:singleLine="true"
+        android:textColor="@color/ink"
+        android:textSize="12sp" />
+
+    <Button
+        android:id="@+id/row_recent_name"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:background="@drawable/btn_ghost"
+        android:minHeight="44dp"
+        android:text="@string/book_name_this"
+        android:textAllCaps="false"
+        android:textColor="@color/brand"
+        android:textSize="14sp" />
+</LinearLayout>

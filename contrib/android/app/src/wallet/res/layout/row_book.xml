@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  One saved address.
+
+  The address is on its own line under the name, always, at full length. It is
+  ellipsized in the MIDDLE rather than at the end: the last characters of a
+  bech32 address are the part of the checksum that differs between two addresses
+  that share a prefix, so truncating the tail hides exactly what distinguishes
+  them.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginTop="12dp"
+    android:background="@drawable/bg_inset"
+    android:orientation="vertical"
+    android:padding="14dp">
+
+    <!-- The tappable part is this block, not the whole row: the Rename and
+         Remove buttons sit outside it so a mis-tap on either cannot start a
+         payment. -->
+    <LinearLayout
+        android:id="@+id/row_book_tap"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/row_book_name"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/ink"
+            android:textSize="16sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/row_book_address"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:ellipsize="middle"
+            android:fontFamily="monospace"
+            android:singleLine="true"
+            android:textColor="@color/ink_muted"
+            android:textSize="11sp" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/row_book_rename"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:background="@drawable/btn_ghost"
+            android:minHeight="44dp"
+            android:text="@string/book_rename"
+            android:textAllCaps="false"
+            android:textColor="@color/brand"
+            android:textSize="14sp" />
+
+        <Button
+            android:id="@+id/row_book_remove"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:layout_weight="1"
+            android:background="@drawable/btn_ghost"
+            android:minHeight="44dp"
+            android:text="@string/book_remove"
+            android:textAllCaps="false"
+            android:textColor="@color/ink_muted"
+            android:textSize="14sp" />
+    </LinearLayout>
+</LinearLayout>

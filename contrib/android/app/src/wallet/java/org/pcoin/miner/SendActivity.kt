@@ -1,12 +1,17 @@
 package org.pcoin.miner
 
+import android.app.Activity
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.Editable
+import android.text.TextWatcher
+import android.view.LayoutInflater
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.content.Context
 import android.content.Intent
 import android.widget.TextView
 import android.widget.Toast
@@ -37,22 +42,35 @@ import org.pcoin.miner.wallet.SeedStore
  * All RPC happens on a background thread. Failures are shown verbatim and
  * resolve nothing: a send that could not be checked is never treated as a send
  * that is fine.
+ *
+ * THE ADDRESS BOOK TOUCHES THIS SCREEN IN THREE PLACES, AND NONE OF THEM DECIDE
+ * ANYTHING. Compose says whether the typed address has a name and offers saved
+ * ones to fill the field with; review shows the name for the destination the
+ * node actually built, above the address and never instead of it; the result
+ * offers to name an address that has just been paid. A name is a note this
+ * phone keeps and nothing verifies it -- see [AddressBook].
  */
 class SendActivity : AppCompatActivity() {
 
     private lateinit var prefs: Prefs
+    private lateinit var book: AddressBookStore
     private val ui = Handler(Looper.getMainLooper())
 
     private lateinit var available: TextView
     private lateinit var gateNotice: TextView
     private lateinit var composeCard: LinearLayout
     private lateinit var addressField: EditText
+    private lateinit var addressLabel: TextView
+    private lateinit var bookBlock: LinearLayout
+    private lateinit var bookRows: LinearLayout
+    private lateinit var bookAllButton: Button
     private lateinit var amountField: EditText
     private lateinit var maxButton: Button
     private lateinit var composeError: TextView
     private lateinit var reviewButton: Button
 
     private lateinit var reviewCard: LinearLayout
+    private lateinit var reviewNamed: TextView
     private lateinit var reviewTo: TextView
     private lateinit var reviewAmount: TextView
     private lateinit var reviewFee: TextView
@@ -64,12 +82,27 @@ class SendActivity : AppCompatActivity() {
     private lateinit var resultCard: LinearLayout
     private lateinit var resultTitle: TextView
     private lateinit var resultBody: TextView
+    private lateinit var resultNamed: TextView
     private lateinit var resultTxid: TextView
+    private lateinit var saveBlock: LinearLayout
+    private lateinit var saveNameField: EditText
+    private lateinit var saveError: TextView
+    private lateinit var saveButton: Button
     private lateinit var doneButton: Button
 
     private var sendMax = false
     private var prepared: ForwardEngine.Prepared? = null
     private var busy = false
+
+    /**
+     * The destination of the payment shown on the result card.
+     *
+     * Kept separately from [prepared] because that is nulled when the compose
+     * step is shown again, and because this must be the NODE's spelling -- it
+     * is what gets stored if the address is named, and storing what was typed
+     * would put a differently-cased duplicate in the book.
+     */
+    private var sentTo: String? = null
 
     private lateinit var gate: SeedGate
     private lateinit var seedStore: SeedStore
@@ -89,18 +122,24 @@ class SendActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
+        book = AddressBookStore(this)
         setContentView(R.layout.activity_send)
 
         available = findViewById(R.id.send_available)
         gateNotice = findViewById(R.id.send_gate_notice)
         composeCard = findViewById(R.id.compose_card)
         addressField = findViewById(R.id.address_field)
+        addressLabel = findViewById(R.id.address_label)
+        bookBlock = findViewById(R.id.book_block)
+        bookRows = findViewById(R.id.book_rows)
+        bookAllButton = findViewById(R.id.book_all_button)
         amountField = findViewById(R.id.amount_field)
         maxButton = findViewById(R.id.max_button)
         composeError = findViewById(R.id.compose_error)
         reviewButton = findViewById(R.id.review_button)
 
         reviewCard = findViewById(R.id.review_card)
+        reviewNamed = findViewById(R.id.review_named)
         reviewTo = findViewById(R.id.review_to)
         reviewAmount = findViewById(R.id.review_amount)
         reviewFee = findViewById(R.id.review_fee)
@@ -112,8 +151,31 @@ class SendActivity : AppCompatActivity() {
         resultCard = findViewById(R.id.result_card)
         resultTitle = findViewById(R.id.result_title)
         resultBody = findViewById(R.id.result_body)
+        resultNamed = findViewById(R.id.result_named)
         resultTxid = findViewById(R.id.result_txid)
+        saveBlock = findViewById(R.id.save_block)
+        saveNameField = findViewById(R.id.save_name_field)
+        saveError = findViewById(R.id.save_error)
+        saveButton = findViewById(R.id.save_button)
         doneButton = findViewById(R.id.done_button)
+
+        // Prefilled when this screen was opened by tapping a name in the
+        // address book. It goes in the field like anything else typed or
+        // pasted, and takes exactly the same route through validation.
+        intent?.getStringExtra(EXTRA_ADDRESS)?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            addressField.setText(it)
+            amountField.requestFocus()
+        }
+
+        addressField.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
+            override fun afterTextChanged(s: Editable?) = renderAddressLabel()
+        })
+        bookAllButton.setOnClickListener {
+            startActivityForResult(AddressBookActivity.intentPick(this), REQUEST_PICK_ADDRESS)
+        }
+        saveButton.setOnClickListener { saveName() }
 
         maxButton.setOnClickListener { toggleMax() }
         reviewButton.setOnClickListener { onReview() }
@@ -147,14 +209,126 @@ class SendActivity : AppCompatActivity() {
 
         renderAvailable()
         renderGateNotice()
+        renderAddressLabel()
+        renderBook()
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        // Checked before the gate, with a request code of its own: swallowing
+        // one of SeedGate's codes here would leave a completed device unlock
+        // with nothing listening, and the payment would silently never send.
+        if (requestCode == REQUEST_PICK_ADDRESS) {
+            if (resultCode == Activity.RESULT_OK) {
+                data?.getStringExtra(AddressBookActivity.EXTRA_ADDRESS)?.let { fillAddress(it) }
+            }
+            return
+        }
         // The API 24..29 path returns through here; without this the credential
         // confirmation completes and nothing ever hears about it.
         if (gate.onActivityResult(requestCode, resultCode)) return
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
+    }
+
+    /**
+     * launchMode is singleTop, so an intent aimed at an instance that already
+     * exists arrives here instead of at onCreate. Prefill has to be handled in
+     * both places, or tapping a name would open a send screen still holding the
+     * address from last time.
+     *
+     * Refused outright while a broadcast is in flight, for the same reason Back
+     * is: nothing may re-target a payment that is already on its way.
+     */
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (busy) return
+        val address = intent?.getStringExtra(EXTRA_ADDRESS)?.trim().orEmpty()
+        if (address.isEmpty()) return
+        showCompose()
+        fillAddress(address)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        renderAvailable()
+        // The book can have changed while this screen was in the background --
+        // a name added from the address book, or removed there.
+        renderAddressLabel()
+        renderBook()
+    }
+
+    // -------------------------------------------------------------- the book
+
+    /**
+     * Says whether the address in the field has a name, in both directions.
+     *
+     * The negative case is deliberate. Someone who pastes what they believe is
+     * a saved address and sees nothing has learned something worth knowing --
+     * a clipboard that handed over a different address than the one that was
+     * copied is a real attack, and silence is what makes it work. It is stated
+     * only once the field holds something long enough to be an address, so it
+     * does not accuse a half-typed one.
+     */
+    private fun renderAddressLabel() {
+        val typed = addressField.text?.toString()?.trim().orEmpty()
+        val name = book.label(typed)
+        when {
+            name != null -> {
+                addressLabel.text = getString(R.string.send_known_address, name)
+                addressLabel.setTextColor(getColorCompat(R.color.brand))
+                addressLabel.visibility = View.VISIBLE
+            }
+            typed.length >= AddressBook.LOOKS_LIKE_ADDRESS -> {
+                addressLabel.setText(R.string.send_unknown_address)
+                addressLabel.setTextColor(getColorCompat(R.color.ink_muted))
+                addressLabel.visibility = View.VISIBLE
+            }
+            else -> addressLabel.visibility = View.GONE
+        }
+    }
+
+    /**
+     * The saved addresses, tappable, most recently used first.
+     *
+     * Only the first few are inlined. The rest are behind one button rather
+     * than an unbounded list growing between the address field and the amount:
+     * a compose step that scrolls is a compose step where the review button
+     * moves around.
+     */
+    private fun renderBook() {
+        val entries = AddressBook.ordered(book.load())
+        bookRows.removeAllViews()
+        if (entries.isEmpty()) {
+            bookBlock.visibility = View.GONE
+            return
+        }
+        bookBlock.visibility = View.VISIBLE
+
+        val inflater = LayoutInflater.from(this)
+        for (e in entries.take(INLINE_BOOK_ROWS)) {
+            val v = inflater.inflate(R.layout.row_book_pick, bookRows, false)
+            v.findViewById<TextView>(R.id.pick_name).text = e.name
+            v.findViewById<TextView>(R.id.pick_address).text = e.address
+            v.setOnClickListener { fillAddress(e.address) }
+            bookRows.addView(v)
+        }
+
+        if (entries.size > INLINE_BOOK_ROWS) {
+            bookAllButton.visibility = View.VISIBLE
+            bookAllButton.text = getString(R.string.send_book_all, entries.size)
+        } else {
+            bookAllButton.visibility = View.GONE
+        }
+    }
+
+    /** Fills the address field and moves on to the amount. Sends nothing. */
+    private fun fillAddress(address: String) {
+        addressField.setText(address)
+        addressField.setSelection(address.length)
+        composeError.visibility = View.GONE
+        renderAddressLabel()
+        if (!sendMax) amountField.requestFocus()
     }
 
     /**
@@ -187,11 +361,6 @@ class SendActivity : AppCompatActivity() {
             return
         }
         super.onBackPressed()
-    }
-
-    override fun onResume() {
-        super.onResume()
-        renderAvailable()
     }
 
     private fun renderAvailable() {
@@ -294,6 +463,14 @@ class SendActivity : AppCompatActivity() {
         resultCard.visibility = View.GONE
         reviewError.visibility = View.GONE
 
+        // Looked up against p.destination -- what the node put in the
+        // transaction -- and not against what was typed. Those differ whenever
+        // the address was entered in another case, and a name shown here has to
+        // be the name of the address the money is actually going to.
+        val name = book.label(p.destination)
+        reviewNamed.text = if (name == null) "" else getString(R.string.send_review_named, name)
+        reviewNamed.visibility = if (name == null) View.GONE else View.VISIBLE
+
         reviewTo.text = p.destination
         reviewAmount.text = getString(R.string.send_review_amount, Fmt.coinsSat(p.paidSat))
         reviewFee.text = getString(R.string.send_review_fee, Fmt.coinsSat(p.feeSat))
@@ -393,13 +570,13 @@ class SendActivity : AppCompatActivity() {
                     reviewError.text = err ?: "Could not send."
                     reviewError.visibility = View.VISIBLE
                 } else {
-                    showResult(t)
+                    showResult(t, p.destination)
                 }
             }
         }.start()
     }
 
-    private fun showResult(txid: String) {
+    private fun showResult(txid: String, destination: String) {
         composeCard.visibility = View.GONE
         reviewCard.visibility = View.GONE
         resultCard.visibility = View.VISIBLE
@@ -407,5 +584,90 @@ class SendActivity : AppCompatActivity() {
         resultBody.text = getString(R.string.send_ok_body)
         resultTxid.text = txid
         resultTxid.visibility = View.VISIBLE
+
+        sentTo = destination
+        saveNameField.setText("")
+        saveError.visibility = View.GONE
+        // Ordering only, and only for an address that already has a name --
+        // touch() never creates an entry, so a send to an unnamed address
+        // leaves the book exactly as it was.
+        book.touch(destination)
+        renderSaveBlock()
+    }
+
+    /**
+     * Either "you paid Market", or the offer to name the address.
+     *
+     * Asked here rather than before the send: the payment is done, the node has
+     * accepted the address, and the person still knows who they were paying.
+     * One more field in front of the money would have been the wrong trade.
+     */
+    private fun renderSaveBlock() {
+        val to = sentTo
+        val name = book.label(to)
+        if (name != null) {
+            resultNamed.text = getString(R.string.send_paid_named, name)
+            resultNamed.visibility = View.VISIBLE
+            saveBlock.visibility = View.GONE
+            return
+        }
+        resultNamed.visibility = View.GONE
+        saveBlock.visibility = if (to == null) View.GONE else View.VISIBLE
+    }
+
+    private fun saveName() {
+        val to = sentTo ?: return
+        val typed = saveNameField.text?.toString()
+        val problem = AddressBook.nameProblem(typed, book.load())
+        if (problem != null) {
+            saveError.text = when (problem) {
+                AddressBook.NameProblem.EMPTY -> getString(R.string.book_err_empty)
+                AddressBook.NameProblem.TOO_LONG ->
+                    getString(R.string.book_err_long, AddressBook.MAX_NAME)
+                AddressBook.NameProblem.DUPLICATE -> getString(R.string.book_err_duplicate)
+                AddressBook.NameProblem.BOOK_FULL ->
+                    getString(R.string.book_err_full, AddressBook.MAX_ENTRIES)
+            }
+            saveError.visibility = View.VISIBLE
+            return
+        }
+
+        val clean = AddressBook.cleanName(typed)
+        saveError.visibility = View.GONE
+        book.put(to, clean)
+        // Straight to lastUsed: this address was paid a moment ago, so it
+        // belongs at the top of the list next time, not at the bottom.
+        book.touch(to)
+        Toast.makeText(this, getString(R.string.send_saved_confirmation, clean), Toast.LENGTH_SHORT)
+            .show()
+        renderSaveBlock()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun getColorCompat(id: Int): Int = resources.getColor(id, theme)
+
+    companion object {
+        private const val EXTRA_ADDRESS = "org.pcoin.miner.extra.SEND_TO"
+
+        /**
+         * Distinct from SeedGate's REQUEST_CONFIRM_CREDENTIAL (7241). Both
+         * arrive at the same onActivityResult, and a collision would route a
+         * device-unlock result into the address picker.
+         */
+        private const val REQUEST_PICK_ADDRESS = 8311
+
+        /** How many saved addresses appear inline before "all N" takes over. */
+        private const val INLINE_BOOK_ROWS = 4
+
+        /**
+         * Open Send with an address already filled in.
+         *
+         * Internal only -- this activity is `exported="false"` precisely so
+         * that no other app can launch a payment screen with a destination it
+         * chose. The address still goes through validateaddress and still has
+         * to be reviewed.
+         */
+        fun intentFor(ctx: Context, address: String): Intent =
+            Intent(ctx, SendActivity::class.java).putExtra(EXTRA_ADDRESS, address)
     }
 }

@@ -155,17 +155,37 @@
                     android:textSize="15sp" />
             </LinearLayout>
 
-            <Button
-                android:id="@+id/history_button"
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="10dp"
-                android:background="@drawable/btn_ghost"
-                android:minHeight="52dp"
-                android:text="@string/wallet_history"
-                android:textAllCaps="false"
-                android:textColor="@color/brand"
-                android:textSize="15sp" />
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/history_button"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:background="@drawable/btn_ghost"
+                    android:minHeight="52dp"
+                    android:text="@string/wallet_history"
+                    android:textAllCaps="false"
+                    android:textColor="@color/brand"
+                    android:textSize="15sp" />
+
+                <Button
+                    android:id="@+id/addresses_button"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="10dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/btn_ghost"
+                    android:minHeight="52dp"
+                    android:text="@string/wallet_addresses"
+                    android:textAllCaps="false"
+                    android:textColor="@color/brand"
+                    android:textSize="15sp" />
+            </LinearLayout>
         </LinearLayout>
 
         <!-- =========================== receive =========================== -->

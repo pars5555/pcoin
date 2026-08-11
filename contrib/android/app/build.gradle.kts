@@ -105,8 +105,11 @@ android {
             // R/BuildConfig package; renaming it would touch 29 source files
             // and buy nothing a user can see.
             applicationId = "am.pc.pcoinwallet"
-            versionCode = 2
-            versionName = "0.1.1"
+            // 0.2.0: the address book. Bumped on the wallet only -- the miner's
+            // APK gains the AddressBook classes but nothing in it reaches them,
+            // so its behaviour is byte-for-byte the same decision it was.
+            versionCode = 3
+            versionName = "0.2.0"
 
             buildConfigField("boolean", "MINING", "false")
             // The ONLY genuine collision between the two apps. bitcoind is

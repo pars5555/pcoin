@@ -124,8 +124,16 @@ will fail.
 | `NodeController.kt` | Starts `bitcoind`, writes `pcoin.conf`, wraps the RPC |
 | `ForwardEngine.kt` / `ForwardPolicy.kt` | Auto-forward. Policy is pure Kotlin with no Android or I/O, so every decision that spends money is unit-testable on a plain JVM |
 | `wallet/` | BIP39, BIP32, secp256k1, derivation, encrypted seed storage, the unlock gate |
+| `AddressBook.kt` | Names for addresses you pay. Pure Kotlin, no Android, so the matching rules are unit-testable; `AddressBookStore.kt` is the SharedPreferences half |
 | `SetupActivity.kt` | First run: create or restore a 12/24-word phrase |
 | `MainActivity.kt` | The single screen |
+
+The address book is wallet-flavour UI (`AddressBookActivity`, plus the compose,
+review and result steps of `SendActivity`). Two rules hold everywhere it
+appears, and they are not stylistic: a name is a note this phone keeps that
+nothing verifies, so it is **always shown next to the address, never instead of
+it**, and the book **never decides where money goes** — it fills a field that
+`validateaddress` still checks and the review step still shows in full.
 
 Derivation is `m/84'/9444'/0'/0/i` on mainnet and `m/84'/1'/0'/0/i` on test
 networks, with published test vectors in [`../../PCOIN.md`](../../PCOIN.md).

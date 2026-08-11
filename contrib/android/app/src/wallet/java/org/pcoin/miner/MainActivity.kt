@@ -54,6 +54,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var refreshButton: Button
     private lateinit var sendButton: Button
     private lateinit var historyButton: Button
+    private lateinit var addressesButton: Button
     private lateinit var backupTitle: TextView
     private lateinit var backupBody: TextView
     private lateinit var receiveQr: QrView
@@ -112,6 +113,7 @@ class MainActivity : AppCompatActivity() {
         refreshButton = findViewById(R.id.refresh_button)
         sendButton = findViewById(R.id.send_button)
         historyButton = findViewById(R.id.history_button)
+        addressesButton = findViewById(R.id.addresses_button)
         receiveAddress = findViewById(R.id.receive_address)
         copyButton = findViewById(R.id.copy_button)
         shareButton = findViewById(R.id.share_button)
@@ -128,6 +130,7 @@ class MainActivity : AppCompatActivity() {
         refreshButton.setOnClickListener { onRefresh() }
         sendButton.setOnClickListener { startActivity(Intent(this, SendActivity::class.java)) }
         historyButton.setOnClickListener { startActivity(Intent(this, HistoryActivity::class.java)) }
+        addressesButton.setOnClickListener { startActivity(AddressBookActivity.intent(this)) }
         copyButton.setOnClickListener { copyAddress() }
         shareButton.setOnClickListener { shareAddress() }
         backupButton.setOnClickListener { startActivity(Intent(this, BackupActivity::class.java)) }

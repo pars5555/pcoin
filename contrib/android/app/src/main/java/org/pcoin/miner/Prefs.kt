@@ -189,6 +189,35 @@ class Prefs(context: Context) {
             sp.edit().putInt(KEY_NODE_PID, value).commit()
         }
 
+    // --------------------------------------------------------- address book
+
+    /**
+     * The address book, as ONE JSON blob in ONE key. See [AddressBookStore].
+     *
+     * Authoritative intent: these are names the user typed and expects to find
+     * again. commit(), and nothing derived from a node read ever writes it --
+     * the node has no opinion about what an address is called.
+     */
+    var addressBookJson: String?
+        get() = sp.getString(KEY_ADDRESS_BOOK, null)?.takeIf { it.isNotBlank() }
+        @Suppress("ApplySharedPref")
+        set(value) {
+            sp.edit().putString(KEY_ADDRESS_BOOK, value).commit()
+        }
+
+    /**
+     * Keep a copy of an address book blob that could not be parsed.
+     *
+     * Called before anything overwrites it, so a bad read can never be the
+     * reason a book is lost. Written once: a second failure must not overwrite
+     * the first preserved copy with the empty book that replaced it.
+     */
+    @Suppress("ApplySharedPref")
+    fun preserveCorruptAddressBook(raw: String) {
+        if (sp.contains(KEY_ADDRESS_BOOK_CORRUPT)) return
+        sp.edit().putString(KEY_ADDRESS_BOOK_CORRUPT, raw).commit()
+    }
+
     // ------------------------------------------------------------ forwarding
 
     /**
@@ -357,6 +386,8 @@ class Prefs(context: Context) {
         private const val KEY_PHRASE_CONFIRMED = "phrase_confirmed"
         private const val KEY_PHRASE_DISMISSED = "phrase_prompt_dismissed"
         private const val KEY_HAS_LEGACY = "has_legacy_wallet"
+        private const val KEY_ADDRESS_BOOK = "address_book"
+        private const val KEY_ADDRESS_BOOK_CORRUPT = "address_book_corrupt"
 
         private const val KEY_FORWARD_ADDRESS = "forward_address"
         private const val KEY_FORWARD_STATE = "forward_state"

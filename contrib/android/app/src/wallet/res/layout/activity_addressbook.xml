@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The address book.
+
+  Two lists, and the split is the point. "Saved" is what this phone remembers.
+  "Paid, not named yet" is drawn live from wallet history and stores nothing:
+  it is a view of what the node says happened, minus what the book covers, so it
+  cannot drift out of step with either.
+
+  Both rows are inflated in code (row_book.xml, row_book_recent.xml). Plain
+  framework views only, like every other screen here.
+-->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/canvas"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/book_title"
+            android:textColor="@color/ink"
+            android:textSize="26sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/book_intro"
+            android:textColor="@color/ink_muted"
+            android:textSize="13sp" />
+
+        <!-- ========================== saved ========================== -->
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="18dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/book_saved_title"
+                android:textColor="@color/ink"
+                android:textSize="17sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/book_saved_hint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:textColor="@color/ink_muted"
+                android:textSize="13sp" />
+
+            <LinearLayout
+                android:id="@+id/book_saved_rows"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical" />
+
+            <Button
+                android:id="@+id/book_add_button"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:background="@drawable/btn_ghost"
+                android:minHeight="48dp"
+                android:text="@string/book_add"
+                android:textAllCaps="false"
+                android:textColor="@color/brand"
+                android:textSize="15sp" />
+        </LinearLayout>
+
+        <!-- ===================== paid, not named ===================== -->
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="18dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/book_recent_title"
+                android:textColor="@color/ink"
+                android:textSize="17sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="@string/book_recent_hint"
+                android:textColor="@color/ink_muted"
+                android:textSize="13sp" />
+
+            <!-- Carries "loading", "nothing to name" and "could not read your
+                 activity". The third is deliberately distinct from the second:
+                 a failed read is not evidence that there is nothing here. -->
+            <TextView
+                android:id="@+id/book_recent_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:textColor="@color/ink_muted"
+                android:textSize="13sp" />
+
+            <LinearLayout
+                android:id="@+id/book_recent_rows"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical" />
+        </LinearLayout>
+    </LinearLayout>
+</ScrollView>

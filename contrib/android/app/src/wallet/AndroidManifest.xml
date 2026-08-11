@@ -30,5 +30,15 @@
             android:name=".HistoryActivity"
             android:exported="false"
             android:label="@string/history_title" />
+
+        <!-- Not exported, like Send and for a related reason: this screen can
+             hand an address straight into the compose step, so an app able to
+             launch it could put a destination in front of someone in a UI they
+             trust. Everything it holds is local anyway. -->
+        <activity
+            android:name=".AddressBookActivity"
+            android:exported="false"
+            android:label="@string/book_title"
+            android:windowSoftInputMode="adjustResize" />
     </application>
 </manifest>

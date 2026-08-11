@@ -162,6 +162,11 @@
          YOUR OWN address for a receive or a coinbase. There is deliberately no
          "from" wording, because the wallet does not record a sender. -->
     <string name="history_party_to">To %1$s</string>
+
+    <!-- A named destination. The address stays on the line: the name is this
+         phone's own note and nothing verifies it, so it is never shown as a
+         substitute for where the money actually went. -->
+    <string name="history_party_to_named">To %1$s &#8212; %2$s</string>
     <string name="history_party_received_at">Received at your address %1$s</string>
     <string name="history_party_mined_to">Block reward to %1$s</string>
 
@@ -198,4 +203,70 @@
         <item quantity="one">Superseded by another transaction %1$d block ago</item>
         <item quantity="other">Superseded by another transaction %1$d blocks ago</item>
     </plurals>
+
+    <!--
+      Address book.
+
+      The copy repeats one thing on purpose, in the intro and again on the send
+      screen: a name is a note this phone keeps, and nothing checks it. Every
+      place a name appears, the address appears next to it. A wallet that let a
+      nickname stand in for a destination would be teaching people to stop
+      reading the one string that decides where their money goes.
+    -->
+    <string name="wallet_addresses">Address book</string>
+    <string name="book_title">Address book</string>
+    <string name="book_intro">Names are kept on this phone and mean nothing to anyone else. Nothing can check that an address belongs to who you think, so the address is always shown next to its name &#8212; read it before you send.</string>
+
+    <string name="book_saved_title">Saved</string>
+    <string name="book_empty">No names yet. Name an address after you pay it, or add one below.</string>
+    <string name="book_add">Add an address</string>
+    <string name="book_rename">Rename</string>
+    <string name="book_remove">Remove</string>
+    <string name="book_pick_hint">Tap a name to pay it</string>
+
+    <string name="book_recent_title">Paid, not named yet</string>
+    <string name="book_recent_hint">Addresses this wallet has paid. Naming one here is the same as naming it after a payment.</string>
+    <string name="book_recent_loading">Reading your activity&#8230;</string>
+    <string name="book_recent_none">Every address you have paid already has a name.</string>
+    <string name="book_recent_failed">Could not read your activity: %1$s</string>
+    <string name="book_name_this">Name this</string>
+
+    <string name="book_dialog_name_title">Name this address</string>
+    <string name="book_dialog_rename_title">Rename</string>
+    <string name="book_dialog_add_title">Add an address</string>
+    <string name="book_name_label">Name</string>
+    <string name="book_name_hint">Market</string>
+    <string name="book_address_label">Address</string>
+    <string name="book_address_hint">pc1&#8230;</string>
+    <string name="book_save">Save</string>
+    <string name="book_cancel">Cancel</string>
+    <string name="book_saved_toast">Saved as %1$s</string>
+    <string name="book_removed_toast">Name removed. Your payments are untouched.</string>
+
+    <string name="book_remove_title">Remove this name?</string>
+    <string name="book_remove_body">%1$s\n%2$s\n\nThis removes the name only. Payments you have already made are not affected and the address still appears in your activity.</string>
+
+    <string name="book_err_empty">Type a name.</string>
+    <string name="book_err_long">A name can be up to %1$d characters.</string>
+    <string name="book_err_duplicate">Another address already has that name. Two entries with one name would make the list unable to tell you which one you are about to pay.</string>
+    <string name="book_err_full">Your address book is full at %1$d names. Remove one to add another.</string>
+    <string name="book_err_address">Type the address you want to name.</string>
+    <string name="book_err_address_short">That is too short to be a PCoin address.</string>
+    <!-- Local shape checks only. The node is the authority and it gets the
+         final say at the moment of sending, where a bad address is refused
+         before anything is signed. -->
+    <string name="book_err_address_spaces">A PCoin address has no spaces in it.</string>
+
+    <!-- Send screen. "Not in your address book" is shown as well as the
+         positive match, because silence after pasting what you believed was a
+         saved address is exactly the case worth noticing. -->
+    <string name="send_known_address">Saved as %1$s</string>
+    <string name="send_unknown_address">Not in your address book</string>
+    <string name="send_book_label">Or pay someone you have named</string>
+    <string name="send_book_all">All %1$d saved addresses</string>
+    <string name="send_review_named">Your name for this address: %1$s</string>
+    <string name="send_save_title">Name this address?</string>
+    <string name="send_save_body">Save it and you can pay it by name next time, without pasting anything.</string>
+    <string name="send_saved_confirmation">Saved as %1$s</string>
+    <string name="send_paid_named">You paid %1$s</string>
 </resources>

@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Naming an address, in three shapes from one layout:
+
+    name an address the app already knows  address block GONE, address shown
+                                           read-only above the name field
+    rename an entry                        same, with the current name filled in
+    add an address by hand                 address block VISIBLE
+
+  The error line is inside the dialog rather than a Toast, because a rejected
+  name has a reason the user has to act on: "that name is taken" needs to be
+  readable while the field it refers to is still on screen.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingStart="24dp"
+    android:paddingTop="8dp"
+    android:paddingEnd="24dp"
+    android:paddingBottom="4dp">
+
+    <!-- Shown when adding by hand. -->
+    <LinearLayout
+        android:id="@+id/dialog_address_block"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/book_address_label"
+            android:textColor="@color/ink_muted"
+            android:textSize="13sp" />
+
+        <EditText
+            android:id="@+id/dialog_address_field"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:fontFamily="monospace"
+            android:hint="@string/book_address_hint"
+            android:importantForAutofill="no"
+            android:inputType="textNoSuggestions"
+            android:minHeight="48dp"
+            android:textColor="@color/ink"
+            android:textColorHint="@color/ink_muted"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <!-- Shown when the address is already known: read-only, full length, so
+         the thing being named is visible while it is named. -->
+    <TextView
+        android:id="@+id/dialog_address_readonly"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:fontFamily="monospace"
+        android:textColor="@color/ink_muted"
+        android:textIsSelectable="true"
+        android:textSize="12sp"
+        android:visibility="gone" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:text="@string/book_name_label"
+        android:textColor="@color/ink_muted"
+        android:textSize="13sp" />
+
+    <EditText
+        android:id="@+id/dialog_name_field"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:hint="@string/book_name_hint"
+        android:importantForAutofill="no"
+        android:inputType="textCapWords"
+        android:minHeight="48dp"
+        android:textColor="@color/ink"
+        android:textColorHint="@color/ink_muted"
+        android:textSize="16sp" />
+
+    <TextView
+        android:id="@+id/dialog_error"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:textColor="@color/alert"
+        android:textSize="13sp"
+        android:visibility="gone" />
+</LinearLayout>

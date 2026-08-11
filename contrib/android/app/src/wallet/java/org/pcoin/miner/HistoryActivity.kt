@@ -34,6 +34,7 @@ import java.util.Locale
 class HistoryActivity : AppCompatActivity() {
 
     private lateinit var prefs: Prefs
+    private lateinit var book: AddressBookStore
     private val ui = Handler(Looper.getMainLooper())
 
     private lateinit var status: TextView
@@ -42,9 +43,18 @@ class HistoryActivity : AppCompatActivity() {
 
     private var busy = false
 
+    /**
+     * The address book, read once per draw rather than once per row.
+     *
+     * Fifty rows would otherwise be fifty reads and fifty JSON parses on the
+     * UI thread for a list that cannot change while it is being built.
+     */
+    private var bookEntries: List<AddressBook.Entry> = emptyList()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
+        book = AddressBookStore(this)
         setContentView(R.layout.activity_history)
 
         status = findViewById(R.id.history_status)
@@ -91,6 +101,7 @@ class HistoryActivity : AppCompatActivity() {
 
     private fun render(list: List<ForwardEngine.HistoryEntry>) {
         rows.removeAllViews()
+        bookEntries = book.load()
         if (list.isEmpty()) {
             // "Nothing yet" is a claim about the wallet. A node that has not
             // caught up cannot support it -- it has not seen the blocks the
@@ -170,8 +181,18 @@ class HistoryActivity : AppCompatActivity() {
     private fun party(e: ForwardEngine.HistoryEntry): String {
         if (e.address.isBlank()) return ""
         return when (e.kind) {
+            // A name from the address book if there is one, and the address
+            // either way. The name is this phone's own note -- nothing signs
+            // it and nothing checks it -- so it is shown WITH the address it
+            // refers to and never in place of it. Looked up live on every draw
+            // rather than stored against the transaction, which is what lets a
+            // rename change every screen at once and keeps this one incapable
+            // of disagreeing with the address book.
             ForwardEngine.HistoryEntry.Kind.SENT ->
-                getString(R.string.history_party_to, e.address)
+                when (val name = AddressBook.labelFor(bookEntries, e.address)) {
+                    null -> getString(R.string.history_party_to, e.address)
+                    else -> getString(R.string.history_party_to_named, name, e.address)
+                }
             ForwardEngine.HistoryEntry.Kind.RECEIVED ->
                 getString(R.string.history_party_received_at, e.address)
             ForwardEngine.HistoryEntry.Kind.MINED,

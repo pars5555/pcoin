@@ -86,6 +86,54 @@
                 android:textSize="14sp"
                 android:importantForAutofill="no" />
 
+            <!-- Says whether this address has a name in the address book.
+                 Both answers are shown: a paste that produces silence where a
+                 name was expected is the case most worth noticing, and it is
+                 invisible if only matches are reported. -->
+            <TextView
+                android:id="@+id/address_label"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:textSize="13sp"
+                android:visibility="gone" />
+
+            <!-- Saved addresses, tappable. Hidden entirely when the book is
+                 empty rather than shown as an empty box. -->
+            <LinearLayout
+                android:id="@+id/book_block"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp"
+                    android:text="@string/send_book_label"
+                    android:textColor="@color/ink_muted"
+                    android:textSize="14sp" />
+
+                <LinearLayout
+                    android:id="@+id/book_rows"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical" />
+
+                <Button
+                    android:id="@+id/book_all_button"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:background="@drawable/btn_ghost"
+                    android:minHeight="44dp"
+                    android:textAllCaps="false"
+                    android:textColor="@color/brand"
+                    android:textSize="14sp"
+                    android:visibility="gone" />
+            </LinearLayout>
+
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
@@ -179,6 +227,19 @@
                 android:text="@string/send_check_hint"
                 android:textColor="@color/ink_muted"
                 android:textSize="13sp" />
+
+            <!-- The book's name for the destination the NODE built, not for
+                 the string that was typed. Above the address, never instead of
+                 it. -->
+            <TextView
+                android:id="@+id/review_named"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:textColor="@color/brand"
+                android:textSize="15sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
 
             <TextView
                 android:id="@+id/review_to"
@@ -285,6 +346,17 @@
                 android:textColor="@color/ink_muted"
                 android:textSize="14sp" />
 
+            <!-- "You paid Market", when the destination already had a name. -->
+            <TextView
+                android:id="@+id/result_named"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:textColor="@color/brand"
+                android:textSize="15sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+
             <TextView
                 android:id="@+id/result_txid"
                 android:layout_width="match_parent"
@@ -297,6 +369,75 @@
                 android:textIsSelectable="true"
                 android:textSize="12sp"
                 android:visibility="gone" />
+
+            <!--
+              Offered only when the destination has no name yet.
+
+              This is the moment worth asking at: the payment has just gone
+              through, the address is known to be one the node accepted, and the
+              person still remembers who they were paying. Asking before the
+              send would be one more field between someone and their money.
+            -->
+            <LinearLayout
+                android:id="@+id/save_block"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:background="@drawable/bg_inset"
+                android:orientation="vertical"
+                android:padding="14dp"
+                android:visibility="gone">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/send_save_title"
+                    android:textColor="@color/ink"
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="@string/send_save_body"
+                    android:textColor="@color/ink_muted"
+                    android:textSize="13sp" />
+
+                <EditText
+                    android:id="@+id/save_name_field"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:hint="@string/book_name_hint"
+                    android:importantForAutofill="no"
+                    android:inputType="textCapWords"
+                    android:minHeight="48dp"
+                    android:textColor="@color/ink"
+                    android:textColorHint="@color/ink_muted"
+                    android:textSize="16sp" />
+
+                <TextView
+                    android:id="@+id/save_error"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:textColor="@color/alert"
+                    android:textSize="13sp"
+                    android:visibility="gone" />
+
+                <Button
+                    android:id="@+id/save_button"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:background="@drawable/btn_ghost"
+                    android:minHeight="48dp"
+                    android:text="@string/book_save"
+                    android:textAllCaps="false"
+                    android:textColor="@color/brand"
+                    android:textSize="15sp" />
+            </LinearLayout>
 
             <Button
                 android:id="@+id/done_button"
