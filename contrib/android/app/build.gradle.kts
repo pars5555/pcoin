@@ -108,8 +108,12 @@ android {
             // 0.2.0: the address book. Bumped on the wallet only -- the miner's
             // APK gains the AddressBook classes but nothing in it reaches them,
             // so its behaviour is byte-for-byte the same decision it was.
-            versionCode = 3
-            versionName = "0.2.0"
+            // 0.2.1: audit fixes on top of the 0.2.0 already installed on the
+            // treasury phone. A different binary must never report the same
+            // version as the one it replaces -- that is what this comment block
+            // is here for.
+            versionCode = 4
+            versionName = "0.2.1"
 
             buildConfigField("boolean", "MINING", "false")
             // The ONLY genuine collision between the two apps. bitcoind is

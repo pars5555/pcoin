@@ -150,7 +150,17 @@ object AddressBook {
         if (entries.any { it.key != replacing && it.name.equals(name, ignoreCase = true) }) {
             return NameProblem.DUPLICATE
         }
-        if (replacing == null && entries.size >= MAX_ENTRIES) return NameProblem.BOOK_FULL
+        // The ceiling applies when this operation ADDS an entry. That is NOT the
+        // same question as `replacing == null`, and gating on nullness left the
+        // cap dead everywhere it mattered: AddressBookActivity passes the typed
+        // address's own key on every path, including a brand-new address, so the
+        // only caller that could ever hit the limit was the post-send save. Ask
+        // the question that decides it instead -- is there already an entry
+        // under this key? A null `replacing` matches nothing, so the add path
+        // still counts as an add.
+        if (entries.none { it.key == replacing } && entries.size >= MAX_ENTRIES) {
+            return NameProblem.BOOK_FULL
+        }
         return null
     }
 

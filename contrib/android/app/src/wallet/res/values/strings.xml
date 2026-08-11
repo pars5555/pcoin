@@ -125,6 +125,7 @@
     <string name="send_err_amount_dust">That amount is too small to send.</string>
     <string name="send_err_syncing">Wait until this phone has caught up before sending.</string>
     <string name="send_busy_back">Hold on &#8212; finishing this payment.</string>
+    <string name="send_not_ready">Nothing was sent. Start this payment again.</string>
 
     <!-- The device unlock in front of sending. Wording is about confirming a
          payment, not about "security", because that is what the person is
@@ -265,6 +266,7 @@
     <string name="send_book_label">Or pay someone you have named</string>
     <string name="send_book_all">All %1$d saved addresses</string>
     <string name="send_review_named">Your name for this address: %1$s</string>
+    <string name="send_result_to">Paid to %1$s</string>
     <string name="send_save_title">Name this address?</string>
     <string name="send_save_body">Save it and you can pay it by name next time, without pasting anything.</string>
     <string name="send_saved_confirmation">Saved as %1$s</string>

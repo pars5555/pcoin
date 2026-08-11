@@ -33,7 +33,10 @@ class AddressBookStore(context: Context) {
         return try {
             decode(raw)
         } catch (e: Exception) {
-            Log.w(TAG, "address book did not parse; keeping a copy aside", e)
+            // The exception is NOT passed to Log: Android's JSONTokener embeds
+            // the whole input in its message, which would put every address and
+            // every name the user typed into logcat.
+            Log.w(TAG, "address book unreadable (${e.javaClass.simpleName}); keeping a copy aside")
             prefs.preserveCorruptAddressBook(raw)
             emptyList()
         }
@@ -94,7 +97,15 @@ class AddressBookStore(context: Context) {
      */
     private fun decode(raw: String): List<AddressBook.Entry> {
         val root = JSONObject(raw)
-        val arr = root.optJSONArray(K_ENTRIES) ?: return emptyList()
+        // A blob that parses as JSON but is not the shape this class writes has
+        // to reach the same preserve-and-empty path as one that does not parse
+        // at all. It used to `return emptyList()` here, which quietly bypassed
+        // the guarantee this file makes at the top: the next put() would then
+        // overwrite the original. optJSONArray and friends never throw, so
+        // nothing else was going to catch it.
+        val version = root.optInt(K_VERSION, -1)
+        if (version != VERSION) throw Unreadable("address book version $version")
+        val arr = root.optJSONArray(K_ENTRIES) ?: throw Unreadable("no entries array")
         val out = ArrayList<AddressBook.Entry>(arr.length())
         val seen = HashSet<String>()
         for (i in 0 until arr.length()) {
@@ -117,6 +128,9 @@ class AddressBookStore(context: Context) {
         }
         return out
     }
+
+    /** A blob that is readable JSON but not an address book. */
+    private class Unreadable(message: String) : Exception(message)
 
     private companion object {
         const val TAG = "PCoinAddressBook"

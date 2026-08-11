@@ -82,6 +82,7 @@ class SendActivity : AppCompatActivity() {
     private lateinit var resultCard: LinearLayout
     private lateinit var resultTitle: TextView
     private lateinit var resultBody: TextView
+    private lateinit var resultTo: TextView
     private lateinit var resultNamed: TextView
     private lateinit var resultTxid: TextView
     private lateinit var saveBlock: LinearLayout
@@ -103,6 +104,17 @@ class SendActivity : AppCompatActivity() {
      * would put a differently-cased duplicate in the book.
      */
     private var sentTo: String? = null
+
+    /**
+     * The address book, held in a field rather than re-read per lookup.
+     *
+     * The address field's TextWatcher fires on every keystroke, and each lookup
+     * used to load and JSON-parse the whole book on the UI thread -- the exact
+     * cost HistoryActivity was already fixed for, reintroduced one screen over.
+     * Refreshed in onResume and after any write from this screen, which is the
+     * only way it can change while this activity is alive.
+     */
+    private var bookEntries: List<AddressBook.Entry> = emptyList()
 
     private lateinit var gate: SeedGate
     private lateinit var seedStore: SeedStore
@@ -151,6 +163,7 @@ class SendActivity : AppCompatActivity() {
         resultCard = findViewById(R.id.result_card)
         resultTitle = findViewById(R.id.result_title)
         resultBody = findViewById(R.id.result_body)
+        resultTo = findViewById(R.id.result_to)
         resultNamed = findViewById(R.id.result_named)
         resultTxid = findViewById(R.id.result_txid)
         saveBlock = findViewById(R.id.save_block)
@@ -172,7 +185,13 @@ class SendActivity : AppCompatActivity() {
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
             override fun afterTextChanged(s: Editable?) = renderAddressLabel()
         })
+        // Guarded on `busy` like every other control that can change the
+        // compose step. Without it a pick could land after showReview had run,
+        // leaving the hidden compose field disagreeing with the reviewed
+        // destination -- harmless for where the money goes, since Confirm
+        // broadcasts `prepared`, but a confusing thing to come back to.
         bookAllButton.setOnClickListener {
+            if (busy) return@setOnClickListener
             startActivityForResult(AddressBookActivity.intentPick(this), REQUEST_PICK_ADDRESS)
         }
         saveButton.setOnClickListener { saveName() }
@@ -209,8 +228,7 @@ class SendActivity : AppCompatActivity() {
 
         renderAvailable()
         renderGateNotice()
-        renderAddressLabel()
-        renderBook()
+        reloadBook()
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -242,7 +260,12 @@ class SendActivity : AppCompatActivity() {
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         setIntent(intent)
+        // `busy` alone is not enough: it is false while the device-unlock
+        // prompt is up, and it is false on the result card. Refusing whenever
+        // the compose step is not the thing on screen covers both, and stops a
+        // new address quietly throwing away a review the user is reading.
         if (busy) return
+        if (reviewCard.visibility == View.VISIBLE || resultCard.visibility == View.VISIBLE) return
         val address = intent?.getStringExtra(EXTRA_ADDRESS)?.trim().orEmpty()
         if (address.isEmpty()) return
         showCompose()
@@ -254,11 +277,18 @@ class SendActivity : AppCompatActivity() {
         renderAvailable()
         // The book can have changed while this screen was in the background --
         // a name added from the address book, or removed there.
-        renderAddressLabel()
-        renderBook()
+        reloadBook()
     }
 
     // -------------------------------------------------------------- the book
+
+    /** Re-read the book and redraw everything that depends on it. */
+    private fun reloadBook() {
+        bookEntries = book.load()
+        renderBook()
+        renderAddressLabel()
+        if (resultCard.visibility == View.VISIBLE) renderSaveBlock()
+    }
 
     /**
      * Says whether the address in the field has a name, in both directions.
@@ -272,7 +302,7 @@ class SendActivity : AppCompatActivity() {
      */
     private fun renderAddressLabel() {
         val typed = addressField.text?.toString()?.trim().orEmpty()
-        val name = book.label(typed)
+        val name = AddressBook.labelFor(bookEntries, typed)
         when {
             name != null -> {
                 addressLabel.text = getString(R.string.send_known_address, name)
@@ -297,7 +327,7 @@ class SendActivity : AppCompatActivity() {
      * moves around.
      */
     private fun renderBook() {
-        val entries = AddressBook.ordered(book.load())
+        val entries = AddressBook.ordered(bookEntries)
         bookRows.removeAllViews()
         if (entries.isEmpty()) {
             bookBlock.visibility = View.GONE
@@ -467,7 +497,7 @@ class SendActivity : AppCompatActivity() {
         // transaction -- and not against what was typed. Those differ whenever
         // the address was entered in another case, and a name shown here has to
         // be the name of the address the money is actually going to.
-        val name = book.label(p.destination)
+        val name = AddressBook.labelFor(bookEntries, p.destination)
         reviewNamed.text = if (name == null) "" else getString(R.string.send_review_named, name)
         reviewNamed.visibility = if (name == null) View.GONE else View.VISIBLE
 
@@ -541,7 +571,17 @@ class SendActivity : AppCompatActivity() {
     }
 
     private fun broadcast() {
-        val p = prepared ?: return
+        val p = prepared
+        if (p == null) {
+            // A completed device unlock must never end in silence. I could not
+            // construct a path that reaches this -- the only thing that nulls
+            // `prepared` is showCompose(), which cannot run while the gate is
+            // up -- but a bare `return` here fails in the worst direction: the
+            // user unlocked, nothing happened, and nothing said so.
+            reviewError.setText(R.string.send_not_ready)
+            reviewError.visibility = View.VISIBLE
+            return
+        }
         if (busy) return
         busy = true
         reviewError.visibility = View.GONE
@@ -588,11 +628,18 @@ class SendActivity : AppCompatActivity() {
         sentTo = destination
         saveNameField.setText("")
         saveError.visibility = View.GONE
+
+        // The address is shown here, not only on the review step. This card
+        // asks for a name, and a name typed against a destination that is off
+        // screen is the mislabelling rule 1 in AddressBook.kt exists to stop.
+        resultTo.text = getString(R.string.send_result_to, destination)
+        resultTo.visibility = View.VISIBLE
+
         // Ordering only, and only for an address that already has a name --
         // touch() never creates an entry, so a send to an unnamed address
         // leaves the book exactly as it was.
         book.touch(destination)
-        renderSaveBlock()
+        reloadBook()
     }
 
     /**
@@ -604,7 +651,7 @@ class SendActivity : AppCompatActivity() {
      */
     private fun renderSaveBlock() {
         val to = sentTo
-        val name = book.label(to)
+        val name = AddressBook.labelFor(bookEntries, to)
         if (name != null) {
             resultNamed.text = getString(R.string.send_paid_named, name)
             resultNamed.visibility = View.VISIBLE
@@ -618,7 +665,7 @@ class SendActivity : AppCompatActivity() {
     private fun saveName() {
         val to = sentTo ?: return
         val typed = saveNameField.text?.toString()
-        val problem = AddressBook.nameProblem(typed, book.load())
+        val problem = AddressBook.nameProblem(typed, bookEntries)
         if (problem != null) {
             saveError.text = when (problem) {
                 AddressBook.NameProblem.EMPTY -> getString(R.string.book_err_empty)
@@ -640,7 +687,7 @@ class SendActivity : AppCompatActivity() {
         book.touch(to)
         Toast.makeText(this, getString(R.string.send_saved_confirmation, clean), Toast.LENGTH_SHORT)
             .show()
-        renderSaveBlock()
+        reloadBook()
     }
 
     @Suppress("DEPRECATION")

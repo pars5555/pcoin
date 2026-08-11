@@ -122,6 +122,20 @@ class AddressBookTest {
         assertNull(AddressBook.nameProblem("Renamed", full, replacing = AddressBook.key("pc1addr1")))
     }
 
+    @Test
+    fun `the ceiling still fires when the caller passes the new address's own key`() {
+        // AddressBookActivity passes AddressBook.key(typed) on EVERY path,
+        // including adding a brand-new address, so a ceiling gated on
+        // `replacing == null` was dead code at the only call site that could
+        // reach it. What decides an add is whether an entry with that key
+        // already exists.
+        val full = (1..AddressBook.MAX_ENTRIES).map { entry("pc1addr$it", "Name $it") }
+        assertEquals(
+            AddressBook.NameProblem.BOOK_FULL,
+            AddressBook.nameProblem("New", full, replacing = AddressBook.key("pc1brandnewaddress")),
+        )
+    }
+
     // ------------------------------------------------------------ book edits
 
     @Test

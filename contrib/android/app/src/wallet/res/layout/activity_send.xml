@@ -346,6 +346,27 @@
                 android:textColor="@color/ink_muted"
                 android:textSize="14sp" />
 
+            <!--
+              Where the money went, in full.
+
+              This card offers to NAME this address, and a name typed against an
+              address that is off screen is exactly the mislabelling that rule 1
+              in AddressBook.kt exists to prevent. The address was missing here
+              before the naming step was added, which is how it went unnoticed.
+            -->
+            <TextView
+                android:id="@+id/result_to"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/bg_inset"
+                android:fontFamily="monospace"
+                android:padding="14dp"
+                android:textColor="@color/ink"
+                android:textIsSelectable="true"
+                android:textSize="13sp"
+                android:visibility="gone" />
+
             <!-- "You paid Market", when the destination already had a name. -->
             <TextView
                 android:id="@+id/result_named"
