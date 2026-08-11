@@ -1,0 +1,244 @@
+<div class="wrap">
+  <header>
+    <div class="brand">PCoin <span>market</span></div>
+    <div class="row">
+      <span id="who" class="mono" style="color:var(--dim)"></span>
+      <button class="ghost" id="signout" hidden>Sign out</button>
+    </div>
+  </header>
+
+  <h1>Buy PCoin with crypto</h1>
+  <p class="lede">Pay in USDT or any coin NOWPayments accepts. PCN is sold from a
+  fixed ladder of <b>100,000 coins</b> in 100 steps, each about 9.75% dearer than the
+  one below it &mdash; from $0.001 up to <b>$10.00</b> for the last coin. Nothing is
+  held back and nothing is added: when the ladder is empty there is no more to sell
+  here. Large orders climb several steps, so <b>the average price you pay is higher
+  than the price on this page</b>. Work it out before you order.</p>
+
+  <div class="grid">
+    <div class="card"><div class="k">Price now</div><div class="v" id="price">&mdash;</div>
+      <div class="s">USD for the next PCN</div></div>
+    <div class="card"><div class="k">Left on the ladder</div><div class="v" id="remaining">&mdash;</div>
+      <div class="s" id="soldPct">of 100,000 PCN</div></div>
+    <div class="card"><div class="k">Order limits</div><div class="v" id="minOrder">&mdash;</div>
+      <div class="s" id="minOrderNote">per order</div></div>
+  </div>
+
+  <!-- Public on purpose: the whole point of a ladder is that the average price
+       of a big order differs from the posted one, so anybody can check it
+       before signing in, not after paying. -->
+  <div class="panel">
+    <h2>What would it cost?</h2>
+    <label for="calcPcn">Number of PCN</label>
+    <input id="calcPcn" type="number" min="1" step="100" placeholder="50000" oninput="calc()">
+    <div class="note" id="calcBox">Enter a quantity to see the rungs it consumes, what it
+      costs in total, and the average price per coin.</div>
+  </div>
+
+  <!-- ── signed out ── -->
+  <div id="authPanel" class="panel">
+    <div class="tabs" role="tablist">
+      <button class="tab" id="t-in" aria-selected="true" onclick="showTab('in')">Sign in</button>
+      <button class="tab" id="t-up" aria-selected="false" onclick="showTab('up')">Create account</button>
+    </div>
+    <label for="email">Email</label>
+    <input id="email" type="email" autocomplete="username" placeholder="you@example.com">
+    <label for="password">Password</label>
+    <input id="password" type="password" autocomplete="current-password" placeholder="at least 8 characters">
+    <button id="authBtn" onclick="doAuth()">Sign in</button>
+    <div class="msg" id="authMsg"></div>
+  </div>
+
+  <!-- ── signed in ── -->
+  <div id="app" hidden>
+    <div class="panel">
+      <h2>Buy PCN</h2>
+      <label for="usd">Amount in USD</label>
+      <input id="usd" type="number" min="10" step="1" value="10" oninput="quote()">
+      <label for="addr">Your PCN address</label>
+      <input id="addr" class="mono" placeholder="pc1q…" spellcheck="false">
+      <div class="note" id="quoteBox">Enter an amount to see what you receive.</div>
+      <button id="buyBtn" onclick="buy()">Continue to payment</button>
+      <div class="msg" id="buyMsg"></div>
+      <div class="note" id="deliveryNote">
+        You are sent to NOWPayments to pay. Coins are released once the payment confirms
+        &mdash; not instantly, because a payment that is still confirming can still be
+        reversed. <b>Orders up to $25 are sent automatically</b>, usually within a minute
+        of confirmation. <b>Larger orders are released by hand</b> and can take anywhere
+        from a minute to 24 working hours.
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Your orders</h2>
+      <div id="orders"><span style="color:var(--dim)">None yet.</span></div>
+    </div>
+  </div>
+
+  <footer>
+    <p><b>PCN is not listed on any exchange, and there is currently nowhere to sell
+    it back.</b> This price is posted from a fixed ladder of 100,000 coins, not
+    discovered on a market. Buying back is closed for now, so treat anything you buy
+    here as spent: use it on <a href="https://pc.am">the services that accept PCN</a>.
+    <b>Do not buy PCN expecting to get money out of it.</b></p>
+    <p><a href="https://pc.am">pc.am</a> &middot;
+       <a href="https://explorer.pc.am">explorer</a> &middot;
+       <a href="https://docs.pc.am">integrate</a></p>
+  </footer>
+</div>
+
+<script>
+let mode = 'in';
+const $ = id => document.getElementById(id);
+const show = (el, cls, text) => { el.className = 'msg ' + cls; el.textContent = text; };
+
+function showTab(m) {
+  mode = m;
+  $('t-in').setAttribute('aria-selected', m === 'in');
+  $('t-up').setAttribute('aria-selected', m === 'up');
+  $('authBtn').textContent = m === 'in' ? 'Sign in' : 'Create account';
+  $('password').autocomplete = m === 'in' ? 'current-password' : 'new-password';
+  $('authMsg').className = 'msg';
+}
+
+async function api(path, opts) {
+  const r = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+  return j;
+}
+
+async function doAuth() {
+  const btn = $('authBtn'); btn.disabled = true;
+  try {
+    await api(mode === 'in' ? '/api/login' : '/api/register', {
+      method: 'POST',
+      body: JSON.stringify({ email: $('email').value, password: $('password').value }),
+    });
+    await refresh();
+  } catch (e) { show($('authMsg'), 'err', e.message); }
+  btn.disabled = false;
+}
+
+async function refresh() {
+  try {
+    const me = await api('/api/me');
+    $('authPanel').hidden = true;
+    $('app').hidden = false;
+    $('who').textContent = me.email;
+    $('signout').hidden = false;
+    renderOrders(me.orders || []);
+  } catch {
+    $('authPanel').hidden = false;
+    $('app').hidden = true;
+    $('signout').hidden = true;
+    $('who').textContent = '';
+  }
+}
+
+function renderOrders(list) {
+  if (!list.length) { $('orders').innerHTML = '<span style="color:var(--dim)">None yet.</span>'; return; }
+  $('orders').innerHTML = '<table><thead><tr><th>When</th><th>USD</th><th>PCN</th>'
+    + '<th>Status</th><th>To</th></tr></thead><tbody>'
+    + list.map(o => '<tr>'
+      + '<td>' + new Date(o.createdAt).toLocaleString() + '</td>'
+      + '<td>$' + o.usd + '</td>'
+      + '<td>' + Math.round(o.quotedPcn).toLocaleString() + '</td>'
+      + '<td>' + o.status.replace(/_/g, ' ') + '</td>'
+      + '<td class="mono">' + o.address.slice(0, 14) + '…</td>'
+      + '</tr>').join('') + '</tbody></table>';
+}
+
+const money = n => n < 0.01 ? '$' + n.toFixed(6) : '$' + n.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+
+let calcTimer;
+function calc() {
+  clearTimeout(calcTimer);
+  calcTimer = setTimeout(async () => {
+    const pcn = Number($('calcPcn').value);
+    if (!(pcn > 0)) { $('calcBox').textContent = 'Enter a quantity.'; return; }
+    try {
+      const c = await api('/api/ladder/calc?pcn=' + pcn);
+      const short = c.unfilledPcn > 0
+        ? '<br><b>Only ' + Math.round(c.filledPcn).toLocaleString() + ' PCN are left on the ladder</b>, '
+          + 'so that is what this prices.'
+        : '';
+      $('calcBox').innerHTML =
+          '<b>' + Math.round(c.filledPcn).toLocaleString() + ' PCN</b> costs <b>$'
+        + c.totalCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+        + '</b>, an average of <b>' + money(c.averagePrice) + '</b> per coin.<br>'
+        + 'It consumes <b>' + c.rungsConsumed + '</b> of the 100 steps and moves the price from '
+        + money(c.priceBefore) + ' to <b>' + (c.marginalPriceAfter === null
+            ? '$10.00 — the ladder would be empty' : money(c.marginalPriceAfter)) + '</b>.'
+        + short;
+    } catch (e) { $('calcBox').textContent = e.message; }
+  }, 250);
+}
+
+let quoteTimer;
+function quote() {
+  clearTimeout(quoteTimer);
+  quoteTimer = setTimeout(async () => {
+    const usd = Number($('usd').value);
+    if (!(usd >= 10)) { $('quoteBox').innerHTML = 'Minimum order is <b>$10</b>.'; return; }
+    try {
+      const q = await api('/api/quote?usd=' + usd);
+      $('quoteBox').innerHTML = 'You receive about <b>' + Math.round(q.pcn).toLocaleString()
+        + ' PCN</b> at an average of <b>' + money(q.effectivePrice) + '</b> each, across <b>'
+        + q.rungsConsumed + '</b> step' + (q.rungsConsumed === 1 ? '' : 's') + ' of the ladder. '
+        + 'This purchase moves the price to ' + money(q.newPrice) + '.'
+        + (q.saleOpen ? '' : '<br><br><b>Sales are paused.</b> ' + q.saleBlockedReason);
+      // Say it before the click, not after. Someone who has typed an amount and
+      // pasted an address should not discover at the payment step that we were
+      // never going to accept it.
+      $('buyBtn').disabled = !q.saleOpen;
+      $('buyBtn').textContent = q.saleOpen ? 'Continue to payment' : 'Sales paused';
+    } catch (e) { $('quoteBox').textContent = e.message; }
+  }, 250);
+}
+
+async function buy() {
+  const btn = $('buyBtn'); btn.disabled = true;
+  try {
+    const r = await api('/api/buy', { method: 'POST', body: JSON.stringify({
+      usd: Number($('usd').value), address: $('addr').value.trim() }) });
+    show($('buyMsg'), 'ok', 'Order created. Opening payment…');
+    location.href = r.invoiceUrl;
+  } catch (e) { show($('buyMsg'), 'err', e.message); }
+  // Re-quote rather than blindly re-enabling: if the refusal was the sale gate,
+  // the button must stay down. quote() is what owns that state.
+  quote();
+}
+
+$('signout').onclick = async () => { await fetch('/api/logout'); refresh(); };
+
+(async () => {
+  try {
+    const p = await (await fetch('/api/price')).json();
+    $('price').textContent = money(Number(p.price));
+  } catch { $('price').textContent = 'unavailable'; }
+  try {
+    const l = await (await fetch('/api/ladder/state')).json();
+    $('remaining').textContent = Math.round(l.remainingPcn).toLocaleString();
+    $('soldPct').textContent = l.pctSold.toFixed(2) + '% of 100,000 PCN sold';
+    // Every limit comes from the server, never from the markup. A number typed
+    // into the HTML goes stale the first time a setting changes.
+    $('minOrder').textContent = '$' + l.minOrderUsd + ' \u2013 '
+      + Number(l.maxOrderPcn).toLocaleString() + ' PCN';
+    $('minOrderNote').textContent = 'minimum $' + l.minOrderUsd + ' \u00b7 at most '
+      + Number(l.maxOrderPcn).toLocaleString() + ' PCN per order'
+      + (l.maxOrderUsdNow ? ' (about $' + Number(l.maxOrderUsdNow).toLocaleString() + ' today)' : '');
+    $('usd').min = l.minOrderUsd;
+    $('usd').max = Math.min(l.maxOrderUsd, l.maxOrderUsdNow || l.maxOrderUsd);
+    if (Number($('usd').value) < l.minOrderUsd) $('usd').value = l.minOrderUsd;
+    $('deliveryNote').innerHTML =
+      'You are sent to NOWPayments to pay. Coins are released once the payment confirms '
+      + '&mdash; not instantly, because a payment that is still confirming can still be reversed. '
+      + '<b>Orders up to $' + l.autoMaxUsd + ' are sent automatically</b>, usually within a minute '
+      + 'of confirmation. <b>Larger orders are released by hand</b> and can take anywhere from a '
+      + 'minute to 24 working hours.';
+  } catch { $('remaining').textContent = 'unavailable'; }
+  refresh();
+  quote();
+})();
+</script>

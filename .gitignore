@@ -66,3 +66,8 @@ contrib/vault/node_modules/
 # Icon generator scratch output. The SVG/PNG/ICO that actually ship are tracked
 # in contrib/branding/ and contrib/windows-tray/; this is just the working dir.
 contrib/branding/out/
+
+# Live server credentials — the repo is PUBLIC. Never track this.
+servers.md
+ARCHITECTURE.puml
+SYSTEM-README.md
