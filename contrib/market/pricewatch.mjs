@@ -64,11 +64,40 @@ export function makePriceWatch({ pool, ladder, notify, log = console }) {
     try { st = await ladder.ladderState(); }
     catch (e) { log.warn('[pricewatch] ladder unreadable:', e.message); return { ok: false, why: e.message }; }
 
+    // The LEDGER of retirements, read separately from the ladder's counters.
+    //
+    // These are two independent facts and must not be conflated. `qty_retired`
+    // on a rung says inventory was withdrawn; the `retirements` table says a
+    // specific chain output paid a specific service. Retire-on-spend moves both
+    // together. A direct edit, a rebuild, or a migration moves only the first.
+    //
+    // The earlier version of this alert reported any rise in qty_retired as
+    // "spent on the services", which is an inference, not an observation — and
+    // it was wrong the first two times it fired, announcing 947 PCN of customer
+    // revenue that never existed. A price alert that invents a business reason
+    // is worse than one that says nothing, because it is believed.
+    let ledger = null;
+    try {
+      const [r] = await q(`SELECT COALESCE(SUM(pcn_retired),0) AS t FROM retirements`);
+      const raw = r[0]?.t ?? r?.t;
+      const n = Number(raw);
+      // `?? 0` on the way out of a query that may not have answered is the
+      // exact bug this file is here to prevent: it turns "I could not read the
+      // ledger" into "the ledger says nothing was paid", which then prints as
+      // "retired with NO payment on chain" — an accusation, stated confidently,
+      // from a failed read. Unreadable stays null, and null prints as unverified.
+      ledger = Number.isFinite(n) ? n : null;
+      if (ledger === null) log.warn('[pricewatch] retirement ledger returned a non-number:', raw);
+    } catch (e) {
+      log.warn('[pricewatch] retirement ledger unreadable:', e.message);
+    }
+
     const now = {
       price: st.marginalPrice,
       sold: Number(st.soldPcn) || 0,
       retired: Number(st.retiredPcn) || 0,
       remaining: Number(st.remainingPcn) || 0,
+      ledger,
     };
 
     const last = await readLast();
@@ -89,9 +118,30 @@ export function makePriceWatch({ pool, ladder, notify, log = console }) {
     const pct = (last.price > 0 && now.price !== null)
       ? ((now.price - last.price) / last.price) * 100 : null;
 
+    // How much of the retirement delta is BACKED by real payment records? Only
+    // that part may be described as customer spending; the rest is reported as
+    // what it actually is — inventory that left the ladder with nothing on
+    // chain accounting for it.
+    const dLedger = (now.ledger !== null && last.ledger !== null && last.ledger !== undefined)
+      ? now.ledger - Number(last.ledger) : null;
+
     const causes = [];
-    if (dSold > 0)    causes.push(`<b>${pcn(dSold)} PCN sold</b>`);
-    if (dRetired > 0) causes.push(`<b>${pcn(dRetired)} PCN retired</b> (spent on the services)`);
+    if (dSold > 0) causes.push(`<b>${pcn(dSold)} PCN sold</b>`);
+    if (dRetired > 0) {
+      if (dLedger === null) {
+        causes.push(`<b>${pcn(dRetired)} PCN retired</b> (could not check the payment ledger — ` +
+                    `cause unverified)`);
+      } else if (Math.abs(dLedger - dRetired) < 0.00000001) {
+        causes.push(`<b>${pcn(dRetired)} PCN retired</b> — customers spent on the services`);
+      } else if (dLedger > 0) {
+        causes.push(`<b>${pcn(dRetired)} PCN retired</b>, of which only ${pcn(dLedger)} PCN is ` +
+                    `matched by a payment on chain. ⚠️ The remaining ${pcn(dRetired - dLedger)} ` +
+                    `PCN left the ladder with nothing accounting for it.`);
+      } else {
+        causes.push(`⚠️ <b>${pcn(dRetired)} PCN retired with NO payment on chain</b> — the ladder ` +
+                    `was edited directly. This is not customer spending.`);
+      }
+    }
     if (dSold < 0 || dRetired < 0) causes.push(`⚠️ counters went DOWN — the ladder was edited or rebuilt`);
     if (!causes.length) causes.push(`no change in sold or retired — the ladder itself was changed`);
 
