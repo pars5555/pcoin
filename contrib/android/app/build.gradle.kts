@@ -124,8 +124,12 @@ android {
             // odd way to start.
             // 0.2.3: one-shot -reindex recovery, so a datadir Core refuses to
             // open repairs itself instead of leaving the wallet with no node.
-            versionCode = 6
-            versionName = "0.2.3"
+            // 0.2.4: the address book survives a format bump. Wallet only --
+            // the change is confined to AddressBook*, which nothing in the
+            // miner reaches, so the miner's behaviour is unchanged and its
+            // version stays where it is.
+            versionCode = 7
+            versionName = "0.2.4"
 
             buildConfigField("boolean", "MINING", "false")
             // The ONLY genuine collision between the two apps. bitcoind is

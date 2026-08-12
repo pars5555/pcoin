@@ -1,6 +1,7 @@
 package org.pcoin.miner
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -63,6 +64,35 @@ class AddressBookTest {
         val a = "PGmqNfjbG1YxpTNQnnQhFqDBRz3LPPQjHF"
         assertEquals(a, AddressBook.key(a))
         assertNull(AddressBook.labelFor(listOf(entry(a, "Cold")), a.lowercase()))
+    }
+
+    // -------------------------------------------------- stored format version
+
+    @Test
+    fun `an update must never make an existing book unreadable`() {
+        // THE ONE THAT MATTERS. An update keeps app-private storage, so the
+        // stored blob survives -- but only if the new build will still READ it.
+        // A strict equality check here means the first release that bumps the
+        // format wipes every user's saved names on upgrade.
+        for (v in 1..AddressBook.FORMAT_VERSION) {
+            assertTrue("version $v must stay readable", AddressBook.canRead(v))
+        }
+    }
+
+    @Test
+    fun `a newer book is refused rather than partially decoded`() {
+        // A downgrade. The blob may carry fields this build does not know, and
+        // decoding then rewriting would silently drop them. Refusing sends it
+        // to preserve-and-empty, which keeps the newer book intact.
+        assertFalse(AddressBook.canRead(AddressBook.FORMAT_VERSION + 1))
+        assertFalse(AddressBook.canRead(99))
+    }
+
+    @Test
+    fun `a missing or nonsense version is not a version`() {
+        // optInt returns the default for a blob with no version field at all.
+        assertFalse(AddressBook.canRead(0))
+        assertFalse(AddressBook.canRead(-1))
     }
 
     // ------------------------------------------------------------------ names

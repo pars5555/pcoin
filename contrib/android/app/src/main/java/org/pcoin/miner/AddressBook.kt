@@ -38,6 +38,34 @@ package org.pcoin.miner
  */
 object AddressBook {
 
+    /**
+     * The stored format this build writes. Bump it only alongside a change to
+     * what [AddressBookStore] encodes.
+     */
+    const val FORMAT_VERSION = 1
+
+    /**
+     * Can this build read a book stamped with version [v]?
+     *
+     * ANYTHING AT OR BELOW THE CURRENT VERSION IS READABLE, and that asymmetry
+     * is the whole point. A strict `v == FORMAT_VERSION` looks tidier and is a
+     * trap: the day someone bumps the constant to add a field, every user's
+     * existing book fails to decode on the FIRST LAUNCH AFTER AN UPDATE and
+     * their saved names silently vanish. An update must never cost the user
+     * their address book -- only an uninstall may, because that takes
+     * app-private storage with it and nothing can be done about that.
+     *
+     * A NEWER version is refused rather than guessed at. That is a downgrade,
+     * where a blob written by a later build contains fields this one does not
+     * understand; decoding it partially and then writing it back would discard
+     * whatever it did not recognise. Refusing sends it down the
+     * preserve-and-empty path instead, so the newer book survives untouched.
+     *
+     * 0 and negative are not versions at all -- they are what `optInt` returns
+     * for a blob with no version field, i.e. corruption.
+     */
+    fun canRead(v: Int): Boolean = v in 1..FORMAT_VERSION
+
     /** Long enough for "Exchange deposit (main)", short enough to fit a row. */
     const val MAX_NAME = 32
 

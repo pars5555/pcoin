@@ -85,7 +85,7 @@ class AddressBookStore(context: Context) {
                     .put(K_USED, e.lastUsedAtMs)
             )
         }
-        return JSONObject().put(K_VERSION, VERSION).put(K_ENTRIES, arr).toString()
+        return JSONObject().put(K_VERSION, AddressBook.FORMAT_VERSION).put(K_ENTRIES, arr).toString()
     }
 
     /**
@@ -103,8 +103,11 @@ class AddressBookStore(context: Context) {
         // the guarantee this file makes at the top: the next put() would then
         // overwrite the original. optJSONArray and friends never throw, so
         // nothing else was going to catch it.
+        // Readable if it is this format or an older one. See AddressBook.canRead
+        // for why refusing an OLDER blob would wipe every user's book the next
+        // time the format changes.
         val version = root.optInt(K_VERSION, -1)
-        if (version != VERSION) throw Unreadable("address book version $version")
+        if (!AddressBook.canRead(version)) throw Unreadable("address book version $version")
         val arr = root.optJSONArray(K_ENTRIES) ?: throw Unreadable("no entries array")
         val out = ArrayList<AddressBook.Entry>(arr.length())
         val seen = HashSet<String>()
@@ -134,9 +137,6 @@ class AddressBookStore(context: Context) {
 
     private companion object {
         const val TAG = "PCoinAddressBook"
-
-        /** Bumped only if the shape changes; [decode] tolerates its absence. */
-        const val VERSION = 1
 
         const val K_VERSION = "v"
         const val K_ENTRIES = "entries"
