@@ -383,13 +383,25 @@ same name is deleted before re-upload), which matters because a 9 MB upload over
 a flaky link is exactly the thing that half-finishes.
 
 **Every asset is then uploaded a second time under a version-less name**
-(`pcoin-win64.zip`, …) by `scratchpad/stable_names.py`. This is
+(`pcoin-win64-miner.zip`, …). This is
 load-bearing, not tidiness: pc.am links through
 `/releases/latest/download/<name>`, and GitHub resolves `latest` to the newest
 release and then looks for that **exact** filename. A versioned name in that URL
 works for one release and 404s for every one after it. The site links to the
 stable names and therefore needs **no edit at release time**. `SHA256SUMS` lists
 both name forms with the same hash.
+
+**Asset names carry the ROLE, as of v1.2.6**: `pcoin-<platform>-<role>.<ext>`, e.g.
+`pcoin-win64-miner.zip`, `pcoin-linux-amd64-miner.deb`, `pcoin-android-wallet.apk`,
+and `pcoin-win64-earner.zip` when the Windows earner ships. Before v1.2.6 the
+non-Android assets had no role word (`pcoin-win64.zip`), and **those old names are
+still published as transition aliases with identical bytes** — because
+`install.ps1` and `install.sh` are fetched fresh from `pc.am/dl/` but a copy
+someone saved still asks for the old name. Drop the aliases only once nothing
+references them, and remember that renaming an asset means editing, in the same
+change: both installers, `site/index.html`, `site/download/index.html`,
+`doc/WINDOWS-NODE-SETUP.md`, and the copies of the two installers deployed on
+pc.am. The repo alone is not enough.
 
 Two things that still need a manual bump:
 * **`contrib/windows-tray/install.ps1:20-21`** — `$Version` and `$Sha256` are
@@ -742,64 +754,68 @@ These are real incidents, not hypotheticals. Each one cost hours or money.
   (`scratchpad/cdp_lite.py` is that client) or every request times out on a page
   that is perfectly healthy.
 
-## 8b. pc.am is part of the deliverable, not documentation of it
+## 8b. THE PUBLIC SURFACES ARE PART OF THE CHANGE, NOT A WRITE-UP OF IT
 
-**Every change that a user could notice must reach https://pc.am in the same
-session that makes it.** The site is not a README that can lag; it is the only
-channel most people will ever read, and the only one that reaches miners whose
-operators cannot be contacted. It went live with **no link to Telegram or X at
-all** — both accounts existed for days and the website never mentioned them.
+**If a change alters anything a user could see, believe, or act on, the public
+surfaces are updated IN THE SAME SESSION. A change is not finished until they
+are.** They are not documentation that may lag; they are the only channel most
+people will ever read, and the only one that reaches users nobody can contact.
 
-Deploy is one file: copy `site/index.html` to `/var/www/pc.am/index.html` on the
-GCP box (see §5 for access), owned `www-data:www-data`, mode 644, keeping a
-timestamped `.bak`. **No Apache reload is needed for a static file** — and on
-that box a restart is forbidden anyway, it serves ~215 other vhosts.
+| surface | host / path | update it when |
+|---|---|---|
+| **pc.am** | `35.239.156.16:/var/www/pc.am/index.html` (from `site/index.html`) | anything user-visible: a new service accepting PCN, a new platform, a changed rate or claim, a consensus milestone, a new channel |
+| **market.pc.am** | `178.105.178.27:/opt/pcoin-market` | prices, limits, what is for sale, how delivery works |
+| **explorer.pc.am** | `178.105.3.51:/opt/pcoin-explorer` | new API endpoints or a changed response shape wallets depend on |
+| **docs.pc.am** | `178.105.3.51` | the integration guide, whenever an integration's behaviour changes |
+| **pcnearner.pc.am** | `178.105.178.27:8787` | the GPU-earner API surface and payout terms |
+| **@PCoinPCN** (Telegram, `-1003712285504`) | `pcoin-announce` | anything users must ACT on, or would want to know |
 
-Always verify by fetching the public URL back and comparing against the repo
-copy, not by trusting the upload:
+### The rule that keeps it honest
 
-```bash
-curl -fsSL https://pc.am/ -o /tmp/live.html
-cmp -s site/index.html /tmp/live.html && echo match || echo DIFFERS
-```
+**A number on a public page is a promise.** Never hardcode a rate, a supply
+figure, a percentage or a version where it can rot. If it must appear, it must
+be derived at render time or re-checked whenever it is touched. Two real
+examples from this project:
 
-Things that MUST trigger a site update:
+* pc.am said **"1,000 PCN = $1.00"** for hours after the credit rate moved to
+  $0.015 — the site was quoting customers **one fifteenth** of what the four
+  services were actually paying them.
+* It claimed **"one address holds about 92% … 107,900 of ~116,800 PCN"** long
+  after that stopped being true (48% in the largest address, ~75% across three).
+  That one is worse than a stale price, because it is a *fairness* disclosure —
+  being wrong about it costs credibility that a price cannot.
 
-| change | what to update |
-|---|---|
-| a release | nothing — links resolve through `/releases/latest/download/` (§4). If you are editing a download URL, something has regressed |
-| a consensus change or activation height | a banner, and remove it once the fork has landed and 100 blocks have passed |
-| a new account, channel or service | the Community column in the footer |
-| a new platform or install method | the `#download` cards and the `#get-started` terminal block |
-| checksums | `pc.am/dl/SHA256SUMS.txt` — the site links to it and it is a second, independent channel to GitHub's copy |
-
-`site/index.html` uses **CRLF**. A Python edit that reads with `encoding='utf-8'`
-and writes with `newline=''` silently rewrites the whole file to LF, so anchor
-strings spanning a line break will not match on the next edit. Anchor on a single
-line, or read as bytes and preserve the ending.
-
-**A commit subject containing `DO NOT DEPLOY YET` means the repo copy is AHEAD
-of reality.** `site/index.html` is sometimes staged with copy that only becomes
-true after an event — a "LWMA is active" banner written before the fork, a
-feature page written before the feature ships. Deploying it early publishes a
-claim that is simply false, on the one page every user reads.
-
-So before any deploy:
+### Before every deploy of pc.am
 
 ```bash
 git log --oneline -8 -- site/index.html | grep -i "do not deploy"
 ```
 
-If that matches, read the commit body for the condition it is waiting on and
-either deploy only up to the last safe commit, or wait. Do not assume the newest
-commit is publishable just because it is committed — this repo deliberately uses
-commits to *stage* website copy, and more than one session edits this file.
+Commits are deliberately used to STAGE copy that only becomes true after an
+event ("LWMA is active" written before the fork). If that matches, read the
+commit body for the condition it is waiting on.
 
-Announcements are a separate act from alerts. Telegram `@PCoinPCN` and X
-`@PCoinPCN` are public and written deliberately; monitoring alerts go to a
-private destination (`ALERT_CHAT`) and must never reach the channel — that
-mistake has already been made once and published `status=3/NOTIMPLEMENTED` plus
-an internal hostname to subscribers.
+`site/index.html` is **CRLF**. Anchor edits on a single line, or read and write
+**bytes**; a text-mode round trip silently rewrites the file to LF and every
+multi-line anchor stops matching on the next edit.
+
+Deploy **atomically** — stage into the same directory and `mv`. A plain
+in-place `cp` lets Apache serve a half-written file to a request that arrives
+mid-copy; that has already happened and produced a page missing two links.
+No Apache reload is needed for a static file, and on that box a restart is
+forbidden — it serves ~215 unrelated vhosts.
+
+Then verify by **fetching the public URL back** and comparing to the repo copy.
+Do not trust the upload.
+
+### Announcements are a separate act from alerts
+
+Operational alerts go to the private channel (`ALERT_CHAT`, `-1004340510788`)
+and must **never** reach `@PCoinPCN`. That mistake has been made once already:
+subscribers received `status=3/NOTIMPLEMENTED` and an internal hostname. Public
+announcements are written deliberately, for people, and go out through
+`pcoin-announce`, which refuses anything that looks operational.
+
 
 ## 9. Current state, and what is next
 

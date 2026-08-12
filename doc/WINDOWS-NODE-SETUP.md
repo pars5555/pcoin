@@ -1,6 +1,9 @@
 # PCoin — Windows always-on full node setup
 
-Package: `pcoin-1.2.2-win64.zip` (PCoin Core v29.4.0, x86-64, statically linked). — or link the version-less `pcoin-win64.zip` under /releases/latest/download/ so the doc never goes stale again
+Package: the version-less `pcoin-win64-miner.zip` under /releases/latest/download/, so this
+line never goes stale again (PCoin Core v29.4.0, x86-64, statically linked). Assets gained a
+role word in v1.2.6 — `-miner`, `-wallet`, `-earner` — so `pcoin-win64.zip` is the pre-1.2.6
+spelling and is still published for now as a transition alias.
 Contents: `bitcoind.exe`, `bitcoin-cli.exe`, `PCOIN.md`, `pcoin.conf.example`.
 
 The binaries are fully static (no MSVC runtime, no MinGW DLLs). Windows 10 /

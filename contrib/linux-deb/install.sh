@@ -18,7 +18,7 @@
 set -eu
 
 BASE="https://github.com/pars5555/pcoin/releases/latest/download"
-DEB="pcoin-linux-amd64.deb"
+DEB="pcoin-linux-amd64-miner.deb"
 
 if [ -t 1 ]; then
     B=$(printf '\033[1m'); G=$(printf '\033[32m'); R=$(printf '\033[31m'); N=$(printf '\033[0m')
