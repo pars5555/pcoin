@@ -42,12 +42,24 @@ set -uo pipefail
 
 REPO_URL="https://github.com/pars5555/pcoin.git"
 CHECKOUT="/srv/pcoin"
-DOCROOT="/var/www/pc.am"
 OWNER="www-data:www-data"
-PUBLIC="https://pc.am"
 BRANCH="${PCOIN_DEPLOY_BRANCH:-main}"
 DRY=0
 [ "${1:-}" = "--dry-run" ] && DRY=1
+
+# Which sites live on this host. Selected by whether the docroot EXISTS, not by
+# hostname: the same script then runs unmodified everywhere, and a host that
+# does not serve a site simply skips it instead of creating an empty one.
+#
+#   <source subdir under site/> | <docroot> | <public URL>
+#
+# pc.am is on the GCP box; docs.pc.am is Caddy on a different host entirely.
+# Deploying the site from one machine therefore CANNOT keep the guide current,
+# which is how docs.pc.am went a day without the pricing section it needed.
+TARGETS="
+.|/var/www/pc.am|https://pc.am
+docs|/var/www/docs.pc.am|https://docs.pc.am
+"
 
 say()  { printf '%s\n' "$*"; }
 die()  { printf 'deploy: %s\n' "$*" >&2; exit 1; }
@@ -86,7 +98,7 @@ say "at $REV  $SUBJ"
 # So the hold is an explicit trailer that only ever means one thing:
 #     Deploy-Hold: waiting for height 2800
 # Prose is only ever a warning, and it names the commit so a human can judge.
-LAST_REV_FILE="$DOCROOT/.deployed-rev"
+LAST_REV_FILE="/var/lib/pcoin-deploy.rev"
 LAST_REV=$(cat "$LAST_REV_FILE" 2>/dev/null || true)
 if [ -n "$LAST_REV" ] && git -C "$CHECKOUT" cat-file -e "$LAST_REV^{commit}" 2>/dev/null; then
   RANGE="$LAST_REV..HEAD"
@@ -115,50 +127,73 @@ if [ -n "$SOFT" ]; then
 fi
 
 # ------------------------------------------------------------------ 3. deploy
-changed=0; same=0
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+total_changed=0; total_same=0; sites=0; failed=0
 
-while IFS= read -r -d '' f; do
-  rel="${f#"$SRC"/}"
-  dst="$DOCROOT/$rel"
-  if [ -f "$dst" ] && cmp -s "$f" "$dst"; then
-    same=$((same+1)); continue
-  fi
-  changed=$((changed+1))
-  if [ "$DRY" = "1" ]; then
-    say "  would update  $rel ($(stat -c%s "$f") bytes)"
-    continue
-  fi
-  mkdir -p "$(dirname "$dst")"
-  [ -f "$dst" ] && cp -a "$dst" "$dst.bak.$STAMP"
-  tmp="$dst.stage.$$"
-  cp "$f" "$tmp"                     # byte copy; no text transform
-  chown "$OWNER" "$tmp" 2>/dev/null
-  chmod 644 "$tmp"
-  mv -f "$tmp" "$dst"                # atomic within the same filesystem
-  say "  updated  $rel"
-done < <(find "$SRC" -type f -print0)
+for target in $TARGETS; do
+  sub="${target%%|*}"; rest="${target#*|}"
+  docroot="${rest%%|*}"; public="${rest##*|}"
+  src="$SRC"; [ "$sub" = "." ] || src="$SRC/$sub"
 
-say "$changed changed, $same already current"
-[ "$DRY" = "1" ] && exit 0
-[ "$changed" = "0" ] && { say "nothing to do"; exit 0; }
-
-# ------------------------------------------------------------------ 4. verify
-# Trust what the public URL serves, not what we just wrote.
-sleep 1
-local_sum=$(sha256sum "$DOCROOT/index.html" | cut -d' ' -f1)
-live_sum=$(curl -fsSL --max-time 30 -H 'Cache-Control: no-cache' "$PUBLIC/" 2>/dev/null | sha256sum | cut -d' ' -f1)
-if [ "$local_sum" = "$live_sum" ]; then
-  # Only now is the revision "deployed". Recording it before verification would
-  # narrow the next run's hold window past a commit that never actually shipped.
-  printf '%s' "$(git -C "$CHECKOUT" rev-parse HEAD)" > "$LAST_REV_FILE"
-  say "verified: $PUBLIC serves the deployed bytes ($REV)"
-else
+  [ -d "$docroot" ] || continue           # this host does not serve that site
+  [ -d "$src" ] || { say "skip $public — $src missing in repo"; continue; }
+  sites=$((sites+1))
   say ""
-  say "WARNING: $PUBLIC does NOT match the file on disk."
-  say "  on disk: $local_sum"
-  say "  served : $live_sum"
-  say "Usually a Cloudflare cache; purge it, or wait and re-check."
-  say "It can also mean another process rewrote the file after this deploy."
-  exit 4
-fi
+  say "-- $public  ($docroot)"
+
+  changed=0; same=0
+  while IFS= read -r -d '' f; do
+    rel="${f#"$src"/}"
+    # pc.am's own tree contains docs/, which is a SEPARATE site with its own
+    # docroot. Deploying it under pc.am too is harmless, but on the host that
+    # serves docs.pc.am it must not be handled twice.
+    dst="$docroot/$rel"
+    if [ -f "$dst" ] && cmp -s "$f" "$dst"; then
+      same=$((same+1)); continue
+    fi
+    changed=$((changed+1))
+    if [ "$DRY" = "1" ]; then
+      say "   would update  $rel ($(stat -c%s "$f") bytes)"
+      continue
+    fi
+    mkdir -p "$(dirname "$dst")"
+    [ -f "$dst" ] && cp -a "$dst" "$dst.bak.$STAMP"
+    tmp="$dst.stage.$$"
+    cp "$f" "$tmp"                     # byte copy; no text transform
+    chown "$OWNER" "$tmp" 2>/dev/null
+    chmod 644 "$tmp"
+    mv -f "$tmp" "$dst"                # atomic within the same filesystem
+    say "   updated  $rel"
+  done < <(find "$src" -type f -print0)
+
+  say "   $changed changed, $same already current"
+  total_changed=$((total_changed+changed)); total_same=$((total_same+same))
+  [ "$DRY" = "1" ] && continue
+  [ "$changed" = "0" ] && continue
+
+  # ---- verify against the PUBLIC url, not the file we just wrote ----
+  sleep 1
+  local_sum=$(sha256sum "$docroot/index.html" 2>/dev/null | cut -d' ' -f1)
+  live_sum=$(curl -fsSL --max-time 30 -H 'Cache-Control: no-cache' "$public/" 2>/dev/null \
+             | sha256sum | cut -d' ' -f1)
+  if [ "$local_sum" = "$live_sum" ]; then
+    say "   verified: $public serves the deployed bytes"
+  else
+    failed=$((failed+1))
+    say "   WARNING: $public does NOT match the file on disk."
+    say "     on disk: $local_sum"
+    say "     served : $live_sum"
+    say "   Usually a Cloudflare cache; purge it, or wait and re-check. It can"
+    say "   also mean another process rewrote the file after this deploy."
+  fi
+done
+
+say ""
+[ "$sites" = "0" ] && { say "no known docroot on this host — nothing to deploy"; exit 0; }
+say "$total_changed changed, $total_same already current, across $sites site(s)"
+[ "$DRY" = "1" ] && exit 0
+[ "$failed" != "0" ] && exit 4
+# Record only after every site verified. Written early, a failed deploy would
+# still narrow the next run's hold window past a commit that never shipped.
+[ "$total_changed" != "0" ] && printf '%s' "$(git -C "$CHECKOUT" rev-parse HEAD)" > "$LAST_REV_FILE"
+say "deployed $REV"

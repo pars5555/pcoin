@@ -74,8 +74,8 @@
   them, and the rules that stop you crediting money that is not there.</p>
 
   <div class="note">
-    <p><strong>Three production integrations follow this guide</strong> — AiControl,
-    checker.pc.am and webbuilderbot. Every rule below exists because it was got
+    <p><strong>Four production integrations follow this guide</strong> — AiControl,
+    checker.pc.am, webbuilderbot and 3dmodels.pc.am. Every rule below exists because it was got
     wrong once, usually expensively. Where a rule looks paranoid, the reason is
     stated so you can judge it yourself.</p>
   </div>
@@ -91,6 +91,7 @@
       <li><a href="#ledger">Recording a deposit</a></li>
       <li><a href="#reorg">Reorgs</a></li>
       <li><a href="#amounts">Amounts</a></li>
+      <li><a href="#pricing">Pricing: what is a PCN worth?</a></li>
       <li><a href="#admin">The admin panel you need</a></li>
       <li><a href="#sweep">Getting the money out</a></li>
       <li><a href="#testing">Testing before you go live</a></li>
@@ -117,7 +118,7 @@
     <p><strong>There is nothing to "collect".</strong> Every user's deposit address is
     a child of one account key, so all your deposits are already in a single wallet.
     Your balance is a sum over the pool, not a transaction anybody has to make. This
-    is why no sweep code exists in any of the three integrations — see §11.</p>
+    is why no sweep code exists in any of the four integrations — see §12.</p>
   </div>
 
   <div class="note bad">
@@ -296,7 +297,7 @@ node pcoin-seed-vault.mjs new --system myapp</code></pre>
     <tr><td>minimum deposit</td><td>your call</td><td>ignore dust rather than write a row per satoshi</td></tr>
   </table>
 
-  <p>All three production integrations run <strong>6 confirmations</strong> — roughly
+  <p>All four production integrations run <strong>6 confirmations</strong> — roughly
   half an hour of work behind a deposit at current spacing. Make it a config value,
   not a constant, and raise it for large amounts. Pair a low value with a per-user
   monthly cap: the cap is what bounds your loss between reviews.</p>
@@ -353,7 +354,7 @@ node pcoin-seed-vault.mjs new --system myapp</code></pre>
   <div class="note bad">
     <p><strong>Key the ledger on <code>(txid, address)</code> — never on
     <code>(txid, vout)</code>.</strong> This is the single most expensive mistake
-    made in these integrations, and all three shipped it before it was found.</p>
+    made in these integrations, and all four shipped it before it was found.</p>
   </div>
 
   <p>The explorer's address-tx summary carries <strong>no vout at all</strong>. Faced
@@ -424,7 +425,59 @@ UNIQUE KEY uq_outpoint (txid, vout)</code></pre>
   cross a JSON boundary — <code>BigInt</code> does not survive
   <code>JSON.stringify</code>.</p>
 
-  <h2 id="admin">10. The admin panel you need</h2>
+  <h2 id="pricing">10. Pricing: what is a PCN worth?</h2>
+  <p>A deposit arrives in PCN. Your product is priced in something else. Converting
+  between the two is where the two most expensive mistakes on this chain were made,
+  and neither looked like a bug at the time.</p>
+
+  <p>The rate is published, free and unauthenticated:</p>
+<pre><code>curl -s https://price.pc.am/price</code></pre>
+<pre><code>{
+  "price": 0.015,
+  "serviceRate": 0.015,     &lt;-- USD per 1 PCN. Use THIS.
+  "currency": "USD",
+  "stale": false,
+  "at": "2026-08-12T19:26:46.829Z"
+}</code></pre>
+
+  <p>Read <code>serviceRate</code>. It is USD per one PCN, so
+  <code>usd = pcn &times; serviceRate</code>.</p>
+
+  <h3>Never hardcode the rate</h3>
+  <p>It moves. pc.am itself displayed &ldquo;1,000&nbsp;PCN = $1.00&rdquo; for hours after
+  the rate had changed, quoting customers <strong>one fifteenth</strong> of what four
+  live services were actually paying them. A number written into a template is a number
+  nobody will remember to change.</p>
+
+  <h3>Stamp the rate on the deposit row</h3>
+  <p>Store the rate you used <em>next to the credit you granted</em>, in the same row:</p>
+<pre><code>credited_usd       DECIMAL(18,8)
+credited_rate_usd  DECIMAL(18,8)   -- the rate AT THE MOMENT OF CREDIT</code></pre>
+  <p>Without it you cannot answer &ldquo;why was this customer credited that amount&rdquo;
+  a week later, and you cannot detect that a bad rate was ever used. One integration
+  credited a batch of deposits at 1/15th of their value and it was invisible until
+  someone compared two rows by hand.</p>
+
+  <h3>An unreadable rate is not a rate of zero</h3>
+  <p>This is section 6 applied to the one input that costs money. If the oracle times
+  out, returns nonsense, or reports <code>"stale": true</code>, you have <strong>no
+  rate</strong> &mdash; which is not the same as a rate of zero, and not a reason to
+  credit anyway.</p>
+<pre><code>if (!rate.usable) {
+  hold(deposit, 'no_usable_rate');   // credit nothing, lose nothing, retry later
+  return;
+}</code></pre>
+  <p>Holding costs a customer a few minutes. Crediting on a guessed rate costs them
+  their money, or costs you yours, and both are silent. The deposit is on the chain
+  and is not going anywhere &mdash; there is never a reason to resolve the question
+  early.</p>
+
+  <h3>Cache it, briefly, and age it out</h3>
+  <p>Cache for a minute or two so a burst of deposits does not hammer the oracle, but
+  give the cache an expiry and treat an expired entry as unknown rather than serving
+  it forever. A cache with no expiry is a hardcoded rate that took longer to write.</p>
+
+  <h2 id="admin">11. The admin panel you need</h2>
   <p>Two numbers, and they are not the same number.</p>
 
   <table>
@@ -452,7 +505,7 @@ UNIQUE KEY uq_outpoint (txid, vout)</code></pre>
   by summing a capped list in the browser; reorg-flagged credits; deposits held for
   review; and address-pool depth.</p>
 
-  <h2 id="sweep">11. Getting the money out</h2>
+  <h2 id="sweep">12. Getting the money out</h2>
   <p>Your server cannot do this, and that is the point. Moving funds is a deliberate
   offline act.</p>
 
@@ -496,7 +549,7 @@ bitcoin-cli unloadwallet sweep-tmp</code></pre>
   reports a zero balance you will believe; and immature coinbase output cannot be
   swept at all until 100 confirmations.</p>
 
-  <h2 id="testing">12. Testing before you go live</h2>
+  <h2 id="testing">13. Testing before you go live</h2>
   <ul>
     <li><strong>Test against the live chain, not only fixtures.</strong> Fixtures
     encode your assumptions about the API, which is precisely what you are trying to
@@ -513,7 +566,7 @@ bitcoin-cli unloadwallet sweep-tmp</code></pre>
     unchanged. If it is not, your idempotency is wrong.</li>
   </ul>
 
-  <h2 id="checklist">13. Go-live checklist</h2>
+  <h2 id="checklist">14. Go-live checklist</h2>
   <ul>
     <li>Seed generated offline; paper backup <strong>verified by restoring it</strong></li>
     <li>Encrypted backup on two machines that are not the web server; passphrase stored separately</li>
