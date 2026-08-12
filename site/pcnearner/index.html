@@ -449,10 +449,10 @@
       <div>
         <h3>Set where you get paid</h3>
           <p>
-            Paste a PCN address into <b>Payout address</b>. It is checked against the node before it
-            is accepted, so a typo is caught immediately rather than after your first payout goes
-            somewhere unrecoverable. No address, no payout &mdash; the work still runs, but nothing
-            can be sent.
+            Paste a PCN address into <b>Payout address</b>. Its <i>shape</i> is validated &mdash;
+            a Bitcoin address or a typo in the prefix is rejected &mdash; but <b>we cannot tell
+            whether you control it</b>, so check it yourself before you save it. No address, no
+            payout &mdash; the work still runs, but nothing can be sent.
           </p>
       </div>
     </div>
@@ -523,7 +523,7 @@
   </p>
   <pre class="cmd"><code>reference_seconds  =  how long the job takes on the reference card
 cost_usd           =  reference_seconds / 3600 x $0.08333
-paid_in            =  PCN, converted at the rate when the job was quoted</code></pre>
+paid_in            =  PCN, converted at the rate on the day your payout is prepared</code></pre>
   <p style="color:var(--muted);line-height:1.7;max-width:80ch;margin:16px 0 0">
     <b>Seconds are measured on the reference card, not on yours.</b> That sounds unfair and is
     the opposite: if you were paid for the seconds <i>your</i> card spent, anyone could underclock
@@ -549,8 +549,9 @@ paid_in            =  PCN, converted at the rate when the job was quoted</code><
       <h3>Pause whenever</h3>
       <p class="dl-sub">
         Right-click the tray icon and pause for 5 minutes, 10 minutes, an hour, 5 hours, a day,
-        or until you resume. The coordinator is told rather than left guessing, so a job you were
-        holding goes back to the queue immediately instead of stalling until its lease expires.
+        or until you resume. The coordinator is told rather than left guessing, so no new work is
+        offered to you. A job already running is <b>allowed to finish</b> &mdash; pausing never
+        throws away work you have already paid for in electricity.
       </p>
     </div>
     <div class="dl-card">
@@ -626,9 +627,23 @@ paid_in            =  PCN, converted at the rate when the job was quoted</code><
 
   <details class="faq"><summary>When do I actually get the coins?</summary>
   <p>Earnings accrue per completed job and are paid out in batches. Your balance, and the split
-  between what is earned and what has been paid, is on the app's account panel. There is a
-  minimum batch size, so a very small balance waits for the next one rather than being sent as
-  dust.</p></details>
+  between what is earned and what has been paid, is on the app's account panel. <b>An account is
+  paid once it is owed at least $0.50</b>; below that it keeps accruing rather than being sent as
+  dust. Your one-time welcome bonus counts toward that minimum like any other earnings. Batches
+  are prepared by hand today &mdash; there is no fixed payout day yet.</p></details>
+
+  <details class="faq"><summary>Is there a joining bonus?</summary>
+  <p>Yes. <b>Your first completed job also pays a one-time welcome bonus of $0.10.</b> It is paid
+  once per account &mdash; not per machine and not per card &mdash; on the first job that is
+  accepted and credited to you, whatever the job type and however small it is. It appears in your
+  ledger as a <code>bonus</code> entry. Because early jobs are worth fractions of a cent, the
+  bonus will be almost all of your first balance: that is expected, not an error.</p></details>
+
+  <details class="faq"><summary>Can a job I finished earn nothing?</summary>
+  <p>Two ways, and both are rare. Some job types have their output checked before payment; work
+  that fails the check is sent to another machine and is not paid. And a job can be cancelled by
+  the customer while it is running, or outrun its lease &mdash; in either case the result arrives
+  too late to be credited. Everything else that completes is paid.</p></details>
 
   <details class="faq"><summary>Can I run it on several machines?</summary>
   <p>Yes. Sign in with the same account on each and they all pay into one balance. Each machine
