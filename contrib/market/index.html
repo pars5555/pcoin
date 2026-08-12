@@ -8,9 +8,8 @@
   </header>
 
   <h1>Buy PCoin with crypto</h1>
-  <p class="lede">Pay in USDT or any coin NOWPayments accepts. PCN is sold from a
-  fixed ladder of <b>100,000 coins</b> in 100 steps, each about 9.75% dearer than the
-  one below it &mdash; from $0.001 up to <b>$10.00</b> for the last coin. Nothing is
+  <p class="lede" id="lede">Pay in USDT or any coin NOWPayments accepts. PCN is sold
+  from a fixed ladder of coins in steps, each dearer than the one below it. Nothing is
   held back and nothing is added: when the ladder is empty there is no more to sell
   here. Large orders climb several steps, so <b>the average price you pay is higher
   than the price on this page</b>. Work it out before you order.</p>
@@ -157,6 +156,30 @@ function renderOrders(list) {
 
 const money = n => n < 0.01 ? '$' + n.toFixed(6) : '$' + n.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
 
+// A total, not a unit price. Cents are the right unit above $1; below it they
+// are not — a 1 PCN order really does cost fifteen thousandths of a dollar, and
+// rounding that to "$0.01" beside an average of "$0.015" made the page
+// contradict itself in two adjacent numbers.
+const usd = n =>
+  n >= 1     ? '$' + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+: n >= 0.01  ? '$' + n.toFixed(3).replace(/0$/, '')
+             : '$' + n.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+
+// Quantities can be fractional and small. Math.round() turned every amount
+// under half a coin into "0 PCN".
+const fmtPcn = n =>
+  n >= 1 ? Math.round(n).toLocaleString()
+         : Number(n.toFixed(8)).toString();
+
+// The share of the ladder an order takes, at a readable precision. Small
+// orders are genuinely tiny fractions and "0%" would be worse than useless.
+const pctOfLadder = p =>
+  p === null || p === undefined ? '<0.001%'
+: p >= 1     ? p.toFixed(1) + '%'
+: p >= 0.01  ? p.toFixed(2) + '%'
+: p > 0      ? '<0.01%'
+             : '0%';
+
 // bech32, so a wrong address is caught while it is being typed rather than
 // after the amount has been chosen and the button pressed. Deliberately the
 // same rules as the server: this is a courtesy, never the authority.
@@ -225,13 +248,24 @@ function calc() {
         ? '<br><b>Only ' + Math.round(c.filledPcn).toLocaleString() + ' PCN are left on the ladder</b>, '
           + 'so that is what this prices.'
         : '';
+      // Two sentences: what it costs, and what it does to the ladder. The
+      // second one only claims a price move when the price actually moves —
+      // an order inside a single step leaves the next buyer's price untouched,
+      // and "moves the price from $0.015 to $0.015" reads as a broken page.
+      const steps = c.rungsTouched ?? c.rungsConsumed;
+      const movement = c.exhausted
+        ? 'It would take <b>every remaining step</b> and empty the ladder.'
+        : c.priceMoves
+          ? 'It climbs <b>' + steps + '</b> of the 100 steps, taking the price for the next '
+            + 'buyer from ' + money(c.priceBefore) + ' to <b>' + money(c.marginalPriceAfter)
+            + '</b>.'
+          : 'That is <b>' + pctOfLadder(c.pctOfLadder) + '</b> of the ladder — inside a single '
+            + 'step, so the price for the next buyer stays at <b>' + money(c.priceBefore)
+            + '</b>.';
       $('calcBox').innerHTML =
-          '<b>' + Math.round(c.filledPcn).toLocaleString() + ' PCN</b> costs <b>$'
-        + c.totalCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+          '<b>' + fmtPcn(c.filledPcn) + ' PCN</b> costs <b>' + usd(c.totalCost)
         + '</b>, an average of <b>' + money(c.averagePrice) + '</b> per coin.<br>'
-        + 'It consumes <b>' + c.rungsConsumed + '</b> of the 100 steps and moves the price from '
-        + money(c.priceBefore) + ' to <b>' + (c.marginalPriceAfter === null
-            ? '$10.00 — the ladder would be empty' : money(c.marginalPriceAfter)) + '</b>.'
+        + movement
         + short;
     } catch (e) { $('calcBox').textContent = e.message; }
   }, 250);
@@ -254,8 +288,7 @@ function quote() {
       const q = await api('/api/quote?usd=' + usd);
       $('quoteBox').innerHTML = 'You receive about <b>' + Math.round(q.pcn).toLocaleString()
         + ' PCN</b> at an average of <b>' + money(q.effectivePrice) + '</b> each, across <b>'
-        + q.rungsConsumed + '</b> step' + (q.rungsConsumed === 1 ? '' : 's') + ' of the ladder. '
-        + 'This purchase moves the price to ' + money(q.newPrice) + '.'
+        + q.rungsConsumed + '</b> step' + (q.rungsConsumed === 1 ? '' : 's') + ' of the ladder.'
         + (q.saleOpen ? '' : '<br><br><b>Sales are paused.</b> ' + q.saleBlockedReason);
       // Say it before the click, not after. Someone who has typed an amount and
       // pasted an address should not discover at the payment step that we were
@@ -293,7 +326,25 @@ $('signout').onclick = async () => { await fetch('/api/logout'); refresh(); };
   try {
     const l = await (await fetch('/api/ladder/state')).json();
     $('remaining').textContent = Math.round(l.remainingPcn).toLocaleString();
-    $('soldPct').textContent = l.pctSold.toFixed(2) + '% of 100,000 PCN sold';
+    $('soldPct').textContent = l.pctSold.toFixed(2) + '% of '
+      + Number(l.totalPcn).toLocaleString() + ' PCN sold';
+
+    // The opening paragraph describes the ladder, so it is built from the
+    // ladder rather than typed into the markup. It read "$0.001 up to $10.00,
+    // 9.75% a step" for as long as it took someone to notice, while the ladder
+    // underneath it actually started at $0.015 and stepped 6.79% — the one
+    // paragraph every buyer reads, describing a different product.
+    if (l.floorPrice && l.topPrice && l.stepPct) {
+      $('lede').innerHTML =
+        'Pay in USDT or any coin NOWPayments accepts. PCN is sold from a fixed ladder of <b>'
+        + Number(l.totalPcn).toLocaleString() + ' coins</b> in ' + l.rungCount
+        + ' steps, each about ' + l.stepPct.toFixed(2) + '% dearer than the one below it '
+        + '&mdash; from ' + money(l.floorPrice) + ' up to <b>' + money(l.topPrice)
+        + '</b> for the last coin. Nothing is held back and nothing is added: when the '
+        + 'ladder is empty there is no more to sell here. Large orders climb several steps, '
+        + 'so <b>the average price you pay is higher than the price on this page</b>. '
+        + 'Work it out before you order.';
+    }
     // Every limit comes from the server, never from the markup. A number typed
     // into the HTML goes stale the first time a setting changes.
     LIMITS = { minOrderUsd: l.minOrderUsd, maxOrderUsd: l.maxOrderUsd,

@@ -42,6 +42,7 @@
 //    arrives
 
 export function makeRetire({ pool, node, settings, notify, log = console }) {
+  let lastNodeFail = 0, lastNodeAlert = 0;
   const q = async (sql, args = []) => (await pool.query(sql, args))[0];
   const UNITS = 1e8;
   const toUnits = pcn => Math.round(Number(pcn) * UNITS);
@@ -105,8 +106,25 @@ export function makeRetire({ pool, node, settings, notify, log = console }) {
     if (!c.systems.length) return { ok: true, skipped: 'no systems configured' };
 
     let tip;
-    try { tip = await node.rpc('getblockcount'); }
-    catch (e) { return { ok: false, why: `node unreachable: ${e.message}` }; }
+    try {
+      tip = await node.rpc('getblockcount');
+      lastNodeFail = 0;
+    } catch (e) {
+      // Retirement is what makes the price respond to real usage, so this
+      // failing means the price quietly stops tracking spend. Nothing else
+      // watches it: the caller is a fire-and-forget setInterval that discards
+      // the returned {ok:false}, so without this the mechanism can be off for
+      // days and look identical to "nobody spent anything".
+      if (!lastNodeFail) lastNodeFail = Date.now();
+      if (Date.now() - lastNodeAlert >= 60 * 60 * 1000) {
+        lastNodeAlert = Date.now();
+        await notify(`🟠 <b>Retirement stalled</b>\nThe node is unreachable, so spent coins are ` +
+          `not being retired and the ladder price has stopped responding to usage ` +
+          `(${Math.round((Date.now() - lastNodeFail) / 60000)} min so far).\n` +
+          `<code>${String(e.message).slice(0, 200)}</code>`).catch(() => {});
+      }
+      return { ok: false, why: `node unreachable: ${e.message}` };
+    }
 
     const safeTip = tip - c.minConf;           // never read an unconfirmed tip
     let from = await cursor();

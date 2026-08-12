@@ -168,6 +168,10 @@ const B = makeBacking({
   ownerAddress: cfg.ownerAddress,
   settings: S,
   floatBalance: () => D.floatBalance(),
+  // Without this, every way the market can STOP SELLING was silent: an
+  // explorer outage, one unreadable backing address, or a node restart pauses
+  // sales and the first signal was noticing the takings had stopped.
+  notify,
 });
 
 // Every 10 minutes: nag if the float is low, and rescue anything stuck between
@@ -475,6 +479,10 @@ function ipnValid(rawBody, sigHeader) {
 }
 
 // ── pages ──────────────────────────────────────────────────────────────────
+// Throttles for alerts a stranger can trigger. Unbounded, they would be a
+// denial of service against the one channel carrying the double-send alarm.
+let lastSigAlert = 0, lastCrashAlert = 0;
+
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const CSS = readFileSync('/opt/pcoin-market/style.css', 'utf8');
 const shell = (title, b) => `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
@@ -518,6 +526,30 @@ createServer(async (req, res) => {
       const raw = await body(req);
       if (!ipnValid(raw, req.headers['x-nowpayments-sig'])) {
         console.warn('[ipn] REJECTED bad signature');
+        // The dangerous case here is NOT forgery — a forged callback is
+        // correctly refused and costs nothing. It is a WRONG SECRET. If
+        // ipnSecret is unset, mistyped, or rotated at NOWPayments, this branch
+        // rejects every GENUINE payment: the customer pays, the gateway gets a
+        // 401, the order expires, the inventory is resold, and the only signal
+        // is the ABSENCE of a follow-up to the "new order" message. Absence of
+        // an event is not an alert, so say it out loud.
+        //
+        // Nothing from the unverified body is echoed: notify posts parse_mode
+        // HTML and does not escape, so attacker-controlled text must not reach
+        // it. Throttled hourly — this endpoint is publicly reachable and gets
+        // scanned.
+        if (Date.now() - lastSigAlert >= 60 * 60 * 1000) {
+          lastSigAlert = Date.now();
+          notify(`⚠️ <b>Payment callback rejected: bad signature</b>\n` +
+            (cfg.ipnSecret
+              ? `If a real customer just paid, the IPN secret here no longer matches ` +
+                `NOWPayments — every genuine payment is being refused. If nobody is ` +
+                `waiting, this is just a scanner and can be ignored.`
+              : `<b>ipnSecret IS NOT SET — every genuine payment is being rejected.</b>`) +
+            `\nbody ${raw.length}B, signature header ` +
+            `${req.headers['x-nowpayments-sig'] ? 'present' : 'absent'}\n` +
+            `Further reports suppressed for an hour.`).catch(() => {});
+        }
         return json(res, 401, { error: 'bad signature' });
       }
       const d = JSON.parse(raw);
@@ -552,7 +584,21 @@ createServer(async (req, res) => {
       // callback that can never succeed.
       const rows = await q(`SELECT order_id, status FROM orders WHERE order_id = ?`,
                            [d.order_id ?? null]);
-      if (!rows.length) return json(res, 200, { ok: true, note: 'unknown order ignored', duplicate });
+      if (!rows.length) {
+        // A SIGNED callback — so it really is from NOWPayments — naming an order
+        // this database has never heard of. Someone paid for something we have
+        // no record of. This was the only outcome in the whole IPN handler that
+        // was completely silent, while its two money-anomaly siblings below both
+        // log and alert. Answered 200 deliberately (a retry cannot help), which
+        // is exactly why it must not also be invisible.
+        console.error('[ipn] SIGNED callback for an unknown order:', d.order_id);
+        notify(`🔴 <b>Payment for an unknown order</b>\n<code>${esc(String(d.order_id ?? 'null'))}</code>\n` +
+          `payment <code>${esc(String(d.payment_id ?? '?'))}</code> · status ` +
+          `<code>${esc(String(d.payment_status ?? '?'))}</code>\n` +
+          `The signature verified, so this is a real callback — but no such order exists ` +
+          `here. Somebody may have paid and be waiting with nothing.`).catch(() => {});
+        return json(res, 200, { ok: true, note: 'unknown order ignored', duplicate });
+      }
 
       if (['finished', 'confirmed'].includes(d.payment_status)) {
         // A human releases the coins; this only records that payment landed.
@@ -728,11 +774,28 @@ createServer(async (req, res) => {
         requestedPcn: pcn,
         filledPcn: w.pcn,
         unfilledPcn: w.pcnUnfilled,          // > 0 means the ladder ran out
-        totalCost: Number(w.cost.toFixed(2)),
+        // NOT rounded to cents. At $0.015 a coin, toFixed(2) turned the true
+        // cost of 1 PCN into $0.01 while the average beside it still read
+        // $0.015 — so the page showed 1 x $0.015 = $0.01 and argued with
+        // itself. Cheap coins mean sub-cent totals are real; the client
+        // decides how many decimals to show, and the server does not destroy
+        // precision it cannot get back.
+        totalCost: w.cost,
         averagePrice: w.avgPrice,
-        rungsConsumed: w.rungsConsumed,
+        // How many rungs this order TOUCHES. It is not how many it uses up: an
+        // order smaller than one rung touches exactly 1 and consumes a sliver
+        // of it, which is why the page reports the fraction of the ladder as
+        // well, and why "consumes 1 of the 100 steps" was the wrong sentence.
+        rungsTouched: w.rungsConsumed,
+        rungsConsumed: w.rungsConsumed,      // kept: older clients read this name
+        pctOfLadder: st.totalPcn ? (w.pcn / Number(st.totalPcn)) * 100 : null,
         priceBefore: st.nextFillPrice,
         marginalPriceAfter: w.marginalAfter,
+        // Whether the NEXT buyer would pay a different price than they would
+        // have before this order. Small orders genuinely do not move it, and
+        // saying "moves the price from $0.015 to $0.015" reads as a bug even
+        // though it is arithmetically true.
+        priceMoves: w.marginalAfter !== null && w.marginalAfter !== st.nextFillPrice,
         exhausted: w.exhausted,
       });
     }
@@ -992,7 +1055,36 @@ createServer(async (req, res) => {
     }
     return json(res, 404, { error: 'not found' });
   } catch (e) {
-    console.error('[market]', e.message);
+    console.error('[market]', e.stack || e.message);
+    // A throw inside /ipn is the expensive one: the money path. It can land
+    // between recording the payment and delivering, leaving a paid order that
+    // nothing will pick up, and the gateway retrying against a request that
+    // fails the same way every time. Alert on the money paths only — a 500 on
+    // a page request is noise, and this handler is publicly reachable.
+    if (p === '/ipn' || p === '/api/buy' || p.startsWith('/order/')) {
+      if (Date.now() - lastCrashAlert >= 10 * 60 * 1000) {
+        lastCrashAlert = Date.now();
+        notify(`🔴 <b>Request crashed on a money path</b>\n<code>${esc(p)}</code>\n` +
+          `<code>${esc(String(e.message).slice(0, 300))}</code>\n` +
+          (p === '/ipn'
+            ? `A payment callback failed. Check for a paid order stuck in <b>pending</b>.`
+            : `Check the order and the ladder reservations.`)).catch(() => {});
+      }
+    }
     return json(res, 500, { error: e.message });
   }
 }).listen(PORT, '127.0.0.1', () => console.log(`pcoin-market on 127.0.0.1:${PORT}`));
+
+// Nothing should ever reach these. If something does, the process is in an
+// undefined state and the operator must hear about it before the box quietly
+// keeps serving from it.
+process.on('unhandledRejection', r => {
+  console.error('[market] unhandled rejection:', r);
+  notify(`🔴 <b>Unhandled rejection</b>\n<code>${esc(String(r?.message || r).slice(0, 300))}</code>`)
+    .catch(() => {});
+});
+process.on('uncaughtException', e => {
+  console.error('[market] uncaught exception:', e.stack || e.message);
+  notify(`🚨 <b>Uncaught exception — the market process may be dead</b>\n` +
+    `<code>${esc(String(e.message).slice(0, 300))}</code>`).catch(() => {});
+});

@@ -115,8 +115,11 @@ export function makeLadder(pool) {
 
   /** What the ladder looks like to the outside world.
    *
-   *  The published marginal price is driven by qty_SOLD alone, never by
-   *  reservations. Reserving costs nothing — an attacker could open orders they
+   *  The published marginal price is driven by qty_sold AND qty_retired, never
+   *  by reservations. (It did once count sold alone; retire-on-spend is the
+   *  whole reason usage moves the price, so leaving it out would have made the
+   *  mechanism invisible in the one number everything reads.) Reserving costs
+   *  nothing — an attacker could open orders they
    *  never pay for and walk the published price up, and since serviceRate
    *  follows this number, that would inflate what four products credit real
    *  customers. Quoting still respects reservations, so we cannot oversell;
@@ -138,9 +141,23 @@ export function makeLadder(pool) {
         ORDER BY rung_no LIMIT 1`);
     const tot = Number(agg.tot), sold = Number(agg.sold), resv = Number(agg.resv),
           retd = Number(agg.retd || 0);
+    // The ladder's own shape, published so the page never has to hardcode it.
+    // It already went stale once: the site described a "$0.001 floor, 9.75% a
+    // step" ladder for hours after it was rebuilt at $0.015 and 6.7885%, in the
+    // first paragraph a buyer reads. Anything the server knows, the server says.
+    const [[shape]] = await conn.query(
+      `SELECT MIN(price) AS lo, MAX(price) AS hi, COUNT(*) AS n,
+              MAX(CASE WHEN rung_no=1 THEN price END) AS p1,
+              MAX(CASE WHEN rung_no=2 THEN price END) AS p2
+         FROM ladder_rungs`);
+    const p1 = Number(shape?.p1), p2 = Number(shape?.p2);
     return {
       marginalPrice: marg ? Number(marg.price) : null,   // null = inventory gone
       nextFillPrice: next ? Number(next.price) : null,   // what a buyer pays next
+      floorPrice: shape ? Number(shape.lo) : null,       // the first rung, ever
+      topPrice: shape ? Number(shape.hi) : null,         // the last rung
+      rungCount: shape ? Number(shape.n) : null,
+      stepPct: (p1 > 0 && p2 > 0) ? ((p2 / p1) - 1) * 100 : null,
       totalPcn: tot,
       soldPcn: sold,
       reservedPcn: resv,

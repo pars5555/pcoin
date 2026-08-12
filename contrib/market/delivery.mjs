@@ -349,7 +349,7 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
 
   // ── monitors ─────────────────────────────────────────────────────────────
 
-  let lastFloatWarn = 0;
+  let lastFloatWarn = 0, lastReconcileWarn = 0;
   async function checkFloat() {
     try {
       const bal = await floatBalance();
@@ -367,6 +367,19 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
       return { bal, warned: true };
     } catch (e) {
       log.warn('[delivery] float check failed:', e.message);
+      // The alarm going quiet is not the same as nothing being wrong, and from
+      // the outside the two look identical. checkFloat is the ONLY thing
+      // watching the hot wallet; if it cannot read the balance, auto-send is
+      // almost certainly broken too — and a bitcoind restart alone does it,
+      // because the wallet comes back unloaded. Reuse the existing throttle so
+      // this cannot outpace the low-float warning it replaces.
+      if (Date.now() - lastFloatWarn >= 10 * 60 * 1000) {
+        lastFloatWarn = Date.now();
+        await notify(
+          `🔴 <b>Float unreadable</b>\nThe hot wallet balance could not be read, so the ` +
+          `low-balance alarm is BLIND and auto-send is probably down.\n` +
+          `<code>${String(e.message).slice(0, 200)}</code>`).catch(() => {});
+      }
       return { error: e.message };
     }
   }
@@ -380,6 +393,11 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
           WHERE status='sending' AND delivered_txid IS NULL
             AND paid_at < (NOW() - INTERVAL 5 MINUTE)`);
       for (const o of stuck) {
+        // Per-order, so one order that cannot be resolved does not abort the
+        // sweep for every order queued behind it. Previously a single failing
+        // findSentTx or UPDATE killed the whole pass, on every tick, forever —
+        // the orders behind it would never be looked at again.
+        try {
         const txid = await findSentTx(o.order_id);
         if (txid) {
           await recordSent(o.order_id, txid);
@@ -395,8 +413,27 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
           await notify(`🔴 <b>Stuck send, no transaction found</b>\n<code>${o.order_id}</code>\n` +
                        `Marked <b>needs_review</b>. Check the wallet before sending anything.`);
         }
+        } catch (e) {
+          log.error(`[delivery] reconcile failed for ${o.order_id}:`, e.message);
+          await notify(`🔴 <b>Could not reconcile a stuck order</b>\n<code>${o.order_id}</code>\n` +
+            `It is still <b>sending</b> and the buyer has paid. Nothing was sent by this pass.\n` +
+            `<code>${String(e.message).slice(0, 200)}</code>`).catch(() => {});
+        }
       }
-    } catch (e) { log.error('[delivery] reconcile failed:', e.message); }
+    } catch (e) {
+      log.error('[delivery] reconcile failed:', e.message);
+      // reconcileSending is the ONLY exit from status='sending' — the admin
+      // panel offers no button for an order in that state. If this sweep is
+      // failing persistently (listtransactions off the RPC whitelist, wallet
+      // unloaded, stale cookie), buyers who have paid are frozen indefinitely
+      // and nothing anywhere says so.
+      if (Date.now() - lastReconcileWarn >= 30 * 60 * 1000) {
+        lastReconcileWarn = Date.now();
+        await notify(`🔴 <b>Reconcile sweep FAILED</b>\nStuck sends were not examined this pass. ` +
+          `Orders may be frozen in <b>sending</b> with the buyer already paid.\n` +
+          `<code>${String(e.message).slice(0, 250)}</code>`).catch(() => {});
+      }
+    }
   }
 
   return { deliver, deliverForce: id => deliver(id, { force: true }),
@@ -415,9 +452,30 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
 // OWNER_BAL_MAX_AGE_MS. Past that it is a guess, and the market stops selling
 // rather than promise coins nobody has confirmed exist.
 export function makeBacking({ pool, explorerUrl, ownerAddress, settings = null,
-                              floatBalance = null, log = console }) {
+                              floatBalance = null, notify = null, log = console }) {
   const q = async (sql, args = []) => (await pool.query(sql, args))[0];
   let cache = { pcn: null, at: 0 };
+
+  // This module decides whether the market may sell AT ALL, and it was built
+  // without a notifier — so every way it can fail ended at a log line on a box
+  // nobody watches. The failures are not exotic: the explorer 500s, one backing
+  // address stops resolving, the node is restarting. Any of them pauses sales,
+  // the site starts answering 503 to paying customers, and the first signal is
+  // a human noticing the takings stopped.
+  //
+  // Throttled per kind, because these repeat every request while broken. An
+  // alert that fires forty times an hour is one the reader learns to swipe away.
+  const lastAlert = new Map();
+  async function alert(kind, build, everyMs = 30 * 60 * 1000) {
+    if (!notify) return;
+    const now = Date.now();
+    if (lastAlert.size > 200) lastAlert.clear();
+    if (now - (lastAlert.get(kind) || 0) < everyMs) return;
+    lastAlert.set(kind, now);
+    try { await notify(build()); } catch (e) { log.warn('[backing] alert failed:', e.message); }
+  }
+  /** Say it once when it breaks and once when it comes back, not on every poll. */
+  function clearAlert(kind) { lastAlert.delete(kind); }
 
   /** Every address whose coins we can actually hand over.
    *
@@ -465,16 +523,45 @@ export function makeBacking({ pool, explorerUrl, ownerAddress, settings = null,
       // The hot wallet holds deliverable coins too. Leaving it out understates
       // the backing by exactly the float.
       if (floatBalance) {
-        try { v += Number(await floatBalance()) || 0; }
-        catch (e) { log.warn('[backing] hot wallet unreadable, excluded from backing:', e.message); }
+        try {
+          v += Number(await floatBalance()) || 0;
+          clearAlert('float');
+        } catch (e) {
+          log.warn('[backing] hot wallet unreadable, excluded from backing:', e.message);
+          // Not fatal to the reading, but it silently SHRINKS the backing by the
+          // whole float, so the market starts refusing orders it could fill.
+          await alert('float', () =>
+            `🟠 <b>Hot wallet unreadable</b>\nThe float is being excluded from the backing ` +
+            `total, so the market will refuse orders it could actually fill.\n` +
+            `<code>${String(e.message).slice(0, 200)}</code>`);
+        }
       }
       cache = { pcn: v, at: Date.now() };
+      clearAlert('read');
+      clearAlert('expired');
       return { pcn: v, ageMs: 0, addresses: addrs.length };
     } catch (e) {
       if (cache.pcn !== null && Date.now() - cache.at < OWNER_BAL_MAX_AGE_MS) {
+        // Selling continues on a cached number. That is the intended behaviour,
+        // but it is a decision to keep taking money on a figure nobody can
+        // currently confirm, and it must not be the one branch here that is
+        // completely silent — its two neighbours both at least log.
+        await alert('read', () =>
+          `🟠 <b>Backing read failing</b>\nSelling is continuing on a cached figure ` +
+          `(${Math.round((Date.now() - cache.at) / 1000)}s old, limit ` +
+          `${Math.round(OWNER_BAL_MAX_AGE_MS / 60000)} min). When it expires, <b>sales stop</b>.\n` +
+          `<code>${String(e.message).slice(0, 200)}</code>`);
         return { pcn: cache.pcn, ageMs: Date.now() - cache.at, degraded: e.message };
       }
       log.warn('[backing] owner balance unreadable and the cache has expired:', e.message);
+      // This one actually stops the market. It is the single most important
+      // alert in the file: the site is now answering 503 to every buyer.
+      await alert('expired', () =>
+        `🔴 <b>SALES STOPPED</b>\nThe coin supply backing sales cannot be confirmed and the ` +
+        `cached reading has expired, so market.pc.am is refusing every order.\n` +
+        `<code>${String(e.message).slice(0, 200)}</code>\n` +
+        `Check the explorer and the node; this clears itself once a reading succeeds.`,
+        10 * 60 * 1000);
       return { pcn: null, error: e.message };
     }
   }

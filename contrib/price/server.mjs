@@ -40,6 +40,55 @@ import { timingSafeEqual, createHash, X509Certificate } from 'node:crypto';
 
 const STATE = '/opt/pcoin-price/state.json';
 const PORT = 8788;
+
+// ── alerting ───────────────────────────────────────────────────────────────
+// This service had NO alerting of any kind, which is how `serviceRate` walked
+// +10% a minute against a stuck retune clock until a human happened to read the
+// number. It sets the rate four payment products credit real money at, so a
+// wrong value here is a wrong price everywhere at once, and the only previous
+// way to notice was to look.
+//
+// Implemented inline rather than by importing the market's notify.mjs: this is
+// a separate deployment unit under /opt/pcoin-price and must not gain a
+// dependency on a sibling directory that may not be installed beside it.
+const ALERT_CONF = '/etc/pcoin/alert.conf';
+function readAlertConf() {
+  try {
+    const out = {};
+    for (const line of readFileSync(ALERT_CONF, 'utf8').split('\n')) {
+      const m = line.match(/^\s*([A-Z_]+)\s*=\s*(.*?)\s*$/);
+      if (m) out[m[1]] = m[2];
+    }
+    return out;
+  } catch { return {}; }
+}
+const ALERT = readAlertConf();
+const alertTo = ALERT.MARKET_CHAT || ALERT.ALERT_CHAT;
+let alertedMissing = false;
+let lastPollAlert = 0;
+/** Best-effort and never throws: an alert that can crash the price oracle is a
+ *  worse problem than the one it reports. */
+async function notify(html) {
+  if (!ALERT.TELEGRAM_TOKEN || !alertTo) {
+    if (!alertedMissing) {
+      alertedMissing = true;
+      console.warn('[price] no Telegram token or chat configured — alerts are LOG ONLY');
+    }
+    console.warn('[price][alert]', html.replace(/<[^>]+>/g, ''));
+    return false;
+  }
+  try {
+    const r = await fetch(`https://api.telegram.org/bot${ALERT.TELEGRAM_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: alertTo, parse_mode: 'HTML',
+                             text: `<b>price.pc.am</b>\n${html}` }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!r.ok) console.warn('[price] telegram said', r.status);
+    return r.ok;
+  } catch (e) { console.warn('[price] alert failed:', e.message); return false; }
+}
 // The lowest rate the walk can stand on. Only used to escape serviceRate = 0,
 // which a multiplicative clamp can otherwise never leave.
 const SERVICE_RATE_FLOOR = 1e-8;
@@ -340,14 +389,43 @@ async function pollLadder(force = false) {
       ...(typeof v.buybackOpen === 'boolean' ? { buybackOpen: v.buybackOpen } : {}),
     };
     const snapshot = { ...st };
+    const before = { serviceRate: st.serviceRate };
     Object.assign(st, next);
     const tune = retuneServiceRate(force);
     try { save(st); }
-    catch (e) { st = snapshot; throw new Error(`state could not be persisted: ${e.message}`); }
-    if (tune.moved) console.log(`[price] serviceRate -> ${tune.serviceRate} (ladder ${st.ladderPrice})`);
+    catch (e) {
+      st = snapshot;
+      // The rate is applied in memory but did not reach the disk. On the next
+      // restart the service silently reverts to the older figure, and the
+      // divergence between what was charged and what is stored is invisible.
+      await notify(`🔴 <b>State could not be persisted</b>\nThe posted rate is live in memory ` +
+        `but NOT saved, so a restart will silently revert it.\n` +
+        `<code>${String(e.message).slice(0, 200)}</code>`);
+      throw new Error(`state could not be persisted: ${e.message}`);
+    }
+    if (tune.moved) {
+      console.log(`[price] serviceRate -> ${tune.serviceRate} (ladder ${st.ladderPrice})`);
+      // Every move, no throttle. This is the number four products credit money
+      // at; it moves at most once an hour by construction, and the one time it
+      // ran away it did so unobserved for as long as it took someone to look.
+      await notify(`💱 <b>serviceRate moved</b>\n` +
+        `<code>${before.serviceRate}</code> → <b><code>${tune.serviceRate}</code></b>\n` +
+        `ladder ${st.ladderPrice} · ceiling ${st.serviceCeiling} · max move ${st.serviceMaxMovePct}%\n` +
+        `checker, webbuilderbot, aicontrol and 3dmodels now credit at the new rate.`);
+    }
     return { ok: true, ...tune };
   } catch (e) {
     console.warn('[price] ladder poll failed, keeping last known price:', e.message);
+    // The last known price stands, which is correct — but if the market service
+    // stays unreachable the posted price silently ages, and `stale` is only
+    // visible to whoever reads the JSON. Say it once per hour rather than on
+    // every failed poll.
+    if (Date.now() - lastPollAlert >= 60 * 60 * 1000) {
+      lastPollAlert = Date.now();
+      await notify(`🟠 <b>Ladder unreachable</b>\nThe price is frozen at the last known ` +
+        `figure (${st.ladderPrice}). Nothing is wrong with the number — it is just ` +
+        `no longer being refreshed.\n<code>${String(e.message).slice(0, 200)}</code>`);
+    }
     return { ok: false, why: e.message };
   }
 }

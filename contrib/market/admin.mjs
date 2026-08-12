@@ -22,6 +22,7 @@
 
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { toSvg } from './qr.mjs';
+import { clientIp, ipLabel } from './clientip.mjs';
 
 const SCRYPT = { N: 1 << 15, r: 8, p: 1, maxmem: 96 * 1024 * 1024 };
 const SESSION_HOURS = 12;
@@ -375,9 +376,13 @@ ${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
     // The LAST X-Forwarded-For entry, not the first. Caddy APPENDS the real
     // client to whatever the client sent, so the first entry is attacker-chosen
     // and using it let anyone reset their own rate limit by varying a header.
-    // The last hop is the only one our proxy wrote.
-    const xff = String(req.headers['x-forwarded-for'] || '').split(',').map(s => s.trim()).filter(Boolean);
-    const ip = xff.length ? xff[xff.length - 1] : req.socket.remoteAddress;
+    // Behind Cloudflare AND Caddy, so neither end of X-Forwarded-For is the
+    // visitor — see clientip.mjs for the measured hop chain. `null` here means
+    // genuinely unidentifiable and is kept as its own value: it gets its own
+    // rate-limit bucket and reads as "unknown" in the alert, rather than being
+    // rendered as some real-looking address nobody actually connected from.
+    const ip = clientIp(req);
+    const ipTxt = ipLabel(ip);
     const cookie = (req.headers.cookie || '').split(/;\s*/).find(c => c.startsWith('mktadm='));
     const sessTok = cookie ? cookie.slice(7) : '';
     const email = verify(sessTok);
@@ -394,7 +399,7 @@ ${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
       if (throttled(`ip:${ip}`) || throttled(`em:${em}`)) {
         await audit(em, 'login.throttled', null, ip);
         await alertOnce(`lock:${ip}`, () =>
-          `⛔️ <b>Admin login locked out</b>\n<code>${esc(ip)}</code> hit ${LOGIN_MAX_TRIES} ` +
+          `⛔️ <b>Admin login locked out</b>\n<code>${esc(ipTxt)}</code> hit ${LOGIN_MAX_TRIES} ` +
           `failed attempts and is blocked for 15 minutes.\nThis is someone guessing. If it ` +
           `is not you, no action is required — but if it keeps up, say so and the panel can ` +
           `be put behind an IP allowlist.`);
@@ -413,7 +418,7 @@ ${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
         // against the one channel that carries the double-send alarm.
         await alertOnce(`fail:${ip}`, () =>
           `🚨 <b>Failed admin login</b>\n<code>${esc(em || '(blank)')}</code> from ` +
-          `<code>${esc(ip)}</code> — ${esc(why)}\nFurther failures from this address are ` +
+          `<code>${esc(ipTxt)}</code> — ${esc(why)}\nFurther failures from this address are ` +
           `suppressed for 15 minutes. If this was not you, nothing is wrong yet: the ` +
           `password is scrypt-hashed and 2FA is enrolled.`);
         return rawSendHtml(401, loginPage('Wrong email, password or code.'));
@@ -428,7 +433,7 @@ ${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
       tries.delete(`ip:${ip}`); tries.delete(`em:${em}`);
       await q(`UPDATE admins SET last_login=NOW() WHERE email=?`, [em]);
       await audit(em, 'login.ok', acc.totp_enabled ? '2fa' : 'no 2fa', ip);
-      await notify(`🔐 <b>Admin signed in</b>\n${esc(em)} from <code>${esc(ip)}</code>` +
+      await notify(`🔐 <b>Admin signed in</b>\n${esc(em)} from <code>${esc(ipTxt)}</code>` +
                    `${acc.totp_enabled ? '' : '\n⚠️ 2FA is NOT enrolled on this account'}`);
       const tok = sign(`${em}|${Date.now() + SESSION_HOURS * 3600e3}`);
       res.writeHead(302, { Location: '/admin', 'Set-Cookie':

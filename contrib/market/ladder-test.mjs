@@ -7,11 +7,45 @@
 // fails it refuses to run at all, because the cleanup would otherwise wipe real
 // sales.
 //
-//   cd /opt/pcoin-market && node ladder-test.mjs
+//   cd /opt/pcoin-market && PCOIN_LADDER_TEST_OK=1 node ladder-test.mjs
+//
+// THIS TEST MOVES THE LIVE POSTED PRICE WHILE IT RUNS, and that is not a
+// hypothetical. It performs REAL fills and commits them before restoring, so
+// for a few seconds `marginalPrice` genuinely climbs several rungs. The price
+// oracle polls that number every 60 seconds and steps `serviceRate` toward it —
+// so a test run that overlaps a poll latches a transient, and the four payment
+// products start crediting at a rate the ladder never actually reached. It has
+// happened: a run at 05:10 was seen as `ladder 0.020831134` and pushed
+// serviceRate 0.015 -> 0.0165 (+10%, the per-step clamp), where it stayed until
+// corrected by hand. The restore is faithful; the observation of the middle is
+// what does the damage, and no amount of cleanup can un-observe it.
+//
+// Hence the explicit opt-in. There is only one database on this box, so this
+// cannot be made safe by pointing it elsewhere — it can only be made
+// deliberate. Prefer running it when a wrong `serviceRate` for an hour would
+// not matter, and check the rate afterwards.
 
 import { readFileSync } from 'node:fs';
 import mysql from 'mysql2/promise';
 import { makeLadder, walkUsd, walkPcn } from './ladder.mjs';
+
+if (process.env.PCOIN_LADDER_TEST_OK !== '1') {
+  console.error(`
+  REFUSING TO RUN.
+
+  This test does real, committed fills against the production ladder. It
+  restores them, but while it runs the live site quotes different prices and the
+  price oracle can latch one — moving what checker, webbuilderbot, aicontrol and
+  3dmodels credit PCN at, for at least an hour.
+
+  If you accept that, run it deliberately:
+
+      PCOIN_LADDER_TEST_OK=1 node ladder-test.mjs
+
+  Then confirm the rate came back:  curl -s localhost:8788/price
+`);
+  process.exit(2);
+}
 
 const cfg = JSON.parse(readFileSync('/opt/pcoin-market/config.json', 'utf8'));
 const pool = mysql.createPool({ ...cfg.db, connectionLimit: 8, decimalNumbers: false });
@@ -54,8 +88,17 @@ try {
   // regenerating the ladder turned five passing tests into five failures that
   // said nothing about correctness. What actually has to hold is that the walk
   // agrees with the table it walks.
+  //
+  // AVAILABLE inventory, not nominal. `walkPcn` walks what is left after sold,
+  // reserved and RETIRED are taken off, so measuring it against SUM(qty_total)
+  // compares the walk to a table it does not walk. Retire-on-spend permanently
+  // removes coins from the ladder by design — the first 40 PCN retired turned
+  // three of these into failures that said nothing about correctness, which is
+  // exactly the trap the note above warns about, one layer down.
+  const avail = `(qty_total - qty_sold - qty_reserved - qty_retired)`;
   const [[agg]] = await pool.query(
-    `SELECT SUM(qty_total) tot, SUM(qty_total*price) rev, MIN(price) floor FROM ladder_rungs`);
+    `SELECT SUM(${avail}) tot, SUM(${avail}*price) rev, MIN(price) floor
+       FROM ladder_rungs WHERE ${avail} > 0`);
   const TOTAL_PCN = Number(agg.tot), TOTAL_REV = Number(agg.rev), FLOOR = Number(agg.floor);
 
   const w50k = walkPcn(rungs, TOTAL_PCN / 2);
