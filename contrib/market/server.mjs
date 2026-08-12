@@ -174,6 +174,15 @@ const B = makeBacking({
   notify,
 });
 
+// ── price watch ────────────────────────────────────────────────────────────
+// Announce every move of the published ladder price. Deliberately a watcher on
+// the number itself rather than an alert bolted to each thing that can move it
+// — see pricewatch.mjs for why that distinction is load-bearing.
+import { makePriceWatch } from './pricewatch.mjs';
+const PW = makePriceWatch({ pool, ladder: L, notify });
+setInterval(() => PW.check().catch(e => console.error('[pricewatch]', e.message)), 60_000).unref?.();
+PW.check().catch(e => console.error('[pricewatch]', e.message));
+
 // Every 10 minutes: nag if the float is low, and rescue anything stuck between
 // "claimed for sending" and "recorded as sent".
 setInterval(() => { D.checkFloat(); D.reconcileSending(); }, 10 * 60 * 1000).unref?.();

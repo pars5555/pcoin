@@ -343,6 +343,35 @@ const postedPrice = () => (ladderKnown() ? st.ladderPrice : price());
 // never been known there is no target, and no target means no step.
 const retuneTarget = () => (ladderKnown() ? st.ladderPrice : null);
 
+// ── transient guard ────────────────────────────────────────────────────────
+// A ladder price must be SEEN TWICE, 60s apart, before it is believed.
+//
+// This is not theoretical. It has now happened twice, both times from routine
+// maintenance rather than anything exotic:
+//
+//   * `ladder-test.mjs` performs real, committed fills against the production
+//     ladder and restores them seconds later. A poll landing inside that window
+//     read `ladder 0.020831134` and stepped serviceRate 0.015 -> 0.0165.
+//   * Directly editing a rung to verify the price-move alert did the same
+//     thing, for a 60-second window.
+//
+// In both cases the ladder was correct before and after; only the middle was
+// observed. serviceRate is what four payment products credit real customers at,
+// and a step is clamped to 10% but is NOT self-correcting on a useful timescale
+// — it walks back one clamped step per retune interval, an hour apart.
+//
+// So the rule is: agreement across two consecutive polls, or no move. A genuine
+// price change is delayed by at most one poll (60s), which costs nothing; a
+// transient shorter than that becomes unobservable, which is the entire point.
+// `force` (POST /admin/retune) still bypasses everything, deliberately — that is
+// the operator saying "I have looked at it myself".
+let seenLadder = { price: null, count: 0 };
+function ladderPriceConfirmed(p) {
+  if (p === seenLadder.price) { seenLadder.count++; }
+  else { seenLadder = { price: p, count: 1 }; }
+  return seenLadder.count >= 2;
+}
+
 /** Pull the ladder's marginal price from the market service on localhost.
  *
  *  A failed poll resolves NOTHING. It does not zero the price, does not fall
@@ -374,8 +403,17 @@ async function pollLadder(force = false) {
     // field and only then calling save() left the in-memory state ahead of disk
     // whenever save() threw -- and the catch below logs "keeping last known
     // price" while the process is in fact serving the new one.
+    // A price only becomes the retune target once two consecutive polls agree —
+    // see the transient guard above. Until then the last confirmed price stands,
+    // exactly as it does when the market is unreachable: an unconfirmed reading
+    // resolves nothing rather than resolving to itself.
+    const confirmed = p !== null && ladderPriceConfirmed(p);
+    if (p !== null && !confirmed && p !== st.ladderPrice) {
+      console.log(`[price] ladder ${p} seen once; waiting for a second poll to agree ` +
+                  `(holding ${st.ladderPrice})`);
+    }
     const next = {
-      ...(p !== null ? { ladderPrice: p } : {}),
+      ...(confirmed ? { ladderPrice: p } : {}),
       ladderSoldPcn: Number(v.soldPcn) || 0,
       // Number(undefined) is NaN, which JSON.stringify renders as `null` -- so
       // an omitted field would be published as a real-looking value.
