@@ -338,7 +338,7 @@
         <a href="#parameters">Parameters</a>
       <a href="#get-started">Get started</a>
       <a href="#roadmap">Roadmap</a>
-      <a href="https://t.me/PCoinPCN" rel="noopener">Community</a>
+      <a href="#integrate">Accept PCN</a>
       <a class="gh-pill" href="https://github.com/pars5555/pcoin" rel="noopener">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.1.79-.25.79-.55v-2.02c-3.2.7-3.87-1.36-3.87-1.36-.52-1.33-1.28-1.68-1.28-1.68-1.04-.72.08-.7.08-.7 1.15.08 1.76 1.19 1.76 1.19 1.03 1.75 2.69 1.25 3.34.95.1-.75.4-1.25.72-1.54-2.55-.29-5.23-1.28-5.23-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11.1 11.1 0 0 1 5.79 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.41-2.69 5.38-5.25 5.66.41.36.78 1.06.78 2.14v3.17c0 .3.2.66.8.55A11.5 11.5 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z"/></svg>
         GitHub
@@ -569,16 +569,74 @@
   <!-- 4 · KEY PARAMETERS -->
 
   <!-- 3c · SPEND IT: AI CONTROL -->
+  <style>
+  .spend-apps{display:grid;gap:14px;margin:26px 0 6px;
+    grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+  .spend-app{display:grid;grid-template-columns:40px 1fr;grid-template-areas:
+    "logo name" "logo desc" "logo host";gap:2px 14px;align-content:start;
+    padding:16px;border:1px solid rgba(255,255,255,.10);border-radius:12px;
+    background:rgba(255,255,255,.03);text-decoration:none;color:inherit;
+    transition:border-color .15s,background .15s}
+  .spend-app:hover{border-color:rgba(255,255,255,.26);background:rgba(255,255,255,.06)}
+  .spend-logo{grid-area:logo;width:40px;height:40px;border-radius:9px;overflow:hidden;
+    display:block}
+  .spend-logo svg,.spend-logo img{width:40px;height:40px;display:block;border-radius:9px}
+  .spend-name{grid-area:name;font-weight:600}
+  .spend-desc{grid-area:desc;font-size:14px;opacity:.78;line-height:1.45}
+  .spend-host{grid-area:host;font-size:12.5px;opacity:.55;margin-top:4px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  </style>
+
   <section id="spend">
     <div class="wrap">
       <span class="kicker">Where you can spend it</span>
-      <h2>Mine PCoin on your phone. Pay for your AI with it.</h2>
+      <h2>Mine PCoin on your phone. Spend it on four real services.</h2>
       <p class="lede">
-        <a href="https://aicontrol.pc.am" rel="noopener">AI&nbsp;Control</a> is a Claude-powered agent
-        that operates your Windows PCs and Android phones through ordinary conversation. It is adding
-        PCoin as a way to top up your balance &mdash; so the same phone that runs the agent can mine
-        the credit it spends.
+        PCN is not a coin waiting for somewhere to be useful. <b>Four live products accept it
+        today</b>, each with its own deposit address, and each crediting your balance
+        automatically once the payment has six confirmations. The same phone that runs the miner
+        can pay for what it uses.
       </p>
+
+      <div class="spend-apps">
+        <a class="spend-app" href="https://aicontrol.pc.am" rel="noopener">
+          <img class="spend-logo" alt="" width="40" height="40"
+               src="data:image/x-icon;base64,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">
+          <span class="spend-name">AI&nbsp;Control</span>
+          <span class="spend-desc">A Claude-powered agent that operates your Windows PCs and
+          Android phones through ordinary conversation.</span>
+          <span class="spend-host">aicontrol.pc.am</span>
+        </a>
+
+        <a class="spend-app" href="https://3dmodels.pc.am" rel="noopener">
+          <span class="spend-logo"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><defs><linearGradient id="g3d" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#58a6ff"/><stop offset="1" stop-color="#a371f7"/></linearGradient></defs><rect width="32" height="32" rx="7" fill="#0d1117"/><!-- an isometric cube: the most honest mark for a geometry store --><path d="M16 5 L27 11.5 L27 20.5 L16 27 L5 20.5 L5 11.5 Z" fill="none" stroke="url(#g3d)" stroke-width="1.8" stroke-linejoin="round"/><path d="M16 5 L16 16 M16 16 L27 11.5 M16 16 L5 11.5" fill="none" stroke="url(#g3d)" stroke-width="1.4" stroke-linejoin="round" opacity=".75"/></svg></span>
+          <span class="spend-name">3D&nbsp;Models</span>
+          <span class="spend-desc">Ready-to-use 3D models, generated on demand and downloadable
+          in the usual formats.</span>
+          <span class="spend-host">3dmodels.pc.am</span>
+        </a>
+
+        <a class="spend-app" href="https://checker.pc.am" rel="noopener">
+          <span class="spend-logo" aria-hidden="true">
+            <svg viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#0f2a1d"/><path d="M9 16.5l4.6 4.6L23 11.7" fill="none" stroke="#34d399" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </span>
+          <span class="spend-name">Checker</span>
+          <span class="spend-desc">Gift-card balance checking, in bulk, through a bot and a web
+          dashboard.</span>
+          <span class="spend-host">checker.pc.am</span>
+        </a>
+
+        <a class="spend-app" href="https://t.me/MyWebsiteBuilderBot" rel="noopener">
+          <span class="spend-logo" aria-hidden="true">
+            <svg viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#1b2333"/><path d="M6.5 10.5h19M6.5 16h19M6.5 21.5h12" stroke="#60a5fa" stroke-width="2.6" stroke-linecap="round"/></svg>
+          </span>
+          <span class="spend-name">Website&nbsp;Builder</span>
+          <span class="spend-desc">Describe a site in a Telegram chat and it builds, hosts and
+          edits it for you.</span>
+          <span class="spend-host">@MyWebsiteBuilderBot</span>
+        </a>
+      </div>
+
       <p class="lede">
         Would rather not mine? You can buy PCN with ordinary crypto at
         <a href="https://market.pc.am" rel="noopener">market.pc.am</a>. It is sold from a fixed
@@ -586,7 +644,6 @@
         rather than being set by anyone. <b>There is currently nowhere to sell PCN back</b> &mdash;
         buy what you intend to spend.
       </p>
-
       <div class="cards">
         <div class="card">
           <h3>Point the miner at your deposit address</h3>
@@ -607,9 +664,13 @@
         <div class="card">
           <h3>A rate, not a market</h3>
           <p>
-            <strong>1,000&nbsp;PCN = $1.00</strong> of AI&nbsp;Control balance. This is a rate
-            AI&nbsp;Control sets and reviews periodically. <strong>It is not a market price</strong>
-            &mdash; PCN is not traded on any exchange, so no market price exists.
+            All four services credit at the <strong>same published rate</strong>, taken from
+            <a href="https://price.pc.am/price" rel="noopener">price.pc.am</a> at the moment your
+            deposit confirms &mdash; so none of them can quote you one number and pay another.
+            The rate follows what PCN currently costs on the
+            <a href="https://market.pc.am" rel="noopener">market ladder</a> and is deliberately
+            slow-moving. <strong>It is not a market price</strong> &mdash; PCN is not traded on any
+            exchange, so no market price exists. Check the live figure before you send.
           </p>
         </div>
       </div>
@@ -733,6 +794,60 @@
     </div>
   </section>
 
+  <section id="integrate">
+    <div class="wrap">
+      <span class="kicker">For developers</span>
+      <h2>Accept PCN in your own product.</h2>
+      <p class="lede">
+        There is no gateway to sign up with, no merchant account and no fee. You watch the
+        chain for payments to addresses you derive yourself, and you keep your own keys.
+        <b>Four production systems run on exactly this</b> &mdash; the guide below is the one
+        they were built from, including the mistakes they made first.
+      </p>
+
+      <div class="card">
+        <h3>The three endpoints you need</h3>
+        <p>
+          All three are public, unauthenticated and free. No key to request, no quota to
+          negotiate.
+        </p>
+        <ul>
+          <li><b>Payments</b> &mdash; <a class="mono" href="https://explorer.pc.am" rel="noopener">explorer.pc.am</a>
+              tells you what an address has received, and at what height.</li>
+          <li><b>A second opinion</b> &mdash; <a class="mono" href="https://explorer2.pc.am" rel="noopener">explorer2.pc.am</a>
+              is a separate node, so you can confirm a payment against two independent
+              sources before you credit anyone.</li>
+          <li><b>Pricing</b> &mdash; <a class="mono" href="https://price.pc.am/price" rel="noopener">price.pc.am/price</a>
+              returns <span class="mono">serviceRate</span>, the USD value of one PCN. Read it
+              at the moment you credit; never hardcode it.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h3>What a payment check looks like</h3>
+        <pre class="mono"># has this address been paid?
+curl -s https://explorer.pc.am/api/address/pc1q&hellip;/summary
+
+# what is a PCN worth right now?
+curl -s https://price.pc.am/price      # -&gt; {"serviceRate":0.015, &hellip;}</pre>
+        <p class="note">
+          Credit after <b>6 confirmations</b>, and key your ledger on
+          <span class="mono">(txid,&nbsp;address)</span> &mdash; not on
+          <span class="mono">(txid,&nbsp;vout)</span>. That one detail was shipped wrong by
+          every integration before it was caught, and it silently loses a customer&rsquo;s
+          deposit rather than erroring. The guide explains why.
+        </p>
+      </div>
+
+      <p>
+        <a class="btn" href="https://docs.pc.am" rel="noopener">Read the integration guide &rarr;</a>
+      </p>
+      <p class="note">
+        It covers deriving addresses from an xpub without putting a private key on your web
+        server, the confirmation gates, reorg handling, refunds, and a go-live checklist.
+      </p>
+    </div>
+  </section>
   <section id="get-started" class="alt">
     <div class="wrap">
       <span class="kicker">Get started</span>
@@ -855,6 +970,25 @@ sudo systemctl stop pcoin-miner
           <span class="mono">/api</span> for wallets and, eventually, exchange integrations.</p>
         </li>
         <li>
+          <h3>PCN accepted by four live services <span class="tag">Shipped</span></h3>
+          <p>Not a pilot and not a promise:
+          <a href="https://aicontrol.pc.am" rel="noopener">AI&nbsp;Control</a>,
+          <a href="https://3dmodels.pc.am" rel="noopener">3dmodels.pc.am</a>,
+          <a href="https://checker.pc.am" rel="noopener">checker.pc.am</a> and
+          <a href="https://t.me/MyWebsiteBuilderBot" rel="noopener">@MyWebsiteBuilderBot</a> all take
+          PCN today. Each issues you an address only your account is credited for, waits six
+          confirmations, and converts at the rate published by
+          <a href="https://price.pc.am/price" rel="noopener">price.pc.am</a>. Every deposit is
+          checked against <b>two independent block explorers</b> before any balance moves, and a
+          deposit that cannot be corroborated is held rather than credited.</p>
+        </li>
+        <li>
+          <h3>Second block explorer <span class="tag">Shipped</span></h3>
+          <p>A second indexer on a different machine, reading from a different node, exists so no
+          single explorer decides whether your money arrived. The payment services compare the two
+          and refuse to credit when they disagree.</p>
+        </li>
+        <li>
           <h3>100 independent nodes <span class="tag">In progress</span></h3>
           <p>Get one hundred people running always-on nodes in different places. Decentralized block
           production and history is the foundation for everything else. Today the number is far smaller
@@ -867,9 +1001,11 @@ sudo systemctl stop pcoin-miner
           only wallets there are.</p>
         </li>
         <li>
-          <h3>First real-world micro-payment &amp; tipping pilots <span class="tag">Planned</span></h3>
-          <p>Small, honest experiments: tipping creators, paying for tiny services. Real usage between real
-          people, at a scale where mistakes are cheap.</p>
+          <h3>Tipping and person-to-person payments <span class="tag">Planned</span></h3>
+          <p>Paying <em>services</em> with PCN now works &mdash; see the four above. What does not exist
+          yet is paying <em>people</em>: tipping a creator, settling a small debt, sending value to
+          someone who is not a merchant. That needs a wallet ordinary people will actually install,
+          which is why the browser wallet sits above this one.</p>
         </li>
       </ol>
     </div>
@@ -892,7 +1028,7 @@ sudo systemctl stop pcoin-miner
           <h3>No premine — but the founder holds most of the coins today</h3>
           <p>There was no premine, no allocation and no sale: every PCN in existence was mined. But almost
           all of the mining so far has been done by the founder's own machines, so
-          <b>one address currently holds about 92% of everything mined</b> — roughly 107,900 of ~116,800 PCN.
+          <b>the founder still holds roughly three quarters of everything mined</b> — about 110,800 of ~147,000 PCN, spread across three addresses rather than one; the largest single address is ~48%.
           You do not have to take that on trust: it is
           <a href="https://explorer.pc.am/api/addresses/top" rel="noopener">the top entry in the public rich
           list</a>, and you can check it yourself. That share falls as other people mine, and that is the
