@@ -76,12 +76,42 @@ say "at $REV  $SUBJ"
 
 # ------------------------------------------------------------- 2. stop marker
 # Copy is sometimes committed BEFORE the event it describes is true.
-if git -C "$CHECKOUT" log -8 --pretty='%s%n%b' -- site/ | grep -qi "do not deploy"; then
+#
+# The window is "commits not yet deployed", not "the last N commits". A fixed
+# window re-reads history that already shipped, and the first version of this
+# refused every deploy because a commit from days earlier said it was RELEASING
+# copy that had been "staged behind DO NOT DEPLOY YET". A hold and a lifted hold
+# read the same to grep.
+#
+# So the hold is an explicit trailer that only ever means one thing:
+#     Deploy-Hold: waiting for height 2800
+# Prose is only ever a warning, and it names the commit so a human can judge.
+LAST_REV_FILE="$DOCROOT/.deployed-rev"
+LAST_REV=$(cat "$LAST_REV_FILE" 2>/dev/null || true)
+if [ -n "$LAST_REV" ] && git -C "$CHECKOUT" cat-file -e "$LAST_REV^{commit}" 2>/dev/null; then
+  RANGE="$LAST_REV..HEAD"
+else
+  RANGE="HEAD -1"                      # first run: judge HEAD alone
+fi
+
+HOLD=$(git -C "$CHECKOUT" log $RANGE --pretty='%h %s%n%b' -- site/ \
+       | grep -iE '^Deploy-Hold:' || true)
+if [ -n "$HOLD" ]; then
   say ""
-  say "REFUSING: a recent commit touching site/ says DO NOT DEPLOY."
-  git -C "$CHECKOUT" log -8 --oneline -- site/
-  say "Read the commit body for the condition it is waiting on."
+  say "REFUSING: an undeployed commit touching site/ carries a deploy hold:"
+  printf '  %s\n' "$HOLD"
+  say "Deploy again once that condition is met."
   exit 3
+fi
+
+SOFT=$(git -C "$CHECKOUT" log $RANGE --pretty='%h|%s' -- site/ | while IFS='|' read -r h s; do
+         git -C "$CHECKOUT" log -1 --pretty='%b' "$h" | grep -qi 'do not deploy' && echo "  $h $s"
+       done)
+if [ -n "$SOFT" ]; then
+  say ""
+  say "NOTE: undeployed commit(s) mention 'do not deploy' in prose:"
+  printf '%s\n' "$SOFT"
+  say "Not blocking — use the Deploy-Hold: trailer for a real hold. Continuing."
 fi
 
 # ------------------------------------------------------------------ 3. deploy
@@ -119,6 +149,9 @@ sleep 1
 local_sum=$(sha256sum "$DOCROOT/index.html" | cut -d' ' -f1)
 live_sum=$(curl -fsSL --max-time 30 -H 'Cache-Control: no-cache' "$PUBLIC/" 2>/dev/null | sha256sum | cut -d' ' -f1)
 if [ "$local_sum" = "$live_sum" ]; then
+  # Only now is the revision "deployed". Recording it before verification would
+  # narrow the next run's hold window past a commit that never actually shipped.
+  printf '%s' "$(git -C "$CHECKOUT" rev-parse HEAD)" > "$LAST_REV_FILE"
   say "verified: $PUBLIC serves the deployed bytes ($REV)"
 else
   say ""
