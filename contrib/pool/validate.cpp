@@ -3,7 +3,20 @@
 // Reads vectors on stdin (from make-vectors.sh), recomputes the RandomX hash of
 // each 80-byte header, and checks it against the target encoded in nBits.
 //
-//   ./validate < vectors.txt
+//   ./validate < vectors.txt          one-shot: verify real-block vectors
+//   ./validate --serve                 long-lived: validate shares on a pipe
+//
+// SERVE MODE is what the pool actually uses. Building the RandomX VM costs
+// ~834 ms; paying that per share would be fatal, so the pool spawns this once
+// and keeps the pipe open. Protocol, one line each way:
+//
+//   in    <80-byte header hex> <32-byte target hex, big-endian>
+//   out   ok|no <32-byte hash hex, big-endian(display) order>
+//   out   err <reason>            malformed input -- NEVER exit
+//
+// A share validator that dies on a bad line takes the pool down with it, and
+// bad lines are exactly what a hostile miner sends. Every parse failure is an
+// `err` and the loop continues.
 //
 // WHY THIS EXISTS BEFORE ANY NETWORKING
 // A pool must verify every share itself -- a miner that could not be checked
@@ -94,8 +107,47 @@ static bool hash_le_target(const uint8_t hash[32], const uint8_t target_be[32])
     return true;  // exactly equal is a valid solution
 }
 
-int main()
+// Emit a 32-byte hash in display order (most significant byte first), which is
+// the order every explorer and log will show.
+static void print_hash_be(const uint8_t hash[32], char out[65])
 {
+    static const char* hexd = "0123456789abcdef";
+    for (int i = 0; i < 32; ++i) {
+        const uint8_t b = hash[31 - i];
+        out[i * 2]     = hexd[b >> 4];
+        out[i * 2 + 1] = hexd[b & 0xf];
+    }
+    out[64] = 0;
+}
+
+static int serve(randomx_vm* vm)
+{
+    // Unbuffered enough that the caller sees each verdict immediately; a pool
+    // blocking on a share it already validated is a hang nobody enjoys finding.
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        if (line.empty()) continue;
+        std::istringstream is(line);
+        std::string hdr_hex, target_hex;
+        if (!(is >> hdr_hex >> target_hex)) { std::printf("err need <header> <target>\n"); std::fflush(stdout); continue; }
+
+        std::vector<uint8_t> hdr, target;
+        if (!unhex(hdr_hex, hdr) || hdr.size() != 80) { std::printf("err header must be 80 bytes\n"); std::fflush(stdout); continue; }
+        if (!unhex(target_hex, target) || target.size() != 32) { std::printf("err target must be 32 bytes\n"); std::fflush(stdout); continue; }
+
+        uint8_t hash[RANDOMX_HASH_SIZE];
+        randomx_calculate_hash(vm, hdr.data(), hdr.size(), hash);
+        char hex[65];
+        print_hash_be(hash, hex);
+        std::printf("%s %s\n", hash_le_target(hash, target.data()) ? "ok" : "no", hex);
+        std::fflush(stdout);
+    }
+    return 0;
+}
+
+int main(int argc, char** argv)
+{
+    const bool serve_mode = (argc > 1 && std::string(argv[1]) == "--serve");
     randomx_flags flags = randomx_get_flags();
     randomx_cache* cache = randomx_alloc_cache(flags);
     if (!cache) {  // same degradation the node does
@@ -110,6 +162,14 @@ int main()
         vm = randomx_create_vm(randomx_flags(flags | RANDOMX_FLAG_SECURE), cache, nullptr);
     }
     if (!vm) { randomx_release_cache(cache); std::fprintf(stderr, "could not create a RandomX VM\n"); return 2; }
+
+    if (serve_mode) {
+        std::fprintf(stderr, "ready\n");   // the pool waits for this before sending
+        const int rc = serve(vm);
+        randomx_destroy_vm(vm);
+        randomx_release_cache(cache);
+        return rc;
+    }
 
     size_t total = 0, ok = 0;
     std::string line;
