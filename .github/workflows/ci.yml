@@ -1,0 +1,160 @@
+# PCoin CI.
+#
+# Upstream's 439-line workflow was deleted at the fork and never replaced, so
+# every check has been manual since. This is deliberately NOT that workflow
+# rebuilt: it tests the things PCoin changed and that would actually hurt here,
+# and skips the parts that only make sense for upstream's release process.
+#
+# Two tiers, because a 30-minute build on every push gets ignored and then
+# disabled:
+#
+#   invariants   ~2 min, every push. Pure-Python and grep checks that catch the
+#                consensus-adjacent mistakes this project has actually made.
+#   build-test   ~30 min, main and PRs. Compiles the node and runs the 30
+#                Boost cases in pow_tests, 13 of which are PCoin's own LWMA.
+#
+# A red tick here means a real problem. Nothing in this file fails on style.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  invariants:
+    name: consensus invariants (fast)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # The reference model and the C++ must agree. lwma_ref.py --vectors
+      # regenerates exactly the table embedded in pow_tests.cpp, so a drift
+      # between the two shows up here rather than as a chain split.
+      - name: LWMA reference vectors match the C++ table
+        run: |
+          python3 contrib/lwma/lwma_ref.py --vectors > /tmp/vectors.txt
+          test -s /tmp/vectors.txt || { echo "reference produced nothing"; exit 1; }
+          missing=0
+          while IFS= read -r line; do
+            probe=$(echo "$line" | sed 's/^ *//')
+            [ -z "$probe" ] && continue
+            grep -qF "$probe" src/test/pow_tests.cpp || { echo "NOT IN pow_tests.cpp: $probe"; missing=$((missing+1)); }
+          done < /tmp/vectors.txt
+          echo "$missing vector line(s) missing"
+          test "$missing" -eq 0
+
+      # CLAUDE.md 7.4: the legacy retarget overflows, blocks 2016..2799 are only
+      # valid under the wrapping arithmetic, and "fixing" it would orphan the
+      # live chain. This pins the wrong answer on purpose.
+      - name: legacy retarget still reproduces the live chain's wrong answer
+        run: |
+          python3 - <<'PY'
+          import sys; sys.path.insert(0, 'contrib/lwma')
+          from lwma_ref import legacy
+          got = legacy(0x1f0fffff, 1785700177, 1785600628)
+          want = 0x1e0b7c33
+          print("legacy() = 0x%08x, want 0x%08x" % (got, want))
+          if got != want:
+              sys.exit("The deliberately-broken legacy retarget changed. Blocks 2016..2799 "
+                       "are only valid under the OLD arithmetic -- see CLAUDE.md 7.4. If this "
+                       "was intentional it is a hard fork, not a bug fix.")
+          PY
+
+      # nMinimumChainWork must stay 0 while PermittedDifficultyTransition
+      # returns true unconditionally above lwmaHeight. A startup assert enforces
+      # it, but an assert fires after someone has already shipped the change.
+      - name: nMinimumChainWork is still zero on every network
+        run: |
+          # uint256{} IS zero. The brace must be non-empty, or uint256S(...)
+          # used, for the value to be anything else. An earlier version of this
+          # check made the brace optional and so matched the brace itself --
+          # every network flagged, on a file that was correct.
+          bad=$(grep -nE 'nMinimumChainWork\s*=\s*(uint256\{[^}]|uint256S\()' src/kernel/chainparams.cpp || true)
+          if [ -n "$bad" ]; then
+            echo "$bad"
+            echo "nMinimumChainWork is non-zero somewhere. PermittedDifficultyTransition"
+            echo "returns true unconditionally above lwmaHeight and has no real LWMA bound,"
+            echo "so this combination is unsafe -- see CLAUDE.md 10.7."
+            exit 1
+          fi
+          echo "all networks still zero"
+
+      # The subsidy schedule is the money supply. Any edit here is an economic
+      # change and must be deliberate.
+      - name: halving interval and subsidy are unchanged
+        run: |
+          grep -q 'nSubsidyHalvingInterval = 210000' src/kernel/chainparams.cpp \
+            || { echo "halving interval changed -- this alters the emission schedule"; exit 1; }
+          echo "210000 confirmed"
+
+      # RandomX key rotation is PoW v2 and a hard fork. It is a fixed string on
+      # every network including regtest, on purpose.
+      - name: RandomX key string is unchanged
+        run: |
+          grep -q 'PCoin/RandomX/v1' src/crypto/pow_randomx.cpp \
+            || { echo "the RandomX key changed -- that is PoW v2 and a hard fork"; exit 1; }
+          echo "PCoin/RandomX/v1 confirmed"
+
+      - name: contrib scripts parse
+        run: |
+          fail=0
+          for f in $(git ls-files 'contrib/**/*.py' 'contrib/*.py'); do
+            python3 -m py_compile "$f" || { echo "SYNTAX: $f"; fail=1; }
+          done
+          for f in $(git ls-files 'contrib/**/*.sh' 'contrib/*.sh'); do
+            bash -n "$f" || { echo "SYNTAX: $f"; fail=1; }
+          done
+          exit $fail
+
+  build-test:
+    name: build + pow_tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkgconf python3 \
+            libevent-dev libboost-dev libsqlite3-0 libsqlite3-dev ccache
+
+      # A cold build is ~30 min and most pushes touch nothing in src/.
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: ccache-${{ runner.os }}-
+
+      - name: configure
+        run: |
+          cmake -B build \
+            -DBUILD_GUI=OFF -DENABLE_WALLET=ON -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: build
+        run: cmake --build build -j "$(nproc)" --target test_bitcoin bitcoind
+
+      # 30 cases, 13 of them PCoin's own LWMA coverage. This is the check that
+      # would have caught the arith_uint256 overflow before it reached a chain.
+      - name: pow_tests
+        run: ./build/bin/test_bitcoin --run_test=pow_tests --log_level=test_suite
+
+      - name: the binary reports a version
+        run: ./build/bin/bitcoind --version | head -3
