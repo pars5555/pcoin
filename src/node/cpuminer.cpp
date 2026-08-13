@@ -107,23 +107,12 @@ bool CpuMiner::Start(ChainstateManager& chainman, interfaces::Mining& mining,
         threads = max_threads;
     }
 
-    StopLocked(); // idempotent restart; the lifecycle lock is already held
+    threads = PrepareLocked(threads, ttl_seconds);
 
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_script = script;
-        m_template.reset();
     }
-    m_hashes = 0;
-    m_hashrate = 0.0;
-    m_generation = 0;
-    m_next_nonce = 0;
-    m_threads = threads;
-    m_fast_threads = 0;
-    m_ttl_seconds = std::max<int64_t>(0, ttl_seconds);
-    m_last_keepalive_ms = SteadyNowMs();
-    m_stop = false;
-    m_running = true;
 
     m_supervisor = std::thread(&util::TraceThread, "pcminer-sup", [this, &chainman, &mining] {
         this->Supervisor(&chainman, &mining);
@@ -156,6 +145,78 @@ bool CpuMiner::Start(ChainstateManager& chainman, interfaces::Mining& mining,
     return true;
 }
 
+int CpuMiner::PrepareLocked(int threads, int64_t ttl_seconds)
+{
+    StopLocked(); // idempotent restart; the lifecycle lock is already held
+
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_template.reset();
+        m_pool_job = PoolJob{};
+    }
+    m_hashes = 0;
+    m_hashrate = 0.0;
+    m_generation = 0;
+    m_next_nonce = 0;
+    m_threads = threads;
+    m_fast_threads = 0;
+    m_ttl_seconds = std::max<int64_t>(0, ttl_seconds);
+    m_last_keepalive_ms = SteadyNowMs();
+    m_stop = false;
+    m_running = true;
+    return threads;
+}
+
+std::shared_ptr<PoolClient> CpuMiner::GetPoolClient() const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_pool;
+}
+
+bool CpuMiner::StartPool(ChainstateManager& chainman, const std::string& host, uint16_t port,
+                         const std::string& user, int threads, std::string& error,
+                         int64_t ttl_seconds)
+{
+    // Exactly the same serialisation as Start(), for exactly the same reason:
+    // two callers arriving together must not assign over a joinable thread.
+    // See the incident recorded in Start().
+    std::lock_guard<std::mutex> lifecycle(m_lifecycle_mutex);
+
+    if (host.empty()) { error = "No pool host given."; return false; }
+    if (port == 0) { error = "No pool port given."; return false; }
+    if (user.empty()) {
+        error = "No pool user: the payout address you want the pool to credit is required.";
+        return false;
+    }
+    const int max_threads{std::max(1, static_cast<int>(std::thread::hardware_concurrency()))};
+    if (threads <= 0) threads = max_threads;
+    if (threads > max_threads) threads = max_threads; // capped, not refused
+
+    threads = PrepareLocked(threads, ttl_seconds);
+
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        // A fresh client per start. The old one is destroyed here, after
+        // StopLocked() joined every thread that could have been touching it.
+        m_pool = std::make_shared<PoolClient>(host, port, user);
+        m_script.clear();  // pool mining pays no local script; the pool credits `user`
+    }
+    m_pool_mode = true;
+
+    m_supervisor = std::thread(&util::TraceThread, "pcminer-sup", [this, &chainman] {
+        this->PoolSupervisor(&chainman);
+    });
+    for (int i = 0; i < threads; ++i) {
+        m_workers.emplace_back(&util::TraceThread, "pcminer", [this, &chainman] {
+            this->PoolWorker(&chainman);
+        });
+    }
+
+    LogPrintf("PCoin pool miner started with %d thread(s), pool %s:%d, crediting %s\n",
+              threads, host, port, user);
+    return true;
+}
+
 void CpuMiner::Stop()
 {
     std::lock_guard<std::mutex> lifecycle(m_lifecycle_mutex);
@@ -181,7 +242,19 @@ void CpuMiner::StopLocked()
     m_fast_threads = 0;
     m_hashrate = 0.0;
     m_ttl_seconds = 0;
-    if (was_running) LogPrintf("PCoin CPU miner stopped\n");
+
+    // Only now, with every worker and the supervisor joined, is it safe to let
+    // the pool client go: they are the threads that used it. Workers hold their
+    // own shared_ptr for the duration of the call anyway, so this is belt and
+    // braces rather than the thing keeping it alive.
+    const bool was_pool{m_pool_mode.exchange(false)};
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_pool) m_pool->Close();
+        m_pool.reset();
+        m_pool_job = PoolJob{};
+    }
+    if (was_running) LogPrintf("PCoin %s miner stopped\n", was_pool ? "pool" : "CPU");
 }
 
 void CpuMiner::Supervisor(ChainstateManager* chainman, interfaces::Mining* mining)
@@ -303,6 +376,165 @@ void CpuMiner::Supervisor(ChainstateManager* chainman, interfaces::Mining* minin
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds{250});
+    }
+}
+
+void CpuMiner::PoolSupervisor(ChainstateManager* chainman)
+{
+    std::shared_ptr<PoolClient> pool{GetPoolClient()};
+    if (!pool) return;
+
+    auto last_sample{std::chrono::steady_clock::now()};
+    uint64_t last_hashes{0};
+    uint64_t published{0};
+
+    // Same opt-in fast-mode kickoff as solo mining, for the same reasons: on a
+    // thread holding no lock, only once this node is genuinely mining.
+    if (m_fast_mode_requested.load()) {
+        std::string reason;
+        if (RandomXFastModeStart(m_fast_build_threads.load(), reason)) {
+            LogPrintf("PCoin pool miner: RandomX fast mode requested (%s)\n", reason);
+        } else {
+            LogPrintf("PCoin pool miner: RandomX fast mode unavailable (%s); mining in light mode\n", reason);
+        }
+    }
+
+    while (!m_stop && !chainman->m_interrupt) {
+        // All socket I/O happens here and nowhere else. The budget doubles as
+        // this loop's sleep, so a quiet pool costs one poll per 100 ms rather
+        // than a spin.
+        pool->Pump(std::chrono::milliseconds{100});
+
+        // Publish a new job to the workers when the pool sends one.
+        PoolJob job;
+        if (pool->GetJob(job) && job.generation != published) {
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                m_pool_job = job;
+            }
+            m_next_nonce = 0;
+            ++m_generation;   // publish: workers pick this up
+            published = job.generation;
+        } else if (!pool->GetJob(job) && published != 0) {
+            // The connection dropped and took its job with it. STOP HASHING.
+            //
+            // Grinding a job from a pool we are no longer talking to produces
+            // shares nobody will ever receive, while every dial the user can
+            // see -- hashrate, threads, temperature -- reads exactly like
+            // working. Retiring the job costs a few seconds of idle CPU and is
+            // the difference between "reconnecting" and "silently mining for
+            // nobody".
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                m_pool_job = PoolJob{};
+            }
+            ++m_generation;
+            published = 0;
+        }
+
+        const auto sample_now{std::chrono::steady_clock::now()};
+        const auto dt{std::chrono::duration_cast<std::chrono::milliseconds>(sample_now - last_sample).count()};
+        if (dt >= 1000) {
+            const uint64_t h{m_hashes.load()};
+            m_hashrate = static_cast<double>(h - last_hashes) * 1000.0 / static_cast<double>(dt);
+            last_hashes = h;
+            last_sample = sample_now;
+        }
+
+        // The dead-man's switch is identical to solo mining's, and matters just
+        // as much: a pool miner whose supervising app died is still a hot CPU
+        // in someone's living room.
+        const int64_t ttl{m_ttl_seconds.load()};
+        if (ttl > 0 && SteadyNowMs() - m_last_keepalive_ms.load() > ttl * 1000) {
+            LogPrintf("PCoin pool miner: no keepalive for %ds, stopping\n", (int)ttl);
+            m_stop = true;
+            m_running = false;
+            m_threads = 0;
+            m_hashrate = 0.0;
+            break;
+        }
+    }
+    pool->Close();
+}
+
+void CpuMiner::PoolWorker(ChainstateManager* chainman)
+{
+    // Hold our own reference for the life of this thread, so the client cannot
+    // be destroyed underneath us even if the lifecycle rules were ever changed.
+    std::shared_ptr<PoolClient> pool{GetPoolClient()};
+    if (!pool) return;
+
+    uint64_t local_gen{0};
+    PoolJob job;
+    RandomXMiningVm rx_vm;
+
+    struct FastThreadCount {
+        std::atomic<int>& counter;
+        bool counted{false};
+        void Observe(bool fast)
+        {
+            if (fast && !counted) { counter.fetch_add(1, std::memory_order_relaxed); counted = true; }
+        }
+        void Drop()
+        {
+            if (counted) { counter.fetch_sub(1, std::memory_order_relaxed); counted = false; }
+        }
+        ~FastThreadCount() { Drop(); }
+    } fast_count{m_fast_threads};
+
+    while (!m_stop && !chainman->m_interrupt) {
+        fast_count.Observe(rx_vm.TryAcquire());
+
+        const uint64_t gen{m_generation.load(std::memory_order_acquire)};
+        if (gen == 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{100});
+            continue;
+        }
+        if (gen != local_gen) {
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                job = m_pool_job;
+            }
+            local_gen = gen;
+        }
+        if (job.id.empty()) {
+            // No job: disconnected, or the pool has not sent one yet. Idle
+            // rather than grind something stale.
+            std::this_thread::sleep_for(std::chrono::milliseconds{100});
+            continue;
+        }
+
+        const uint32_t start{m_next_nonce.fetch_add(NONCE_BATCH, std::memory_order_relaxed)};
+        if (start > std::numeric_limits<uint32_t>::max() - NONCE_BATCH) {
+            // Nonce space exhausted for this job. Unlike solo mining nothing
+            // here can refresh it locally -- the pool owns the template -- so
+            // wait for the pool's next job.
+            std::this_thread::sleep_for(std::chrono::milliseconds{100});
+            continue;
+        }
+
+        CBlockHeader header{job.header};
+        for (uint32_t n = start; n < start + NONCE_BATCH; ++n) {
+            if (m_stop || static_cast<bool>(chainman->m_interrupt)) return;
+            if (m_generation.load(std::memory_order_acquire) != local_gen) break;
+
+            header.nNonce = n;
+            m_hashes.fetch_add(1, std::memory_order_relaxed);
+
+            // The identical RandomX hash solo mining computes -- same function,
+            // same VM, same bytes. Only the comparison differs: against the
+            // POOL's easier target instead of the network's, which is the whole
+            // of what makes this a share rather than a block.
+            if (UintToArith256(rx_vm.Hash(header)) > job.target) continue;
+
+            // A share does NOT retire the job. This is the one place pool
+            // mining genuinely differs from solo mining: solo finds at most one
+            // solution per template and must stop the other workers, whereas
+            // shares are the normal product and the job stays live until the
+            // pool replaces it. Bumping the generation here would throw away
+            // the rest of the round's work every few seconds.
+            pool->QueueSubmit(job.id, n);
+        }
     }
 }
 

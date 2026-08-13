@@ -1,4 +1,4 @@
-// Copyright (c) 2026 The PCoin developers
+﻿// Copyright (c) 2026 The PCoin developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 //
@@ -216,6 +216,10 @@ namespace PCoinTray
 
         string _address = "";
         string _addressWallet = "";    // which wallet the payout address belongs to
+        //! Pool to mine for, as host:port. EMPTY MEANS SOLO -- that is the
+        //! default and the behaviour every existing install keeps. Set
+        //! `poolurl=pool.pc.am:3333` in pcoin-tray.cfg to switch this machine.
+        string _poolUrl = "";
         string _datadir = "";          // empty = bitcoind's default location
         int _percent = DEFAULT_PERCENT;
         bool _mining;
@@ -227,6 +231,10 @@ namespace PCoinTray
         bool _startedNode;
         double _hashrate;
         long _blocksFound;
+        bool _poolMining;              // observed from the node, not from _poolUrl
+        long _sharesAccepted;
+        long _sharesRejected;
+        string _poolStatus = "";       // empty means the pool connection is fine
         long _height;
         int _cores = Environment.ProcessorCount;
 
@@ -410,6 +418,7 @@ namespace PCoinTray
                     string v = line.Substring(eq + 1).Trim();
                     if (k == "address") _address = v;
                     else if (k == "addresswallet") _addressWallet = v;
+                    else if (k == "poolurl") _poolUrl = v;
                     else if (k == "seedprompt") _seedDeclined = v == "declined";
                     else if (k == "fastmode") _fastMode = v == "1";
                     else if (k == "datadir") _datadir = v;
@@ -442,6 +451,7 @@ namespace PCoinTray
                 File.WriteAllText(_cfgPath,
                     "address=" + _address + "\r\n" +
                     "addresswallet=" + _addressWallet + "\r\n" +
+                    "poolurl=" + _poolUrl + "\r\n" +
                     "datadir=" + _datadir + "\r\n" +
                     "percent=" + (_mining ? _percent : 0).ToString(CultureInfo.InvariantCulture) + "\r\n" +
                     "seedprompt=" + (_seedDeclined ? "declined" : "") + "\r\n" +
@@ -716,10 +726,31 @@ namespace PCoinTray
             t.Start();
         }
 
+        //! Start mining -- solo, or for a pool when `poolurl` is set in the config.
+        //!
+        //! THE POOL BRANCH LIVES HERE, IN THE ONE FUNCTION EVERY CALLER GOES
+        //! THROUGH, and that is the whole point. The tray re-issues mining from
+        //! four places -- app start, node restart, the "intent is on but the node
+        //! is not hashing" recovery, and the mode menu -- and every one of them
+        //! calls this. Putting the branch anywhere else would leave a path that
+        //! silently reverts the machine to solo, which is exactly what would have
+        //! happened on the first reboot: the pool would look like it worked for a
+        //! day and then quietly stop, with the balance frozen and nothing saying
+        //! why.
+        //!
+        //! Note what is NOT sent: a ttl. The tray is the supervisor here and it
+        //! is alive by definition when this runs; a dead-man's switch would only
+        //! add a way for mining to stop while the tray still says it is on.
         void StartMining(int threads)
         {
             if (string.IsNullOrEmpty(_address)) return;
-            Cli("startmining \"" + _address + "\" " + threads.ToString(CultureInfo.InvariantCulture));
+            string t = threads.ToString(CultureInfo.InvariantCulture);
+            if (!string.IsNullOrEmpty(_poolUrl))
+            {
+                Cli("startpoolmining \"" + _poolUrl + "\" \"" + _address + "\" " + t);
+                return;
+            }
+            Cli("startmining \"" + _address + "\" " + t);
         }
 
         // ---------- recovery phrase ----------
@@ -1260,6 +1291,13 @@ namespace PCoinTray
             public double Hashrate;
             public long BlocksFound;
             public int Cores;
+            //! Pool mining. PoolMining false means the three below are
+            //! meaningless, NOT zero -- a solo miner must never be rendered as
+            //! "0 shares accepted", which reads as broken.
+            public bool PoolMining;
+            public long SharesAccepted;
+            public long SharesRejected;
+            public string PoolStatus;
             public long Height;
             public long Headers;
             public double Progress = 1.0;
@@ -1376,6 +1414,14 @@ namespace PCoinTray
                 r.Hashrate = Json.Number(mi.Result, "hashespersec") ?? 0;
                 r.BlocksFound = (long)(Json.Number(mi.Result, "blocksfound") ?? 0);
                 r.Cores = (int)(Json.Number(mi.Result, "cores") ?? 0);
+                bool? p = Json.Bool(mi.Result, "pool");
+                r.PoolMining = p.HasValue && p.Value;
+                if (r.PoolMining)
+                {
+                    r.SharesAccepted = (long)(Json.Number(mi.Result, "sharesaccepted") ?? 0);
+                    r.SharesRejected = (long)(Json.Number(mi.Result, "sharesrejected") ?? 0);
+                    r.PoolStatus = Json.Str(mi.Result, "poolstatus");
+                }
             }
             else
             {
@@ -1490,6 +1536,10 @@ namespace PCoinTray
             _threads = r.Threads;
             _hashrate = r.Hashrate;
             _blocksFound = r.BlocksFound;
+            _poolMining = r.PoolMining;
+            _sharesAccepted = r.SharesAccepted;
+            _sharesRejected = r.SharesRejected;
+            _poolStatus = r.PoolStatus ?? "";
             if (r.Cores > 0) _cores = r.Cores;
             // Chain fields are only present on a full poll; on a rate-only tick
             // the previous values stand rather than being zeroed.
@@ -1520,11 +1570,17 @@ namespace PCoinTray
             if (mining && _threads > 0)
             {
                 _icon.Icon = _iconMining;
+                // A pool problem while the node is still hashing is the quiet
+                // failure worth surfacing: the miner is busy, and none of it is
+                // reaching anyone. Say so here rather than only in a log.
+                string poolNote = _poolMining && _poolStatus.Length > 0 ? " - " + _poolStatus : "";
                 _miStatus.Text = string.Format(CultureInfo.InvariantCulture,
-                    "Mining at {0}% - {1} of {2} cores - {3:0.0} H/s",
-                    _percent, _threads, _cores, _hashrate);
+                    "{0} at {1}% - {2} of {3} cores - {4:0.0} H/s{5}",
+                    _poolMining ? "Pool mining" : "Mining",
+                    _percent, _threads, _cores, _hashrate, poolNote);
                 _icon.Text = Truncate(string.Format(CultureInfo.InvariantCulture,
-                    "PCoin Miner - {0}%, {1:0.0} H/s", _percent, _hashrate));
+                    "PCoin {0} - {1}%, {2:0.0} H/s",
+                    _poolMining ? "Pool Miner" : "Miner", _percent, _hashrate));
             }
             else if (_mining)
             {
@@ -1548,7 +1604,22 @@ namespace PCoinTray
                 _icon.Text = "PCoin Miner - not mining";
             }
             _miChain.Text = "Blockchain height: " + _height.ToString(CultureInfo.InvariantCulture);
-            _miEarned.Text = "Blocks mined by this PC: " + _blocksFound.ToString(CultureInfo.InvariantCulture);
+            // A POOL MINER FINDS NO BLOCKS, BY DESIGN -- the pool submits them.
+            // `blocksfound` therefore stays 0 forever here, and showing that
+            // line unchanged would tell someone earning steadily that they have
+            // earned nothing. Show the thing that is actually accumulating.
+            if (_poolMining)
+            {
+                _miEarned.Text = "Shares accepted by the pool: "
+                    + _sharesAccepted.ToString(CultureInfo.InvariantCulture)
+                    + (_sharesRejected > 0
+                        ? " (" + _sharesRejected.ToString(CultureInfo.InvariantCulture) + " rejected)"
+                        : "");
+            }
+            else
+            {
+                _miEarned.Text = "Blocks mined by this PC: " + _blocksFound.ToString(CultureInfo.InvariantCulture);
+            }
             _miPhrase.Text = _phrase == null ? "Set up a recovery phrase..." : "Recovery phrase...";
             UpdateBalances();
 

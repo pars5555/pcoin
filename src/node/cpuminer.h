@@ -5,6 +5,7 @@
 #ifndef BITCOIN_NODE_CPUMINER_H
 #define BITCOIN_NODE_CPUMINER_H
 
+#include <node/poolclient.h>
 #include <script/script.h>
 
 #include <atomic>
@@ -68,6 +69,26 @@ public:
                const CScript& script, int threads, std::string& error,
                int64_t ttl_seconds = 0);
 
+    //! Begin POOL mining: take work from `host`:`port` instead of building it,
+    //! and send solved nonces back there instead of to ProcessNewBlock.
+    //!
+    //! Everything else is deliberately identical to Start() -- same worker
+    //! pool, same 64-nonce batching, same RandomX VMs, same dead-man's switch,
+    //! same lifecycle mutex. The only differences are where a template comes
+    //! from and where a solution goes, which is exactly why this is a change to
+    //! one function rather than a new miner.
+    //!
+    //! `user` is the miner's payout address at the pool: it is how the pool
+    //! knows whom to credit, and it has nothing to do with this node's wallet.
+    //! No key is involved and no wallet is required.
+    //!
+    //! Unlike solo mining, this does NOT require a synced node. The pool
+    //! supplies the block being worked on, so a node that is still in initial
+    //! block download cannot build a competing fork by pool mining.
+    bool StartPool(ChainstateManager& chainman, const std::string& host, uint16_t port,
+                   const std::string& user, int threads, std::string& error,
+                   int64_t ttl_seconds = 0);
+
     //! Refresh the dead-man's switch. Harmless when no TTL is set.
     void KeepAlive();
 
@@ -98,6 +119,15 @@ public:
     int GetThreads() const { return m_threads; }
     uint64_t GetBlocksFound() const { return m_blocks_found; }
 
+    //! True while mining for a pool rather than solo.
+    bool IsPoolMining() const { return m_pool_mode; }
+
+    //! The pool client, or nullptr when solo. Its accessors are thread-safe;
+    //! the pointer itself only changes under m_lifecycle_mutex.
+    //!
+    //! Callers must not hold this across a Stop(): copy what they need.
+    std::shared_ptr<PoolClient> GetPoolClient() const;
+
     //! How many workers are currently hashing from the fast-mode dataset.
     //!
     //! This is an OBSERVATION of what the workers actually hold, not a record
@@ -114,7 +144,13 @@ public:
 
 private:
     void Supervisor(ChainstateManager* chainman, interfaces::Mining* mining);
+    void PoolSupervisor(ChainstateManager* chainman);
     void Worker(ChainstateManager* chainman);
+    void PoolWorker(ChainstateManager* chainman);
+
+    //! Shared prologue of Start()/StartPool(). Requires m_lifecycle_mutex.
+    //! Resets counters, stops anything running, and validates the thread count.
+    int PrepareLocked(int threads, int64_t ttl_seconds);
 
     //! Body of Stop(); requires m_lifecycle_mutex to be held by the caller.
     void StopLocked();
@@ -132,6 +168,14 @@ private:
     mutable std::mutex m_mutex;               //!< guards m_template and m_script
     std::shared_ptr<const CBlock> m_template; //!< current template, nonce unset
     CScript m_script;
+
+    //! Pool mode. m_pool_mode is read by workers on every batch; the client
+    //! pointer is only reassigned under m_lifecycle_mutex, with every worker
+    //! joined, so a worker can never observe it changing underneath itself.
+    std::atomic<bool> m_pool_mode{false};
+    std::shared_ptr<PoolClient> m_pool;
+    //! The pool job the workers are grinding, republished on every new job.
+    PoolJob m_pool_job;                       //!< guarded by m_mutex
 
     std::vector<std::thread> m_workers;
     std::thread m_supervisor;

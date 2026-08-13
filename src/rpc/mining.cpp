@@ -1188,6 +1188,97 @@ static RPCHelpMan startmining()
     };
 }
 
+static RPCHelpMan startpoolmining()
+{
+    return RPCHelpMan{"startpoolmining",
+        "Start PCoin's built-in CPU miner against a mining POOL instead of mining solo.\n"
+        "\n"
+        "Solo mining (startmining) pays the whole 50 PCN block reward to you on the rare\n"
+        "occasions you find a block, and nothing the rest of the time. Pool mining sends\n"
+        "your work to a pool, which pays you a share of every block the pool finds, in\n"
+        "proportion to the work you did. Your total expected earnings are slightly LOWER\n"
+        "(the pool takes a fee); what you gain is that the payments are regular instead of\n"
+        "rare.\n"
+        "\n"
+        "The address is your identity at the pool -- where it credits you. No wallet and no\n"
+        "private key is involved on this node, and unlike solo mining the node does NOT need\n"
+        "to be synced first, because the pool supplies the block being worked on.\n"
+        "\n"
+        "This replaces any mining already running. Use stopmining to stop, or startmining to\n"
+        "go back to solo.",
+        {
+            {"url", RPCArg::Type::STR, RPCArg::Optional::NO, "The pool, as host:port (for example pool.pc.am:3333)."},
+            {"address", RPCArg::Type::STR, RPCArg::Optional::NO, "The address the pool should credit your work to."},
+            {"threads", RPCArg::Type::NUM, RPCArg::Default{0}, "Worker threads to use. 0 means every core. Values above the core count are capped."},
+            {"ttl", RPCArg::Type::NUM, RPCArg::Default{0}, "Dead-man's switch, in seconds. If set, mining stops automatically unless getcpuminerinfo or a start call happens at least this often. 0 disables."},
+        },
+        RPCResult{
+            RPCResult::Type::OBJ, "", "",
+            {
+                {RPCResult::Type::BOOL, "mining", "whether the miner is now running"},
+                {RPCResult::Type::BOOL, "pool", "always true; this is pool mining"},
+                {RPCResult::Type::STR, "url", "the pool being mined for"},
+                {RPCResult::Type::NUM, "threads", "worker threads actually started"},
+                {RPCResult::Type::STR, "address", "the address the pool will credit"},
+                {RPCResult::Type::NUM, "ttl", "dead-man's switch in seconds, as requested (0 = disabled)"},
+                {RPCResult::Type::STR, "status", "what the miner is doing right now. Connecting to a pool is not instant, so this is normally \"connecting...\" here; poll getcpuminerinfo for the outcome, including a pool that refuses this address."},
+            }},
+        RPCExamples{
+            "\nMine for the PCoin pool with four cores\n"
+            + HelpExampleCli("startpoolmining", "\"pool.pc.am:3333\" \"myaddress\" 4")
+            + HelpExampleRpc("startpoolmining", "\"pool.pc.am:3333\", \"myaddress\", 4")
+                },
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+{
+    const std::string url{request.params[0].get_str()};
+    // Split host:port. Deliberately strict: a typo that silently became a
+    // default port would send this machine's work to the wrong place and look
+    // like it was working.
+    uint16_t port{0};
+    std::string host;
+    if (!SplitHostPort(url, port, host) || host.empty() || port == 0) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER,
+            "Error: pool must be given as host:port, for example pool.pc.am:3333");
+    }
+
+    // Validate the payout address locally as well as at the pool. The pool will
+    // refuse a bad one at login, but doing it here turns a silent "connected,
+    // never credited" into an immediate, readable error -- and catches the far
+    // worse case of an address for the WRONG NETWORK, which is a perfectly
+    // valid string that no one on this chain can ever spend.
+    const std::string address{request.params[1].get_str()};
+    const CTxDestination destination{DecodeDestination(address)};
+    if (!IsValidDestination(destination)) {
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
+            "Error: Invalid address for this network -- the pool would credit work to an address nobody can spend");
+    }
+
+    const int threads{request.params[2].isNull() ? 0 : request.params[2].getInt<int>()};
+    const int64_t ttl{request.params[3].isNull() ? 0 : request.params[3].getInt<int64_t>()};
+
+    NodeContext& node = EnsureAnyNodeContext(request.context);
+    ChainstateManager& chainman = EnsureChainman(node);
+
+    std::string error;
+    auto& cpuminer = node::GetCpuMiner();
+    if (!cpuminer.StartPool(chainman, host, port, address, threads, error, ttl)) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, error);
+    }
+
+    UniValue obj(UniValue::VOBJ);
+    obj.pushKV("mining", cpuminer.IsRunning());
+    obj.pushKV("pool", true);
+    obj.pushKV("url", host + ":" + std::to_string(port));
+    obj.pushKV("threads", cpuminer.GetThreads());
+    obj.pushKV("address", address);
+    obj.pushKV("ttl", ttl);
+    auto client{cpuminer.GetPoolClient()};
+    obj.pushKV("status", client ? client->GetStatus() : std::string{"starting"});
+    return obj;
+},
+    };
+}
+
 static RPCHelpMan stopmining()
 {
     return RPCHelpMan{"stopmining",
@@ -1226,6 +1317,14 @@ static RPCHelpMan getcpuminerinfo()
                 {RPCResult::Type::NUM, "fastthreads", "worker threads currently hashing from the fast-mode dataset"},
                 {RPCResult::Type::STR, "modereason", "why the miner is not in fast mode, or the dataset build progress. Empty ONLY when every worker is in fast mode, or when fast mode was never requested -- a node that is in light mode for any other reason always says why here."},
                 {RPCResult::Type::NUM, "datasetprogress", "RandomX fast-mode dataset build progress, 0-100. 0 when fast mode was never requested."},
+                {RPCResult::Type::BOOL, "pool", "true when mining for a pool rather than solo. The fields below are present only then."},
+                {RPCResult::Type::STR, "poolurl", /*optional=*/true, "the pool being mined for"},
+                {RPCResult::Type::STR, "poolstate", /*optional=*/true, "connection state: disconnected, connecting, loggingin, mining, or refused"},
+                {RPCResult::Type::STR, "poolstatus", /*optional=*/true, "why mining is not happening, in words. EMPTY means it is working. A pool that refused this address says so here -- this is the only place that reason is visible."},
+                {RPCResult::Type::NUM, "sharessubmitted", /*optional=*/true, "shares sent to the pool since the miner started"},
+                {RPCResult::Type::NUM, "sharesaccepted", /*optional=*/true, "shares the pool accepted"},
+                {RPCResult::Type::NUM, "sharesrejected", /*optional=*/true, "shares the pool rejected. A few after a new job is normal (they were for the previous one); a steadily rising count is not."},
+                {RPCResult::Type::NUM, "poolheight", /*optional=*/true, "the block height the pool's current job builds on"},
             }},
         RPCExamples{HelpExampleCli("getcpuminerinfo", "") + HelpExampleRpc("getcpuminerinfo", "")},
         [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
@@ -1275,6 +1374,34 @@ static RPCHelpMan getcpuminerinfo()
     obj.pushKV("fastthreads", fast_threads);
     obj.pushKV("modereason", mode == "fast" ? std::string{} : reason);
     obj.pushKV("datasetprogress", rx.percent);
+
+    // Pool mode. `blocksfound` above is a SOLO figure and stays 0 here forever,
+    // because a pool miner does not submit blocks -- the pool does. Reporting
+    // that alone would read as "this machine has earned nothing", so say
+    // plainly that this is pool mining and give the numbers that do mean
+    // something: shares.
+    const bool pool_mining{cpuminer.IsPoolMining()};
+    obj.pushKV("pool", pool_mining);
+    if (pool_mining) {
+        auto client{cpuminer.GetPoolClient()};
+        if (client) {
+            std::string state{"disconnected"};
+            switch (client->GetState()) {
+            case node::PoolState::DISCONNECTED: state = "disconnected"; break;
+            case node::PoolState::CONNECTING:   state = "connecting"; break;
+            case node::PoolState::LOGGING_IN:   state = "loggingin"; break;
+            case node::PoolState::MINING:       state = "mining"; break;
+            case node::PoolState::REFUSED:      state = "refused"; break;
+            }
+            obj.pushKV("poolurl", client->Describe());
+            obj.pushKV("poolstate", state);
+            obj.pushKV("poolstatus", client->GetStatus());
+            obj.pushKV("sharessubmitted", client->SharesSubmitted());
+            obj.pushKV("sharesaccepted", client->SharesAccepted());
+            obj.pushKV("sharesrejected", client->SharesRejected());
+            obj.pushKV("poolheight", client->JobHeight());
+        }
+    }
     return obj;
 },
     };
@@ -1286,6 +1413,7 @@ void RegisterMiningRPCCommands(CRPCTable& t)
         {"mining", &getnetworkhashps},
         {"mining", &getmininginfo},
         {"mining", &startmining},
+        {"mining", &startpoolmining},
         {"mining", &stopmining},
         {"mining", &getcpuminerinfo},
         {"mining", &prioritisetransaction},

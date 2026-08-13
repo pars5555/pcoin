@@ -280,6 +280,7 @@ add_library(bitcoin_node STATIC EXCLUDE_FROM_ALL
   node/connection_types.cpp
   node/context.cpp
   node/cpuminer.cpp
+  node/poolclient.cpp
   node/database_args.cpp
   node/eviction.cpp
   node/interface_ui.cpp

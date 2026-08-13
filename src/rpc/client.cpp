@@ -36,6 +36,15 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "generatetoaddress", 2, "maxtries" },
     { "startmining", 1, "threads" },
     { "startmining", 2, "ttl" },
+    // WITHOUT THESE, bitcoin-cli SENDS threads AND ttl AS STRINGS and the call
+    // fails with "JSON value of type string is not of expected type number".
+    // Every caller that goes through bitcoin-cli is affected -- which is the
+    // tray app, the Linux supervisor, and every operator typing it by hand --
+    // while a caller speaking JSON-RPC directly works fine. That asymmetry is
+    // why this was missed: the client tests drive the node over curl with real
+    // JSON numbers and never touch this table.
+    { "startpoolmining", 2, "threads" },
+    { "startpoolmining", 3, "ttl" },
     { "generatetodescriptor", 0, "num_blocks" },
     { "generatetodescriptor", 2, "maxtries" },
     { "generateblock", 1, "transactions" },
