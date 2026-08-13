@@ -1,13 +1,27 @@
-// PCoin mining pool — step 3: jobs, shares, and PPLNS accounting.
+// PCoin mining pool — jobs, shares, PPLNS, and payouts made BY THE COINBASE.
 //
-//   *** PAYOUTS ARE COMPUTED AND RECORDED. NOTHING IS SENT. ***
+//   *** THIS POOL HOLDS NO WALLET, NO PRIVATE KEY, AND HAS NO SEND PATH. ***
 //
-// Miners connect, get work, submit shares, and the pool submits real blocks.
-// Every accepted share is written to SQLite before the miner is told "OK", and
-// when a block is found the pool computes what each miner is owed under PPLNS
-// and writes it down. It does not pay it. Sending is step 4, deliberately after
-// a week of reconciling these numbers by hand against the chain — DESIGN.md
-// says "do not skip 3" and this is what not skipping it looks like.
+// Miners connect, get work, and submit shares. Every accepted share is written
+// to SQLite before the miner is told "OK". When the pool builds a template it
+// splits that block's reward across the PPLNS window and emits ONE COINBASE
+// OUTPUT PER MINER, so the block itself pays them. There is nothing to send
+// afterwards and no float for an operator to hold or lose.
+//
+// What that buys, beyond not holding anyone's money:
+//
+//   * idempotency stops being a database constraint and becomes a property of
+//     the chain -- a block either exists or it does not, so a retry cannot pay
+//     twice and a lost response resolves nothing
+//   * an orphaned block reverses itself; there is no credit to claw back
+//   * a miner can verify its own payment inside the block it helped find,
+//     without trusting this pool's bookkeeping
+//
+// The cost, stated plainly: the split is fixed when the TEMPLATE is built,
+// because the coinbase is committed to by the merkle root. A share submitted a
+// second before a block lands may be paid by the NEXT block instead. Nothing is
+// lost, only deferred. And a miner owed less than the dust limit is left out of
+// that block and accumulates instead -- see buildPayoutOutputs().
 //
 // Read the ledger with:  node payouts.mjs --config pool.config.json
 //
@@ -33,7 +47,7 @@ import {
   addressToScript, buildCoinbase, merkleRoot, buildHeader,
   serializeBlock, bitsToTarget, scaleTarget, sha256d, nextDiffFactor, maxFactorForWeight,
 } from './block.mjs';
-import { Store, loadConfig, pcn } from './store.mjs';
+import { Store, loadConfig, pcn, buildPayoutOutputs } from './store.mjs';
 
 // ── config ──────────────────────────────────────────────────────────────────
 const cfgPath = process.argv.includes('--config')
@@ -104,6 +118,7 @@ const state = {
   jobs: new Map(),      // job_id -> { header base, merkle, coinbase, height, target, seen:Set }
   jobSeq: 0,
   miners: new Map(),    // session id -> miner
+  payout: null,         // the coinbase output set for the current template
   accepted: 0,          // this process's counters; the ledger lives in SQLite
   blocksFound: 0,
   storeDown: null,      // set to a reason if the store dies
@@ -122,6 +137,11 @@ function makeJob(miner) {
     height: t.height,
     value: t.coinbasevalue,
     script: state.script,
+    // THE PAYOUT SET. Every miner's job carries the same outputs -- only the
+    // extranonce in the scriptSig differs -- so whichever miner solves it, the
+    // block pays the same people the same amounts. This is what replaces a
+    // wallet, a private key and a send path.
+    pays: state.payout ? state.payout.outputs : null,
     extranonce,
     witnessCommitment: t.default_witness_commitment,
   });
@@ -144,6 +164,10 @@ function makeJob(miner) {
     // job, so read them off the job.
     netTarget: bitsToTarget(t.bits),
     value: t.coinbasevalue,
+    // Pinned to the job, because the coinbase this miner is hashing pays THIS
+    // set. A later template may pay a different one; the block that gets
+    // submitted must be recorded as paying what it actually pays.
+    payout: state.payout,
     seen: new Set(),
     miner: miner.id,
   };
@@ -180,6 +204,38 @@ async function refreshTemplate() {
     const changed = !state.tpl || state.tpl.previousblockhash !== t.previousblockhash;
     state.tpl = t;
     state.netTarget = bitsToTarget(t.bits);
+
+    // Recompute who this template would pay. Done here, once per refresh, so
+    // every job built from it carries the same outputs -- and so the window is
+    // as fresh as the template is.
+    //
+    // A FAILURE HERE MUST NOT PAY THE POOL EVERYTHING. If the window cannot be
+    // read, the honest thing is to keep the previous payout set rather than
+    // build a coinbase that quietly pays the pool address alone: an unreadable
+    // ledger is not "nobody is owed anything".
+    try {
+      const win = await store.currentWindow(state.netTarget.toString('hex'));
+      state.payout = buildPayoutOutputs({
+        value: t.coinbasevalue,
+        feeBasisPoints: CFG.feeBasisPoints,
+        entries: win.entries,
+        scriptOf: (addr) => addressToScript(addr, CFG.hrp),
+        poolScript: state.script,
+        dustLimit: BigInt(CFG.dustLimit ?? 294),
+      });
+      // NOTE: buildPayoutOutputs already returns windowWeight for the LIVE set
+      // -- the miners actually being paid, after dust exclusion. Overwriting it
+      // with the full window would store a divisor that does not reproduce the
+      // amounts, and every reconciliation afterwards would disagree with a
+      // ledger that was in fact correct.
+      for (const d of state.payout.dropped) {
+        log(`payout: ${d.miner.slice(0, 14)}… would get ${d.wouldHave} sat, under the dust limit — `
+          + 'left in the window to accumulate, not lost');
+      }
+    } catch (e) {
+      log(`payout set NOT rebuilt (${e.message.slice(0, 120)}); keeping the previous one`);
+    }
+
     if (changed) {
       log(`tip -> height ${t.height - 1}, next ${t.height}, bits ${t.bits}`);
       state.jobs.clear();          // work on a stale tip is wasted
@@ -314,23 +370,35 @@ async function handleSubmit(m, params, id) {
  * a wallet.
  */
 async function recordBlock(job, blockId, m, shareId) {
+  const payout = job.payout;
   try {
-    const p = await store.recordBlockAndComputePayouts({
+    const coinbaseTxid = Buffer.from(job.coinbase.txid).reverse().toString('hex');
+    const p = await store.recordBlockPaidByCoinbase({
       hash: blockId, height: job.height, value: job.value, finder: m.login,
-      shareId, netTargetHex: job.netTarget.toString('hex'), at: Date.now(),
+      shareId, at: Date.now(), coinbaseTxid,
+      outputs: payout ? payout.outputs : [],
+      fee: payout ? payout.fee : 0n,
+      windowWeight: payout ? payout.windowWeight : 0n,
     });
-    if (!p.computed) { log(`payouts not computed: ${p.reason}`); return; }
-    const pct = (w) => (Number(w * 10000n / p.windowWeight) / 100).toFixed(2);
-    log(`── PPLNS for height ${p.height} ─────────────────────────────`);
-    log(`   reward ${pcn(p.value)} PCN   fee ${CFG.feeBasisPoints / 100}% = ${pcn(p.fee)}   dust ${p.dust} sat`);
-    log(`   window N=${p.N} covered W=${p.windowWeight} `
-      + `(${p.shares.length} miner(s), ${p.shares.reduce((a, s) => a + s.shares, 0)} shares)`);
-    for (const a of p.amounts) log(`   ${a.miner}  ${pcn(a.amount).padStart(16)} PCN  (${pct(a.weight)}%)`);
-    log('   COMPUTED AND RECORDED — NOTHING SENT. Sending is step 4.');
+    log(`── height ${p.height} PAID BY ITS OWN COINBASE ──────────────`);
+    log(`   reward ${pcn(p.value)} PCN   fee ${CFG.feeBasisPoints / 100}% = ${pcn(p.fee)}`);
+    if (payout) {
+      const W = payout.windowWeight || 1n;
+      for (const o of payout.outputs) {
+        const who = o.miner ? o.miner : '(pool fee + rounding)';
+        const pct = o.miner ? ` (${(Number(o.weight * 10000n / W) / 100).toFixed(2)}%)` : '';
+        log(`   ${who.padEnd(46)} ${pcn(o.value).padStart(16)} PCN${pct}`);
+      }
+    }
+    log(`   coinbase ${coinbaseTxid}`);
+    log(`   spendable by everyone after ${CFG.pplns.maturity} confirmations. Nothing to send.`);
   } catch (e) {
-    // The block is real and on the chain either way. A failed computation is
-    // loud and leaves no half-written ledger; the operator can recompute.
-    log(`PAYOUT COMPUTATION FAILED for height ${job.height}: ${e.message.slice(0, 200)}`);
+    // The block is on the chain and has already paid, whatever this says. A
+    // failure here is a BOOKKEEPING failure, not a payment one -- which is the
+    // point of paying from the coinbase, and worth saying so nobody goes
+    // looking for a stuck payment that never existed.
+    log(`LEDGER WRITE FAILED for height ${job.height}: ${e.message.slice(0, 200)}`);
+    log('   the block itself already paid; this is a bookkeeping gap, not a missing payment');
   }
 }
 
@@ -457,7 +525,8 @@ const server = net.createServer((sock) => {
   state.script = addressToScript(CFG.poolAddress, CFG.hrp);
   log(`pool pays ${CFG.poolAddress}, fee ${CFG.feeBasisPoints / 100}% off the block reward`);
   log(`PPLNS window N = ${CFG.pplns.windowMultiplier}x one block's work; maturity ${CFG.pplns.maturity} blocks`);
-  log('STEP 3: payouts are COMPUTED AND RECORDED. Nothing is sent.');
+  log('PAYOUTS ARE MADE BY THE COINBASE: each block pays its miners directly.');
+  log('This pool holds no wallet, no private key, and has no send path.');
   log(`allowlist: ${CFG.allowlist.length ? CFG.allowlist.length + ' address(es)' : 'OPEN -- anyone may mine'}`);
   await refreshTemplate();
   if (!state.tpl) { log('FATAL no template at startup'); process.exit(1); }

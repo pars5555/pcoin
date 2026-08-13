@@ -109,6 +109,76 @@ export function splitPot(pot, entries) {
   return { amounts, dust, windowWeight: total };
 }
 
+/**
+ * Turn a PPLNS window into the coinbase's output set.
+ *
+ * THE POOL NEVER HOLDS ANYONE'S MONEY. Each miner is an output of the block
+ * they helped find, so the chain pays them directly: no wallet on the server,
+ * no private key, no send path, and no "did the payment land?" to get wrong.
+ * Idempotency stops being a database constraint and becomes a property of the
+ * chain -- the block either exists or it does not.
+ *
+ * Two rules that make it safe:
+ *
+ *   DUST. An output below the relay dust limit is non-standard and would make
+ *   the block unrelayable. A miner under it is dropped from THIS block and
+ *   nothing is lost: its shares are still in the window, so it accumulates and
+ *   is paid by a later block. The split is then RECOMPUTED over who is left, so
+ *   the dropped share goes to the other miners rather than to the pool. (That
+ *   recompute cannot cascade -- removing an entry only ever makes the remaining
+ *   amounts larger -- but it is still a second pass, and skipping it would hand
+ *   the difference to the pool.)
+ *
+ *   EXACTNESS. The pool output is whatever is left, so the outputs sum to the
+ *   coinbase value to the satoshi. Paying one satoshi more than
+ *   subsidy+fees makes the block INVALID: found, submitted, rejected, work
+ *   thrown away. Under-paying silently donates to nobody.
+ *
+ * @returns {{outputs, fee, dropped, windowWeight, paid}}
+ */
+export function buildPayoutOutputs({ value, feeBasisPoints, entries, scriptOf,
+                                     poolScript, dustLimit = 294n }) {
+  const V = BigInt(value);
+  if (V <= 0n) throw new Error(`coinbase value ${value} is not positive`);
+  const fee = feeOf(V, BigInt(feeBasisPoints));
+  const pot = V - fee;
+
+  let live = entries.filter((e) => e.weight > 0n);
+  const dropped = [];
+  let amounts = [];
+  for (let pass = 0; pass < 64; pass++) {
+    if (!live.length) { amounts = []; break; }
+    const r = splitPot(pot, live);
+    const under = r.amounts.filter((a) => a.amount < dustLimit);
+    if (!under.length) { amounts = r.amounts; break; }
+    for (const u of under) dropped.push({ miner: u.miner, wouldHave: u.amount });
+    const drop = new Set(under.map((u) => u.miner));
+    live = live.filter((e) => !drop.has(e.miner));
+  }
+
+  // Deterministic order, so two runs over the same window build byte-identical
+  // coinbases. Sorted by address: any ordering works, an unstable one does not.
+  amounts.sort((a, b) => (a.miner < b.miner ? -1 : a.miner > b.miner ? 1 : 0));
+
+  const outputs = [];
+  let paid = 0n;
+  for (const a of amounts) {
+    outputs.push({ miner: a.miner, script: scriptOf(a.miner), value: a.amount, weight: a.weight });
+    paid += a.amount;
+  }
+  const poolValue = V - paid;                 // fee + rounding + anything dropped
+  if (poolValue < 0n) throw new Error('payout outputs exceed the coinbase value');
+  outputs.push({ miner: null, script: poolScript, value: poolValue });
+
+  const total = outputs.reduce((s, o) => s + o.value, 0n);
+  if (total !== V) throw new Error(`coinbase outputs sum to ${total}, not ${V}`);
+
+  return {
+    outputs, fee, dropped, paid,
+    windowWeight: live.reduce((s, e) => s + e.weight, 0n),
+  };
+}
+
 // ── the sqlite3 process ─────────────────────────────────────────────────────
 class Sqlite {
   constructor(bin, path, onFatal) {
@@ -359,6 +429,22 @@ export class Store {
    * shares exist, W < N and the pot is still distributed in full -- everyone in
    * the window simply gets a larger slice, which is correct.
    */
+  /**
+   * The PPLNS window as of right now, for building a template's coinbase.
+   *
+   * Coinbase payouts have to decide the split when the TEMPLATE is built, not
+   * when the nonce is found, because the coinbase is committed to by the merkle
+   * root. So the window is snapshotted every template refresh (~2 s). A share
+   * submitted a second before the block lands may therefore miss that block and
+   * be paid by the next one -- inherent to paying from the coinbase, and the
+   * shares are not lost, only deferred.
+   */
+  async currentWindow(netTargetHex) {
+    const [maxId] = (await this.db.run('SELECT IFNULL(MAX(id),0) FROM shares;')).rows;
+    if (Number(maxId) === 0) return { entries: [], N: 0n, blockWork: 0n };
+    return this.pplnsWindow(Number(maxId), netTargetHex);
+  }
+
   async pplnsWindow(lastShareId, netTargetHex) {
     const blockWork = targetWeight(Buffer.from(netTargetHex, 'hex'));
     const N = blockWork * this.windowMultiplier;
@@ -380,6 +466,83 @@ export class Store {
    * Returns {computed:true, ...} the first time and {computed:false, reason}
    * on any repeat, so the caller can log the difference honestly.
    */
+  /**
+   * A block we found, whose COINBASE already paid everyone.
+   *
+   * There is nothing to send and nothing to compute after the fact: the split
+   * was fixed when the template was built and is now on the chain. This records
+   * what that coinbase paid so it can be reconciled against the block itself.
+   *
+   * `sent_txid` is set to the coinbase txid immediately, because it genuinely
+   * has been paid -- by the block. That is the whole point of this design: the
+   * "computed but not sent" state, and every retry hazard that came with it,
+   * does not exist.
+   *
+   * Note what is deliberately NOT duplicated from recordBlockAndComputePayouts:
+   * the two-blocks-at-one-height guard. It mattered there because the ledger
+   * decided who got sent money. Here the ledger decides nothing -- the chain
+   * already paid -- so a wrong row is a bookkeeping error, and
+   * reconcileAgainstChain() catches exactly that by comparing against the
+   * block's real outputs. A guard that cannot prevent a payment error is not
+   * worth the code it takes to get wrong.
+   */
+  async recordBlockPaidByCoinbase({ hash, height, value, finder, shareId, at,
+                                    coinbaseTxid, outputs, fee, windowWeight }) {
+    const V = BigInt(value);
+    await this.db.run(
+      `INSERT OR IGNORE INTO blocks (hash,height,found_at,value,finder,share_id,state,state_at) VALUES (`
+      + `${lit(hash)},${num(height)},${num(at)},${num(V)},${lit(finder)},${num(shareId)},'pending',${num(at)});`);
+
+    const paid = outputs.filter((o) => o.miner);
+    const rows = paid.map((o) =>
+      `(${num(height)},${lit(o.miner)},${lit(hash)},${num(o.value)},${num(o.weight || 0)},`
+      + `${num(windowWeight || 0)},${num(V - fee)},${num(at)},${lit(coinbaseTxid)})`);
+
+    if (rows.length) {
+      await this.db.run(
+        'BEGIN IMMEDIATE;\n'
+        + 'INSERT OR IGNORE INTO payouts (block_height,miner,block_hash,amount,weight,window_weight,pot,computed_at,sent_txid) VALUES\n'
+        + rows.join(',\n') + ';\n'
+        + `INSERT OR IGNORE INTO pool_fees (block_height,block_hash,value,fee,dust) VALUES (`
+        + `${num(height)},${lit(hash)},${num(V)},${num(fee)},0);\n`
+        + 'COMMIT;');
+    } else {
+      await this.db.run(
+        `INSERT OR IGNORE INTO pool_fees (block_height,block_hash,value,fee,dust) VALUES (`
+        + `${num(height)},${lit(hash)},${num(V)},${num(fee)},0);`);
+    }
+
+    // Read it back. The rows are the product; "the INSERT returned" is not.
+    const check = await this.db.run(
+      `SELECT COUNT(*), IFNULL(SUM(amount),0) FROM payouts WHERE block_height=${num(height)};`);
+    const [cnt, sum] = check.rows[0].split('|');
+    return { height, hash, value: V, fee, miners: Number(cnt), paid: BigInt(sum) };
+  }
+
+  /**
+   * Reconcile a block against the CHAIN, not against this database.
+   *
+   * The stored rows say what the coinbase was built to pay. `actual` is what
+   * the node reports that block's coinbase outputs actually are. If those
+   * disagree, the ledger is describing a block that does not exist.
+   */
+  async reconcileAgainstChain(height, hash, actualOutputs) {
+    const rows = await this.sql(
+      `SELECT miner, amount FROM payouts WHERE block_height=${num(height)} AND block_hash=${lit(hash)};`);
+    const problems = [];
+    const want = new Map();
+    for (const line of rows) {
+      const [m, a] = line.split('|');
+      want.set(m, BigInt(a));
+    }
+    for (const [addr, amt] of want) {
+      const got = actualOutputs.get(addr);
+      if (got === undefined) problems.push(`${addr}: ledger says ${amt}, the block pays it nothing`);
+      else if (got !== amt) problems.push(`${addr}: ledger says ${amt}, the block pays ${got}`);
+    }
+    return problems;
+  }
+
   async recordBlockAndComputePayouts({ hash, height, value, finder, shareId, netTargetHex, at }) {
     const V = BigInt(value);
     if (V <= 0n) throw new Error(`coinbase value ${value} is not positive`);
@@ -564,12 +727,14 @@ export class Store {
   /**
    * Per-miner balances, split by the state of the block each payout came from.
    *
-   *   pending  — the block is real but the coinbase is under 100 confirmations
-   *   payable  — mature, unsent (step 3 never sends; this is what step 4 will)
+   *   pending  — already paid by the block's coinbase, but that coinbase is
+   *               under 100 confirmations so nobody can spend it yet
+   *   paid     — mature and spendable, sitting in the miner's own wallet
    *   void     — the block was orphaned; the work was real, the coins never were
    *
-   * PENDING IS SHOWN, NOT HIDDEN. A miner who cannot see the ~17 hours of
-   * immaturity reports it as a bug, and they are not wrong to.
+   * There is no "owed" state, because the pool never owes anyone anything: the
+   * block paid them. PENDING IS STILL SHOWN, NOT HIDDEN -- a miner who cannot
+   * see the ~17 hours of immaturity reports it as a bug, and is not wrong to.
    */
   async balances() {
     const r = await this.db.run(
@@ -581,10 +746,12 @@ export class Store {
       const [miner, state, txid, sum] = line.split('|');
       const e = byMiner.get(miner) || { miner, pending: 0n, payable: 0n, sent: 0n, void: 0n };
       const amt = BigInt(sum);
+      // Order matters: with coinbase payouts sent_txid is ALWAYS set, so
+      // checking it first would report an immature block as spendable. The
+      // block's state is what decides, not whether a txid exists.
       if (state === 'orphaned') e.void += amt;
-      else if (txid) e.sent += amt;
-      else if (state === 'mature') e.payable += amt;
-      else e.pending += amt;
+      else if (state === 'mature') e.sent += amt;      // paid AND spendable
+      else e.pending += amt;                            // paid, not yet spendable
       byMiner.set(miner, e);
     }
     return [...byMiner.values()];

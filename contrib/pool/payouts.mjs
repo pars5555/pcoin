@@ -15,6 +15,7 @@
 // value the pool wrote down as its own answer. A ledger that reports its own
 // opinion of itself is not a check.
 
+import { execFile } from 'node:child_process';
 import { Store, loadConfig, pcn, splitPot, feeOf } from './store.mjs';
 
 const arg = (name, dflt) => {
@@ -27,6 +28,13 @@ const store = await new Store({
   path: CFG.db, sqlite3: CFG.sqlite3, feeBasisPoints: CFG.feeBasisPoints,
   windowMultiplier: CFG.pplns.windowMultiplier, maturity: CFG.pplns.maturity, log: () => {},
 }).open();
+
+// Ask the NODE, so the ledger can be checked against the chain rather than
+// only against itself.
+const cliJson = (args) => new Promise((res, rej) => {
+  execFile(CFG.cliCommand[0], [...CFG.cliCommand.slice(1), ...args], { maxBuffer: 64 << 20 },
+    (e, out, err) => e ? rej(new Error((err || e.message).trim())) : res(JSON.parse(out)));
+});
 
 const bold = (s) => `\x1b[1m${s}\x1b[0m`;
 const dim = (s) => `\x1b[2m${s}\x1b[0m`;
@@ -91,7 +99,8 @@ const blocks = await store.blocks();
 // was mis-split at the time does not get to certify itself now.
 rule('RECONCILIATION');
 {
-  let bad = 0;
+  let bad = 0, onChainChecked = 0;
+  const unchecked = [];
   for (const b of blocks) {
     const rows = await store.sql(
       `SELECT miner, amount, weight, window_weight, pot FROM payouts `
@@ -107,8 +116,12 @@ rule('RECONCILIATION');
     const problems = [];
 
     const paid = parsed.reduce((a, r) => a + r.amount, 0n);
-    if (paid + b.dust + b.fee !== b.value) {
-      problems.push(`sum ${paid} + dust ${b.dust} + fee ${b.fee} != value ${b.value}`);
+    // Coinbase payouts: the pool's own output is whatever is left, so the
+    // invariant is that the miners never take more than the pot. The exact
+    // "sums to the coinbase value" check is enforced where it matters -- when
+    // the coinbase is built, because a block that overpays is simply invalid.
+    if (paid + b.fee > b.value) {
+      problems.push(`miners ${paid} + fee ${b.fee} exceeds the coinbase ${b.value}`);
     }
     const expectFee = feeOf(b.value, BigInt(CFG.feeBasisPoints));
     if (b.fee !== expectFee) problems.push(`fee ${b.fee} != ${CFG.feeBasisPoints}bp of ${b.value} (${expectFee})`);
@@ -127,7 +140,26 @@ rule('RECONCILIATION');
         problems.push(`${parsed[i].miner}: stored ${parsed[i].amount}, recomputes to ${redone.amounts[i].amount}`);
       }
     }
-    if (redone.dust !== b.dust) problems.push(`dust ${b.dust} recomputes to ${redone.dust}`);
+    // THE CHECK THAT MATTERS: what does the BLOCK actually pay?
+    //
+    // Everything above re-derives the ledger from itself, which catches
+    // arithmetic drift but would happily certify a ledger describing a block
+    // that does not exist. Paying from the coinbase means the chain holds the
+    // real answer, so ask it. An unreadable node resolves nothing -- it is
+    // reported as unchecked, never as agreement.
+    try {
+      const raw = await cliJson(['getblock', b.hash, '2']);
+      const actual = new Map();
+      for (const o of raw.tx[0].vout) {
+        const a = o.scriptPubKey?.address;
+        if (a) actual.set(a, BigInt(Math.round(o.value * 1e8)));
+      }
+      const chain = await store.reconcileAgainstChain(b.height, b.hash, actual);
+      problems.push(...chain);
+      if (!chain.length) onChainChecked++;
+    } catch (e) {
+      unchecked.push(`${b.height}: ${e.message.split('\n')[0].slice(0, 80)}`);
+    }
 
     if (problems.length) {
       bad++;
@@ -143,24 +175,25 @@ rule('RECONCILIATION');
 }
 
 // ── balances ────────────────────────────────────────────────────────────────
-rule('BALANCES — nothing here has been sent');
+rule('BALANCES — every one of these was paid by a block, not by this pool');
 {
   const bals = await store.balances();
   const only = arg('miner');
   const rows = only ? bals.filter((b) => b.miner === only) : bals;
   if (!rows.length) console.log(dim('  none'));
-  console.log(dim(`  ${'miner'.padEnd(46)} ${'pending'.padStart(15)} ${'payable'.padStart(15)} ${'void'.padStart(13)}`));
+  console.log(dim(`  ${'miner'.padEnd(46)} ${'pending'.padStart(15)} ${'spendable'.padStart(15)} ${'void'.padStart(13)}`));
   let tp = 0n, tv = 0n, to = 0n;
   for (const b of rows) {
-    tp += b.pending; tv += b.payable; to += b.void;
-    console.log(`  ${b.miner.padEnd(46)} ${pcn(b.pending).padStart(15)} ${pcn(b.payable).padStart(15)} ${pcn(b.void).padStart(13)}`);
+    tp += b.pending; tv += b.sent; to += b.void;
+    console.log(`  ${b.miner.padEnd(46)} ${pcn(b.pending).padStart(15)} ${pcn(b.sent).padStart(15)} ${pcn(b.void).padStart(13)}`);
   }
   if (rows.length) {
     console.log(dim(`  ${'─'.repeat(46)} ${pcn(tp).padStart(15)} ${pcn(tv).padStart(15)} ${pcn(to).padStart(13)}`));
     console.log('');
-    console.log(dim(`  pending  the block is real, its coinbase is under ${CFG.pplns.maturity} confirmations`));
-    console.log(dim('  payable  mature and owed. STEP 4 will send this. Step 3 never does.'));
-    console.log(dim('  void     the block was orphaned. The work was real; the coins never were.'));
+    console.log(dim(`  pending    ALREADY PAID by the block's coinbase, but under ${CFG.pplns.maturity} confirmations`));
+    console.log(dim('             so not spendable yet. A consensus rule, not a pool delay.'));
+    console.log(dim('  spendable  mature. It is in the miner’s own wallet, not held here.'));
+    console.log(dim('  void       the block was orphaned. The work was real; the coins never were.'));
   }
 
   const fees = await store.sql('SELECT IFNULL(SUM(fee),0), IFNULL(SUM(dust),0) FROM pool_fees;');
@@ -170,12 +203,13 @@ rule('BALANCES — nothing here has been sent');
 
 // ── the thing that must stay true ───────────────────────────────────────────
 {
-  const [sent] = await store.sql('SELECT COUNT(*) FROM payouts WHERE sent_txid IS NOT NULL;');
+  const [unpaid] = await store.sql('SELECT COUNT(*) FROM payouts WHERE sent_txid IS NULL;');
   console.log('');
-  if (Number(sent) === 0) {
-    console.log(bold('  STEP 3: nothing has been sent, and no code in this tree can send it.'));
+  if (Number(unpaid) === 0) {
+    console.log(bold('  Every payout above was made by a block’s own coinbase.'));
+    console.log(bold('  This pool holds no wallet, no private key, and has no send path.'));
   } else {
-    console.log(bold(`  ${sent} payout(s) are marked SENT — that is step 4 code, and it should not be here yet.`));
+    console.log(bold(`  ${unpaid} payout row(s) have no paying transaction — that should be impossible here.`));
   }
 }
 

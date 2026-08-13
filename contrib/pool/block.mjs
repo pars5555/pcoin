@@ -102,7 +102,7 @@ export function addressToScript(addr, expectHrp = 'pc') {
  * coinbase, which changes its txid, which changes the merkle root, which
  * changes the header. Without it every miner would grind identical work.
  */
-export function buildCoinbase({ height, value, script, extranonce, witnessCommitment }) {
+export function buildCoinbase({ height, value, script, pays, extranonce, witnessCommitment }) {
   const en = Buffer.from(extranonce, 'hex');
   const scriptSig = Buffer.concat([
     pushInt(height),                                // BIP34: height first, always
@@ -110,9 +110,33 @@ export function buildCoinbase({ height, value, script, extranonce, witnessCommit
   ]);
   if (scriptSig.length > 100) throw new Error('coinbase scriptSig over the 100-byte consensus limit');
 
+  // `pays` is the pool's payout set: one output per miner, so the CHAIN pays
+  // them and the pool never holds anyone's money. `script`+`value` is the
+  // single-output form, kept for the block-assembly tests and for a pool with
+  // no miners in its window yet.
+  //
+  // The coinbase is committed to by the merkle root, so this set is fixed when
+  // the TEMPLATE is built and cannot change once a miner starts hashing it.
+  // That is the whole reason the payout window is snapshotted per template
+  // rather than at the instant a nonce is found.
+  const spend = pays && pays.length
+    ? pays
+    : [{ script, value: BigInt(value) }];
+
   const outputs = [];
-  const val = Buffer.alloc(8); val.writeBigUInt64LE(BigInt(value));
-  outputs.push(Buffer.concat([val, varint(script.length), script]));
+  let total = 0n;
+  for (const o of spend) {
+    const v = BigInt(o.value);
+    if (v < 0n) throw new Error('negative coinbase output');
+    total += v;
+    const val = Buffer.alloc(8); val.writeBigUInt64LE(v);
+    outputs.push(Buffer.concat([val, varint(o.script.length), o.script]));
+  }
+  // Consensus caps the coinbase at subsidy + fees. Paying a satoshi more makes
+  // the block invalid -- found, submitted, rejected, and the work thrown away.
+  if (value !== undefined && total > BigInt(value)) {
+    throw new Error(`coinbase pays ${total} but only ${value} is available`);
+  }
 
   // Every PCoin block's coinbase carries the zero-value OP_RETURN witness
   // commitment. getblocktemplate hands us the exact scriptPubKey; use it

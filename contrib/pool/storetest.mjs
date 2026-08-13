@@ -24,7 +24,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Store, targetWeight, splitPot, feeOf, pcn } from './store.mjs';
+import { Store, targetWeight, splitPot, feeOf, pcn, buildPayoutOutputs } from './store.mjs';
 import { nextDiffFactor, maxFactorForWeight } from './block.mjs';
 
 const SQLITE3 = process.env.SQLITE3 || 'sqlite3';
@@ -236,6 +236,82 @@ section('the split -- integer satoshis, and nothing lost or invented');
   ok(allExact, '2000 random splits all reconcile to the satoshi', `worst dust ${worst} sat`);
 }
 
+// ── 2b. the coinbase output set ─────────────────────────────────────────────
+section('coinbase payouts -- the block pays the miners, so nobody holds a key');
+{
+  const S = (a) => Buffer.from('0014' + a.padEnd(40, '0').slice(0, 40), 'hex');
+  const POOL = S('ff');
+  const REWARD = 5000000000n;
+  const mk = (n, w) => ({ miner: 'pc1q' + n, weight: BigInt(w) });
+
+  // Ordinary case: three miners, awkward weights.
+  const r = buildPayoutOutputs({
+    value: REWARD, feeBasisPoints: 200,
+    entries: [mk('aa', 7), mk('bb', 11), mk('cc', 13)],
+    scriptOf: S, poolScript: POOL,
+  });
+  const total = r.outputs.reduce((s, o) => s + o.value, 0n);
+  ok(total === REWARD, 'the outputs sum to the coinbase value, to the satoshi',
+    `${total} vs ${REWARD}`);
+  ok(r.outputs.length === 4, 'one output per miner plus the pool');
+  ok(r.outputs[r.outputs.length - 1].miner === null, 'the pool output is last');
+  // Paying MORE than the coinbase makes the block invalid -- found, submitted,
+  // rejected, work thrown away. This is the check that keeps that impossible.
+  ok(total <= REWARD, 'and never exceeds it');
+
+  // Deterministic ordering: the same window must build byte-identical coinbases.
+  const again = buildPayoutOutputs({
+    value: REWARD, feeBasisPoints: 200,
+    entries: [mk('cc', 13), mk('aa', 7), mk('bb', 11)],   // different input order
+    scriptOf: S, poolScript: POOL,
+  });
+  ok(JSON.stringify(r.outputs.map((o) => [o.miner, String(o.value)]))
+     === JSON.stringify(again.outputs.map((o) => [o.miner, String(o.value)])),
+    'the output set does not depend on the order the window came back in');
+
+  // DUST. A miner owed less than the relay dust limit cannot be paid in this
+  // block without making it unrelayable. It must be dropped and told about --
+  // never silently paid zero, and never silently handed to the pool.
+  const dusty = buildPayoutOutputs({
+    value: REWARD, feeBasisPoints: 200,
+    entries: [mk('aa', 1000000), mk('bb', 1)],   // bb is owed ~4900 sat... still above dust
+    scriptOf: S, poolScript: POOL, dustLimit: 10000n,
+  });
+  ok(dusty.dropped.length === 1 && dusty.dropped[0].miner === 'pc1qbb',
+    'a miner under the dust limit is dropped from this block and reported',
+    JSON.stringify(dusty.dropped.map((d) => [d.miner, String(d.wouldHave)])));
+  ok(dusty.outputs.reduce((s, o) => s + o.value, 0n) === REWARD,
+    'and the block still pays out exactly the coinbase value');
+
+  // The dropped share must go to the OTHER MINERS, not to the pool. Paying it
+  // to the pool would be a fee the miners never agreed to.
+  const poolOut = dusty.outputs.find((o) => !o.miner).value;
+  ok(poolOut <= feeOf(REWARD, 200n) + 10n,
+    'the dropped miner\'s share is redistributed to the others, not kept by the pool',
+    `pool got ${poolOut}, fee alone is ${feeOf(REWARD, 200n)}`);
+
+  // Degenerate: nothing in the window yet. The pool takes the block rather than
+  // building an invalid coinbase, and that is the only case where it should.
+  const empty = buildPayoutOutputs({
+    value: REWARD, feeBasisPoints: 200, entries: [], scriptOf: S, poolScript: POOL,
+  });
+  ok(empty.outputs.length === 1 && empty.outputs[0].value === REWARD,
+    'an empty window pays the pool the whole block, and nothing is malformed');
+
+  // Random windows must always reconcile. Exactness is not a property of nice
+  // numbers, and this is the number a node checks.
+  let allExact = true;
+  for (let i = 0; i < 500; i++) {
+    const n = 1 + (i % 12);
+    const es = [];
+    for (let k = 0; k < n; k++) es.push(mk(String(k).padStart(2, '0'), 1 + ((i * 7919 + k * 104729) % 99991)));
+    const v = BigInt(100000 + ((i * 2654435761) % 5000000000));
+    const out = buildPayoutOutputs({ value: v, feeBasisPoints: 200, entries: es, scriptOf: S, poolScript: POOL });
+    if (out.outputs.reduce((s, o) => s + o.value, 0n) !== v) { allExact = false; break; }
+  }
+  ok(allExact, '500 random windows all build a coinbase that sums exactly');
+}
+
 // ── the store ───────────────────────────────────────────────────────────────
 const store = new Store({
   path: dbPath, sqlite3: SQLITE3,
@@ -423,8 +499,12 @@ section('maturity -- 100 blocks, and unknown resolves nothing');
   ok(s4 === 'mature', 'at 100 confirmations it matures');
   const bal2 = await store.balances();
   const bob2 = bal2.find((b) => b.miner === 'pc1qbob');
-  ok(bob2.payable > 0n && bob2.pending === 0n, 'and moves from pending to payable');
-  ok(bob2.sent === 0n, 'and is still not sent -- that is step 4');
+  // Under coinbase payouts the coins were ALREADY paid by the block; maturity
+  // is what makes them spendable. So the move is pending -> spendable, and
+  // there is no "owed" state in between for the pool to sit on.
+  ok(bob2.sent > 0n && bob2.pending === 0n, 'and moves from pending to spendable once mature',
+    `pending=${pcn(bob2.pending)} spendable=${pcn(bob2.sent)}`);
+  ok(bob2.void === 0n, 'and none of it is void while the block is on the chain');
 }
 
 // ── 8. orphans ──────────────────────────────────────────────────────────────

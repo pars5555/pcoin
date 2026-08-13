@@ -155,6 +155,56 @@ difficulty doubling. Measured in work, N follows the chain without being touched
   lesson from the payment rails applies exactly — a retry must be a no-op, and
   the key must be the thing that is actually unique.
 
+### SUPERSEDED 2026-08-13: payouts are made BY THE COINBASE
+
+Everything below this heading describes a pool that holds miners' coins in a
+wallet and sends them later. **It no longer works that way, and the reason is
+worth keeping.**
+
+Option A above put a spending key on `178.105.178.27` — a box that also runs the
+market, the explorer and pcnearner. The owner's instinct was to keep the key off
+it, and the design that satisfies that instinct completely is to **pay miners
+directly in the coinbase of each block the pool finds**: one output per miner,
+proportional to the PPLNS window at template-build time.
+
+**The pool then holds no wallet, no private key, and has no send path.** What
+that deletes, rather than guards against:
+
+* **idempotency** stops being a database constraint and becomes a property of
+  the chain. A block exists or it does not; a retry cannot pay twice and a lost
+  response resolves nothing. The entire class of §7.1/§7.6 bug is gone.
+* **orphans** reverse themselves. There is no credit to claw back, and no
+  "detect but never auto-reverse" rule to get right.
+* **custody**. The single largest risk in running a pool — the operator holding
+  other people's money — does not exist.
+* a miner can **verify its own payment inside the block it helped find**,
+  without trusting this pool's bookkeeping.
+
+The costs, stated plainly:
+
+* **The split is fixed when the TEMPLATE is built**, because the coinbase is
+  committed to by the merkle root. A share submitted a second before a block
+  lands is paid by the *next* block instead. Deferred, never lost.
+* **No payout threshold.** Every block pays everyone in the window, so there is
+  more on-chain output than batching would produce.
+* **Dust.** A miner owed less than the relay dust limit (294 sat) cannot be paid
+  in that block without making it unrelayable. It is dropped from that block and
+  its shares stay in the window to accumulate; the dropped share is
+  redistributed to the other miners, never kept by the pool.
+
+**When to revisit.** The dust and block-space costs scale with miner count and
+are negligible at fleet size. Reconsider before opening publicly, or once a
+typical miner's per-block slice approaches the dust limit — whichever comes
+first. Switching back means building the wallet path in §4 below, which is why
+it is kept rather than deleted.
+
+Proven by `coinbasetest.mjs`: a node **accepted a block whose coinbase pays three
+miners**, and the block read back off the chain pays each the exact amount the
+ledger says. The ledger is now reconciled against the *chain* rather than
+against itself (`reconcileAgainstChain`).
+
+---
+
 **Built (step 3), and the details that only appear once you write it down:**
 
 *The split, exactly.* `fee = value × 200 / 10000`, `pot = value − fee`,
