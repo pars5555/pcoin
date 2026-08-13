@@ -589,15 +589,30 @@ class MinerService : Service() {
                 // looks fine: the node cannot be asked which address it is
                 // paying, so a running miner is NOT evidence that it is paying
                 // the right one.
+                // Empty means solo, which is the default and what every existing
+                // install keeps.
+                val poolUrl = prefs.poolUrl()
+                // A MINER THAT IS RUNNING IS NOT EVIDENCE IT IS MINING FOR THE
+                // RIGHT PLACE, for exactly the reason the address comment above
+                // gives. Compare the observed pool state against what we want,
+                // or a node left mining SOLO looks healthy forever and silently
+                // keeps the whole block reward instead of joining the pool --
+                // and the reverse, a node still pointed at an old pool, is just
+                // as invisible.
+                val poolWrong = (poolUrl.isNotBlank() != info?.pool) ||
+                    (poolUrl.isNotBlank() && info != null && info.poolUrl != poolUrl)
                 val needsStart = payoutAddressChanged ||
-                    info == null || !info.mining || info.threads != effective
+                    info == null || !info.mining || info.threads != effective ||
+                    (info != null && poolWrong)
                 if (needsStart) {
                     if (address.isBlank()) return false
                     // The very first start builds the ~256 MiB RandomX cache and
                     // can take a few seconds; say so instead of looking hung.
-                    MinerState.update { it.copy(gate = Gate.STARTING, detail = "starting miner ($threads threads)") }
+                    val what = if (poolUrl.isBlank()) "miner" else "pool miner"
+                    MinerState.update { it.copy(gate = Gate.STARTING, detail = "starting $what ($threads threads)") }
                     pushNotification()
-                    node.startMining(address, threads)
+                    if (poolUrl.isBlank()) node.startMining(address, threads)
+                    else node.startPoolMining(poolUrl, address, threads)
                     // Only cleared once a start has actually been issued for
                     // the new address, so a failed call gets retried next tick
                     // rather than being forgotten.

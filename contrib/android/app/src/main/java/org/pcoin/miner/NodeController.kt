@@ -530,6 +530,18 @@ class NodeController(context: Context) {
         val hashesPerSec: Double,
         val blocksFound: Long,
         val cores: Int,
+        /**
+         * Pool mining, as OBSERVED from the node rather than from our own
+         * intent. The gate compares these against what it wants, because a
+         * running miner is not evidence it is mining for the right place --
+         * exactly as a running miner is not evidence it is paying the right
+         * address. Without them a node left mining SOLO looks healthy forever
+         * and never switches.
+         */
+        val pool: Boolean = false,
+        val poolUrl: String = "",
+        val poolStatus: String = "",
+        val sharesAccepted: Long = 0L,
     )
 
     fun minerInfo(): MinerInfo? = parseMinerInfo(
@@ -548,6 +560,10 @@ class NodeController(context: Context) {
             hashesPerSec = o.optDouble("hashespersec", 0.0),
             blocksFound = o.optLong("blocksfound", 0L),
             cores = o.optInt("cores", Prefs.cpuCores()),
+            pool = o.optBoolean("pool", false),
+            poolUrl = o.optString("poolurl", ""),
+            poolStatus = o.optString("poolstatus", ""),
+            sharesAccepted = o.optLong("sharesaccepted", 0L),
         )
     }
 
@@ -561,6 +577,27 @@ class NodeController(context: Context) {
             "startmining",
             JSONArray().put(address).put(threads).put(MINER_TTL_SECONDS),
             readTimeoutMs = 60_000, // first call builds the ~256 MiB RandomX cache
+        )
+    }
+
+    /**
+     * Mine for a POOL instead of alone.
+     *
+     * Same miner, same threads, same dead-man's switch; only the source of work
+     * and the destination of a solution change. `address` is the miner's
+     * identity at the pool -- where it credits the work -- and no key of ours is
+     * involved, so this needs no wallet.
+     *
+     * Note that the numbers go over JSON-RPC as real numbers here. Callers going
+     * through bitcoin-cli need the RPC's arguments registered in rpc/client.cpp
+     * or they arrive as strings and the call fails; this path is not affected,
+     * which is precisely why that bug survived the desktop tests.
+     */
+    fun startPoolMining(url: String, address: String, threads: Int) {
+        rpc.call(
+            "startpoolmining",
+            JSONArray().put(url).put(address).put(threads).put(MINER_TTL_SECONDS),
+            readTimeoutMs = 60_000,
         )
     }
 

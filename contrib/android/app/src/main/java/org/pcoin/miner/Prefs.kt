@@ -99,6 +99,24 @@ class Prefs(context: Context) {
         }
 
     /**
+     * The pool to mine for, as `host:port`. BLANK MEANS SOLO, which is the
+     * default and what every existing install keeps until someone changes it.
+     *
+     * This is authoritative INTENT, not a derived display value, so it is
+     * written with commit() like the payout address: it decides where a phone's
+     * work goes, and losing it silently returns the phone to solo mining. A
+     * blank value read back from a failed load must therefore never overwrite a
+     * set one -- the getter defaults, the setter is only called by a user
+     * action.
+     */
+    fun poolUrl(): String = sp.getString(KEY_POOL_URL, "")?.trim().orEmpty()
+
+    @Suppress("ApplySharedPref")
+    fun setPoolUrl(value: String) {
+        sp.edit().putString(KEY_POOL_URL, value.trim()).commit()
+    }
+
+    /**
      * Name of the wallet created from the recovery phrase, or null if there
      * isn't one yet.
      *
@@ -404,6 +422,7 @@ class Prefs(context: Context) {
         private const val KEY_THERMAL = "thermal_limit"
         private const val KEY_ON_BATTERY = "mine_on_battery"
         private const val KEY_PAYOUT_WALLET = "payout_wallet"
+        private const val KEY_POOL_URL = "pool_url"
         private const val KEY_SEED_WALLET = "seed_wallet_name"
         private const val KEY_PHRASE_CONFIRMED = "phrase_confirmed"
         private const val KEY_PHRASE_DISMISSED = "phrase_prompt_dismissed"
