@@ -53,6 +53,25 @@ if command -v objdump >/dev/null 2>&1; then
     objdump -p "$SRC/bitcoind" | awk '/NEEDED/ {print "  " $2}'
 fi
 
+# The libc floor is READ FROM THE BINARY, not written down here.
+#
+# It was hardcoded as `libc6 (>= 2.31)` while the binary actually required
+# GLIBC_2.38, which is the same failure as the libevent one above wearing
+# different clothes: dpkg checks the declared version, is satisfied, installs
+# cleanly, and then every start dies with "version `GLIBC_2.38' not found". A
+# declared dependency that is LOOSER than the truth is worse than a missing one,
+# because it converts a refusal-to-install into a crash loop.
+#
+# Whichever toolchain builds the release sets this, so it cannot drift.
+LIBC=$(objdump -T "$SRC/bitcoind" 2>/dev/null \
+       | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -V | tail -1 | cut -d_ -f2)
+if [ -z "$LIBC" ]; then
+    echo "WARNING: could not read the glibc requirement from the binary." >&2
+    echo "Refusing to guess a floor -- an understated one installs and then crashes." >&2
+    exit 1
+fi
+echo "glibc floor read from the binary: $LIBC"
+
 SIZE=$(du -sk "$OUT/pkg" | cut -f1)
 
 cat > "$OUT/pkg/DEBIAN/control" <<EOF
@@ -63,7 +82,7 @@ Priority: optional
 Architecture: amd64
 Maintainer: PCoin Project <pcoin@pc.am>
 Installed-Size: $SIZE
-Depends: libc6 (>= 2.31), libevent-core-2.1-7t64 | libevent-core-2.1-7, libevent-extra-2.1-7t64 | libevent-extra-2.1-7, libevent-pthreads-2.1-7t64 | libevent-pthreads-2.1-7
+Depends: libc6 (>= $LIBC), libevent-core-2.1-7t64 | libevent-core-2.1-7, libevent-extra-2.1-7t64 | libevent-extra-2.1-7, libevent-pthreads-2.1-7t64 | libevent-pthreads-2.1-7
 Homepage: https://pc.am
 Description: PCoin full node and CLI
  PCoin (PCN) is an independent Layer-1 blockchain: Bitcoin's economics with
