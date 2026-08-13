@@ -10,6 +10,7 @@
 #   peers      somebody is connected; a seed with no peers seeds nothing
 #   progress   the tip moved since last run, OR is younger than the stall limit
 #   listening  9444 accepts connections, which is the entire job of a seed
+#   supply     the money supply still equals the emission schedule
 #
 # Deliberately no alerting integration: it writes state and exits non-zero.
 # systemd records the failure, and OnFailure can carry it wherever it needs to
@@ -42,6 +43,44 @@ PEERS=$(cli getconnectioncount)
 [ -n "$HEIGHT" ] || fail "could not read height from getblockchaininfo"
 [ -n "$PEERS" ]  || fail "could not read peer count"
 [ "$PEERS" -gt 0 ] 2>/dev/null || fail "zero peers -- this seed is seeding nothing"
+
+# ── supply ──────────────────────────────────────────────────────────────────
+# Every block pays exactly the scheduled subsidy, so total supply is a pure
+# function of height until the first halving: 50 PCN x height. If that ever
+# stops being true, a block has issued coins it was not entitled to -- the one
+# failure that cannot be undone by a reorg and that no other check here would
+# notice, because an over-issuing chain looks perfectly healthy from outside.
+#
+# Consensus already enforces it (bad-cb-amount in ConnectBlock, on every connect
+# path). This is the independent second opinion: consensus asserts the rule, and
+# this asserts the OUTCOME. A bug that weakened the rule would leave this the
+# only thing still watching.
+#
+# gettxoutsetinfo is O(entire UTXO set), so it runs on a sampled basis rather
+# than every tick. Skipping is NOT a pass: SUPPLY_EVERY=1 forces it.
+SUPPLY_EVERY=${SUPPLY_EVERY:-12}
+if [ "$SUPPLY_EVERY" = "1" ] || [ $(( HEIGHT % SUPPLY_EVERY )) -eq 0 ]; then
+  UTXO=$(cli gettxoutsetinfo)
+  if [ -z "$UTXO" ]; then
+    say "supply: gettxoutsetinfo did not answer -- NOT CHECKED (unknown, not ok)"
+  else
+    # Integer satoshis throughout. The RPC prints PCN with 8 decimals; a float
+    # comparison here would invent a mismatch out of rounding.
+    ACTUAL_SAT=$(echo "$UTXO" | sed -n 's/.*"total_amount": *\([0-9]*\)\.\([0-9]*\).*/\1\2/p' | head -1)
+    HALVING=210000
+    if [ "$HEIGHT" -lt "$HALVING" ] && [ -n "$ACTUAL_SAT" ]; then
+      EXPECT_SAT=$(( HEIGHT * 50 * 100000000 ))
+      if [ "$ACTUAL_SAT" != "$EXPECT_SAT" ]; then
+        fail "SUPPLY MISMATCH at height $HEIGHT: chain holds ${ACTUAL_SAT} sat, schedule says ${EXPECT_SAT} sat"
+      fi
+      say "supply: ${ACTUAL_SAT} sat == 50 x ${HEIGHT} PCN, exact"
+    else
+      # Past the first halving the closed form needs the full sum; do not
+      # guess, and do not report a guess as a pass.
+      say "supply: height $HEIGHT is at/after the first halving -- closed form no longer applies, NOT CHECKED"
+    fi
+  fi
+fi
 
 # Is the tip stale? Block timestamps on this chain are not monotonic in height,
 # so a tip can legitimately read slightly ahead of the clock; a negative age is
