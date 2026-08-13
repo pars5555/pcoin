@@ -595,7 +595,7 @@
   <section id="pool">
     <div class="wrap">
       <span class="kicker">Mining pool</span>
-      <h2>Getting paid weekly instead of eventually</h2>
+      <h2>Paid for the work you did, not the block you found</h2>
       <div class="split">
         <div class="col">
           <p class="lede" style="margin-bottom:20px">
@@ -631,46 +631,93 @@
             <p style="margin:10px 0 0">
               <b>It concentrates hashrate</b>, and on a network this small that is a real risk rather
               than a theoretical one. A pool holding a majority of the network <i>is</i> the 51% problem
-              it was meant to reduce. We publish the pool’s share, we will cap it, and we would
-              rather see a second pool run by somebody else than grow this one.
+              it was meant to reduce. We publish the pool’s hashrate and the network’s at
+              <a href="https://pool.pc.am/api/pools" rel="noopener">pool.pc.am/api/pools</a>, so its share is
+              checkable rather than claimed, and we would rather see a second pool run by somebody
+              else than grow this one.
             </p>
           </div>
         </div>
       </div>
 
-      <div class="honest-box" style="max-width:100%;margin-top:22px">
-        <b>Invite-only right now — opening soon.</b>
+      <div class="honest-box" style="max-width:100%;margin-top:22px;border-color:rgba(45,212,191,.4)">
+        <b>The pool is open. One line to join.</b>
         <p style="margin:10px 0 0">
-          The pool is live and mining, but the connection is restricted to a short list of machines
-          while the payout accounting is checked against the chain by hand. That is deliberate: a pool
-          that has never had its arithmetic reconciled is how an operator loses other people’s money.
-          Payouts are being <i>computed and recorded</i> in this phase, and nothing is sent.
+          You do not need separate mining software — it is built into the PCoin node. You do need
+          a <b>recent enough node</b>: <code>startpoolmining</code> ships from <b>v1.2.9</b>, and
+          <b>both</b> the node and <code>bitcoin-cli</code> must be that version or newer. An older
+          CLI sends the thread count as text and the call fails with a type error, even against a
+          new node. If in doubt, reinstall from the Download section above.
+        </p>
+        <p style="margin:12px 0 4px"><b>Windows</b> (PowerShell) — the binaries keep their upstream
+        names, and the install directory depends on whether the installer had administrator rights:</p>
+        <pre style="margin:0;padding:12px 14px;overflow-x:auto;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid var(--line-soft)"><code>$P = if (Test-Path C:\PCoin\bitcoin-cli.exe) { 'C:\PCoin' } else { "$env:LOCALAPPDATA\PCoin" }
+&amp; "$P\bitcoin-cli.exe" -datadir="$P\data" `
+  startpoolmining "pool.pc.am:3333" "&lt;your pc1q… address&gt;" 4</code></pre>
+        <p style="margin:12px 0 4px"><b>Linux</b> — the <code>.deb</code> installs the CLI as
+        <code>pcoin-cli</code>:</p>
+        <pre style="margin:0;padding:12px 14px;overflow-x:auto;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid var(--line-soft)"><code>sudo systemctl stop pcoin-miner        # or it will pull you back to solo
+sudo -u pcoin pcoin-cli -datadir=/var/lib/pcoin \
+  startpoolmining "pool.pc.am:3333" "&lt;your pc1q… address&gt;" 4</code></pre>
+        <p style="margin:10px 0 0">
+          The last number is how many CPU threads to use; <code>0</code> means every core.
+          <code>stopmining</code> stops it, and <code>startmining "&lt;your address&gt;" 4</code> puts
+          you back on solo.
         </p>
         <p style="margin:10px 0 0">
-          When it opens you will not need new software — pool mining is built into the PCoin node
-          itself, so it is a one-line change to the miner you already run.
+          <b>It returns before it has connected.</b> The command answers immediately with a status of
+          <code>starting</code>, which is not yet success. Run <code>getcpuminerinfo</code> a few
+          seconds later and check the pool status field — a refused address or an unreachable pool is
+          reported <i>there</i>, and nowhere else.
+        </p>
+        <p style="margin:10px 0 0">
+          <b>Two things worth knowing.</b> The address is where the pool credits you — no wallet is
+          opened and <b>no private key is involved on that machine</b>. It must be a standard
+          <code>pc1q…</code> address; taproot <code>pc1p…</code> addresses pass the node's own check
+          and are then refused by the pool. And unlike solo mining, <b>your node does not need to be
+          synced first</b>, because the pool supplies the block being worked on — verified by mining
+          from a node at height 0 with no peers. Solo mining on an unsynced node is worse than slow:
+          it builds on a chain your node has not verified, so anything it finds is thrown away.
         </p>
       </div>
 
       <div class="split" style="margin-top:22px">
         <div class="col">
-          <h3 style="margin:0 0 8px">How it will pay</h3>
+          <h3 style="margin:0 0 8px">How it pays</h3>
           <ul style="margin:0;padding-left:18px;line-height:1.7">
-            <li><b>PPLNS</b> — the last N shares are paid when a block is found, so joining late
-              or leaving early earns you nothing extra.</li>
-            <li><b>2% fee</b>, taken off the block reward and never off a balance you have already
-              accrued.</li>
+            <li><b>The pool never holds your coins.</b> You are paid as an output of the block you
+              helped find — the chain pays you directly. There is no pool wallet, no private key on
+              the server, no withdrawal to request and no balance an operator could walk away with.</li>
+            <li><b>Every block, automatically.</b> No withdrawal step, because there is nothing to
+              withdraw <i>from</i>. There is one threshold: a payout below the network's dust limit
+              of <b>0.00000294 PCN</b> would make the block unrelayable, so a miner under it is
+              skipped for that block and paid by a later one.</li>
+            <li><b>PPLNS</b> — a block pays the most recent window of work, weighted by how hard
+              each share was rather than how many you sent. Timing your arrival or departure gains
+              nothing, and your shares keep earning after you stop, until they age out of the
+              window.</li>
+            <li><b>2% fee</b>, taken off the block reward before anything is split — never off coins
+              already paid to you.</li>
             <li><b>Whole satoshis only.</b> Every split is integer arithmetic and every block
-              reconciles exactly: payouts plus fee plus rounding equals the reward.</li>
+              reconciles exactly: payouts plus fee plus rounding equals the reward, to the satoshi.
+              Paying one satoshi too much would make the block invalid.</li>
           </ul>
         </div>
         <div class="col">
           <h3 style="margin:0 0 8px">The wait nobody warns you about</h3>
           <p style="margin:0">
             A freshly mined block’s reward cannot be spent by anyone — pool or solo miner —
-            until it is <b>100 blocks deep</b>, which is roughly <b>17 hours</b>. Your balance will show
-            those earnings as <i>pending</i> during that time. That is a consensus rule of the chain,
-            not a delay the pool invents, and a pool that hid it would just be lying to you.
+            until it is <b>100 blocks deep</b> — roughly <b>15–17 hours</b> at the pace the chain
+            actually runs. Your coins are visible on the chain immediately and simply cannot move
+            until then. That is a consensus rule, not a delay the pool invents.
+            <b>And if that block is later displaced from the chain</b> — which does happen on a young
+            network — the coins it paid never existed and they disappear. The work was real; the
+            block was not. A pool that hid either of these would just be lying to you.
+          </p>
+          <p style="margin:10px 0 0">
+            On the dust threshold above: when a miner is skipped, the amount is redistributed to the
+            <i>other miners</i> rather than kept by the pool, and their shares stay in the window. You
+            would need a share of well under a millionth of a block to reach it at all.
           </p>
         </div>
       </div>
