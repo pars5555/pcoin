@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PCoin — News &amp; Releases</title>
+<meta name="description" content="Release notes and chain milestones for PCoin (PCN), an independent Layer-1 blockchain with RandomX CPU proof-of-work.">
+<meta name="theme-color" content="#0a0b10">
+<link rel="icon" href="/brand/pcoin-64.png">
+<style>
+  :root{
+    --bg:#0a0b10; --bg-alt:#0d0f17; --panel:#11131d; --panel-2:#151827;
+    --line:rgba(255,255,255,.09); --line-soft:rgba(255,255,255,.06);
+    --text:#e9ebf4; --muted:#9aa2b8; --dim:#6b7288;
+    --violet:#8b5cf6; --teal:#2dd4bf;
+    --grad:linear-gradient(135deg,#8b5cf6,#2dd4bf);
+    --radius:16px;
+    --mono:ui-monospace,"Cascadia Code",Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    font-size:16.5px; line-height:1.65; -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--teal);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:820px;margin:0 auto;padding:0 24px}
+
+  header.nav{
+    position:sticky;top:0;z-index:50;
+    background:rgba(10,11,16,.82);
+    backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+    border-bottom:1px solid var(--line-soft);
+  }
+  .nav-inner{display:flex;align-items:center;gap:28px;padding:14px 24px;max-width:1080px;margin:0 auto;flex-wrap:wrap}
+  .brand{display:flex;align-items:center;gap:11px;font-weight:700;font-size:1.15rem;color:var(--text)}
+  .brand:hover{text-decoration:none}
+  .brand img{width:28px;height:28px;border-radius:7px}
+  nav.links{display:flex;gap:22px;margin-left:auto;flex-wrap:wrap;align-items:center}
+  nav.links a{color:var(--muted);font-size:.93rem;font-weight:500}
+  nav.links a:hover{color:var(--text);text-decoration:none}
+
+  .hero{padding:64px 0 34px;border-bottom:1px solid var(--line-soft)}
+  h1{font-size:2.4rem;line-height:1.15;letter-spacing:-.02em;font-weight:800}
+  .lede{color:var(--muted);margin-top:14px;font-size:1.05rem;max-width:62ch}
+
+  main{padding:44px 0 90px}
+  .entry{
+    border:1px solid var(--line-soft); background:var(--panel);
+    border-radius:var(--radius); padding:22px 24px; margin-bottom:18px;
+  }
+  .entry.major{border-color:rgba(139,92,246,.42); background:var(--panel-2)}
+  .meta{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:8px}
+  time{font-family:var(--mono);font-size:.83rem;color:var(--dim);letter-spacing:.02em}
+  .tag{
+    font-size:.72rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+    border:1px solid var(--line);border-radius:99px;padding:2px 9px;color:var(--muted);
+  }
+  .tag.chain{border-color:rgba(45,212,191,.45);color:var(--teal)}
+  .tag.rel{border-color:rgba(139,92,246,.45);color:#c4b5fd}
+  h2{font-size:1.16rem;font-weight:700;letter-spacing:-.01em;margin-bottom:6px}
+  .entry p{color:var(--muted);font-size:.97rem}
+  .entry p + p{margin-top:9px}
+  code{font-family:var(--mono);font-size:.87em;background:rgba(255,255,255,.05);
+       border:1px solid var(--line-soft);border-radius:6px;padding:1px 6px;color:var(--text)}
+  .note{
+    margin:34px 0 8px;padding:20px 22px;border-radius:var(--radius);
+    border:1px solid rgba(45,212,191,.28);background:rgba(45,212,191,.05);
+  }
+  .note h3{font-size:1rem;margin-bottom:7px}
+  .note p{color:var(--muted);font-size:.95rem}
+  footer{border-top:1px solid var(--line-soft);padding:30px 0 60px;color:var(--dim);font-size:.9rem}
+  footer a{color:var(--muted)}
+</style>
+</head>
+<body>
+
+<header class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="/"><img src="/brand/pcoin-64.png" alt="">PCoin</a>
+    <nav class="links">
+      <a href="/">Home</a>
+      <a href="/download/">Download</a>
+      <a href="https://explorer.pc.am">Explorer</a>
+      <a href="https://docs.pc.am">Docs</a>
+      <a href="https://github.com/pars5555/pcoin">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap">
+  <section class="hero">
+    <h1>News &amp; Releases</h1>
+    <p class="lede">Every release and every consensus milestone since mainnet launched on
+    1 August 2026. Dates are UTC. Chain facts here are recorded once and not restated
+    elsewhere &mdash; for anything live, read
+    <a href="https://explorer.pc.am/api/status">the explorer</a>.</p>
+  </section>
+
+  <main>
+
+    <article class="entry">
+      <div class="meta"><time>2026-08-13</time><span class="tag rel">Release v1.2.8</span></div>
+      <h2>Android wallet update</h2>
+      <p>A wallet-only release. The miner, Windows and Linux downloads are unchanged and
+      still served from v1.2.6 &mdash; every download link on this site is pinned to the
+      release tag that built it, so a single-component release like this one cannot break
+      the others.</p>
+    </article>
+
+    <article class="entry">
+      <div class="meta"><time>2026-08-12</time><span class="tag rel">Release v1.2.6</span></div>
+      <h2>Release assets now name their role</h2>
+      <p>Artifacts became <code>pcoin-&lt;platform&gt;-&lt;role&gt;.&lt;ext&gt;</code> &mdash;
+      for example <code>pcoin-win64-miner.zip</code> and <code>pcoin-android-wallet.apk</code>.
+      The previous names are still published as byte-identical aliases so that saved copies
+      of the install scripts keep working.</p>
+      <p>The Windows zip now also contains the tray miner. Earlier zips held only the node
+      and the CLI, which produced an install that reported success and left a desktop
+      shortcut pointing at a file that had never been installed.</p>
+    </article>
+
+    <article class="entry major">
+      <div class="meta"><time>2026-08-10 10:30 UTC</time><span class="tag chain">Consensus milestone</span></div>
+      <h2>LWMA difficulty activated at height 2800</h2>
+      <p>Difficulty now retargets on <strong>every block</strong> using a 60-block linearly
+      weighted moving average, replacing Bitcoin's 2016-block retarget. On a young chain with
+      little hashrate, a two-week retarget window is far too slow &mdash; a single miner
+      arriving or leaving distorts block times for days.</p>
+      <p>The change was height-gated, and so was the accompanying tightening of the
+      future-block-time limit from two hours to fifteen minutes. Every node followed and
+      there was no chain split.</p>
+    </article>
+
+    <article class="entry">
+      <div class="meta"><time>2026-08-10</time><span class="tag rel">Release v1.2.4</span></div>
+      <h2>Debian packaging fixed</h2>
+      <p>The <code>.deb</code> had declared only <code>libc6</code> as a dependency. The
+      binaries link libevent dynamically, so on distributions shipping only
+      <code>libevent_core</code> the node installed cleanly and then failed at every start.
+      All three libevent modules are now declared, with alternatives for the 64-bit
+      <code>time_t</code> rename.</p>
+    </article>
+
+    <article class="entry">
+      <div class="meta"><time>2026-08-08</time><span class="tag rel">Release v1.2.3</span></div>
+      <h2>Windows installer withdrawn</h2>
+      <p>The Inno Setup installer was being quarantined by a Microsoft Defender
+      machine-learning heuristic. It was a reputation false positive on the installer stub
+      rather than anything in the code, and it aged out on its own, but the installer was
+      dropped rather than shipped under a warning. Windows is distributed as a portable zip.</p>
+      <p>Note that all binaries are unsigned, so SmartScreen will warn on first run. That is
+      a separate mechanism from Defender and only a code-signing certificate removes it.</p>
+    </article>
+
+    <article class="entry">
+      <div class="meta"><time>2026-08-07</time><span class="tag rel">Release v1.2.2</span></div>
+      <h2>Miner and wallet split into two Android apps</h2>
+      <p>One source tree, two products: a miner and a wallet-only build with mining compiled
+      out, for people who want to hold and send PCN without running a miner.</p>
+    </article>
+
+    <article class="entry">
+      <div class="meta"><time>2026-08-05</time><span class="tag rel">Release v1.2.1</span></div>
+      <h2>CPU miner concurrency fix</h2>
+      <p>Two tray applications on one machine could issue <code>startmining</code>
+      simultaneously and terminate the process. The miner lifecycle is now serialised under a
+      single mutex.</p>
+    </article>
+
+    <article class="entry">
+      <div class="meta"><time>2026-08-03</time><span class="tag rel">Release v1.2.0</span></div>
+      <h2>Android, and the LWMA code ships</h2>
+      <p>First Android build, and the release that carried the LWMA implementation ahead of
+      its activation at height 2800 a week later. Shipping consensus code before the height
+      it activates is what allowed the fork to land without a split.</p>
+    </article>
+
+    <article class="entry">
+      <div class="meta"><time>2026-08-02</time><span class="tag rel">Release v1.0.1</span></div>
+      <h2>First patch release</h2>
+      <p>Windows and Android builds, one day after launch.</p>
+    </article>
+
+    <article class="entry major">
+      <div class="meta"><time>2026-08-01 16:10 UTC</time><span class="tag chain">Genesis</span></div>
+      <h2>Mainnet launched</h2>
+      <p>Block 0 was mined with the message
+      <em>&ldquo;PCoin 01/Aug/2026 an independent chain is born&rdquo;</em>, hash
+      <code>a95d51f0cbf25cad&hellip;264a</code>.</p>
+      <p>No premine, no founder allocation, no ICO, no token sale and no vesting. Every coin
+      in existence was produced by RandomX proof-of-work from block 1 onward. Supply is
+      published as machine-readable endpoints at
+      <a href="/supply/supply.json">/supply/supply.json</a>.</p>
+    </article>
+
+    <div class="note">
+      <h3>What is being worked on</h3>
+      <p><strong>A mining pool.</strong> RandomX over a Bitcoin-style header means no existing
+      pool software runs unmodified, so it is being written. The share validator agrees with
+      the chain on 100 real blocks and assembled blocks are accepted by a node; share
+      accounting and payouts are the remaining work. Solo mining is supported today and is
+      not going away.</p>
+      <p>No dates are promised for this or anything else.</p>
+    </div>
+  </main>
+
+  <footer>
+    <p>PCoin (PCN) &mdash; an independent Layer-1 blockchain.
+    <a href="/">pc.am</a> &middot;
+    <a href="https://github.com/pars5555/pcoin">source</a> &middot;
+    <a href="https://t.me/PCoinPCN">Telegram</a> &middot;
+    <a href="https://x.com/PCoinPCN">X</a></p>
+  </footer>
+</div>
+
+</body>
+</html>
