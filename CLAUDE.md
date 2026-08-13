@@ -382,10 +382,12 @@ from `git credential fill`, never a literal, and is idempotent (an asset of the
 same name is deleted before re-upload), which matters because a 9 MB upload over
 a flaky link is exactly the thing that half-finishes.
 
-**Every asset is uploaded twice: a version-less name and a versioned one.**
-`SHA256SUMS` lists both forms with the same hash. The version-less name is what
-every link uses, so bumping a component is a one-token edit rather than a
-rewrite; the versioned name makes a downloaded file self-identifying.
+~~**Every asset is uploaded twice: a version-less name and a versioned one.**
+The version-less name is what every link uses, so bumping a component is a
+one-token edit.~~ **No longer true — see the repeal immediately below.** Assets
+carry their version in the name, `SHA256SUMS` lists that name, and a downloaded
+file is self-identifying. Nothing uploads a second version-less copy, and the
+`stable_names.py` helper that used to do it is gone and is not needed.
 
 > **REPEALED as of v1.2.7 — `/releases/latest/download/` IS NO LONGER USED, AND
 > THE SITE *DOES* NEED AN EDIT AT RELEASE TIME.** This file previously said the
@@ -937,11 +939,13 @@ This paragraph used to list uncommitted work that has long since been committed.
 
 Open items, roughly in order of how much damage they do if ignored:
 
-1. ~~`site/index.html` links to v1.0.0 binaries.~~ **Fixed.** pc.am now has a
-   `#download` section linking every platform through
-   `/releases/latest/download/<version-less name>`, so it tracks the newest
-   release without an edit. See §4 "Cutting a release" for why the names must
-   stay version-less.
+1. ~~`site/index.html` links to v1.0.0 binaries.~~ **Fixed**, then fixed again.
+   pc.am has a `#download` section for every platform. It briefly linked through
+   `/releases/latest/download/<version-less name>`; that was **repealed at
+   v1.2.7** because per-component releases break it — see §4. Links are now
+   pinned to the release tag that built each asset, which means **the site DOES
+   need an edit when a component ships**. A forgotten bump serves last month's
+   working build instead of 404ing every platform at once.
 2. ~~Get the tray sources and the Android app into version control.~~ **Fixed.**
    Both are tracked, as is the packaging script `contrib/linux-deb/build-deb.sh`.
    (`installer.iss` was removed with the installer — see §4 "Cutting a release".)
