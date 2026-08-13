@@ -644,7 +644,7 @@
         <b>The pool is open. One line to join.</b>
         <p style="margin:10px 0 0">
           You do not need separate mining software — it is built into the PCoin node. You do need
-          a <b>recent enough node</b>: <code>startpoolmining</code> ships from <b>v1.2.9</b>, and
+          a <b>recent enough node</b>: <code>startpoolmining</code> ships from <b>v1.3.0</b>, and
           <b>both</b> the node and <code>bitcoin-cli</code> must be that version or newer. An older
           CLI sends the thread count as text and the call fails with a type error, even against a
           new node. If in doubt, reinstall from the Download section above.
@@ -656,14 +656,29 @@
   startpoolmining "pool.pc.am:3333" "&lt;your pc1q… address&gt;" 4</code></pre>
         <p style="margin:12px 0 4px"><b>Linux</b> — the <code>.deb</code> installs the CLI as
         <code>pcoin-cli</code>:</p>
-        <pre style="margin:0;padding:12px 14px;overflow-x:auto;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid var(--line-soft)"><code>sudo systemctl stop pcoin-miner        # or it will pull you back to solo
-sudo -u pcoin pcoin-cli -datadir=/var/lib/pcoin \
+        <pre style="margin:0;padding:12px 14px;overflow-x:auto;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid var(--line-soft)"><code>sudo -u pcoin pcoin-cli -datadir=/var/lib/pcoin \
   startpoolmining "pool.pc.am:3333" "&lt;your pc1q… address&gt;" 4</code></pre>
         <p style="margin:10px 0 0">
           The last number is how many CPU threads to use; <code>0</code> means every core.
           <code>stopmining</code> stops it, and <code>startmining "&lt;your address&gt;" 4</code> puts
           you back on solo.
         </p>
+        <div class="honest-box" style="max-width:100%;margin-top:14px">
+          <b>That command does not survive a restart. Set it in the config too.</b>
+          <p style="margin:10px 0 0">
+            Both the Windows tray and the Linux service re-issue mining whenever the node restarts,
+            and what they re-issue is <b>solo</b> unless the config says otherwise. So a machine set
+            up with the command above mines for the pool until its first reboot and then quietly
+            goes back to paying its own address, with nothing anywhere saying so. Add one line:
+          </p>
+          <pre style="margin:10px 0 0;padding:12px 14px;overflow-x:auto;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid var(--line-soft)"><code>Linux    /etc/pcoin/miner.conf     POOL_URL=pool.pc.am:3333
+Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
+          <p style="margin:10px 0 0">
+            Then <code>sudo systemctl restart pcoin-miner</code> on Linux, or restart the tray on
+            Windows. Leave the line out — or empty — and you stay on solo, which is the default and
+            what every existing install keeps.
+          </p>
+        </div>
         <p style="margin:10px 0 0">
           <b>It returns before it has connected.</b> The command answers immediately with a status of
           <code>starting</code>, which is not yet success. Run <code>getcpuminerinfo</code> a few
