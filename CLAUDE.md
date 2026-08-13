@@ -887,33 +887,53 @@ announcements are written deliberately, for people, and go out through
 
 ## 9. Current state, and what is next
 
-State measured on the seed, **2026-08-04** — **re-measure before relying on any
-of it**: height **2082**, difficulty 0.0003401078 (bits `1e0b7c33`), txcount
-**2089** of which **6** are non-coinbase, UTXO set **2035** outputs,
-`size_on_disk` ~652 KB, total supply **104,100 PCN**. The seed has 7 inbound and
-0 outbound connections — it is purely a rendezvous point. Combined desktop
-hashrate ≈ **1,120 H/s** across three PCs (519 + 140 + 461), plus two phones.
+**This section deliberately contains no chain numbers. Go and look.**
 
-Two numbers people get wrong here:
+A height, a difficulty or a hashrate written here is wrong within hours and
+then quietly misleads whoever reads it next — this section previously claimed
+height 2082 and 1,120 H/s for over a week. §8b already says a number on a
+public page is a promise; the same applies to a number in the orientation doc,
+except nobody is watching it. **Where a fact is one command away, link the
+command, not the answer.**
 
-* **`du -sh /root/.pcoin/blocks` reports 18 MB, not 652 KB.** Core preallocates
-  `blk*.dat`. The block *content* really is under 1 MB; the filesystem usage is
-  not. Both statements are true and they differ by ~28×.
-* **The chain is running SLOWER than target, not faster.** Measured from the
-  seed: last 100 blocks ≈ **864 s/block**, last 20 ≈ 1082 s, last 10 ≈ 1213 s —
-  all above the 600 s target. The chain-wide *average* of ~89 s/block is an
-  artefact of the first ~2000 blocks being mined at powLimit (heights 0–2015 ran
-  at ~49 s/block; 2016 onwards at ~1210 s). `src/kernel/chainparams.cpp:108-119`
-  states it plainly: "measured pace 1317 s/block", "the chain is currently
-  running ~2.2x slower than target", "Expect a one-off ~2x difficulty DROP at
-  this height". **LWMA at 2800 exists to make blocks come faster, not slower.**
-  At the observed pace, height 2800 is roughly **10 days** from height 2082.
+| what | where to get it |
+|---|---|
+| height, difficulty, supply, tips | `https://explorer.pc.am/api/status` |
+| the same, authoritatively | `sudo docker exec pcoin-seed bitcoin-cli getblockchaininfo` |
+| UTXO count and total supply | `… bitcoin-cli gettxoutsetinfo` (slow, O(UTXO set)) |
+| who is mining, and your share | `scratchpad/coinbase_share.py` — carries the address→device map and prints unattributed addresses rather than silently calling them someone else's |
+| your fleet's hashrate and balances | `https://explorer.pc.am/admin/` (§8b) |
+| the live PCN rate | `https://price.pc.am` |
+| is anything broken right now | the private ops channel; `pcoin-deposit-watch` and `pcoin-seed-watch` post there |
 
-Working tree is **dirty**: `PCOIN.md` (+188 lines, the new wallet-recovery-phrase
-§6), the five tracked `contrib/windows-tray` files, and
-`src/node/cpuminer.{h,cpp}` (the `m_lifecycle_mutex` fix from lesson 5) are all
-modified and uncommitted, plus ten untracked tray sources. **The concurrency fix
-and the entire recovery-phrase client feature are not committed anywhere.**
+Two things that are *not* time-sensitive, and are the reason people misread
+those numbers when they do fetch them:
+
+* **`du -sh /root/.pcoin/blocks` massively overstates the chain.** Core
+  preallocates `blk*.dat`, so the filesystem usage has been ~28× the actual
+  block content. `size_on_disk` from `getblockchaininfo` is the real figure.
+  Both are true; they answer different questions.
+* **A low `getbalances` on a miner usually means it is WORKING.** Every
+  forwarding device sweeps to the treasury, so its local balance returns to
+  zero by design. Read `listreceivedbyaddress` before concluding anything —
+  a phone showing 0.00000000 had received 550 PCN and forwarded all of it.
+
+**LWMA is live and the fork landed cleanly.** The long passage that stood here
+described the pre-2800 world — a chain running ~2.2x slower than target and a
+one-off difficulty drop still to come. That happened. Every node followed, and
+there was no split. `src/kernel/chainparams.cpp:108-119` still records the
+reasoning and the measured pace at the time; read it as history, not as the
+current state.
+
+What is still worth knowing about pace: **block spacing is noisy and routinely
+far from the 600 s target in both directions**, and the chain-wide *average* is
+meaningless because heights 0-2015 were mined at powLimit at ~49 s/block. Judge
+pace on a recent window of 100+ blocks, never on the average, and remember from
+§3 that **block timestamps are not monotonic in height** — "time since the last
+block" and "blocks in the last 24 h" can both come out negative.
+
+Do not trust a "working tree is dirty" note in a document — run `git status`.
+This paragraph used to list uncommitted work that has long since been committed.
 
 Open items, roughly in order of how much damage they do if ignored:
 
@@ -933,14 +953,22 @@ Open items, roughly in order of how much damage they do if ignored:
    Bitcoin documents** and correctly say `bitcoin.conf` — do not "fix" those.
 4. ~~`doc/WINDOWS-NODE-SETUP.md` says `bitcoin.conf`.~~ **Fixed**, along with a
    stale `pcoin-1.0.0-win64.zip` package name in the same file.
-5. **The single seed has no monitoring.** `restart=unless-stopped` covers a crash
-   and a reboot; nothing watches for "container up, chain stalled", and if
-   `seed.pc.am` dies no new participant can bootstrap. There is no cron job or
-   systemd timer watching it.
+5. ~~The single seed has no monitoring.~~ **Fixed.** `contrib/seed-monitoring`
+   ships `pcoin-seed-watch` and `pcoin-fork-watch` on all three seeds, plus
+   `pcoin-monitor.mjs` (chain/deposit checks including a pc.am-vs-GitHub
+   checksum tamper check) and `pcoin-bootstrap-watch`, which tests reachability
+   from a host that is NOT a seed. All alert to the private channel. What is
+   still true: the deployed copies of some of those scripts are the only copy —
+   see the version-control note at the end of this list.
 6. Version reporting is inconsistent: the binary says `v29.4.0`, the P2P user
    agent is still `/Satoshi:29.4.0/`, releases say v1.2.0. PCoin nodes are
    indistinguishable from Bitcoin nodes on the wire by user agent.
-7. **No address index exists** — Core has never carried one and PCoin added none.
+7. ~~No address index exists.~~ **Fixed** — `contrib/explorer` builds one
+   outside the node and serves it at explorer.pc.am, with a second independent
+   instance at explorer2.pc.am used by the payment integrations for
+   corroboration. The constraints below are why it was built that way, and they
+   still hold for anything that bypasses it:
+   Core has never carried an address index and PCoin added none.
    `scantxoutset` is globally serialised behind a process-wide flag
    (`src/rpc/blockchain.cpp:2141-2168`) and is O(entire UTXO set) per call, so it
    must never be fronted by HTTP. ZMQ source is present but **not compiled in**
