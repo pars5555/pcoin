@@ -222,6 +222,23 @@ node pcoin-seed-vault.mjs new --system myapp</code></pre>
     without orphaning every address you have already issued — so decide once.</p>
   </div>
 
+  <h3>Lowercase every address before you compare or store it</h3>
+  <p>A bech32 address is valid in <strong>all lowercase or all uppercase</strong>
+  &mdash; <code>pc1q&hellip;</code> and <code>PC1Q&hellip;</code> are the same address to
+  the chain and two different strings to your database. If your uniqueness check
+  is case-sensitive, both forms get stored and your deposit key splits in two.</p>
+  <div class="note bad">
+    <p><strong>The explorer will not save you here.</strong> Query the uppercase
+    form and it answers <strong>HTTP 200 with zero transactions</strong> &mdash; not
+    an error, an empty answer. Your watcher logs nothing, raises nothing, and the
+    customer&rsquo;s coins are simply invisible. Normalise to lowercase before you
+    validate, before you compare, and before you store.</p>
+    <p style="margin-top:8px">And normalise <em>new</em> rows only. Rewriting the
+    address on a row that has already been issued re-keys its deposit history,
+    and the next watcher tick credits the same on-chain transaction a second
+    time.</p>
+  </div>
+
   <h3>Allocate the index under a lock</h3>
   <p>Two concurrent first-time callers must not receive the same index. Take the
   current maximum under a row lock, and put a <code>UNIQUE</code> constraint on both
@@ -397,6 +414,62 @@ UNIQUE KEY uq_outpoint (txid, vout)</code></pre>
   forward per address. Flooring each deposit independently silently eats up to a
   whole credit every time.</p>
 
+  <h3>Write the ledger atomically, or it can reset to empty</h3>
+  <p>If your ledger is a file rather than a database, <strong>never write it in
+  place.</strong> Truncate-then-write leaves a truncated file if the process dies,
+  the disk fills, or the OOM killer arrives mid-write &mdash; and if your reader
+  turns a failed decode into an empty collection, that file now reads as
+  <em>&ldquo;no deposits have ever happened&rdquo;</em> and every past deposit
+  credits again.</p>
+<pre><code><span class="c">// wrong — a crash between these two lines destroys the ledger</span>
+ftruncate($fh, 0); fwrite($fh, json_encode($new));
+
+<span class="c">// right — the rename is atomic; the old file survives until it succeeds</span>
+$tmp = $f . '.tmp.' . getmypid() . '.' . bin2hex(random_bytes(4));
+file_put_contents($tmp, $out);   <span class="c">// check the return</span>
+fsync($tmpHandle); rename($tmp, $f); fsync($dirHandle);</code></pre>
+  <p>Three details that are easy to miss: <code>json_encode</code> can return
+  <code>false</code>, and writing that produces a <strong>zero-byte file</strong>
+  that passes a naive length check; <code>fflush</code>, <code>fsync</code> and
+  <code>fclose</code> all have return values, and ENOSPC surfaces there rather
+  than at the write; and a rename is only durable once the <em>parent
+  directory</em> is synced.</p>
+  <p><strong>A failed read is not an empty ledger.</strong> Bytes that will not
+  decode must abort the tick, not resolve to <code>[]</code>. That is
+  &sect;6 applied to your own storage.</p>
+
+  <h3>Credit the balance first, mark the deposit second</h3>
+  <p>Two writes cannot be atomic across two files, so choose the order whose crash
+  window is survivable. Credit the balance under a durable, never-evicted
+  idempotency key; only then mark the deposit credited. A crash in between leaves
+  the deposit unfinished, the next tick retries, and the idempotency key makes the
+  retry a no-op. The other order &mdash; mark first, credit second &mdash; loses the
+  money silently.</p>
+  <p>Two traps inside that: an idempotency set with a size cap is <em>not</em>
+  durable, and evicting the oldest key is exactly what lets an old deposit
+  re-credit. And on the duplicate path, do not re-stamp the amount or the rate
+  from the current tick &mdash; return what was actually applied. If the stamped
+  amount feeds a daily cap or a report, a duplicate that re-stamps makes both
+  drift with nothing in the log.</p>
+
+  <div class="note bad">
+    <p><strong>When you make a write throw, ask what was going to run next.</strong>
+    Hardening a write is right, and it is also how the next class of bug gets in.
+    An exception thrown from a storage helper unwinds <em>past</em> the
+    compensating action &mdash; past the refund, past the upstream cancel, past the
+    line that records the reserve you just debited. The user is charged and there
+    is no path that gives it back.</p>
+    <p style="margin-top:8px">The mirror image is just as bad: a helper that used
+    to throw and now returns <code>null</code> turns a caller&rsquo;s
+    <code>if&nbsp;(found)</code> into a <strong>fall-through</strong>. An
+    idempotency check that fails open charges twice. Every time you change how a
+    function reports failure, re-read its callers.</p>
+    <p style="margin-top:8px">And in a batch loop &mdash; a sweeper, a watcher
+    &mdash; wrap each item. One poisoned row that throws will otherwise kill the
+    whole run, and if the ordering is deterministic it holds the same slot
+    forever and nothing behind it is ever processed again.</p>
+  </div>
+
   <h2 id="reorg">8. Reorgs: detect, never auto-reverse</h2>
   <p>Store <code>block_hash</code> at credit time and re-check it for deposits
   credited in the last ~7 days. If the funding transaction is no longer in that
@@ -431,7 +504,7 @@ UNIQUE KEY uq_outpoint (txid, vout)</code></pre>
   and neither looked like a bug at the time.</p>
 
   <p>The rate is published, free and unauthenticated:</p>
-<pre><code>curl -s https://price.pc.am/price</code></pre>
+<pre><code>curl -s https://price.pc.am</code></pre>
 <pre><code>{
   "price": 0.015,
   "serviceRate": 0.015,     &lt;-- USD per 1 PCN. Use THIS.
@@ -471,6 +544,29 @@ credited_rate_usd  DECIMAL(18,8)   -- the rate AT THE MOMENT OF CREDIT</code></p
   their money, or costs you yours, and both are silent. The deposit is on the chain
   and is not going anywhere &mdash; there is never a reason to resolve the question
   early.</p>
+
+  <h3>The oracle has two clocks. Read both.</h3>
+  <p>A healthy-looking response can still be quoting a frozen price, because
+  <code>stale</code> and <code>stateAgeSeconds</code> describe the
+  <strong>replica&rsquo;s sync</strong>, not the price:</p>
+<pre><code>{
+  "serviceRate": 0.015,
+  "stale": false,          <span class="c">// is this replica in sync with the primary?</span>
+  "stateAgeSeconds": 25,   <span class="c">// how long since it last synced</span>
+  "ladder": {
+    "ageSeconds": 35,      <span class="c">// how long since the PRICE itself moved</span>
+    "stale": false         <span class="c">// &lt;-- the one that says the price is usable</span>
+  }
+}</code></pre>
+  <p>Guarding only <code>stateAgeSeconds</code> catches a replica that has fallen
+  behind &mdash; but on a replica that condition already implies
+  <code>stale: true</code>, so the guard adds almost nothing. What it misses is the
+  case that costs money: the replica syncing perfectly while the market ladder
+  behind it is frozen. Then <code>stale</code> is false, the sync age is seconds,
+  and you credit at a stale price indefinitely.</p>
+  <p><strong>Honour <code>ladder.stale</code>, and bound
+  <code>ladder.ageSeconds</code> as well.</strong> Give the freshness bound its own
+  config key: reusing the cache-age bound means tightening one destroys the other.</p>
 
   <h3>Cache it, briefly, and age it out</h3>
   <p>Cache for a minute or two so a burst of deposits does not hammer the oracle, but
@@ -565,6 +661,16 @@ bitcoin-cli unloadwallet sweep-tmp</code></pre>
     <li><strong>Run your poller twice concurrently</strong> and confirm the ledger is
     unchanged. If it is not, your idempotency is wrong.</li>
   </ul>
+
+  <div class="note warn">
+    <p><strong>A test that cannot fail is not a test.</strong> Three habits that
+    produced green suites over broken code here: asserting a fixture the test
+    itself built two lines earlier without ever calling the code under test;
+    a second call that hits an early return and never reaches the branch being
+    tested; and a fixture missing the very field whose handling is the fix. Before
+    you trust a new test, <strong>delete the fix and confirm the test goes
+    red.</strong></p>
+  </div>
 
   <h2 id="checklist">14. Go-live checklist</h2>
   <ul>

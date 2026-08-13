@@ -665,7 +665,7 @@
           <h3>A rate, not a market</h3>
           <p>
             All four services credit at the <strong>same published rate</strong>, taken from
-            <a href="https://price.pc.am/price" rel="noopener">price.pc.am</a> at the moment your
+            <a href="https://price.pc.am" rel="noopener">price.pc.am</a> at the moment your
             deposit confirms &mdash; so none of them can quote you one number and pay another.
             The rate follows what PCN currently costs on the
             <a href="https://market.pc.am" rel="noopener">market ladder</a> and is deliberately
@@ -817,7 +817,7 @@
           <li><b>A second opinion</b> &mdash; <a class="mono" href="https://explorer2.pc.am" rel="noopener">explorer2.pc.am</a>
               is a separate node, so you can confirm a payment against two independent
               sources before you credit anyone.</li>
-          <li><b>Pricing</b> &mdash; <a class="mono" href="https://price.pc.am/price" rel="noopener">price.pc.am/price</a>
+          <li><b>Pricing</b> &mdash; <a class="mono" href="https://price.pc.am" rel="noopener">price.pc.am</a>
               returns <span class="mono">serviceRate</span>, the USD value of one PCN. Read it
               at the moment you credit; never hardcode it.</li>
         </ul>
@@ -829,7 +829,7 @@
 curl -s https://explorer.pc.am/api/address/pc1q&hellip;/summary
 
 # what is a PCN worth right now?
-curl -s https://price.pc.am/price      # -&gt; {"serviceRate":0.015, &hellip;}</pre>
+curl -s https://price.pc.am      # -&gt; {"serviceRate":0.015, &hellip;}</pre>
         <p class="note">
           Credit after <b>6 confirmations</b>, and key your ledger on
           <span class="mono">(txid,&nbsp;address)</span> &mdash; not on
@@ -978,7 +978,7 @@ sudo systemctl stop pcoin-miner
           <a href="https://t.me/MyWebsiteBuilderBot" rel="noopener">@MyWebsiteBuilderBot</a> all take
           PCN today. Each issues you an address only your account is credited for, waits six
           confirmations, and converts at the rate published by
-          <a href="https://price.pc.am/price" rel="noopener">price.pc.am</a>. Every deposit is
+          <a href="https://price.pc.am" rel="noopener">price.pc.am</a>. Every deposit is
           checked against <b>two independent block explorers</b> before any balance moves, and a
           deposit that cannot be corroborated is held rather than credited.</p>
         </li>
