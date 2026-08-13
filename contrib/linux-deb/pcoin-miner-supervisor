@@ -28,6 +28,8 @@ ADDR=$(sed -n 's/^PAYOUT_ADDRESS=//p' "$CONF" | tail -1)
 THREADS=$(sed -n 's/^THREADS=//p' "$CONF" | tail -1)
 [ -n "$ADDR" ] || { log "no PAYOUT_ADDRESS in $CONF -- run: sudo pcoin-setup"; exit 1; }
 [ -n "$THREADS" ] || THREADS=1
+# Empty means solo, which is the default and what every existing install keeps.
+POOL_URL=$(sed -n 's/^POOL_URL=//p' "$CONF" | tail -1)
 
 # Stop mining on the way out. Without this a systemctl stop would leave the node
 # hashing until the TTL happened to expire.
@@ -60,20 +62,48 @@ case "$RES" in
        exit 1 ;;
 esac
 
-# --- wait for sync ----------------------------------------------------------
-while :; do
-    INFO=$($CLI getblockchaininfo 2>/dev/null) || { sleep 10; continue; }
-    case "$INFO" in
-        *'"initialblockdownload": false'*) break ;;
-    esac
-    H=$(printf '%s' "$INFO" | sed -n 's/.*"blocks": *\([0-9]*\).*/\1/p')
-    log "syncing (height ${H:-?}) -- not mining yet"
-    sleep 20
-done
-log "chain is synced; starting the miner"
+# --- wait for sync (SOLO ONLY) ----------------------------------------------
+# Mining before the node has synced builds a competing fork, because a solo
+# miner builds its own template from whatever chain it currently believes in.
+#
+# THAT HAZARD DOES NOT EXIST FOR POOL MINING. The pool supplies the block being
+# worked on, so an unsynced node contributes correct work immediately and can
+# never fork anything. Waiting anyway would leave a fresh install idle for the
+# hours of a full sync -- and a newcomer who sees nothing happen for hours is
+# the exact person this whole pool exists to keep.
+if [ -n "$POOL_URL" ]; then
+    log "pool mining: no sync wait needed, the pool supplies the block"
+else
+    while :; do
+        INFO=$($CLI getblockchaininfo 2>/dev/null) || { sleep 10; continue; }
+        case "$INFO" in
+            *'"initialblockdownload": false'*) break ;;
+        esac
+        H=$(printf '%s' "$INFO" | sed -n 's/.*"blocks": *\([0-9]*\).*/\1/p')
+        log "syncing (height ${H:-?}) -- not mining yet"
+        sleep 20
+    done
+    log "chain is synced; starting the miner"
+fi
 
 # --- start, then keep alive -------------------------------------------------
+# POOL_URL in miner.conf switches this machine from solo to pool mining.
+#
+# THE BRANCH IS INSIDE start(), which is the only place mining is ever begun --
+# at boot, when the miner is seen stopped, and after a run of missed reads. Put
+# it anywhere else and a node restart silently re-issues SOLO startmining, which
+# does not merely stop pool mining: it moves the payouts to PAYOUT_ADDRESS with
+# nothing anywhere saying so. The tray had the identical hazard for the same
+# reason, and both are fixed the same way.
 start() {
+    if [ -n "$POOL_URL" ]; then
+        OUT=$($CLI startpoolmining "$POOL_URL" "$ADDR" "$THREADS" "$TTL" 2>&1) || {
+            log "startpoolmining failed: $OUT"
+            return 1
+        }
+        log "pool mining for $POOL_URL with $THREADS thread(s), credited to $ADDR"
+        return 0
+    fi
     OUT=$($CLI startmining "$ADDR" "$THREADS" "$TTL" 2>&1) || {
         log "startmining failed: $OUT"
         return 1

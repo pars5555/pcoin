@@ -198,14 +198,29 @@ done
 QUOTA=$((CORES * CAP))
 
 # --- 5. write it down -------------------------------------------------------
+# CARRY POOL_URL THROUGH. This file is rewritten wholesale, and the docs tell
+# people to re-run pcoin-setup to change their thread count -- so without this,
+# a routine "give it two more cores" would delete the pool setting and quietly
+# move the machine back to solo mining, paying a different address. The tray had
+# exactly this hazard with pcoin-tray.cfg, which is why the recovery phrase is
+# deliberately not stored there.
+CUR_POOL=''
+[ -f "$CONF" ] && CUR_POOL=$(sed -n 's/^POOL_URL=//p' "$CONF" | tail -1)
+
 mkdir -p /etc/pcoin
 umask 022
-cat > "$CONF" <<EOF
-# Written by pcoin-setup. Safe to edit by hand.
-# Apply changes with: sudo systemctl restart pcoin-miner
-PAYOUT_ADDRESS=$ADDR
-THREADS=$THREADS
-EOF
+{
+    echo "# Written by pcoin-setup. Safe to edit by hand."
+    echo "# Apply changes with: sudo systemctl restart pcoin-miner"
+    echo "PAYOUT_ADDRESS=$ADDR"
+    echo "THREADS=$THREADS"
+    echo "# Set POOL_URL to mine for a pool instead of alone. Empty = solo."
+    echo "# Pool mining pays you a share of every block the pool finds, rather"
+    echo "# than the whole reward on the rare occasions you find one yourself."
+    echo "#   POOL_URL=pool.pc.am:3333"
+    echo "POOL_URL=$CUR_POOL"
+} > "$CONF"
+[ -n "$CUR_POOL" ] && echo "Keeping your pool setting: $CUR_POOL"
 
 mkdir -p /etc/systemd/system/pcoind.service.d
 {
