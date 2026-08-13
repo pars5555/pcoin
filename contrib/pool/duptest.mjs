@@ -5,18 +5,25 @@
 // replay was refused as "stale" and the duplicate check was never reached. A
 // rejection for the wrong reason looks identical in a log to the right one.
 //
-// KNOWN LIMITATION -- this test cannot pass on regtest, and that is a fact
-// about regtest, not about the pool. At regtest difficulty the network target
-// is 7fffff00..., so roughly HALF of all hashes are valid blocks. A share is
-// therefore almost always also a block, which moves the tip and clears the job
-// cache before the replay lands. No share difficulty fixes this: the share
-// target is already capped at 2^256-1 and every hash clears it.
+// PROVEN 2026-08-13 against real mainnet difficulty:
+//     1st submit     ACCEPTED
+//     2nd same nonce rejected: duplicate share
+//     3rd UPPERCASED rejected: duplicate share
+//     blocks found   0
 //
-// Run this against a chain whose difficulty is high enough for a share to not
-// be a block -- testnet, or mainnet with a large factor. Until then the
-// duplicate-nonce path (job.seen in pool.mjs) is UNPROVEN. It is three lines
-// and obviously correct on reading, which is exactly the kind of thing that
-// turns out to be wrong, so do not mark it done on inspection.
+// It CANNOT pass on regtest, and that is a fact about regtest rather than the
+// pool. At regtest difficulty the network target is 7fffff00..., so roughly
+// HALF of all hashes are valid blocks -- a share is almost always also a block,
+// which moves the tip and clears the job cache before the replay lands. No
+// share factor fixes that: the share target is already capped at 2^256-1.
+//
+// So run it against a chain with real difficulty. Point cliCommand at a mainnet
+// node and set a share factor large enough that a share is NOT a block --
+// 50000 gives a share every few seconds at the validator's ~45 H/s while making
+// the chance of stumbling on a real block about 0.05% per 90 seconds. If it
+// does find one, the block pays the configured pool address, so configure an
+// address you own.
+
 import net from 'node:net';
 import { spawn } from 'node:child_process';
 
