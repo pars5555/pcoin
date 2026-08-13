@@ -769,6 +769,53 @@ people will ever read, and the only one that reaches users nobody can contact.
 | **docs.pc.am** | `178.105.3.51` | the integration guide, whenever an integration's behaviour changes |
 | **pcnearner.pc.am** | `178.105.178.27:8787` | the GPU-earner API surface and payout terms |
 | **@PCoinPCN** (Telegram, `-1003712285504`) | `pcoin-announce` | anything users must ACT on, or would want to know |
+| **explorer.pc.am/admin/** | `178.105.3.51:/opt/pcoin-ops` (from `contrib/ops-dashboard`) | a new miner, a new payment integration, a retired address — §8c |
+
+### 8c. The five services that accept PCN
+
+Four are live and have each credited three real deposits; the fifth is a
+third-party integration still in review. **Deposit addresses are per-user and
+REUSED**, which is the whole reason the ledger key below is not negotiable.
+
+| service | credits you get | deposit address | code |
+|---|---|---|---|
+| **checker.pc.am** | credits | `pc1qnfk7xenwzxx7h4mx88g004crlx0m2zcjg3nq4j` | `pars5555/checker-pc-am`, on 35.238.47.14 |
+| **webbuilderbot** | USD balance | `pc1q59d4tnhq6k3qqa9u5gvtuj05zswnjz3a900uxa` | `oonak-ai/ai-tgbot`, on 116.203.221.42 |
+| **aicontrol.pc.am** | USD credit | `pc1q8ghcjcxxuv6wg4sp7zhs6udv3vfpm6y8l9kfm5` | `oonak-ai/aicontrol-server` |
+| **3dmodels.pc.am** | credits | `pc1qtadn46mj4p6w9gwgykz8j7h8yh89k90rsqxgsv` | own repo, **no remote** — one disk |
+| **3dmodel.oonak.ai** | credits | `pc1qpj707j3m5uqchj6j2vswvgnsfsags9lp0stffl` | `d:\xampp\htdocs\3dmodel` — **IN REVIEW, do not treat as live** |
+
+`3dmodel.oonak.ai` and `3dmodels.pc.am` are **different products with different
+wallets**. Nothing may be shared between them, and a reviewer who reads the
+wrong directory will report nonsense about both.
+
+**Every one of these addresses is in the admin dashboard** (`explorer.pc.am/admin/`,
+`config.json` → `fleet`, labelled `PAYMENT - <service>`), so one page shows every
+rail's balance beside every miner. Adding a service means adding it there too —
+that is what makes the dashboard the answer to "is money arriving", rather than
+a list someone has to remember to update.
+
+The four non-negotiables, each of which has been shipped WRONG by a real
+integration and cost money to find. The full guide is `site/docs/index.html`
+(published at docs.pc.am); this is the short list:
+
+1. **Key the ledger on `(txid, address)` — never `(txid, vout)`.** `vout` is
+   always 0 for these deposits, so the wrong key silently DROPS a second
+   deposit instead of erroring. All four live services shipped this wrong first.
+2. **Read the rate from `price.pc.am` at credit time and STAMP it on the row**
+   (`credited_rate_usd`). A hardcoded rate is how 3dmodels credited a batch at
+   one fifteenth of value, and how pc.am advertised a stale price for hours.
+3. **A failed, timed-out or stale read resolves NOTHING — hold, never credit.**
+   An unreadable rate is not a rate of zero; an errored explorer call is not
+   "no payment". Watch for `?? 0`, `?: 0`, `(int)$x` on a failed call, and
+   `@`-suppressed calls: each turns "unknown" into a number.
+4. **Gate on the deposit's own block height, 6 confirmations** (100 for
+   coinbase), and **detect reorgs but never auto-reverse a credit.**
+
+Monitoring: `pcoin-deposit-watch` (every 5 min, both hosts) watches the
+watchers, and `pcoin-payment-report` (every 2 min) posts each credit to the
+private ops channel with who/where/PCN/USD/rate-used/rate-now. Both live only
+on the servers — see §9.
 
 ### The rule that keeps it honest
 
@@ -923,8 +970,23 @@ Open items, roughly in order of how much damage they do if ignored:
    releases are v1.x — see §9.6.
 10. Default signet keeps Bitcoin's challenge, so its magic equals Bitcoin
     signet's and it can never produce blocks. Use `-signetchallenge`.
-11. `src/chainparamsseeds.h` still contains Bitcoin's IPs but is no longer
-    `#include`d anywhere. It is dead, not active.
+11. ~~`src/chainparamsseeds.h` still contains Bitcoin's IPs but is no longer
+    `#include`d anywhere. It is dead, not active.~~ **WRONG on both counts,
+    corrected 2026-08-12.** Commit `2776061` replaced Bitcoin's 2,552 lines with
+    PCoin's own 48, and the file is `#include`d at `chainparams.cpp:9` and *used*
+    at `:212` (`vFixedSeeds = chainparams_seed_main`). It holds **all three seed
+    IPs** as BIP155 tuples and is the bootstrap fallback when DNS is down,
+    blocked, or `-dnsseed=0`. Do not "clean up" a file that is load-bearing.
+
+    While you are here — **how a node finds peers, in order**: `peers.dat`
+    (a node that has run before needs no seed at all) → the DNS seed
+    `seed.pc.am` → these fixed seeds → then `addr`/`getaddr` gossip, which is
+    what actually makes the network decentralised. **If every one of our servers
+    dies the chain does not stop**: existing nodes keep their peers and keep
+    mining. What breaks is *new* nodes joining, because all three fixed seeds
+    and the DNS name are ours. The fix is community-run seeds, exactly as the
+    comment at `chainparams.cpp:197` says; until then a newcomer can always use
+    `-addnode=<any live peer>`.
 12. **Reorgs are routine on this chain, not exceptional.** `getchaintips` on the
     live seed returns **66 tips** — 28 `valid-fork`, 36 `valid-headers`, several
     with `branchlen: 2`, plus one `headers-only` tip with `branchlen: 2015`
