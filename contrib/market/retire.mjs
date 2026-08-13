@@ -140,8 +140,12 @@ export function makeRetire({ pool, node, settings, notify, log = console }) {
     if (safeTip <= from) return { ok: true, upToDate: true, at: from };
 
     const capLeft = Math.max(0, c.dailyCap - await retiredToday());
-    let scanned = 0, spent = 0, retired = 0, capped = false;
+    let scanned = 0, spent = 0, retired = 0, capped = false, cappedAt = null;
 
+    // Labelled so the cap can abandon the whole scan from inside the innermost
+    // loop WITHOUT reaching setCursor(h) below — leaving the cursor on the last
+    // fully-processed block is what makes the deferral work.
+    scan:
     for (let h = from + 1; h <= safeTip; h++) {
       let b;
       try { b = await node.rpc('getblock', [await node.rpc('getblockhash', [h]), 2]); }
@@ -157,8 +161,32 @@ export function makeRetire({ pool, node, settings, notify, log = console }) {
           if (!row || !c.systems.includes(row.system)) continue;
 
           const want = Number(o.value) * c.ratio;
-          const allowed = capped ? 0 : Math.min(want, Math.max(0, capLeft - retired));
-          if (allowed < want) capped = true;
+
+          // THE CAP DEFERS. IT DOES NOT DISCARD.
+          //
+          // This used to retire whatever the cap allowed and record the output
+          // anyway — with `pcn_retired` set to the partial figure, or to zero.
+          // Because the row is keyed UNIQUE (txid, vout), a later scan then
+          // skipped it as already-counted, so the shortfall was never retired
+          // by anything, ever. A day with more than dailyCap/ratio of spending
+          // (20,000 PCN at today's settings) silently threw the excess away,
+          // and the ladder simply never reflected that usage.
+          //
+          // Stopping instead costs nothing, because every part of this scan is
+          // already idempotent: the outputs handled before this one are
+          // protected by that same UNIQUE key, and the cursor is only advanced
+          // at the END of a fully-processed block. Leaving both alone means
+          // tomorrow's scan resumes at this exact block and retires this
+          // output IN FULL. The re-read of a few blocks is the whole price.
+          if (want > capLeft - retired) {
+            capped = true; cappedAt = h;
+            log.log(`[retire] daily cap reached at block ${h} — stopping here. ` +
+                    `${(capLeft - retired).toFixed(2)} PCN of headroom left, this output ` +
+                    `needs ${want.toFixed(2)}. It will be retired in full on the next run ` +
+                    `after the cap resets; nothing is lost.`);
+            break scan;
+          }
+          const allowed = want;
 
           const conn = await pool.getConnection();
           try {
@@ -198,8 +226,21 @@ export function makeRetire({ pool, node, settings, notify, log = console }) {
         `♻️ <b>Usage retired ladder inventory</b>\n` +
         `Customers spent <b>${spent.toFixed(2)} PCN</b> on the services.\n` +
         `Withdrew <b>${retired.toFixed(2)} PCN</b> from sale (${(c.ratio * 100).toFixed(0)}%).\n` +
-        (capped ? `⚠️ The daily cap of ${c.dailyCap} PCN was reached; the rest was not retired.\n` : '') +
+        (capped
+          ? `⏸ The daily cap of ${c.dailyCap} PCN was reached, so the scan stopped at block ` +
+            `${cappedAt}. The rest is <b>deferred, not lost</b> — it retires in full on the ` +
+            `next run after the cap resets at 00:00 UTC.\n`
+          : '') +
         `Those coins are in your treasury, not destroyed — this only takes them off the ladder.`);
+    } else if (capped) {
+      // Nothing retired at all AND capped: the whole allowance was already
+      // used earlier today, so retirement is paused outright. Silence here
+      // would look exactly like "nobody spent anything".
+      await notify(
+        `⏸ <b>Retirement paused — daily cap reached</b>\n` +
+        `The ${c.dailyCap} PCN daily allowance is used up, so spending is no longer moving ` +
+        `the price today. The backlog is <b>held, not discarded</b>, and resumes at 00:00 UTC.\n` +
+        `Raise <code>retireDailyCapPcn</code> in the panel if this is throttling real usage.`);
     }
     return { ok: true, scanned, spent, retired, capped, at: safeTip };
   }

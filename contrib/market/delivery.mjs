@@ -388,10 +388,21 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
    *  This is the only path that can rescue a crash between claim and record. */
   async function reconcileSending() {
     try {
+      // `paid_at IS NULL OR paid_at < …` — the NULL half is not defensive
+      // padding. SQL comparisons against NULL are neither true nor false, so a
+      // row with no paid_at could never match, and this sweep is the ONLY exit
+      // from status='sending' (the admin panel offers no button for that
+      // state). Such a row is reachable: a failed or refunded callback moves an
+      // order out of 'pending' before paid_at is ever written, and any later
+      // path that claims it for sending strands it permanently — a buyer's
+      // order frozen forever, invisible to the one thing that looks for frozen
+      // orders. NOW() - 5 MIN is a grace period for a send still in flight; an
+      // order with no payment time at all has no in-flight window to protect,
+      // so it is examined immediately.
       const stuck = await q(
         `SELECT order_id FROM orders
           WHERE status='sending' AND delivered_txid IS NULL
-            AND paid_at < (NOW() - INTERVAL 5 MINUTE)`);
+            AND (paid_at IS NULL OR paid_at < (NOW() - INTERVAL 5 MINUTE))`);
       for (const o of stuck) {
         // Per-order, so one order that cannot be resolved does not abort the
         // sweep for every order queued behind it. Previously a single failing

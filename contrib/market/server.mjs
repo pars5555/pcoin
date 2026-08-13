@@ -124,7 +124,16 @@ function validAddress(addr) {
 // already lost once when it was a JSON file, and an engine you cannot run in
 // isolation is an engine nobody re-tests after changing it.
 import { makeLadder } from './ladder.mjs';
-const L = makeLadder(pool);
+// The notifier is passed in so a failing reservation sweep can say so; without
+// it the ladder silently stops returning inventory from unpaid orders.
+//
+// Wrapped in an arrow, NOT passed directly: `notify` is declared further down
+// this file, so `{ notify }` here reads it during module evaluation and throws
+// "Cannot access 'notify' before initialization" — which took the whole market
+// offline for the length of one deploy. The arrow defers the read to call time,
+// by which point the binding exists. (Same class of mistake as the CSRF-reject
+// path and the gate watcher above; the file's ordering makes it easy to repeat.)
+const L = makeLadder(pool, { notify: (...args) => notify(...args) });
 setInterval(L.sweepExpiredOrders, 15 * 60 * 1000).unref?.();
 
 // ── settings ───────────────────────────────────────────────────────────────
@@ -182,6 +191,42 @@ import { makePriceWatch } from './pricewatch.mjs';
 const PW = makePriceWatch({ pool, ladder: L, notify });
 setInterval(() => PW.check().catch(e => console.error('[pricewatch]', e.message)), 60_000).unref?.();
 PW.check().catch(e => console.error('[pricewatch]', e.message));
+
+// ── is the market open? ─────────────────────────────────────────────────────
+// saleGate() can shut the market for four different reasons — the operator
+// switch, a sold-out ladder, an unreadable rate oracle, or the ladder and
+// serviceRate drifting apart — and it told NOBODY. It is consulted only from
+// request handlers, so with no traffic nothing even calls it, and "closed" and
+// "quiet" look identical from the outside. The first sign was the takings
+// stopping.
+//
+// Polled rather than hooked into the handlers for exactly that reason: a
+// closure at 3am with zero visitors must still reach the operator. Only
+// TRANSITIONS are announced, so a market that stays shut does not nag.
+let lastGateOpen = null;
+async function watchGate() {
+  let g;
+  try { g = await saleGate(); }
+  catch (e) { console.error('[gatewatch]', e.message); return; }
+  if (lastGateOpen === null) {                    // first look after a restart
+    const [r] = await q(`SELECT v FROM market_state WHERE k='saleGateOpen'`).catch(() => [[]]);
+    lastGateOpen = r?.[0] ? r[0].v === '1' : g.open;
+  }
+  if (g.open === lastGateOpen) return;
+  lastGateOpen = g.open;
+  await q(`INSERT INTO market_state (k,v) VALUES ('saleGateOpen',?)
+             ON DUPLICATE KEY UPDATE v=VALUES(v)`, [g.open ? '1' : '0']).catch(() => {});
+  await notify(g.open
+    ? `🟢 <b>Sales have REOPENED</b>\nThe market is accepting orders again.`
+    : `🔴 <b>SALES ARE PAUSED</b>\nmarket.pc.am is refusing every order.\n${esc(g.reason || 'no reason given')}`
+  ).catch(e => console.error('[gatewatch] alert failed:', e.message));
+}
+setInterval(() => watchGate(), 60_000).unref?.();
+// Deferred, not immediate: `esc` and the settings this reads are declared
+// further down the file, so calling it during module evaluation would throw a
+// ReferenceError out of its temporal dead zone. Five seconds is after the
+// module has finished evaluating and long before anyone needs the answer.
+setTimeout(watchGate, 5_000).unref?.();
 
 // Every 10 minutes: nag if the float is low, and rescue anything stuck between
 // "claimed for sending" and "recorded as sent".
@@ -490,7 +535,7 @@ function ipnValid(rawBody, sigHeader) {
 // ── pages ──────────────────────────────────────────────────────────────────
 // Throttles for alerts a stranger can trigger. Unbounded, they would be a
 // denial of service against the one channel carrying the double-send alarm.
-let lastSigAlert = 0, lastCrashAlert = 0;
+let lastSigAlert = 0, lastCrashAlert = 0, lastGatewayAlert = 0;
 
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const CSS = readFileSync('/opt/pcoin-market/style.css', 'utf8');
@@ -984,6 +1029,19 @@ createServer(async (req, res) => {
         // straight back rather than wait out the 24h sweep.
         await q(`UPDATE orders SET status='failed' WHERE order_id=? AND status='pending'`, [orderId]);
         await L.releaseLadder(orderId);
+        // A customer just tried to buy and could not. Silent, this is the most
+        // expensive kind of outage: every visitor bounces off the last step and
+        // the market looks fine from the outside — the gate is open, the price
+        // is current, and nothing is refusing anything except the one call that
+        // takes money. Throttled, because if the gateway is down this fires for
+        // every visitor.
+        if (Date.now() - lastGatewayAlert >= 15 * 60 * 1000) {
+          lastGatewayAlert = Date.now();
+          notify(`🔴 <b>Payment gateway refused an order</b>\nA customer could not pay. ` +
+            `The order was cancelled and its inventory released.\n` +
+            `<code>${esc(String(e.message).slice(0, 250))}</code>\n` +
+            `If this persists, nobody can buy — the site will not look broken.`).catch(() => {});
+        }
         return json(res, 502, { error: `payment gateway: ${e.message}` });
       }
       await q(`UPDATE orders SET invoice_id=?, invoice_url=? WHERE order_id=?`,

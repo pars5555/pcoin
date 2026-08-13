@@ -145,9 +145,22 @@ export function makeAdmin({ pool, cfg, settings, ladder, delivery, backing, noti
       throw new Error('an admin password must be at least 12 characters');
     }
     const salt = randomBytes(16).toString('hex');
+    const em = String(email).toLowerCase();
+    const [before] = await q(`SELECT email FROM admins WHERE email=?`, [em]);
     await q(`INSERT INTO admins (email, salt, hash) VALUES (?,?,?)
              ON DUPLICATE KEY UPDATE salt=VALUES(salt), hash=VALUES(hash)`,
-            [String(email).toLowerCase(), salt, hashPw(password, salt)]);
+            [em, salt, hashPw(password, salt)]);
+    // Changing the password to this panel — which can pause sales, move limits
+    // and send coins — left no trace whatever: no audit row, no alert. Someone
+    // who reached the CLI could take the account over silently, and there was
+    // nothing to notice afterwards either. It is run as root from a terminal,
+    // so it is normally the owner; "normally" is not a control.
+    await audit(em, before?.length ? 'password.changed' : 'admin.created', null, 'cli');
+    await notify(before?.length
+      ? `🔑 <b>Admin password CHANGED</b> for ${esc(em)}\nSet from the server CLI. If this was ` +
+        `not you, that account is compromised and so is the box it was run on.`
+      : `🔑 <b>New admin account created</b>: ${esc(em)}\nSet from the server CLI.`
+    ).catch(() => {});
     return { ok: true };
   }
 
@@ -506,7 +519,22 @@ ${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
       const act = sub;
       try {
         if (act === 'settings') {
-          const changed = [];
+          // `changed` is declared OUTSIDE the try that wraps this whole action.
+          //
+          // settings.set() writes each key in its own autocommit statement —
+          // there is no transaction around the loop — so a key that fails
+          // validation half-way leaves every earlier key already saved AND
+          // live. The rejection then unwound to the outer catch, which only
+          // showed a flash message, and `changed` (block-scoped here before)
+          // was out of scope by then: no audit row, no Telegram, no record
+          // that anything had been applied at all. The operator saw an error
+          // and reasonably concluded nothing had happened, while several
+          // settings had in fact changed underneath them.
+          //
+          // A partial apply is not something this can prevent without a
+          // transaction the settings store does not offer. What it can do is
+          // never hide it.
+          var changed = [];
           for (const key of Object.keys(settings.defs)) {
             if (!f.has(`s_${key}`)) {
               // An unchecked checkbox sends nothing at all.
@@ -615,6 +643,19 @@ ${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
           return done('/admin', 'err', `Unknown action: ${act}`);
         }
       } catch (e) {
+        // A settings save that threw part-way has ALREADY written every key it
+        // reached, and they are already live. Record and announce that before
+        // reporting the failure, or the operator is told "it did not work"
+        // about a change that partly did.
+        if (act === 'settings' && typeof changed !== 'undefined' && changed.length) {
+          await audit(email, 'settings.change.partial',
+                      `APPLIED BEFORE FAILING: ${changed.join('; ')} || failed on: ${e.message}`, ip);
+          await notify(`⚠️ <b>Settings change PARTLY applied</b> by ${esc(email)}\n` +
+            `These are live now:\n<code>${esc(changed.join('\n'))}</code>\n` +
+            `Then it failed: <code>${esc(String(e.message).slice(0, 200))}</code>\n` +
+            `The form will show the old values for anything after that point — re-check the page.`
+          ).catch(() => {});
+        }
         // Errors redirect too. Rendering the error inline would leave the
         // browser on a POST-only URL, and the refresh after reading it would
         // 404 — which is exactly the fault being fixed here.

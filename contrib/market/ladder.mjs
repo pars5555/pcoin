@@ -98,8 +98,21 @@ export function walkPcn(rungs, pcn) {
   return finish(rungs, fills, gotUnits, cost, 0, fromUnits(needUnits));
 }
 
-export function makeLadder(pool) {
+export function makeLadder(pool, { notify = null, log = console } = {}) {
   const q = async (sql, args = []) => (await pool.query(sql, args))[0];
+
+  // sweepExpiredOrders is what returns inventory from orders nobody paid for.
+  // If it stops working, unpaid reservations accumulate and the ladder quietly
+  // runs out of PCN to sell while the rungs are, in fact, untouched — and this
+  // module was built with no way to say so. Throttled: a persistent fault
+  // repeats every 15 minutes.
+  let lastSweepAlert = 0;
+  async function alertSweep(text) {
+    if (!notify) return;
+    if (Date.now() - lastSweepAlert < 60 * 60 * 1000) return;
+    lastSweepAlert = Date.now();
+    try { await notify(text); } catch (e) { log.warn('[ladder] alert failed:', e.message); }
+  }
 
   /** Rungs with anything left to give, cheapest first. `forUpdate` takes row
    *  locks — every writer walks the same rows in the same order, so two buyers
@@ -289,7 +302,16 @@ export function makeLadder(pool) {
         if (n) console.warn(`[ladder] reconciled ${o.order_id}: settled ${n} rung reservation(s) ` +
                             `for an order that was already paid`);
       }
-    } catch (e) { console.error('[ladder] sweep failed:', e.message); }
+    } catch (e) {
+      console.error('[ladder] sweep failed:', e.message);
+      // Unpaid reservations are no longer being returned. Nothing else looks
+      // at them, so left alone the ladder slowly stops being able to sell.
+      await alertSweep(`🟠 <b>Reservation sweep FAILED</b>
+Inventory from unpaid orders is not ` +
+        `being returned to the ladder. Left alone, the market runs out of PCN to sell while ` +
+        `the rungs are actually untouched.
+<code>${String(e.message).slice(0, 200)}</code>`);
+    }
   }
 
   return { rungsWithStock, ladderState, reserveLadder, settleLadder, releaseLadder,

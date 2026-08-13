@@ -69,7 +69,15 @@ try {
   // ── entry guard ──────────────────────────────────────────────────────────
   const [[start]] = await pool.query(
     `SELECT COUNT(*) n, SUM(qty_sold) sold, SUM(qty_reserved) resv, SUM(qty_total) tot FROM ladder_rungs`);
-  const [[fillsNow]] = await pool.query(`SELECT COUNT(*) n FROM ladder_fills`);
+  // Only fills that still CLAIM inventory matter here. The cleanup below
+  // blanket-zeroes qty_sold and qty_reserved, so anything holding those must
+  // block the run — but a 'released' fill holds nothing. It is the inert record
+  // of an order that expired or was reversed, and counting it made the guard
+  // permanently unsatisfiable the first time any order existed: the suite would
+  // have been disabled for the life of the market, which is a worse outcome
+  // than the one the guard protects against.
+  const [[fillsNow]] = await pool.query(
+    `SELECT COUNT(*) n FROM ladder_fills WHERE state IN ('reserved','sold')`);
   if (Number(start.n) !== 100 || Number(start.sold) !== 0 || Number(start.resv) !== 0 || Number(fillsNow.n) !== 0) {
     console.error(`REFUSING: ladder is not pristine (rungs=${start.n} sold=${start.sold} ` +
                   `reserved=${start.resv} fills=${fillsNow.n}). This test resets counters and ` +
@@ -233,7 +241,11 @@ try {
   await q(`UPDATE ladder_rungs SET qty_sold = 0, qty_reserved = 0`);
   const [[end]] = await pool.query(
     `SELECT SUM(qty_sold) sold, SUM(qty_reserved) resv FROM ladder_rungs`);
-  const [[ef]] = await pool.query(`SELECT COUNT(*) n FROM ladder_fills`);
+  // Same narrowing as the entry guard: what must be zero afterwards is the
+  // inventory this test CLAIMED, not the inert 'released' rows left behind by
+  // unrelated orders that expired or were reversed long before it ran.
+  const [[ef]] = await pool.query(
+    `SELECT COUNT(*) n FROM ladder_fills WHERE state IN ('reserved','sold')`);
   ok('ladder restored to pristine',
      Number(end.sold) === 0 && Number(end.resv) === 0 && Number(ef.n) === 0,
      `sold=${end.sold} reserved=${end.resv} fills=${ef.n}`);
