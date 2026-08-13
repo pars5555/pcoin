@@ -529,10 +529,12 @@ def block_page(ctx, ident, page=1):
     txids = [t["txid"] for t in txs]
     outs = reads.outputs_for(conn, txids, cap=5)
     ins = reads.inputs_for(conn, txids, cap=5)
+    chg = reads.change_for(conn, txids)
     trows = []
     for t in txs:
         o = outs.get(t["txid"], {"rows": [], "total": 0})
         i = ins.get(t["txid"], {"rows": [], "total": 0})
+        c = chg.get(t["txid"], {"change": 0, "addresses": set()})
         if t["is_coinbase"]:
             src = ('<span class="badge badge-cb">coinbase</span> '
                    '<span class="dim">newly mined</span>')
@@ -541,15 +543,23 @@ def block_page(ctx, ident, page=1):
                               for r in i["rows"]) or '<span class="dim">%s</span>' % DASH
             if i["total"] > len(i["rows"]):
                 src += '<div class="dim">+%s more</div>' % num(i["total"] - len(i["rows"]))
-        dst = "<br>".join(address_link(r["address"], short=True, kind=r["script_type"])
-                          for r in o["rows"]) or '<span class="dim">%s</span>' % DASH
+        # Per-output values, same reasoning as the /txs list.
+        dst = "<br>".join(
+            '%s <span class="dim">%s</span>%s'
+            % (address_link(r["address"], short=True, kind=r["script_type"]),
+               amount_html(r["value"], unit=False),
+               ' <span class="badge">change</span>' if r["address"] in c["addresses"] else "")
+            for r in o["rows"]) or '<span class="dim">%s</span>' % DASH
         if o["total"] > len(o["rows"]):
             dst += '<div class="dim">+%s more</div>' % num(o["total"] - len(o["rows"]))
+        sent_cell = amount_html(t["value_out"], unit=False)
+        if o["total"] > 1:
+            sent_cell += '<div class="dim">incl. change</div>'
         trows.append(
             "<tr><td>%s<div class='dim'>#%s</div></td><td>%s</td><td>%s</td>"
             "<td class='num'>%s</td><td class='num'>%s</td></tr>"
             % (tx_link(t["txid"]), num(t["block_index"]), src, dst,
-               amount_html(t["value_out"], unit=False),
+               sent_cell,
                amount_html(t["fee"], unit=False) if not t["is_coinbase"]
                else '<span class="dim">%s</span>' % DASH))
 
@@ -558,7 +568,7 @@ def block_page(ctx, ident, page=1):
             + "<h2>Transactions %s</h2>" % note("%s in this block" % num(total_txs))
             + pager("/block/%d" % height, {}, page, total_txs, PER_PAGE)
             + table((("Transaction", False), ("From", False), ("To", False),
-                     ("Value out", True), ("Fee", True)), trows)
+                     ("Total out", True), ("Fee", True)), trows)
             + pager("/block/%d" % height, {}, page, total_txs, PER_PAGE))
     return shell(ctx, title="Block %s - PCoin explorer" % height, body=body,
                  h1="Block %s" % num(height), kind="block",
@@ -574,21 +584,36 @@ def txs_list(ctx, page, coinbase):
     total = reads.tx_count(conn, coinbase=coinbase)
     offset = (page - 1) * PER_PAGE
     txs = reads.txs_page(conn, limit=PER_PAGE, offset=offset, coinbase=coinbase)
-    outs = reads.outputs_for(conn, [t["txid"] for t in txs], cap=4)
+    txids = [t["txid"] for t in txs]
+    outs = reads.outputs_for(conn, txids, cap=4)
+    # One extra query for the whole page, so this stays O(1) per page.
+    chg = reads.change_for(conn, txids)
     rows = []
     for t in txs:
         o = outs.get(t["txid"], {"rows": [], "total": 0})
-        dst = "<br>".join(address_link(r["address"], short=True, kind=r["script_type"])
-                          for r in o["rows"]) or '<span class="dim">%s</span>' % DASH
+        c = chg.get(t["txid"], {"change": 0, "addresses": set()})
+        # Each destination with WHAT IT RECEIVED. This is the whole fix, and it
+        # needs no heuristic: "Total out 8,000" against a wallet showing 1,306
+        # is only confusing while the split is invisible. Shown per output, the
+        # 6,693 change is right there and the arithmetic explains itself.
+        dst = "<br>".join(
+            '%s <span class="dim">%s</span>%s'
+            % (address_link(r["address"], short=True, kind=r["script_type"]),
+               amount_html(r["value"], unit=False),
+               ' <span class="badge">change</span>' if r["address"] in c["addresses"] else "")
+            for r in o["rows"]) or '<span class="dim">%s</span>' % DASH
         if o["total"] > len(o["rows"]):
             dst += '<div class="dim">+%s more</div>' % num(o["total"] - len(o["rows"]))
+        sent_cell = amount_html(t["value_out"], unit=False)
+        if o["total"] > 1:
+            sent_cell += '<div class="dim">incl. change</div>'
         rows.append(
             "<tr><td>%s%s</td><td>%s</td><td>%s</td><td>%s</td>"
             "<td class='num'>%s</td><td class='num'>%s</td></tr>"
             % (tx_link(t["txid"]),
                ' <span class="badge badge-cb">coinbase</span>' if t["is_coinbase"] else "",
                block_link(t["height"]), time_cell(t["time"], ctx.now), dst,
-               amount_html(t["value_out"], unit=False),
+               sent_cell,
                amount_html(t["fee"], unit=False) if not t["is_coinbase"]
                else '<span class="dim">%s</span>' % DASH))
     params = {} if coinbase is None else {"payments": "1"}
@@ -597,7 +622,7 @@ def txs_list(ctx, page, coinbase):
                   ("/txs?payments=1", "Payments only", "payments")], view)
             + pager("/txs", params, page, total, PER_PAGE)
             + table((("Transaction", False), ("Block", False), ("Time", False),
-                     ("To", False), ("Value out", True), ("Fee", True)), rows)
+                     ("To", False), ("Total out", True), ("Fee", True)), rows)
             + pager("/txs", params, page, total, PER_PAGE))
     return shell(ctx, title="Transactions - PCoin explorer", body=body,
                  active="/txs", h1="Transactions", kind="chain")
@@ -621,9 +646,25 @@ def tx_page(ctx, txid):
     if is_cb:
         mat = reads.maturity_eta(conn, ctx.tip, t["height"] + COINBASE_MATURITY)
 
+    # Outputs the sender paid to ITSELF, where that can be established as fact:
+    # the address also appears among this transaction's inputs. That only
+    # catches address REUSE. Bitcoin Core sends change to a fresh address every
+    # time, so the common case cannot be detected from the chain by anyone —
+    # and a badge is not put on a guess. The honest fix is elsewhere: the list
+    # views now show what each output received, so an 8,000 total against a
+    # wallet showing 1,306 explains itself without anything having to know
+    # which half was change.
+    _chg = reads.change_for(conn, [txid]).get(txid, {"change": 0, "addresses": set()})
+    change_addrs = _chg["addresses"]
+
     tl = [
         tile("Value out", amount_html(t["value_out"], group=True, unit=False),
-             accent=True, foot="across %s output(s)" % num(t["n_out"]), small=True),
+             accent=True,
+             foot=("across %s outputs — a transaction spends a whole coin, so this "
+                   "usually includes change returning to the sender"
+                   % num(t["n_out"])) if t["n_out"] > 1
+                  else "across %s output" % num(t["n_out"]),
+             small=True),
         tile("Fee", '<span class="dim">%s</span>' % DASH if is_cb
              else amount_html(t["fee"], unit=False),
              foot="newly created coins pay no fee" if is_cb
@@ -692,6 +733,8 @@ def tx_page(ctx, txid):
         meta = []
         if o["script_type"]:
             meta.append(esc(o["script_type"]))
+        if o["address"] and o["address"] in change_addrs:
+            meta.append('<span class="badge">change back to the sender</span>')
         if o["unspendable"]:
             meta.append('<span class="badge badge-soft">unspendable</span>')
         if o["spent"]:

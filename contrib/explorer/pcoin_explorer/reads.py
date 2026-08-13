@@ -160,6 +160,44 @@ def inputs_for(conn, txids, *, cap=6):
     return out
 
 
+def change_for(conn, txids):
+    """txid -> {'change': sat, 'addresses': set(addresses that are change)}.
+
+    WHY THIS EXISTS
+    A UTXO chain cannot spend part of a coin. To send 1,306 PCN out of an 8,000
+    PCN output you spend the whole 8,000 and pay yourself 6,693 back, so the
+    transaction's *total output value* is 8,000 while only 1,306 actually went
+    anywhere. Listing that 8,000 under a column called "Value out" is
+    technically exact and reliably misread: the owner of this chain read his own
+    delivery and asked why 8,000 had left when his wallet showed 1,306.
+
+    The heuristic is the standard one and it is exact for the case that causes
+    the confusion: an output paying an address that also appears among the
+    transaction's INPUTS is money returning to the same party. It cannot detect
+    change sent to a fresh address (nothing on-chain can), so this UNDERSTATES
+    change and therefore OVERSTATES what was sent -- the safe direction. It
+    never claims a payment to a stranger was change.
+
+    EXISTS, not a JOIN: a transaction spending three inputs from one address
+    would multiply that output's value by three under a join, inventing change
+    out of nothing.
+    """
+    if not txids:
+        return {}
+    rows = conn.execute(
+        "SELECT o.txid, o.n, o.value, o.address FROM outputs o"
+        " WHERE o.txid IN (%s) AND o.address IS NOT NULL"
+        "   AND EXISTS (SELECT 1 FROM inputs i"
+        "                WHERE i.txid = o.txid AND i.address = o.address)"
+        % _placeholders(len(txids)), tuple(txids)).fetchall()
+    out = {}
+    for r in rows:
+        slot = out.setdefault(r["txid"], {"change": 0, "addresses": set()})
+        slot["change"] += (r["value"] or 0)
+        slot["addresses"].add(r["address"])
+    return out
+
+
 def addresses_page(conn, *, limit=50, offset=0, include_empty=False):
     where = "" if include_empty else "WHERE balance > 0"
     return _rows(conn.execute(
