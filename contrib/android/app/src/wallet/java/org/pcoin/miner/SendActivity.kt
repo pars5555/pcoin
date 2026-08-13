@@ -8,9 +8,12 @@ import android.text.Editable
 import android.text.TextWatcher
 import android.view.LayoutInflater
 import android.view.View
+import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ImageButton
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.content.Context
 import android.content.Intent
 import android.widget.TextView
@@ -63,7 +66,7 @@ class SendActivity : AppCompatActivity() {
     private lateinit var addressLabel: TextView
     private lateinit var bookBlock: LinearLayout
     private lateinit var bookRows: LinearLayout
-    private lateinit var bookAllButton: Button
+    private lateinit var bookScroll: ScrollView
     private lateinit var amountField: EditText
     private lateinit var maxButton: Button
     private lateinit var composeError: TextView
@@ -144,7 +147,7 @@ class SendActivity : AppCompatActivity() {
         addressLabel = findViewById(R.id.address_label)
         bookBlock = findViewById(R.id.book_block)
         bookRows = findViewById(R.id.book_rows)
-        bookAllButton = findViewById(R.id.book_all_button)
+        bookScroll = findViewById(R.id.book_scroll)
         amountField = findViewById(R.id.amount_field)
         maxButton = findViewById(R.id.max_button)
         composeError = findViewById(R.id.compose_error)
@@ -190,11 +193,16 @@ class SendActivity : AppCompatActivity() {
         // leaving the hidden compose field disagreeing with the reviewed
         // destination -- harmless for where the money goes, since Confirm
         // broadcasts `prepared`, but a confusing thing to come back to.
-        bookAllButton.setOnClickListener {
-            if (busy) return@setOnClickListener
-            startActivityForResult(AddressBookActivity.intentPick(this), REQUEST_PICK_ADDRESS)
+        // The saved-address list scrolls inside a page that also scrolls. Without
+        // this the outer ScrollView intercepts the drag and the inner list never
+        // moves, which reads as a frozen list. Returning false leaves the inner
+        // ScrollView to handle the gesture as normal.
+        @Suppress("ClickableViewAccessibility")
+        bookScroll.setOnTouchListener { v, _ ->
+            v.parent?.requestDisallowInterceptTouchEvent(true)
+            false
         }
-        findViewById<Button>(R.id.scan_button).setOnClickListener {
+        findViewById<ImageButton>(R.id.scan_button).setOnClickListener {
             if (busy) return@setOnClickListener
             startActivityForResult(ScanActivity.intent(this), REQUEST_SCAN)
         }
@@ -239,12 +247,6 @@ class SendActivity : AppCompatActivity() {
         // Checked before the gate, with a request code of its own: swallowing
         // one of SeedGate's codes here would leave a completed device unlock
         // with nothing listening, and the payment would silently never send.
-        if (requestCode == REQUEST_PICK_ADDRESS) {
-            if (resultCode == Activity.RESULT_OK) {
-                data?.getStringExtra(AddressBookActivity.EXTRA_ADDRESS)?.let { fillAddress(it) }
-            }
-            return
-        }
         if (requestCode == REQUEST_SCAN) {
             if (resultCode == Activity.RESULT_OK) {
                 onScanned(data?.getStringExtra(ScanActivity.EXTRA_TEXT))
@@ -329,12 +331,12 @@ class SendActivity : AppCompatActivity() {
     }
 
     /**
-     * The saved addresses, tappable, most recently used first.
+     * Every saved address, tappable, most recently used first.
      *
-     * Only the first few are inlined. The rest are behind one button rather
-     * than an unbounded list growing between the address field and the amount:
-     * a compose step that scrolls is a compose step where the review button
-     * moves around.
+     * All of them, not a preview: paying someone already named is the common
+     * case, and it should never cost a screen change. The list keeps its natural
+     * height while it is short and becomes a scroller once it would push the
+     * amount box and the review button too far down the page.
      */
     private fun renderBook() {
         val entries = AddressBook.ordered(bookEntries)
@@ -346,7 +348,7 @@ class SendActivity : AppCompatActivity() {
         bookBlock.visibility = View.VISIBLE
 
         val inflater = LayoutInflater.from(this)
-        for (e in entries.take(INLINE_BOOK_ROWS)) {
+        for (e in entries) {
             val v = inflater.inflate(R.layout.row_book_pick, bookRows, false)
             v.findViewById<TextView>(R.id.pick_name).text = e.name
             v.findViewById<TextView>(R.id.pick_address).text = e.address
@@ -354,12 +356,14 @@ class SendActivity : AppCompatActivity() {
             bookRows.addView(v)
         }
 
-        if (entries.size > INLINE_BOOK_ROWS) {
-            bookAllButton.visibility = View.VISIBLE
-            bookAllButton.text = getString(R.string.send_book_all, entries.size)
-        } else {
-            bookAllButton.visibility = View.GONE
-        }
+        // Clamp in code, not in the layout: a fixed height would leave a short
+        // list sitting in a half-empty box, and wrap_content alone would let a
+        // long one run off the bottom of the card.
+        val lp = bookScroll.layoutParams
+        lp.height =
+            if (entries.size > VISIBLE_BOOK_ROWS) (BOOK_MAX_HEIGHT_DP * resources.displayMetrics.density).toInt()
+            else ViewGroup.LayoutParams.WRAP_CONTENT
+        bookScroll.layoutParams = lp
     }
 
     /**
@@ -744,13 +748,15 @@ class SendActivity : AppCompatActivity() {
          * arrive at the same onActivityResult, and a collision would route a
          * device-unlock result into the address picker.
          */
-        private const val REQUEST_PICK_ADDRESS = 8311
-
-        /** Distinct from the picker (8311) and SeedGate's unlock (7241). */
+        /** Distinct from SeedGate's unlock (7241). */
         private const val REQUEST_SCAN = 8312
 
-        /** How many saved addresses appear inline before "all N" takes over. */
-        private const val INLINE_BOOK_ROWS = 4
+        /** Above this many saved addresses the list starts scrolling. */
+        private const val VISIBLE_BOOK_ROWS = 4
+
+        /** Roughly four rows. Deep enough to be worth scrolling, shallow enough
+         *  to leave the amount box and the review button on screen. */
+        private const val BOOK_MAX_HEIGHT_DP = 248
 
         /**
          * Open Send with an address already filled in.

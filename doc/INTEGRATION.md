@@ -76,7 +76,7 @@ use SLIP-44's universal coin type 1.
 
 ```bash
 # Linux
-tar xzf pcoin-1.2.1-linux-x86_64.tar.gz && cd pcoin-1.2.1
+tar xzf pcoin-1.2.6-linux-x86_64-miner.tar.gz && cd pcoin-1.2.6
 ./bin/bitcoind -datadir=/var/lib/pcoin -daemon
 ./bin/bitcoin-cli -datadir=/var/lib/pcoin getblockchaininfo
 ```

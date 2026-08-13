@@ -448,7 +448,7 @@
   </p>
   <table class="files">
     <tr><th>File</th><th>What it contains</th></tr>
-    <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-win64-miner.zip">pcoin-win64-miner.zip</a></td><td>Node, CLI and the tray miner</td></tr>
+    <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.2.6/pcoin-win64-miner.zip">pcoin-win64-miner.zip</a></td><td>Node, CLI and the tray miner</td></tr>
   </table>
   <pre class="cmd"><button class="copy" type="button">copy</button><span class="c"># check it before you run it</span>
 Get-FileHash .\pcoin-win64-miner.zip -Algorithm SHA256</pre>
@@ -514,10 +514,10 @@ journalctl -u pcoin-miner -n 40      <span class="c"># why it is or is not minin
   <h2 style="font-size:20px;margin:38px 0 12px">Packages, if you would rather not pipe to a shell</h2>
   <table class="files">
     <tr><th>File</th><th>What it is</th></tr>
-    <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-linux-amd64-miner.deb">pcoin-linux-amd64-miner.deb</a></td><td>Debian/Ubuntu package &mdash; same contents the one-liner installs</td></tr>
-    <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-linux-x86_64-miner.tar.gz">pcoin-linux-x86_64-miner.tar.gz</a></td><td>Plain binaries, any distribution</td></tr>
+    <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.2.6/pcoin-linux-amd64-miner.deb">pcoin-linux-amd64-miner.deb</a></td><td>Debian/Ubuntu package &mdash; same contents the one-liner installs</td></tr>
+    <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.2.6/pcoin-linux-x86_64-miner.tar.gz">pcoin-linux-x86_64-miner.tar.gz</a></td><td>Plain binaries, any distribution</td></tr>
   </table>
-  <pre class="cmd"><button class="copy" type="button">copy</button>curl -fsSLO https://github.com/pars5555/pcoin/releases/latest/download/pcoin-linux-amd64-miner.deb
+  <pre class="cmd"><button class="copy" type="button">copy</button>curl -fsSLO https://github.com/pars5555/pcoin/releases/download/v1.2.6/pcoin-linux-amd64-miner.deb
 curl -fsSL https://pc.am/dl/SHA256SUMS.txt -o SHA256SUMS.txt
 sha256sum --ignore-missing -c SHA256SUMS.txt
 sudo apt install ./pcoin-linux-amd64-miner.deb</pre>
@@ -538,8 +538,8 @@ sudo apt install ./pcoin-linux-amd64-miner.deb</pre>
   </p>
   <table class="files">
     <tr><th>File</th><th>What it is</th></tr>
-    <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-android-miner.apk">pcoin-android-miner.apk</a></td><td>Node, wallet and mining</td></tr>
-    <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-android-wallet.apk">pcoin-android-wallet.apk</a></td><td>Node and wallet, no mining</td></tr>
+    <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.2.6/pcoin-android-miner.apk">pcoin-android-miner.apk</a></td><td>Node, wallet and mining</td></tr>
+    <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.2.7/pcoin-android-wallet.apk">pcoin-android-wallet.apk</a></td><td>Node and wallet, no mining</td></tr>
   </table>
 
   <div class="step">
@@ -603,9 +603,10 @@ cmake --build build -j "$(nproc)"
   <h2 style="font-size:22px;margin:0 0 8px">Verifying what you downloaded</h2>
   <p style="color:var(--muted);line-height:1.7;max-width:72ch">
     Checksums are published in two places that would have to be compromised together to
-    fool you: <a href="https://pc.am/dl/SHA256SUMS.txt">pc.am/dl/SHA256SUMS.txt</a> and
-    <a href="https://github.com/pars5555/pcoin/releases/latest" rel="noopener">the GitHub
-    release</a>. They should agree exactly.
+    fool you: <a href="https://pc.am/dl/SHA256SUMS.txt">pc.am/dl/SHA256SUMS.txt</a> and the
+    <a href="https://github.com/pars5555/pcoin/releases" rel="noopener">GitHub release</a> each
+    file came from &mdash; the list names the release beside every entry, because the wallet and
+    the miner ship separately and no longer come from one release. The two must agree.
   </p>
   <div class="note">
     <strong>What a checksum proves, and what it does not.</strong>

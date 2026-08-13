@@ -728,9 +728,9 @@
       <span class="kicker">Download</span>
       <h2>Get PCoin</h2>
       <p class="lede">
-        Every link points at the <b>latest release</b> and keeps working when a new one ships &mdash;
-        they resolve through GitHub's <span class="mono">/releases/latest</span>, so nothing here goes
-        stale. Mining is <b>off by default</b> everywhere: a node that mines before it has synced is
+        Each download points at the <b>release that built it</b>, so a link never quietly turns into
+        a different file &mdash; and each part ships on its own schedule, so the wallet can update
+        without the miner moving. Mining is <b>off by default</b> everywhere: a node that mines before it has synced is
         building on a chain it has not checked.
       </p>
 
@@ -738,21 +738,21 @@
         <div class="dl-card">
           <h3>Windows</h3>
           <p class="dl-sub">Node, CLI and tray app in one archive. Unzip and run, or use the one command below.</p>
-          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-win64-miner.zip" rel="noopener">Download (.zip)</a>
+          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/download/v1.2.6/pcoin-win64-miner.zip" rel="noopener">Download (.zip)</a>
           <a class="dl-alt" href="#get-started">or install with one command</a>
         </div>
 
         <div class="dl-card">
           <h3>Linux</h3>
           <p class="dl-sub">Debian and Ubuntu. Installs <span class="mono">pcoind</span> and <span class="mono">pcoin-cli</span> with a systemd unit.</p>
-          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-linux-amd64-miner.deb" rel="noopener">Package (.deb)</a>
-          <a class="dl-alt" href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-linux-x86_64-miner.tar.gz" rel="noopener">or portable .tar.gz</a>
+          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/download/v1.2.6/pcoin-linux-amd64-miner.deb" rel="noopener">Package (.deb)</a>
+          <a class="dl-alt" href="https://github.com/pars5555/pcoin/releases/download/v1.2.6/pcoin-linux-x86_64-miner.tar.gz" rel="noopener">or portable .tar.gz</a>
         </div>
 
         <div class="dl-card">
           <h3>Android &mdash; miner</h3>
           <p class="dl-sub">Full node, wallet and CPU mining on your phone. arm64.</p>
-          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-android-miner.apk" rel="noopener">Miner (.apk)</a>
+          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/download/v1.2.6/pcoin-android-miner.apk" rel="noopener">Miner (.apk)</a>
           <a class="dl-alt" href="#android-note">read this first</a>
         </div>
 
@@ -766,7 +766,7 @@
         <div class="dl-card">
           <h3>Android &mdash; wallet</h3>
           <p class="dl-sub">Balance, send, receive by QR, history. Carries a full node; no mining.</p>
-          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/latest/download/pcoin-android-wallet.apk" rel="noopener">Wallet (.apk)</a>
+          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/download/v1.2.7/pcoin-android-wallet.apk" rel="noopener">Wallet (.apk)</a>
           <a class="dl-alt" href="#android-note">read this first</a>
         </div>
       </div>
@@ -872,7 +872,7 @@ curl -s https://price.pc.am      # -&gt; {"serviceRate":0.015, &hellip;}</pre>
 <span class="c"># -Threads is how many cores mine; 0 installs without mining.</span>
 &amp; ([scriptblock]::Create((irm https://pc.am/dl/install.ps1))) -Threads 4
 
-<span class="o">  PCoin 1.2.4 installer
+<span class="o">  PCoin 1.2.6 installer
   sha256 ok
   tray app present
   desktop shortcut created
@@ -929,7 +929,7 @@ sudo pcoin-setup
 sudo systemctl stop pcoin-miner
 
 <span class="c"># Prefer no packages? Take the portable archive instead:</span>
-<span class="c">#   .../releases/latest/download/pcoin-linux-x86_64-miner.tar.gz</span>
+<span class="c">#   .../releases/download/v1.2.6/pcoin-linux-x86_64-miner.tar.gz</span>
 <span class="c"># then run ./bitcoind -daemon from inside it.</span></pre>
       </div>
 

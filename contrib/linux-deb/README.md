@@ -5,8 +5,8 @@
 (see `PCOIN.md` §3) or unpack a published `pcoin-<ver>-linux-x86_64.tar.gz`.
 
 ```bash
-tar xf pcoin-1.2.2-linux-x86_64.tar.gz
-contrib/linux-deb/build-deb.sh 1.2.2 pcoin-1.2.2/bin /tmp/debbuild
+tar xf pcoin-1.2.6-linux-x86_64-miner.tar.gz
+contrib/linux-deb/build-deb.sh 1.2.6 pcoin-1.2.6/bin /tmp/debbuild
 sudo apt install /tmp/debbuild/pcoin_1.2.2_amd64.deb
 ```
 

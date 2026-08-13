@@ -21,7 +21,9 @@ param(
     # most people will not run.
     [string]$InstallDir = '',
     [string]$DataDir = '',
-    # Bump both together at every release. The hash is of pcoin-<ver>-win64.zip
+    # Bump both together on a WINDOWS release. $Version also selects the release
+    # tag the zip is fetched from, so the URL and the hash move as one and a
+    # half-applied bump is impossible. The hash is of pcoin-win64-miner.zip
     # and the install aborts on a mismatch, so a forgotten bump here breaks
     # every new install rather than failing quietly.
     [string]$Version = '1.2.6',
@@ -45,8 +47,14 @@ if (-not $InstallDir) {
         }
     }
 }
-$name = "pcoin-win64-miner.zip"   # version-less: resolves through /releases/latest/
-$url = "https://github.com/pars5555/pcoin/releases/latest/download/$name"
+# Pinned to the tag $Version names, NOT /releases/latest/. Components ship
+# separately now, so "latest" is whatever released last -- an Android-only
+# release has no Windows asset and this would 404 for everyone. A stale pin
+# serves the previous working miner instead, which is the failure worth having.
+# It also makes $Version drive both the URL and which $Sha256 is correct, so the
+# two can no longer disagree.
+$name = "pcoin-win64-miner.zip"
+$url = "https://github.com/pars5555/pcoin/releases/download/v$Version/$name"
 
 # Keep the data directory beside the program by default. Remote management
 # tools often launch with a service's environment block, so %LOCALAPPDATA% can

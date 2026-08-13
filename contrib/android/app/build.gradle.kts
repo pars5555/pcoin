@@ -130,8 +130,11 @@ android {
             // version stays where it is.
             // 0.2.5: QR scanning on the send screen. Wallet only -- the scanner
             // and its two libraries are scoped to this flavour.
-            versionCode = 8
-            versionName = "0.2.5"
+            // 0.2.6: QR icon beside the address field, the whole address book
+            // scrollable in place, and MAX. 0.2.5 already reached a phone, so
+            // this is a new number rather than a second binary claiming that one.
+            versionCode = 9
+            versionName = "0.2.6"
 
             buildConfigField("boolean", "MINING", "false")
             // The ONLY genuine collision between the two apps. bitcoind is

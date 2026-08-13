@@ -113,7 +113,9 @@
     <string name="send_to_hint">pc1&#8230;</string>
     <string name="send_amount_label">Amount</string>
     <string name="send_amount_hint">0.00000000</string>
-    <string name="send_max">All</string>
+    <!-- MAX, not "All": next to an amount box "All" reads as a quantity that
+         could be typed, while MAX is unmistakably the button that fills it. -->
+    <string name="send_max">MAX</string>
     <string name="send_review">Check this send</string>
 
     <string name="send_check_title">Check before sending</string>
@@ -282,7 +284,6 @@
     <string name="send_known_address">Saved as %1$s</string>
     <string name="send_unknown_address">Not in your address book</string>
     <string name="send_book_label">Or pay someone you have named</string>
-    <string name="send_book_all">All %1$d saved addresses</string>
     <string name="send_review_named">Your name for this address: %1$s</string>
     <string name="send_result_to">Paid to %1$s</string>
     <string name="send_save_title">Name this address?</string>

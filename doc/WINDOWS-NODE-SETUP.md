@@ -1,9 +1,11 @@
 # PCoin — Windows always-on full node setup
 
-Package: the version-less `pcoin-win64-miner.zip` under /releases/latest/download/, so this
-line never goes stale again (PCoin Core v29.4.0, x86-64, statically linked). Assets gained a
-role word in v1.2.6 — `-miner`, `-wallet`, `-earner` — so `pcoin-win64.zip` is the pre-1.2.6
-spelling and is still published for now as a transition alias.
+Package: `pcoin-win64-miner.zip` from the release that built it —
+<https://github.com/pars5555/pcoin/releases/download/v1.2.6/pcoin-win64-miner.zip>
+(PCoin Core v29.4.0, x86-64, statically linked). Components release separately, so
+`/releases/latest/` is **not** a safe way to reach a Windows build: a release that ships only
+the Android wallet has no Windows asset and the link 404s. Assets gained a role word in
+v1.2.6 — `-miner`, `-wallet`, `-earner`; `pcoin-win64.zip` is the pre-1.2.6 spelling.
 Contents: `bitcoind.exe`, `bitcoin-cli.exe`, `PCOIN.md`, `pcoin.conf.example`.
 
 The binaries are fully static (no MSVC runtime, no MinGW DLLs). Windows 10 /

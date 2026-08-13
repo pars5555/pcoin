@@ -311,7 +311,7 @@ first:
 
 | file | what it is |
 |---|---|
-| `install.sh` | the one-liner. Hosted at `pc.am/dl/install.sh`; **not** version-pinned, it resolves through `/releases/latest/download/` so it never needs a release-time bump (contrast `install.ps1`, which does — §4 "Cutting a release") |
+| `install.sh` | the one-liner. Hosted at `pc.am/dl/install.sh`. **Pinned to a release tag** (`VER`, `:20`) since components began releasing separately — the old "never needs a bump" property died with `/releases/latest/`, because an Android-only release 404s both the `.deb` and the `SHA256SUMS` it verifies against |
 | `pcoin-setup` | wizard: asks for the payout address, **validates it via the node's `validateaddress`** rather than a regex, asks thread count, writes `/etc/pcoin/miner.conf`, enables `pcoin-miner` |
 | `pcoin-miner-supervisor` | `ExecStart` of `pcoin-miner.service`. Waits for RPC, waits for `initialblockdownload == false`, then `startmining` with **ttl=120** and polls `getcpuminerinfo` every 30 s — the poll *is* the keep-alive |
 | `pcoin-mine` | live terminal dashboard: hashrate, share of network, block ETA, `b` scans the UTXO set for the payout address and splits mature from immature |
@@ -382,14 +382,35 @@ from `git credential fill`, never a literal, and is idempotent (an asset of the
 same name is deleted before re-upload), which matters because a 9 MB upload over
 a flaky link is exactly the thing that half-finishes.
 
-**Every asset is then uploaded a second time under a version-less name**
-(`pcoin-win64-miner.zip`, …). This is
-load-bearing, not tidiness: pc.am links through
-`/releases/latest/download/<name>`, and GitHub resolves `latest` to the newest
-release and then looks for that **exact** filename. A versioned name in that URL
-works for one release and 404s for every one after it. The site links to the
-stable names and therefore needs **no edit at release time**. `SHA256SUMS` lists
-both name forms with the same hash.
+**Every asset is uploaded twice: a version-less name and a versioned one.**
+`SHA256SUMS` lists both forms with the same hash. The version-less name is what
+every link uses, so bumping a component is a one-token edit rather than a
+rewrite; the versioned name makes a downloaded file self-identifying.
+
+> **REPEALED as of v1.2.7 — `/releases/latest/download/` IS NO LONGER USED, AND
+> THE SITE *DOES* NEED AN EDIT AT RELEASE TIME.** This file previously said the
+> opposite, and per-component releases are what killed it. GitHub resolves
+> `latest` to the newest *release* first and only then looks for the filename,
+> so the moment a wallet-only release is newest, **every Windows, Linux and
+> miner link 404s at once** — including `install.ps1` and `install.sh`, which
+> are what pc.am tells users to run. `install.sh` is worse than a dead download:
+> it fetches `SHA256SUMS` from the same place, so a resilient retry still hits
+> *"SHA256SUMS does not list … refusing to install"*.
+>
+> **Every download is now pinned to the release tag that built it**
+> (`/releases/download/v1.2.6/pcoin-win64-miner.zip`). A forgotten bump then
+> degrades softly — users get last month's working miner — instead of taking
+> every non-Android download down together. Two tag tokens now exist and nothing
+> checks either: `install.ps1` `$Version` (`:27`, which drives both the URL and
+> which `$Sha256` is correct) and `install.sh` `VER` (`:20`).
+>
+> **Which release touches what:** an Android release edits the two APK links on
+> `site/index.html` and `site/download/index.html`; a Windows release edits
+> `$Version` **and** `$Sha256`; a Linux release edits `VER`. All of
+> `install.ps1`, `install.sh` and `SHA256SUMS.txt` live under `/var/www/pc.am/dl/`,
+> which is **outside git** (`contrib/deploy/deploy.sh:28`) and untouched by the
+> site deploy — they are a separate hand copy, and a repo-only fix leaves the
+> live one-liners broken.
 
 **Asset names carry the ROLE, as of v1.2.6**: `pcoin-<platform>-<role>.<ext>`, e.g.
 `pcoin-win64-miner.zip`, `pcoin-linux-amd64-miner.deb`, `pcoin-android-wallet.apk`,
@@ -404,7 +425,7 @@ change: both installers, `site/index.html`, `site/download/index.html`,
 pc.am. The repo alone is not enough.
 
 Two things that still need a manual bump:
-* **`contrib/windows-tray/install.ps1:20-21`** — `$Version` and `$Sha256` are
+* **`contrib/windows-tray/install.ps1:27-28`** — `$Version` and `$Sha256` are
   pinned defaults and the installer refuses to run on a hash mismatch, so
   forgetting the SHA bump breaks every new install.
 * **`pc.am/dl/SHA256SUMS.txt`** — copy the release's `SHA256SUMS` up with the

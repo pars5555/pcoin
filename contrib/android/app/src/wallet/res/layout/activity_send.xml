@@ -63,51 +63,51 @@
             android:orientation="vertical"
             android:padding="18dp">
 
-            <!-- Label and Scan on one row so the address field below keeps the
-                 full width: a bech32 address is 42 characters and shrinking the
-                 box to make room for a button is the wrong trade. -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/send_to_label"
+                android:textColor="@color/ink_muted"
+                android:textSize="14sp" />
+
+            <!-- Address and scanner on one row. The icon button is square and
+                 fixed-width so the field keeps almost all the space: a bech32
+                 address is 42 monospace characters and every dp matters. -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
                 android:gravity="center_vertical"
                 android:orientation="horizontal">
 
-                <TextView
+                <EditText
+                    android:id="@+id/address_field"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="@string/send_to_label"
-                    android:textColor="@color/ink_muted"
+                    android:background="@drawable/bg_inset"
+                    android:fontFamily="monospace"
+                    android:hint="@string/send_to_hint"
+                    android:importantForAutofill="no"
+                    android:inputType="textNoSuggestions"
+                    android:minHeight="52dp"
+                    android:padding="14dp"
+                    android:textColor="@color/ink"
+                    android:textColorHint="@color/ink_muted"
                     android:textSize="14sp" />
 
-                <Button
+                <ImageButton
                     android:id="@+id/scan_button"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
+                    android:layout_width="52dp"
+                    android:layout_height="52dp"
+                    android:layout_marginStart="8dp"
                     android:background="@drawable/btn_ghost"
-                    android:minHeight="44dp"
-                    android:minWidth="96dp"
-                    android:text="@string/scan_button"
-                    android:textAllCaps="false"
-                    android:textColor="@color/brand"
-                    android:textSize="15sp" />
+                    android:contentDescription="@string/scan_button"
+                    android:padding="13dp"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/ic_qr"
+                    android:tint="@color/brand" />
             </LinearLayout>
-
-            <EditText
-                android:id="@+id/address_field"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:background="@drawable/bg_inset"
-                android:fontFamily="monospace"
-                android:hint="@string/send_to_hint"
-                android:inputType="textNoSuggestions"
-                android:minHeight="52dp"
-                android:padding="14dp"
-                android:textColor="@color/ink"
-                android:textColorHint="@color/ink_muted"
-                android:textSize="14sp"
-                android:importantForAutofill="no" />
 
             <!-- Says whether this address has a name in the address book.
                  Both answers are shown: a paste that produces silence where a
@@ -138,23 +138,31 @@
                     android:textColor="@color/ink_muted"
                     android:textSize="14sp" />
 
-                <LinearLayout
-                    android:id="@+id/book_rows"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical" />
+                <!--
+                  Every saved name is here, and the list scrolls inside itself
+                  once it outgrows the space. It replaced a first-four preview
+                  plus an "all N" button, which made the common case (pay
+                  someone I have already named) cost a screen change.
 
-                <Button
-                    android:id="@+id/book_all_button"
+                  Height is clamped in code rather than fixed here: a short list
+                  should take only the room it needs, and only a long one should
+                  become a scroller. SendActivity also asks the parent not to
+                  intercept touches while a drag is inside this view, otherwise
+                  the outer ScrollView steals it and the inner list never moves.
+                -->
+                <ScrollView
+                    android:id="@+id/book_scroll"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:background="@drawable/btn_ghost"
-                    android:minHeight="44dp"
-                    android:textAllCaps="false"
-                    android:textColor="@color/brand"
-                    android:textSize="14sp"
-                    android:visibility="gone" />
+                    android:fadeScrollbars="false"
+                    android:scrollbars="vertical">
+
+                    <LinearLayout
+                        android:id="@+id/book_rows"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical" />
+                </ScrollView>
             </LinearLayout>
 
             <TextView

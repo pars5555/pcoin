@@ -11,13 +11,17 @@
 # completed" is not the same claim as "the download is the file the project
 # published". A mismatch aborts; it never warns and continues.
 #
-# Deliberately no version pinned in here. The Windows installer pins one and
-# every release therefore needs a manual bump that has been forgotten before;
-# resolving through /releases/latest/download means this file is correct for
-# every future release without being edited.
+# Pinned to a release tag, deliberately, and this reverses what this comment
+# used to say. Components now ship separately, so /releases/latest/download
+# resolves against whatever released last: an Android-only release would 404
+# this .deb AND its SHA256SUMS together, and the SHA256SUMS half is the nastier
+# one -- even a resilient download is then refused below because the list does
+# not name the file. A stale pin instead serves the previous working miner.
+# Bump VER on a LINUX release only; the .deb and its checksum come from one tag.
 set -eu
 
-BASE="https://github.com/pars5555/pcoin/releases/latest/download"
+VER="v1.2.6"
+BASE="https://github.com/pars5555/pcoin/releases/download/$VER"
 DEB="pcoin-linux-amd64-miner.deb"
 
 if [ -t 1 ]; then

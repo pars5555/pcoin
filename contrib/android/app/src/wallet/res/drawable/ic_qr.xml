@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  A QR glyph.
+
+  The viewport is 21x21 because that is a real QR version-1 grid, so one unit is
+  one module and the three finder patterns land on their true coordinates:
+  7x7 rings at the top-left, top-right and bottom-left, each with a 3x3 centre.
+  Drawing it to the actual geometry rather than by eye is what makes it read as
+  a QR code at 24dp instead of as a generic grid.
+
+  The rings use evenOdd so the hole is a hole rather than a second shape painted
+  in the background colour, which would show as a solid block on a tinted button.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="21"
+    android:viewportHeight="21">
+
+    <!-- top-left finder -->
+    <path
+        android:fillColor="#000000"
+        android:fillType="evenOdd"
+        android:pathData="M0,0 h7 v7 h-7 z M1,1 v5 h5 v-5 z" />
+    <path android:fillColor="#000000" android:pathData="M2,2 h3 v3 h-3 z" />
+
+    <!-- top-right finder -->
+    <path
+        android:fillColor="#000000"
+        android:fillType="evenOdd"
+        android:pathData="M14,0 h7 v7 h-7 z M15,1 v5 h5 v-5 z" />
+    <path android:fillColor="#000000" android:pathData="M16,2 h3 v3 h-3 z" />
+
+    <!-- bottom-left finder -->
+    <path
+        android:fillColor="#000000"
+        android:fillType="evenOdd"
+        android:pathData="M0,14 h7 v7 h-7 z M1,15 v5 h5 v-5 z" />
+    <path android:fillColor="#000000" android:pathData="M2,16 h3 v3 h-3 z" />
+
+    <!-- a scatter of data modules, enough to read as encoded content -->
+    <path android:fillColor="#000000" android:pathData="M9,0 h2 v2 h-2 z" />
+    <path android:fillColor="#000000" android:pathData="M9,3 h2 v2 h-2 z" />
+    <path android:fillColor="#000000" android:pathData="M12,9 h2 v2 h-2 z" />
+    <path android:fillColor="#000000" android:pathData="M9,12 h2 v2 h-2 z" />
+    <path android:fillColor="#000000" android:pathData="M15,9 h2 v2 h-2 z" />
+    <path android:fillColor="#000000" android:pathData="M19,9 h2 v2 h-2 z" />
+    <path android:fillColor="#000000" android:pathData="M15,13 h2 v2 h-2 z" />
+    <path android:fillColor="#000000" android:pathData="M19,16 h2 v2 h-2 z" />
+    <path android:fillColor="#000000" android:pathData="M12,16 h2 v2 h-2 z" />
+    <path android:fillColor="#000000" android:pathData="M15,19 h2 v2 h-2 z" />
+    <path android:fillColor="#000000" android:pathData="M9,19 h2 v2 h-2 z" />
+    <path android:fillColor="#000000" android:pathData="M0,9 h2 v2 h-2 z" />
+    <path android:fillColor="#000000" android:pathData="M3,9 h2 v2 h-2 z" />
+</vector>
