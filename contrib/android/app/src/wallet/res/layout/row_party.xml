@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  One address on the other side of a transaction, with the button that pays it.
+
+  The address is always shown in full next to any name, for the same reason the
+  address book gives: a name is this phone's own note and nothing verifies it.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginTop="8dp"
+    android:background="@drawable/bg_inset"
+    android:orientation="vertical"
+    android:padding="12dp">
+
+    <TextView
+        android:id="@+id/party_name"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="@color/ink"
+        android:textSize="14sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/party_address"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:fontFamily="monospace"
+        android:textColor="@color/ink_muted"
+        android:textIsSelectable="true"
+        android:textSize="11sp" />
+
+    <Button
+        android:id="@+id/party_pay"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:background="@drawable/btn_ghost"
+        android:minHeight="44dp"
+        android:textAllCaps="false"
+        android:textColor="@color/brand"
+        android:textSize="14sp" />
+</LinearLayout>

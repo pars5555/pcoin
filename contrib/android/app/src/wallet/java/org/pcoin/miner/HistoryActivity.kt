@@ -16,10 +16,16 @@ import java.util.Locale
 /**
  * Wallet history.
  *
- * Read-only, and everything on screen comes from one `listtransactions` call.
- * Nothing here is derived, cached or remembered between visits: a stale history
- * is worse than a slow one, because the whole point of the screen is to answer
- * "did my money arrive".
+ * The LIST comes from one `listtransactions` call and is never cached between
+ * visits: a stale history is worse than a slow one, because the whole point of
+ * the screen is to answer "did my money arrive".
+ *
+ * A row can be TAPPED OPEN for details, and that part is fetched on demand -- one
+ * `gettransaction` plus one `getrawtransaction`, only for the row that was
+ * opened, never for the list. Closing and reopening re-uses what was already
+ * fetched for that row, and leaving the screen forgets all of it. That is the
+ * whole extent of the caching, and it is why the earlier claim that "nothing
+ * here is derived" no longer holds: it is derived, per row, on request.
  *
  * Two rules this screen follows that are easy to get wrong:
  *
@@ -51,10 +57,29 @@ class HistoryActivity : AppCompatActivity() {
      */
     private var bookEntries: List<AddressBook.Entry> = emptyList()
 
+    /**
+     * Details already fetched this visit, keyed by txid, so reopening a row does
+     * not ask the node again. Cleared with the activity: a transaction gains
+     * confirmations and this must never show a number from ten minutes ago as if
+     * it were current.
+     */
+    private val details = HashMap<String, ForwardEngine.TxDetails>()
+
+    /** Txids whose fetch is in flight, so a double tap cannot start two. */
+    private val fetching = HashSet<String>()
+
+    /** Our own addresses, so a change output is not offered as a counterparty. */
+    private var myAddresses: Set<String> = emptySet()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
         book = AddressBookStore(this)
+        // Only the receiving address is known here, which is enough for the case
+        // that matters: coins moved between your own addresses. Change addresses
+        // are not enumerated, and are not needed -- a send's counterparty comes
+        // from listtransactions rather than from its outputs.
+        myAddresses = setOfNotNull(prefs.payoutAddress)
         setContentView(R.layout.activity_history)
 
         status = findViewById(R.id.history_status)
@@ -157,7 +182,135 @@ class HistoryActivity : AppCompatActivity() {
             detail.text = listOf(when_, party(e), e.txid)
                 .filter { it.isNotEmpty() }
                 .joinToString("\n")
+
+            // Tap anywhere on the row to open it. The whole card is the target
+            // rather than a small chevron: this is a list read with a thumb.
+            val more = v.findViewById<LinearLayout>(R.id.row_more)
+            v.setOnClickListener {
+                if (more.visibility == View.VISIBLE) {
+                    more.visibility = View.GONE
+                } else {
+                    more.visibility = View.VISIBLE
+                    showDetails(e, more)
+                }
+            }
             rows.addView(v)
+        }
+    }
+
+    /**
+     * Fill an opened row, fetching once and reusing after that.
+     *
+     * The fetch is off the UI thread and the result is checked against the row
+     * it was asked for: a list can be refreshed while a lookup is in flight, and
+     * writing a stale answer into a recycled view would put one transaction's
+     * counterparty under another's amount.
+     */
+    private fun showDetails(e: ForwardEngine.HistoryEntry, more: LinearLayout) {
+        val status = more.findViewById<TextView>(R.id.row_more_status)
+        val facts = more.findViewById<TextView>(R.id.row_more_facts)
+        val txidView = more.findViewById<TextView>(R.id.row_more_txid)
+        val parties = more.findViewById<LinearLayout>(R.id.row_more_parties)
+
+        details[e.txid]?.let { render(e, it, status, facts, txidView, parties); return }
+
+        status.text = getString(R.string.history_more_loading)
+        facts.visibility = View.GONE
+        txidView.visibility = View.GONE
+        parties.removeAllViews()
+        if (!fetching.add(e.txid)) return
+
+        val wallet = prefs.payoutWallet
+        Thread {
+            var got: ForwardEngine.TxDetails? = null
+            var err: String? = null
+            try {
+                got = MinerService.engine()?.txDetails(e.txid, wallet)
+                    ?: throw IllegalStateException(getString(R.string.history_no_service))
+            } catch (t: Exception) {
+                err = t.message ?: t.javaClass.simpleName
+            }
+            val d = got
+            ui.post {
+                fetching.remove(e.txid)
+                if (d == null) {
+                    status.text = getString(R.string.history_more_failed, err.orEmpty())
+                    return@post
+                }
+                details[e.txid] = d
+                // Only paint if this view is still showing the same transaction.
+                if (more.tag == null || more.tag == e.txid) {
+                    render(e, d, status, facts, txidView, parties)
+                }
+            }
+        }.start()
+        more.tag = e.txid
+    }
+
+    private fun render(
+        e: ForwardEngine.HistoryEntry,
+        d: ForwardEngine.TxDetails,
+        status: TextView,
+        facts: TextView,
+        txidView: TextView,
+        parties: LinearLayout,
+    ) {
+        val height = if (d.blockHeight >= 0) d.blockHeight.toString() else "—"
+        facts.text =
+            if (d.feeSat > 0) getString(R.string.history_more_facts, height, d.confirmations, Fmt.coinsSat(d.feeSat))
+            else getString(R.string.history_more_facts_nofee, height, d.confirmations)
+        facts.visibility = View.VISIBLE
+        txidView.text = d.txid
+        txidView.visibility = View.VISIBLE
+
+        parties.removeAllViews()
+
+        // A SEND's destination is already known exactly -- listtransactions puts
+        // it in `address` -- so it needs NO block lookup and works while the
+        // payment is still unconfirmed. Gating it on unresolvedReason (as this
+        // first did) hid "Send again" behind a confirmation the destination
+        // never depended on, and told someone their own outgoing payment's
+        // origin was unknown, which is not even the question.
+        //
+        // Deriving it from the outputs instead would mean telling change apart
+        // from payment, which needs every internal address the wallet ever
+        // derived -- work with a wrong answer at the end of it.
+        //
+        // A RECEIVE has no such field, because there is no sender in the
+        // protocol. Its inputs are the closest thing, and only THEY need the
+        // block.
+        val sent = e.kind == ForwardEngine.HistoryEntry.Kind.SENT
+        val payable = if (sent) {
+            TxParties.payable(listOf(e.address), emptySet())
+        } else {
+            if (d.unresolvedReason != null) {
+                status.text = getString(R.string.history_more_unresolved, d.unresolvedReason)
+                return
+            }
+            TxParties.payable(d.inputAddresses, myAddresses)
+        }
+        if (payable.isEmpty()) {
+            status.text =
+                if (sent) getString(R.string.history_sent_multi)
+                else getString(R.string.history_no_parties)
+            return
+        }
+        status.text = getString(if (sent) R.string.history_paid_to else R.string.history_paid_from)
+
+        val inflater = LayoutInflater.from(this)
+        for (address in payable) {
+            val row = inflater.inflate(R.layout.row_party, parties, false)
+            val name = AddressBook.labelFor(bookEntries, address)
+            val nameView = row.findViewById<TextView>(R.id.party_name)
+            nameView.visibility = if (name == null) View.GONE else View.VISIBLE
+            nameView.text = name.orEmpty()
+            row.findViewById<TextView>(R.id.party_address).text = address
+            val pay = row.findViewById<Button>(R.id.party_pay)
+            pay.setText(if (sent) R.string.history_pay_again else R.string.history_pay_this)
+            // Fills the compose field and nothing more: validateaddress still
+            // runs and the review step still shows what the node built.
+            pay.setOnClickListener { startActivity(SendActivity.intentFor(this, address)) }
+            parties.addView(row)
         }
     }
 

@@ -178,6 +178,24 @@
 
     <string name="history_status_pending">Waiting to be included in a block</string>
 
+    <!-- Expanded row. The wording never calls an input address "the sender":
+         inputs are often an exchange or the payer's change address, and a
+         transaction has no from-field to be certain about. -->
+    <string name="history_tap_hint">Tap a payment for details</string>
+    <string name="history_more_loading">Looking up the details&#8230;</string>
+    <string name="history_more_failed">Could not read the details: %1$s</string>
+    <string name="history_more_facts">Block %1$s &#183; %2$d confirmations &#183; fee %3$s</string>
+    <string name="history_more_facts_nofee">Block %1$s &#183; %2$d confirmations</string>
+    <string name="history_more_unresolved">Where it came from cannot be shown: %1$s.</string>
+    <string name="history_paid_from">Paid from these addresses</string>
+    <string name="history_paid_to">Paid to</string>
+    <string name="history_pay_this">Pay this address</string>
+    <string name="history_pay_again">Send again</string>
+    <string name="history_no_parties">No other address to show &#8212; the coins moved between your own addresses.</string>
+    <!-- A send to several destinations reports a blank address, so there is no
+         single one to repeat. -->
+    <string name="history_sent_multi">This payment had more than one destination, so there is no single address to send to again.</string>
+
     <!-- Counterparty. Worded per direction because listtransactions puts a
          different thing in `address` for each: the destination for a send, but
          YOUR OWN address for a receive or a coinbase. There is deliberately no

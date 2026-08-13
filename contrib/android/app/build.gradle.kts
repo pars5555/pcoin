@@ -1,4 +1,4 @@
-import java.util.Properties
+﻿import java.util.Properties
 
 plugins {
     id("com.android.application")
@@ -133,8 +133,14 @@ android {
             // 0.2.6: QR icon beside the address field, the whole address book
             // scrollable in place, and MAX. 0.2.5 already reached a phone, so
             // this is a new number rather than a second binary claiming that one.
-            versionCode = 9
-            versionName = "0.2.6"
+            // 0.2.7: history rows open for details and can pay the other side.
+            // 0.2.8: "Send again" no longer waits for a confirmation. A send's
+            // destination comes from listtransactions and never needed the block
+            // lookup that resolving a RECEIVE's inputs does; gating both on it
+            // hid the button on the newest payment, which is the one most likely
+            // to be repeated. Caught by opening a real unconfirmed row.
+            versionCode = 11
+            versionName = "0.2.8"
 
             buildConfigField("boolean", "MINING", "false")
             // The ONLY genuine collision between the two apps. bitcoind is
@@ -150,7 +156,7 @@ android {
     // from the environment, so neither is ever committed.
     //
     // This key is irreplaceable: Android refuses to upgrade an app signed with a
-    // different key, so losing it would force every user to uninstall — and an
+    // different key, so losing it would force every user to uninstall â€” and an
     // uninstall destroys the wallet stored in app data.
     val signingProps = Properties().apply {
         val f = rootProject.file("signing.properties")

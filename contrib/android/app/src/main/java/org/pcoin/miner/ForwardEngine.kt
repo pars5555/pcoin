@@ -1532,6 +1532,103 @@ class ForwardEngine(context: Context, private val node: NodeController) {
         return out
     }
 
+    /**
+     * Everything a history row can say about one transaction, including who was
+     * on the other side.
+     *
+     * HOW THE OTHER SIDE IS RESOLVED WITHOUT txindex, which is the whole trick.
+     * A phone runs no transaction index, so `getrawtransaction <txid>` fails
+     * outright: "No such mempool transaction. Use -txindex or provide a block
+     * hash". The escape is in that error message. `gettransaction` is
+     * wallet-scoped and answers for OUR transactions, and it returns the
+     * blockhash; handing that back as the third argument lets the node find the
+     * transaction in one block instead of an index. Verbosity 2 then decorates
+     * every input with its `prevout`, address included.
+     *
+     * Verified on a real phone node with txindex off before this was written:
+     * verbosity 2 plus a blockhash returns prevout addresses, exit 0.
+     *
+     * One targeted call, not a whole-block fetch, and it is only made when a row
+     * is actually opened -- the list itself still costs exactly one
+     * listtransactions.
+     */
+    @Throws(IOException::class)
+    fun txDetails(txid: String, wallet: String): TxDetails {
+        val t = rpc.call(
+            "gettransaction",
+            JSONArray().put(txid),
+            wallet = wallet,
+            readTimeoutMs = RPC_TIMEOUT_MS,
+        ) as? JSONObject ?: throw IOException("the node did not answer gettransaction")
+
+        val confirmations = t.optInt("confirmations", 0)
+        val blockHash = t.optString("blockhash").takeIf { it.isNotBlank() }
+        val details = t.optJSONArray("details")
+        val isCoinbase = (0 until (details?.length() ?: 0)).any {
+            val c = details?.optJSONObject(it)?.optString("category")
+            c == "generate" || c == "immature"
+        }
+
+        val base = TxDetails(
+            txid = txid,
+            confirmations = confirmations,
+            blockHeight = t.optLong("blockheight", -1L),
+            timeSec = t.optLong("time", 0L),
+            feeSat = kotlin.math.abs(toSat(t.optDouble("fee", 0.0))),
+            inputAddresses = emptyList(),
+            outputAddresses = emptyList(),
+            unresolvedReason = TxParties.unresolvableReason(confirmations, blockHash != null, isCoinbase),
+        )
+        if (base.unresolvedReason != null || blockHash == null) return base
+
+        // Verbosity 2 + blockhash. A failure here is NOT fatal to the row: the
+        // amounts and status above are already known and true, and losing the
+        // counterparty is a smaller loss than showing nothing at all.
+        val raw = try {
+            rpc.call(
+                "getrawtransaction",
+                JSONArray().put(txid).put(2).put(blockHash),
+                readTimeoutMs = RPC_TIMEOUT_MS,
+            ) as? JSONObject
+        } catch (e: IOException) {
+            Log.w(TAG, "txDetails: prevout lookup failed for ${Redact.text(txid)}")
+            null
+        } ?: return base.copy(unresolvedReason = "the node could not read that transaction")
+
+        val ins = ArrayList<String>()
+        val vin = raw.optJSONArray("vin")
+        for (i in 0 until (vin?.length() ?: 0)) {
+            val v = vin?.optJSONObject(i) ?: continue
+            // A coinbase input has no prevout at all; nothing to resolve.
+            val a = v.optJSONObject("prevout")?.optJSONObject("scriptPubKey")?.optString("address")
+            if (!a.isNullOrBlank()) ins.add(a)
+        }
+        val outs = ArrayList<String>()
+        val vout = raw.optJSONArray("vout")
+        for (i in 0 until (vout?.length() ?: 0)) {
+            val v = vout?.optJSONObject(i) ?: continue
+            val a = v.optJSONObject("scriptPubKey")?.optString("address")
+            if (!a.isNullOrBlank()) outs.add(a)
+        }
+        return base.copy(inputAddresses = ins, outputAddresses = outs)
+    }
+
+    /**
+     * [unresolvedReason] is null when the other side is known. It is a sentence
+     * fragment for the UI, never an error: "not in a block yet" is a true
+     * statement about a healthy pending payment.
+     */
+    data class TxDetails(
+        val txid: String,
+        val confirmations: Int,
+        val blockHeight: Long,
+        val timeSec: Long,
+        val feeSat: Long,
+        val inputAddresses: List<String>,
+        val outputAddresses: List<String>,
+        val unresolvedReason: String?,
+    )
+
     /** Exact amount, node-selected inputs, change back to us. */
     private fun callExactSend(destination: String, amountSat: Long, wallet: String): Built {
         val options = JSONObject()

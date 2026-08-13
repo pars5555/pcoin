@@ -54,6 +54,67 @@
         android:layout_marginTop="6dp"
         android:fontFamily="monospace"
         android:textColor="@color/ink_muted"
-        android:textIsSelectable="true"
         android:textSize="11sp" />
+
+    <!--
+      The expanded half. Hidden until the row is tapped, and its contents are
+      fetched only then, so the list still costs exactly one listtransactions.
+
+      row_detail above is deliberately no longer selectable: a long-press to
+      select text and a tap to expand fight each other, and losing the toggle is
+      the more annoying of the two. The full txid is selectable down here
+      instead, which is where someone actually goes to copy it.
+    -->
+    <LinearLayout
+        android:id="@+id/row_more"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="@color/hairline" />
+
+        <TextView
+            android:id="@+id/row_more_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:textColor="@color/ink_muted"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/row_more_facts"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textColor="@color/ink_muted"
+            android:textSize="13sp"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/row_more_txid"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/bg_inset"
+            android:fontFamily="monospace"
+            android:padding="10dp"
+            android:textColor="@color/ink_muted"
+            android:textIsSelectable="true"
+            android:textSize="11sp"
+            android:visibility="gone" />
+
+        <!-- Counterparty addresses, each with its own pay button, added in code
+             because there can be several and there is no honest way to pick one. -->
+        <LinearLayout
+            android:id="@+id/row_more_parties"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:orientation="vertical" />
+    </LinearLayout>
 </LinearLayout>
