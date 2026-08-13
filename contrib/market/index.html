@@ -53,13 +53,19 @@
     <div class="panel">
       <h2>Buy PCN</h2>
       <label for="usd">Amount in USD</label>
-      <input id="usd" type="number" min="10" step="1" value="10" oninput="quote()">
+      <!-- No min/value typed in here. Both were hardcoded to 10 while the real
+           minimum was 20: correct in practice only because the script rewrites
+           them on load, and silently wrong for anyone whose /api/ladder/state
+           call failed. The button starts disabled and the script enables it
+           once the server's real limits have arrived — a page that has not
+           confirmed the limits must not invite a payment against them. -->
+      <input id="usd" type="number" step="1" oninput="quote()">
       <label for="addr">Your PCN address</label>
       <input id="addr" class="mono" placeholder="pc1q…" spellcheck="false"
              autocapitalize="none" autocorrect="off" oninput="checkAddr()">
       <div class="s" id="addrNote"></div>
       <div class="note" id="quoteBox">Enter an amount to see what you receive.</div>
-      <button id="buyBtn" onclick="buy()">Continue to payment</button>
+      <button id="buyBtn" onclick="buy()" disabled>Loading limits…</button>
       <div class="msg" id="buyMsg"></div>
       <div class="note" id="deliveryNote">
         You are sent to NOWPayments to pay. Coins are released once the payment confirms
@@ -92,6 +98,7 @@
 let mode = 'in';
 // Server-owned limits, fetched at load. The defaults only cover the instant
 // before that returns; every one is overwritten from /api/ladder/state.
+let LIMITS_LOADED = false;
 let LIMITS = { minOrderUsd: 20, maxOrderUsd: 2000, maxOrderPcn: 12000,
                maxOrderUsdNow: null, autoMaxUsd: 25 };
 const $ = id => document.getElementById(id);
@@ -305,6 +312,14 @@ function quote() {
 }
 
 async function buy() {
+  // Belt to the disabled button's braces. The button is the UI; this is the
+  // rule. Anything that re-enables the button — a stray script, a devtools
+  // poke, a future edit — must still not be able to start a payment against
+  // limits this page never received.
+  if (!LIMITS_LOADED) {
+    show($('buyMsg'), 'err', 'Order limits have not loaded. Reload the page and try again.');
+    return;
+  }
   if (!checkAddr() || !$('addr').value.trim()) {
     show($('buyMsg'), 'err', 'Enter a valid PCN address first — it starts with "pc1".');
     return;
@@ -362,15 +377,31 @@ $('signout').onclick = async () => { await fetch('/api/logout'); refresh(); };
       + (l.maxOrderUsdNow ? ' (about $' + Number(l.maxOrderUsdNow).toLocaleString() + ' today)' : '');
     $('usd').min = l.minOrderUsd;
     $('usd').max = Math.min(l.maxOrderUsd, l.maxOrderUsdNow || l.maxOrderUsd);
-    if (Number($('usd').value) < l.minOrderUsd) $('usd').value = l.minOrderUsd;
+    if (!($('usd').value > 0) || Number($('usd').value) < l.minOrderUsd) {
+      $('usd').value = l.minOrderUsd;
+    }
+    // The limits are now the server's, so the form may be used.
+    LIMITS_LOADED = true;
+    $('buyBtn').textContent = 'Continue to payment';
     $('deliveryNote').innerHTML =
       'You are sent to NOWPayments to pay. Coins are released once the payment confirms '
       + '&mdash; not instantly, because a payment that is still confirming can still be reversed. '
       + '<b>Orders up to $' + l.autoMaxUsd + ' are sent automatically</b>, usually within a minute '
       + 'of confirmation. <b>Larger orders are released by hand</b> and can take anywhere from a '
       + 'minute to 24 working hours.';
-  } catch { $('remaining').textContent = 'unavailable'; }
+  } catch {
+    // The limits never arrived. Say so and keep the form shut rather than
+    // inviting a payment against numbers this page cannot vouch for — the
+    // markup no longer carries any, precisely so there is nothing to fall
+    // back to that could be quietly wrong.
+    $('remaining').textContent = 'unavailable';
+    $('quoteBox').innerHTML = '<b>Order limits could not be loaded.</b> Reload the page — '
+      + 'buying is disabled until they are known, rather than risk quoting you a limit '
+      + 'that is not the real one.';
+    $('buyBtn').disabled = true;
+    $('buyBtn').textContent = 'Limits unavailable';
+  }
   refresh();
-  quote();
+  if (LIMITS_LOADED) quote();
 })();
 </script>
