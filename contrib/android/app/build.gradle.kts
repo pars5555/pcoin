@@ -98,6 +98,46 @@ android {
             buildConfigField("int", "RPC_PORT", "9443")
         }
 
+        // The phones that never made the 2026-08-06 rename.
+        //
+        // SM-G781V, SM-N960U and SM-F721U still run org.pcoin.miner 0.2.0. To
+        // Android the `miner` flavour above is a DIFFERENT app, so installing it
+        // there would sit alongside the old one rather than upgrade it -- and
+        // the only way to replace it would be an uninstall, which destroys the
+        // wallet AND the forwarding address in app-private storage. The owner's
+        // instruction was explicit: not that.
+        //
+        // So this flavour is the same code with the OLD identity, purely so
+        // those three can be upgraded in place. It exists to be deleted: once
+        // they are migrated deliberately -- with backups, on a day someone
+        // chooses -- this block and the id go with them.
+        //
+        // `install -r` FAILS SAFELY if the signer does not match. It refuses;
+        // it does not uninstall. So attempting it costs nothing and is the
+        // cheapest way to find out whether these predate the pinned debug key.
+        create("legacy") {
+            dimension = "role"
+            applicationId = "org.pcoin.miner"
+            // Must exceed whatever is installed or Android refuses the upgrade
+            // as a downgrade. The three phones report 0.2.0; nothing in that era
+            // went past versionCode 2, so 10 clears it with room and stays well
+            // clear of the miner flavour's own numbering.
+            versionCode = 10
+            versionName = "0.3.2-legacy"
+
+            buildConfigField("boolean", "MINING", "true")
+            buildConfigField("int", "RPC_PORT", "9443")
+        }
+
+        // legacy IS the miner, with the old identity. It shares the miner's
+        // source set rather than copying it: a duplicated MainActivity and icon
+        // set would drift, and the whole point is that these phones run the same
+        // app as everyone else.
+        sourceSets.getByName("legacy") {
+            java.srcDirs("src/miner/java")
+            res.srcDirs("src/miner/res")
+        }
+
         create("wallet") {
             dimension = "role"
             // Free to choose: this app has never been installed anywhere, so
