@@ -95,6 +95,20 @@
     <string name="send_available">Available to spend: %1$s</string>
     <string name="send_available_unknown">Waiting for your balance&#8230;</string>
 
+    <!-- Scanner. The copy never claims a scan proves anything about the
+         address: it fills a field, and the review step is still where the
+         destination is confirmed. -->
+    <string name="scan_title">Scan a code</string>
+    <string name="scan_button">Scan</string>
+    <string name="scan_hint">Point the camera at a PCoin QR code.</string>
+    <string name="scan_cancel">Cancel</string>
+    <string name="scan_torch_on">Light on</string>
+    <string name="scan_torch_off">Light off</string>
+    <string name="scan_no_permission">Without camera access this phone cannot scan. You can still paste an address or pick one from your address book.</string>
+    <string name="scan_no_camera">This phone\'s camera could not be started. You can still paste an address or pick one from your address book.</string>
+    <string name="scan_not_payment">That code is not a PCoin address.</string>
+    <string name="scan_filled_amount">Scanned an amount of %1$s &#8212; check it before sending.</string>
+
     <string name="send_to_label">To this address</string>
     <string name="send_to_hint">pc1&#8230;</string>
     <string name="send_amount_label">Amount</string>

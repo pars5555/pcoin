@@ -6,6 +6,14 @@
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Wallet only. The miner has no scanner and must not ask for a camera. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- required="false": a device with no camera is a perfectly good wallet,
+         it just cannot scan. Marking it required would hide the app from those
+         devices in a store listing for a convenience feature. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
     <application>
         <!-- Send is reached from the home screen only, never from outside the
              app: no intent-filter, not exported. A payment screen that any other
@@ -40,5 +48,15 @@
             android:exported="false"
             android:label="@string/book_title"
             android:windowSoftInputMode="adjustResize" />
+
+        <!-- Not exported: it returns a string that lands in the address field of
+             a payment, so no other app may launch it and hand back a result.
+             Portrait-locked because a rotation mid-scan tears down the camera
+             and rebinds it, which reads as the scanner freezing. -->
+        <activity
+            android:name=".ScanActivity"
+            android:exported="false"
+            android:label="@string/scan_title"
+            android:screenOrientation="portrait" />
     </application>
 </manifest>

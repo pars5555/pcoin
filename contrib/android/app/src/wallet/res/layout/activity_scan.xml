@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The scanner. Camera preview behind, controls in front.
+
+  Deliberately plain: no aiming reticle drawn over the preview. ZXing finds the
+  code anywhere in the frame, so a box that implies "line it up here" would be
+  telling the user to do work the decoder does not need, and would look broken
+  when a code decodes outside it.
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/black">
+
+    <androidx.camera.view.PreviewView
+        android:id="@+id/scan_preview"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- Carries the hint, and the two answers that end the screen early:
+         permission refused, and no usable camera. -->
+    <TextView
+        android:id="@+id/scan_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:background="#B3000000"
+        android:padding="16dp"
+        android:textColor="#FFFFFF"
+        android:textSize="15sp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:orientation="horizontal"
+        android:padding="20dp">
+
+        <Button
+            android:id="@+id/scan_cancel"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:background="@drawable/btn_ghost"
+            android:minHeight="52dp"
+            android:text="@string/scan_cancel"
+            android:textAllCaps="false"
+            android:textColor="@color/brand"
+            android:textSize="16sp" />
+
+        <!-- Hidden unless the device actually has a flash unit. -->
+        <Button
+            android:id="@+id/scan_torch"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:layout_weight="1"
+            android:background="@drawable/btn_ghost"
+            android:minHeight="52dp"
+            android:text="@string/scan_torch_on"
+            android:textAllCaps="false"
+            android:textColor="@color/brand"
+            android:textSize="16sp"
+            android:visibility="gone" />
+    </LinearLayout>
+</FrameLayout>

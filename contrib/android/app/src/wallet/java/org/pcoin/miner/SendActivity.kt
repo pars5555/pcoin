@@ -194,6 +194,10 @@ class SendActivity : AppCompatActivity() {
             if (busy) return@setOnClickListener
             startActivityForResult(AddressBookActivity.intentPick(this), REQUEST_PICK_ADDRESS)
         }
+        findViewById<Button>(R.id.scan_button).setOnClickListener {
+            if (busy) return@setOnClickListener
+            startActivityForResult(ScanActivity.intent(this), REQUEST_SCAN)
+        }
         saveButton.setOnClickListener { saveName() }
 
         maxButton.setOnClickListener { toggleMax() }
@@ -238,6 +242,12 @@ class SendActivity : AppCompatActivity() {
         if (requestCode == REQUEST_PICK_ADDRESS) {
             if (resultCode == Activity.RESULT_OK) {
                 data?.getStringExtra(AddressBookActivity.EXTRA_ADDRESS)?.let { fillAddress(it) }
+            }
+            return
+        }
+        if (requestCode == REQUEST_SCAN) {
+            if (resultCode == Activity.RESULT_OK) {
+                onScanned(data?.getStringExtra(ScanActivity.EXTRA_TEXT))
             }
             return
         }
@@ -349,6 +359,39 @@ class SendActivity : AppCompatActivity() {
             bookAllButton.text = getString(R.string.send_book_all, entries.size)
         } else {
             bookAllButton.visibility = View.GONE
+        }
+    }
+
+    /**
+     * A QR was decoded. It fills fields; it decides nothing.
+     *
+     * [PaymentUri] says whether the text is a payment at all. A code that is
+     * not one is reported and dropped rather than half-applied -- putting a URL
+     * into the address box would only produce a confusing failure two steps
+     * later, at the node.
+     *
+     * An amount is filled in when the code states one readably, and announced,
+     * because money that appeared without being typed deserves to be pointed
+     * at. When the code states no amount, or one that cannot be read, the box
+     * is left ALONE rather than zeroed: an untouched field is a question the
+     * user answers, a zero is an answer nobody gave.
+     */
+    private fun onScanned(text: String?) {
+        val target = PaymentUri.parse(text)
+        if (target == null) {
+            composeError.setText(R.string.scan_not_payment)
+            composeError.visibility = View.VISIBLE
+            return
+        }
+        fillAddress(target.address)
+        target.amountSat?.let { sat ->
+            if (sendMax) toggleMax()          // an explicit amount contradicts "All"
+            amountField.setText(Amounts.toPlainString(sat))
+            Toast.makeText(
+                this,
+                getString(R.string.scan_filled_amount, Fmt.coinsSat(sat)),
+                Toast.LENGTH_LONG,
+            ).show()
         }
     }
 
@@ -702,6 +745,9 @@ class SendActivity : AppCompatActivity() {
          * device-unlock result into the address picker.
          */
         private const val REQUEST_PICK_ADDRESS = 8311
+
+        /** Distinct from the picker (8311) and SeedGate's unlock (7241). */
+        private const val REQUEST_SCAN = 8312
 
         /** How many saved addresses appear inline before "all N" takes over. */
         private const val INLINE_BOOK_ROWS = 4

@@ -128,8 +128,10 @@ android {
             // the change is confined to AddressBook*, which nothing in the
             // miner reaches, so the miner's behaviour is unchanged and its
             // version stays where it is.
-            versionCode = 7
-            versionName = "0.2.4"
+            // 0.2.5: QR scanning on the send screen. Wallet only -- the scanner
+            // and its two libraries are scoped to this flavour.
+            versionCode = 8
+            versionName = "0.2.5"
 
             buildConfigField("boolean", "MINING", "false")
             // The ONLY genuine collision between the two apps. bitcoind is
@@ -253,5 +255,28 @@ dependencies {
     // published BIP39, BIP32 and BIP84 test vectors. Two independent
     // implementations agreeing on published vectors is the only real evidence
     // that a phrase generated here can be restored somewhere else.
+    // QR SCANNING. The first dependencies this app has taken beyond core-ktx
+    // and appcompat, and they are here for a reason worth stating: Qr.kt is an
+    // ENCODER, and decoding is not its inverse in difficulty. A reader has to
+    // find the finder patterns in a camera frame, correct perspective, sample
+    // the grid, and run Reed-Solomon ERROR CORRECTION rather than generation.
+    // That is well over a thousand lines of subtle code sitting directly on a
+    // payment path, and a hand-rolled version's failure mode is a misread
+    // address. ZXing is the reference implementation and pure Java.
+    //
+    // CameraX rather than Camera2: PreviewView handles the surface lifecycle,
+    // rotation and the resolution dance that Camera2 makes the caller do by
+    // hand, and getting that wrong shows up as a preview that is black on one
+    // device and sideways on another.
+    // walletImplementation, NOT implementation: the miner has no scanner, and a
+    // module-level dependency lands in BOTH flavours. Declared plainly it added
+    // several megabytes of camera and barcode code to an APK that never calls
+    // any of it. PaymentUri stays in src/main and needs neither library, so
+    // scoping these costs nothing.
+    "walletImplementation"("com.google.zxing:core:3.5.3")
+    "walletImplementation"("androidx.camera:camera-camera2:1.3.4")
+    "walletImplementation"("androidx.camera:camera-lifecycle:1.3.4")
+    "walletImplementation"("androidx.camera:camera-view:1.3.4")
+
     testImplementation("junit:junit:4.13.2")
 }
