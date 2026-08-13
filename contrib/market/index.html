@@ -160,8 +160,13 @@ const money = n => n < 0.01 ? '$' + n.toFixed(6) : '$' + n.toFixed(4).replace(/0
 // are not — a 1 PCN order really does cost fifteen thousandths of a dollar, and
 // rounding that to "$0.01" beside an average of "$0.015" made the page
 // contradict itself in two adjacent numbers.
+// Rounded UP to the cent, never down. At $0.015 a coin most totals land on a
+// fraction of a cent — 137 PCN really costs $2.055 — and plain 2-decimal
+// rounding displayed that as "$2.05", quoting a buyer LESS than the thing
+// actually costs. A cost quote may be a hair high; it must never be low.
 const usd = n =>
-  n >= 1     ? '$' + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  n >= 1     ? '$' + (Math.ceil(n * 100) / 100).toLocaleString(undefined,
+                       { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 : n >= 0.01  ? '$' + n.toFixed(3).replace(/0$/, '')
              : '$' + n.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
 
