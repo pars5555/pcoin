@@ -1,4 +1,11 @@
 build/
 vectors-tampered.txt
 pool.config.json
+pool.mainnet.json
 shares.log
+
+# The share ledger. Never commit it: it is money owed, it names miners, and a
+# stale copy in git is a second source of truth for who is owed what.
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

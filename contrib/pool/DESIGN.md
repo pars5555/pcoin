@@ -122,6 +122,27 @@ Chosen over the alternatives for specific reasons:
 Set `N ≈ 2×` the shares in an average round. Store every share with
 `(miner, difficulty, timestamp, job_id)`.
 
+**Built (step 3). What "difficulty" turned out to have to mean:**
+
+A share's weight is **`2^256 / share_target` — the expected number of hashes to
+find it**, not a share count and not difficulty-1 units.
+
+* *Not a count*, because vardiff means two miners' shares are not the same
+  thing. In the test, one miner submitting 100 easy shares and another
+  submitting 10 shares ten times harder did **identical work**; paying by count
+  would have handed the first ten times the money.
+* *Not difficulty-1 units* (`powLimit / target`), which was the obvious choice
+  and is wrong here. At a share factor of 50000 against this chain's difficulty
+  a share is **easier than powLimit**, so its difficulty-1 weight floors to
+  **zero** and the share becomes worth nothing. `2^256` is above every possible
+  target, so the weight is always ≥ 1.
+
+**N is measured in that same unit — work, not shares:**
+`N = 2 × (2^256 / network_target)`, i.e. twice the work one block is expected to
+take. This matters more here than on most chains: **LWMA retargets every block**,
+so a fixed share count would silently come to mean "half a round" after a
+difficulty doubling. Measured in work, N follows the chain without being touched.
+
 ### 4. Payouts
 
 - Accrue balances in **satoshis, integer arithmetic only**. No floats anywhere
@@ -133,6 +154,51 @@ Set `N ≈ 2×` the shares in an average round. Store every share with
 - **Idempotency:** key every payout on `(block_height, miner_address)`. The
   lesson from the payment rails applies exactly — a retry must be a no-op, and
   the key must be the thing that is actually unique.
+
+**Built (step 3), and the details that only appear once you write it down:**
+
+*The split, exactly.* `fee = value × 200 / 10000`, `pot = value − fee`,
+`amount_i = pot × w_i / W` — all BigInt, all flooring. The floors always lose a
+few satoshis; that remainder is **dust and it goes to the pool**, never silently
+vanishing. The invariant `Σ amounts + dust + fee == coinbase value` is asserted
+before anything is written, re-derived per block by `payouts.mjs` from the
+weights stored on the rows themselves, and checked across the whole ledger at
+once by `ledgertest.sh`. A per-block check can pass while the ledger as a whole
+has invented coins.
+
+*A float here is silent, not loud.* SQLite integers are int64 and a literal
+above that is **parsed as REAL with no error**, so an over-large weight would
+become a float that still prints, still sums, and is quietly wrong. Weights are
+refused above 2^62 rather than stored. At real magnitudes the numerator
+`pot × w` is past 2^53, so this is not hypothetical tidiness.
+
+*Idempotency is two layers, and only one of them was being tested.* The
+application returns early when a block already has payout rows; the
+`PRIMARY KEY (block_height, miner)` refuses a duplicate underneath it. Deleting
+the primary key left the whole suite green, because the application guard hid
+it — so the test now also inserts a duplicate row directly, going around the
+guard. Two layers, two checks.
+
+*Two of our own blocks at one height.* The chosen key is `(block_height, …)`, so
+the loser's rows sit in the way of the winner's. Resolved only when the chain
+has already said which lost: if the recorded block is `orphaned` its rows are
+replaced, otherwise **nothing is computed** and it is logged as unresolved.
+Guessing which one won is the mistake this project keeps paying for.
+
+*Record before acknowledging.* A share is fsynced to the ledger **before** the
+miner is told `OK`, and if the store cannot be written the share is refused with
+a retryable error rather than accepted. A share the pool cannot record is a
+share the pool will not pay. If the store dies the pool stops accepting shares
+entirely — the same rule already applied to the validator.
+
+*Reorgs, which are routine here (~3% stale rate).* Maturity is a **depth, not a
+proof**, so mature blocks keep being re-checked; a block a reorg pushes back
+under 100 confirmations returns to *pending*, because "payable" has to mean
+"spendable now" — step 4 will read exactly that field to decide what to send. A
+disagreement must be seen **twice** before it is believed, the same
+two-observation rule the forwarding engine uses. And per the doctrine above:
+once a payout has actually been **sent**, a later reorg raises an **alarm and
+changes nothing**. Detect reorgs; never auto-reverse a credit.
 
 ### The client problem — the real work
 
@@ -189,8 +255,37 @@ Each step is independently useful and testable:
 2. **Job server + share validator**, no payouts. Miners connect, submit shares,
    the pool logs them and submits real blocks. Solo-with-extra-steps, but it
    proves the protocol end to end.
-3. **Share store and PPLNS accounting**, with payouts *computed and logged but
-   not sent*. Run it against real shares for a week; reconcile by hand.
+3. ~~**Share store and PPLNS accounting**, with payouts *computed and logged but
+   not sent*.~~ **DONE.** `store.mjs` (SQLite ledger + PPLNS + payout
+   computation), `payouts.mjs` (the reconciliation report), `storetest.mjs`
+   (70 offline checks), `ledgertest.sh` (29 end-to-end checks against the
+   regtest node). **Nothing can send: there is no send path in the tree.**
+
+   What the end-to-end run proved, with two miners over 40 s: every share the
+   miners were told was accepted is in the ledger and none twice; 55 blocks
+   found, every one reconciling to the satoshi; **98,750,000,000 satoshis mined,
+   98,750,000,000 accounted for** across payouts + fee + dust; the fee tracked
+   the reward down through the regtest halving at height 150, because the pool
+   reads `coinbasevalue` per template rather than assuming 50 PCN; blocks showed
+   as PENDING until buried, then matured; a restart lost and duplicated nothing;
+   killing the ledger out from under the running pool made it **refuse** shares
+   rather than accept ones it could not record; and a block the node genuinely
+   reorged away — `invalidateblock`, then a longer chain — was marked orphaned
+   and its payouts voided.
+
+   The evidence that matters is that the tests can fail. **15 mutations, each
+   deleting exactly one guard, were applied to `store.mjs` and every one turned
+   the suite red** — inverted weights, the missing UNIQUE index, the missing
+   primary key, believing an orphan on first sight, resolving an unreadable tip,
+   rounding instead of flooring, dropping the window trim, double-charging the
+   fee, latching maturity through a reorg, silently reversing a sent payout.
+   Two of them found real bugs first: `total_changes()` is cumulative rather
+   than per-statement, so every replay reported itself as freshly recorded; and
+   `evaluateBlocks` only ever re-examined *pending* blocks, so a matured block
+   leaving the chain was invisible.
+
+   Still to do in step 3's spirit: **run it against real shares for a week and
+   reconcile by hand.** Nothing above substitutes for that.
 4. **Payouts enabled**, threshold-triggered, idempotent on
    `(block_height, miner_address)`.
 5. **`startpoolmining`** in the node, then flip the fleet over.

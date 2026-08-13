@@ -6,6 +6,8 @@
 
   "poolAddress": "pc1qEXAMPLE...",
   "hrp": "pc",
+
+  "_fee": "Taken off the BLOCK REWARD, never off a miner's accrued balance. 50 PCN found -> 49 into PPLNS, 1 to the pool. Converted to basis points once, at config load, so nothing downstream of it touches a float. Set feeBasisPoints directly if you want a fraction of a percent.",
   "feePercent": 2,
 
   "_allowlist": "FLEET-ONLY IS ENFORCED HERE. Empty array = open to anyone. During the first week list only the fleet's payout addresses, so a stranger who finds the port is refused instead of silently accruing a balance nobody planned to pay.",
@@ -14,6 +16,17 @@
   "cliCommand": ["sudo", "docker", "exec", "pcoin-seed", "bitcoin-cli"],
   "validator": "./build/validate",
   "templatePollMs": 2000,
+
+  "_db": "The share ledger. Every accepted share is fsynced here BEFORE the miner is told OK. Back it up like a wallet: it is the only record of who is owed what. Reconcile with `node payouts.mjs`.",
+  "db": "./pool.sqlite",
+  "sqlite3": "sqlite3",
+
+  "_pplns": "windowMultiplier sets N as a multiple of the work in ONE block, measured in hashes rather than shares -- so it stays correct through vardiff and through LWMA retargeting every block. 2 is the design's 'about twice an average round'. maturity is coinbase maturity in blocks and must match consensus (100); a block's payouts show as PENDING until then.",
+  "pplns": {
+    "windowMultiplier": 2,
+    "maturity": 100
+  },
+  "maturityPollMs": 60000,
 
   "_vardiff": "Every share costs the pool ~21.7 ms of CPU, so share rate is a budget, not a comfort setting. targetSeconds is the interval each miner is held near.",
   "vardiff": {

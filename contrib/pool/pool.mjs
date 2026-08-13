@@ -1,8 +1,15 @@
-// PCoin mining pool — step 2: jobs and shares. NO PAYOUTS YET.
+// PCoin mining pool — step 3: jobs, shares, and PPLNS accounting.
+//
+//   *** PAYOUTS ARE COMPUTED AND RECORDED. NOTHING IS SENT. ***
 //
 // Miners connect, get work, submit shares, and the pool submits real blocks.
-// Shares are recorded but nothing is paid: payouts are step 4, deliberately
-// after a week of reconciling recorded shares by hand (see DESIGN.md).
+// Every accepted share is written to SQLite before the miner is told "OK", and
+// when a block is found the pool computes what each miner is owed under PPLNS
+// and writes it down. It does not pay it. Sending is step 4, deliberately after
+// a week of reconciling these numbers by hand against the chain — DESIGN.md
+// says "do not skip 3" and this is what not skipping it looks like.
+//
+// Read the ledger with:  node payouts.mjs --config pool.config.json
 //
 //   node pool.mjs --config pool.config.json
 //
@@ -20,19 +27,19 @@
 // the share target. A miner writes its nonce at offset 76 and hashes.
 
 import net from 'node:net';
-import fs from 'node:fs';
 import { spawn, execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import {
   addressToScript, buildCoinbase, merkleRoot, buildHeader,
-  serializeBlock, bitsToTarget, scaleTarget, sha256d,
+  serializeBlock, bitsToTarget, scaleTarget, sha256d, nextDiffFactor, maxFactorForWeight,
 } from './block.mjs';
+import { Store, loadConfig, pcn } from './store.mjs';
 
 // ── config ──────────────────────────────────────────────────────────────────
 const cfgPath = process.argv.includes('--config')
   ? process.argv[process.argv.indexOf('--config') + 1]
   : new URL('./pool.config.json', import.meta.url).pathname;
-const CFG = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+const CFG = loadConfig(cfgPath);
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
@@ -97,8 +104,9 @@ const state = {
   jobs: new Map(),      // job_id -> { header base, merkle, coinbase, height, target, seen:Set }
   jobSeq: 0,
   miners: new Map(),    // session id -> miner
-  shares: [],           // step 2: recorded, not paid
-  blocks: [],
+  accepted: 0,          // this process's counters; the ledger lives in SQLite
+  blocksFound: 0,
+  storeDown: null,      // set to a reason if the store dies
 };
 
 const shareTargetFor = (m) => scaleTarget(state.netTarget, m.diffFactor);
@@ -129,6 +137,13 @@ function makeJob(miner) {
     prevhash: t.previousblockhash,
     txs: (t.transactions || []).map((x) => x.data),
     target: shareTargetFor(miner),
+    // Pinned to THIS job rather than read from state at submit time. The two
+    // agree today because jobs are cleared whenever the tip moves, but the
+    // network target is what decides whether a share is a block and what one
+    // block's work is worth in the PPLNS window -- both are properties of the
+    // job, so read them off the job.
+    netTarget: bitsToTarget(t.bits),
+    value: t.coinbasevalue,
     seen: new Set(),
     miner: miner.id,
   };
@@ -187,14 +202,28 @@ function retune(m) {
   const rate = m.windowShares / elapsed;                 // shares/sec
   const want = 1 / CFG.vardiff.targetSeconds;
   if (rate > 0) {
-    const ratio = rate / want;
-    if (ratio > 1.5 || ratio < 0.67) {
-      const next = Math.max(CFG.vardiff.minFactor,
-                   Math.min(CFG.vardiff.maxFactor, Math.round(m.diffFactor * ratio)));
-      if (next !== m.diffFactor) {
-        log(`vardiff ${m.login.slice(0, 12)}… ${m.diffFactor} -> ${next} (${rate.toFixed(3)}/s)`);
-        m.diffFactor = next;
-      }
+    // The direction is load-bearing and got shipped inverted; it now lives in
+    // block.mjs next to scaleTarget, which is the other half of the same trap,
+    // and storetest.mjs holds it there.
+    // The ceiling comes from the CHAIN, not the config: a factor beyond this
+    // makes every hash a share worth ~nothing, which costs the pool 21.7 ms
+    // each to validate. config maxFactor is only an additional operator bound.
+    const chainCap = state.netTarget ? maxFactorForWeight(state.netTarget) : CFG.vardiff.maxFactor;
+    const next = nextDiffFactor(m.diffFactor, rate, CFG.vardiff.targetSeconds,
+                                CFG.vardiff.minFactor,
+                                Math.min(CFG.vardiff.maxFactor, chainCap));
+    if (next !== m.diffFactor) {
+      log(`vardiff ${m.login.slice(0, 12)}… ${m.diffFactor} -> ${next} (${rate.toFixed(3)}/s, want ${want.toFixed(3)}/s)`);
+      m.diffFactor = next;
+      // PUSH THE NEW DIFFICULTY IMMEDIATELY.
+      //
+      // Jobs were only rebuilt on a new tip, so a vardiff change did nothing
+      // for up to ten minutes while retune kept measuring the OLD difficulty
+      // and "correcting" again every 60 s. That feedback loop is what actually
+      // drove the runaway -- the controller was reacting to a rate its own
+      // previous change had not yet been allowed to affect.
+      const j = makeJob(m);
+      if (j) send(m.sock, { jsonrpc: '2.0', method: 'job', params: j });
     }
   }
   m.windowStart = now; m.windowShares = 0;
@@ -208,27 +237,46 @@ async function handleSubmit(m, params, id) {
 
   const nonceHex = String(params.nonce || '');
   if (!/^[0-9a-fA-F]{8}$/.test(nonceHex)) return { error: { code: -1, message: 'nonce must be 8 hex chars' } };
-  // A duplicate nonce is the cheapest way to claim credit twice.
-  if (job.seen.has(nonceHex.toLowerCase())) return { error: { code: -1, message: 'duplicate share' } };
-  job.seen.add(nonceHex.toLowerCase());
+  const nonce = nonceHex.toLowerCase();
+  // A duplicate nonce is the cheapest way to claim credit twice. This in-memory
+  // set exists to avoid paying 21.7 ms of RandomX for a replay; the UNIQUE
+  // index in the store is what actually makes it true across a restart.
+  if (job.seen.has(nonce)) return { error: { code: -1, message: 'duplicate share' } };
+  job.seen.add(nonce);
 
   const header = Buffer.from(job.header);
   header.writeUInt32LE(parseInt(nonceHex, 16) >>> 0, 76);
 
   // NEVER trust a hash the miner sends. Recompute.
   const r = await validator.check(header.toString('hex'), job.target.toString('hex'));
-  if (r.dead) return { error: { code: -1, message: 'pool validator unavailable' } };
+  if (r.dead) { job.seen.delete(nonce); return { error: { code: -1, message: 'pool validator unavailable' } }; }
   if (r.err) return { error: { code: -1, message: 'malformed share' } };
   if (!r.ok) { m.rejected++; return { error: { code: -1, message: 'share above target' } }; }
 
-  m.accepted++; m.windowShares++;
-  state.shares.push({
-    at: Date.now(), login: m.login, session: m.id,
-    job: job.id, height: job.height, diffFactor: m.diffFactor, hash: r.hash,
-  });
+  // RECORD BEFORE ACKNOWLEDGING. A share the pool cannot store is a share the
+  // pool will not pay, and answering "OK" for it is the exact shape of the bug
+  // this project has already paid for three times: an unwritable store is
+  // UNKNOWN, and unknown must never become a definite yes.
+  //
+  // On failure the nonce comes back out of the seen-set so an honest retry can
+  // land. That is safe because the retry is idempotent at the store: the same
+  // (job_id, nonce) maps to the same row, so a write that actually succeeded
+  // and merely lost its response cannot be counted twice.
+  let stored;
+  try {
+    stored = await store.recordShare({
+      at: Date.now(), miner: m.login, session: m.id, jobId: job.id,
+      nonce, height: job.height, targetHex: job.target.toString('hex'),
+    });
+  } catch (e) {
+    job.seen.delete(nonce);
+    log(`SHARE NOT RECORDED for ${m.login}: ${e.message.slice(0, 140)}`);
+    return { error: { code: -1, message: 'pool could not record the share; retry' } };
+  }
+  if (stored.fresh) { m.accepted++; m.windowShares++; state.accepted++; }
 
   // Does it also clear the NETWORK target? Then it is a block.
-  const net = await validator.check(header.toString('hex'), state.netTarget.toString('hex'));
+  const net = await validator.check(header.toString('hex'), job.netTarget.toString('hex'));
   if (net.ok) {
     const blockHex = serializeBlock(header, job.coinbase.witness, job.txs);
     const blockId = Buffer.from(sha256d(header)).reverse().toString('hex');
@@ -237,12 +285,19 @@ async function handleSubmit(m, params, id) {
       const res = await cli(['submitblock', blockHex]);
       if (res === '') {
         log(`BLOCK ACCEPTED ${blockId}`);
-        state.blocks.push({ at: Date.now(), height: job.height, id: blockId, login: m.login });
+        state.blocksFound++;
+        await store.markShareIsBlock(stored.id).catch(() => {});
+        await recordBlock(job, blockId, m, stored.id);
       } else {
+        // Rejected by the node: no coins exist, so there is nothing to pay and
+        // nothing is written. The share itself stays -- the work was real.
         log(`block REJECTED by node: ${res}`);
       }
     } catch (e) {
-      log(`submitblock threw: ${e.message.slice(0, 160)}`);
+      // submitblock threw: we do NOT know whether the node took the block.
+      // Record nothing. The maturity pass will find it if it was accepted --
+      // by then getblockhash can answer, which a lost RPC response cannot.
+      log(`submitblock threw (outcome UNKNOWN, computing no payouts): ${e.message.slice(0, 160)}`);
     }
     await refreshTemplate();
   }
@@ -251,8 +306,75 @@ async function handleSubmit(m, params, id) {
   return { result: { status: 'OK' } };
 }
 
+/**
+ * A block landed. Work out what it owes, write it down, print it.
+ *
+ * Nothing here sends anything. The point of step 3 is that this arithmetic runs
+ * against real shares for a week and gets checked by hand before it is wired to
+ * a wallet.
+ */
+async function recordBlock(job, blockId, m, shareId) {
+  try {
+    const p = await store.recordBlockAndComputePayouts({
+      hash: blockId, height: job.height, value: job.value, finder: m.login,
+      shareId, netTargetHex: job.netTarget.toString('hex'), at: Date.now(),
+    });
+    if (!p.computed) { log(`payouts not computed: ${p.reason}`); return; }
+    const pct = (w) => (Number(w * 10000n / p.windowWeight) / 100).toFixed(2);
+    log(`── PPLNS for height ${p.height} ─────────────────────────────`);
+    log(`   reward ${pcn(p.value)} PCN   fee ${CFG.feeBasisPoints / 100}% = ${pcn(p.fee)}   dust ${p.dust} sat`);
+    log(`   window N=${p.N} covered W=${p.windowWeight} `
+      + `(${p.shares.length} miner(s), ${p.shares.reduce((a, s) => a + s.shares, 0)} shares)`);
+    for (const a of p.amounts) log(`   ${a.miner}  ${pcn(a.amount).padStart(16)} PCN  (${pct(a.weight)}%)`);
+    log('   COMPUTED AND RECORDED — NOTHING SENT. Sending is step 4.');
+  } catch (e) {
+    // The block is real and on the chain either way. A failed computation is
+    // loud and leaves no half-written ledger; the operator can recompute.
+    log(`PAYOUT COMPUTATION FAILED for height ${job.height}: ${e.message.slice(0, 200)}`);
+  }
+}
+
+/**
+ * Maturity and orphans. A found block's coinbase cannot be spent for 100
+ * blocks, so its payouts sit as PENDING for ~17 hours. Miners must be able to
+ * see that wait, or they report it as a bug — and they are right to.
+ */
+async function evaluateMaturity() {
+  let tip = null;
+  try { tip = (await cliJson(['getblockchaininfo'])).blocks; }
+  catch (e) { log(`maturity: tip unreadable (${e.message.slice(0, 80)}) — resolving nothing`); }
+  const hashAt = async (h) => { try { return await cli(['getblockhash', String(h)]); } catch { return null; } };
+  try {
+    const r = await store.evaluateBlocks(tip, hashAt);
+    if (r.skipped) return;
+    for (const b of r.matured) log(`block ${b.height} MATURED — its payouts are now payable (still unsent)`);
+    for (const b of r.orphaned) {
+      log(`block ${b.height} ORPHANED${b.wasMature ? ' AFTER MATURING' : ''} — its payouts are void`);
+    }
+    for (const b of r.dematured) {
+      log(`block ${b.height} fell back to PENDING at ${b.confirmations} confirmations (a reorg buried it less deeply)`);
+    }
+    for (const a of r.alarms) log(`*** ALARM *** block ${a.height} ${a.message}. Ledger NOT changed — decide by hand.`);
+  } catch (e) {
+    log(`maturity pass failed: ${e.message.slice(0, 140)}`);
+  }
+}
+
 // ── server ──────────────────────────────────────────────────────────────────
 const validator = new Validator(CFG.validator);
+
+// If the store dies the pool can still validate shares — and must not accept
+// them. Same rule as the validator: a pool that credits work it cannot record
+// is worse than a pool that is down, because the miner is told it was paid for.
+const store = new Store({
+  path: CFG.db, sqlite3: CFG.sqlite3, feeBasisPoints: CFG.feeBasisPoints,
+  windowMultiplier: CFG.pplns.windowMultiplier, maturity: CFG.pplns.maturity,
+  log,
+  onFatal: (e) => {
+    state.storeDown = e.message;
+    log(`FATAL store gone (${e.message}); refusing further shares`);
+  },
+});
 
 const server = net.createServer((sock) => {
   sock.setEncoding('utf8');
@@ -297,6 +419,10 @@ const server = net.createServer((sock) => {
 
       } else if (msg.method === 'submit') {
         if (!miner) { send(sock, { id: msg.id, error: { code: -1, message: 'not logged in' } }); continue; }
+        if (state.storeDown) {
+          send(sock, { id: msg.id, error: { code: -1, message: 'pool ledger unavailable; not accepting shares' } });
+          continue;
+        }
         const out = await handleSubmit(miner, msg.params || {}, msg.id);
         send(sock, { id: msg.id, ...out });
 
@@ -327,16 +453,24 @@ const server = net.createServer((sock) => {
 (async () => {
   await validator.ready;
   log('validator warm');
+  await store.open();
   state.script = addressToScript(CFG.poolAddress, CFG.hrp);
-  log(`pool pays ${CFG.poolAddress}, fee ${CFG.feePercent}%`);
+  log(`pool pays ${CFG.poolAddress}, fee ${CFG.feeBasisPoints / 100}% off the block reward`);
+  log(`PPLNS window N = ${CFG.pplns.windowMultiplier}x one block's work; maturity ${CFG.pplns.maturity} blocks`);
+  log('STEP 3: payouts are COMPUTED AND RECORDED. Nothing is sent.');
   log(`allowlist: ${CFG.allowlist.length ? CFG.allowlist.length + ' address(es)' : 'OPEN -- anyone may mine'}`);
   await refreshTemplate();
   if (!state.tpl) { log('FATAL no template at startup'); process.exit(1); }
   setInterval(refreshTemplate, CFG.templatePollMs);
+  setInterval(evaluateMaturity, CFG.maturityPollMs || 60000);
+  await evaluateMaturity();
   server.listen(CFG.port, CFG.bind, () => log(`listening on ${CFG.bind}:${CFG.port}`));
 })();
 
 // Status on demand, for the operator and for tests.
-process.on('SIGUSR2', () => {
-  log(`miners=${state.miners.size} shares=${state.shares.length} blocks=${state.blocks.length}`);
+process.on('SIGUSR2', async () => {
+  const s = await store.stats().catch(() => null);
+  if (!s) { log(`miners=${state.miners.size} store=UNREADABLE`); return; }
+  log(`miners=${state.miners.size} shares=${s.shares} blocks=${s.blocks} `
+    + `(pending ${s.pending}, mature ${s.mature}, orphaned ${s.orphaned}) computed=${pcn(s.computed)} PCN, sent 0`);
 });

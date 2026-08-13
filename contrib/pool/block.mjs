@@ -215,6 +215,62 @@ export function bitsToTarget(bitsHex) {
  * Capped at 2^256-1. A factor large enough to overflow means the operator asked
  * for a share target easier than "any hash at all", which is not a share.
  */
+/**
+ * Vardiff: the next share-difficulty factor for a miner observed submitting at
+ * `rate` shares/sec when we want one every `targetSeconds`.
+ *
+ *     next = factor * (want / rate)
+ *
+ * WANT/RATE, NOT RATE/WANT. `factor` multiplies the target (see scaleTarget),
+ * so a BIGGER factor is an EASIER share and therefore MORE of them. A miner
+ * that is too slow needs its factor to go UP.
+ *
+ * Shipped the other way round it does not merely mistune, it RUNS AWAY: too
+ * slow makes the target harder, which makes it slower, which makes it harder,
+ * down to minFactor -- where the share target equals the network target and the
+ * miner only ever submits real blocks, so its recorded work silently becomes
+ * zero while it hashes at full speed. Both fleet PCs were on that slope within
+ * minutes of connecting.
+ *
+ * Returned unchanged inside the dead band, so a miner is not retuned forever.
+ */
+export function nextDiffFactor(factor, rate, targetSeconds, minFactor, maxFactor) {
+  if (!(rate > 0) || !(factor > 0)) return factor;
+  const want = 1 / targetSeconds;
+  let ratio = want / rate;
+  if (ratio <= 1.5 && ratio >= 0.67) return factor;
+  // CLAMP THE STEP. Without this a miner measured at a tenth of the target rate
+  // gets its factor multiplied by ten IN ONE GO, and if the measurement is
+  // stale it does it again the next minute: 1000 -> 9000 -> 81000 -> maxFactor
+  // in about five minutes. That happened in production, to two miners, in the
+  // opposite direction to the bug it replaced -- an unclamped controller does
+  // not converge, it just picks a rail to slam into.
+  ratio = Math.max(0.25, Math.min(4, ratio));
+  return Math.max(minFactor, Math.min(maxFactor, Math.round(factor * ratio)));
+}
+
+/**
+ * The largest factor whose shares are still worth measuring, given the current
+ * network target.
+ *
+ * A share must represent real work. Push the factor high enough and the share
+ * target exceeds 2^256, scaleTarget caps it, and EVERY HASH becomes a share
+ * worth one hash of credit -- the pool then spends 21.7 ms validating each of
+ * them for nothing. In production one miner logged 516 consecutive shares of
+ * weight 1 that way.
+ *
+ * Derived from the chain rather than hardcoded, because the honest bound is
+ * "a share is at least `minWeight` hashes of work", and what that means in
+ * factor terms moves with difficulty. A fixed maxFactor is a number that rots.
+ */
+export function maxFactorForWeight(netTargetBE, minWeight = 256) {
+  const t = BigInt('0x' + Buffer.from(netTargetBE).toString('hex'));
+  if (t <= 0n) return 1;
+  const blockWork = (1n << 256n) / t;
+  const cap = blockWork / BigInt(minWeight);
+  return cap < 1n ? 1 : Number(cap);
+}
+
 export function scaleTarget(targetBE, factor) {
   let v = BigInt('0x' + targetBE.toString('hex')) * BigInt(factor);
   const max = (1n << 256n) - 1n;
