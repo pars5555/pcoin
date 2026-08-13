@@ -1,0 +1,26 @@
+{
+  "_comment": "Copy to pool.config.json and edit. The real config is gitignored.",
+
+  "bind": "127.0.0.1",
+  "port": 3333,
+
+  "poolAddress": "pc1qEXAMPLE...",
+  "hrp": "pc",
+  "feePercent": 2,
+
+  "_allowlist": "FLEET-ONLY IS ENFORCED HERE. Empty array = open to anyone. During the first week list only the fleet's payout addresses, so a stranger who finds the port is refused instead of silently accruing a balance nobody planned to pay.",
+  "allowlist": [],
+
+  "cliCommand": ["sudo", "docker", "exec", "pcoin-seed", "bitcoin-cli"],
+  "validator": "./build/validate",
+  "templatePollMs": 2000,
+
+  "_vardiff": "Every share costs the pool ~21.7 ms of CPU, so share rate is a budget, not a comfort setting. targetSeconds is the interval each miner is held near.",
+  "vardiff": {
+    "startFactor": 1000,
+    "minFactor": 1,
+    "maxFactor": 100000000,
+    "targetSeconds": 15,
+    "retuneSeconds": 60
+  }
+}

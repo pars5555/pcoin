@@ -202,9 +202,21 @@ export function bitsToTarget(bitsHex) {
   return t;
 }
 
-/** Scale a target by 1/factor to get an easier share target. */
+/**
+ * Network target -> the EASIER share target, `factor` times easier.
+ *
+ * Difficulty is inversely proportional to target, so an easier target is a
+ * LARGER number: share_target = net_target * factor. The first version of this
+ * divided, which made every share HARDER than a block -- so every share a miner
+ * found was also a block, the tip moved, and the job cache cleared. The pool
+ * appeared to work perfectly; it was simply solo mining with extra steps, and
+ * the duplicate-share check could never even be reached.
+ *
+ * Capped at 2^256-1. A factor large enough to overflow means the operator asked
+ * for a share target easier than "any hash at all", which is not a share.
+ */
 export function scaleTarget(targetBE, factor) {
-  let v = BigInt('0x' + targetBE.toString('hex')) / BigInt(factor);
+  let v = BigInt('0x' + targetBE.toString('hex')) * BigInt(factor);
   const max = (1n << 256n) - 1n;
   if (v > max) v = max;
   return Buffer.from(v.toString(16).padStart(64, '0'), 'hex');
