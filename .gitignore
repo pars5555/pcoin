@@ -71,3 +71,8 @@ contrib/branding/out/
 servers.md
 ARCHITECTURE.puml
 SYSTEM-README.md
+
+# ops dashboard: real config holds the scrypt hash, session secret and
+# collector token; state.json is runtime data. Only the example is tracked.
+contrib/ops-dashboard/config.json
+contrib/ops-dashboard/state.json
