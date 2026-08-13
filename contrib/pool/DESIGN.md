@@ -83,8 +83,20 @@ easier than the network target. The pool must verify every share by computing
 the hash itself. A miner that could not do this honestly could otherwise claim
 credit for work it never did.
 
-- **Light mode**, ~256 MiB cache, ~1 ms per hash. One core validates roughly
-  1,000 shares/sec — orders of magnitude more than this network will produce.
+- **Light mode**, ~256 MiB cache. **Measured on real blocks: 21.7 ms per hash,
+  ~45 shares/sec per core** (~735/sec across 16 cores), plus a one-off 834 ms
+  cache init. An earlier draft of this document guessed ~1 ms and ~1,000
+  shares/sec — **wrong by more than 20×**. RandomX light-mode verification is
+  deliberately expensive; that cost *is* the CPU-fairness. Do not carry a
+  SHA256d intuition into a RandomX pool.
+- **This puts a floor under share difficulty.** Share difficulty is usually set
+  as low as miners find comfortable, so small miners submit often. Here every
+  share costs the pool 21.7 ms of CPU, so "one share per miner per second" stops
+  being free: 45 miners at that rate saturate a core. Target roughly **one share
+  per miner per 10–30 s** and use vardiff to hold it there. At the current
+  28,000 H/s network this is comfortable on two cores — but it is a real
+  constraint, not a rounding error, and it is the first thing that will bite if
+  the pool grows.
 - Reuse `src/crypto/pow_randomx.{h,cpp}`. It already does exactly this, degrades
   `flags → |SECURE → DEFAULT`, and all three paths produce identical hashes.
 - **Never trust a submitted hash.** Take the nonce, recompute, compare.
@@ -167,9 +179,13 @@ State plainly, so nobody expects otherwise:
 
 Each step is independently useful and testable:
 
-1. **Validator against real blocks.** Take 100 known-good chain blocks, verify
-   their RandomX hashes with `pow_randomx`. Proves the hard part before any
-   networking exists.
+1. ~~**Validator against real blocks.**~~ **DONE.** `validate.cpp` +
+   `make-vectors.sh` + `selftest.sh`. Verifies 100 real blocks (heights
+   3114–3213) against the targets the chain accepted them under: **100/100
+   pass, and 0/100 pass once the nonce is flipped by one.** Both halves matter —
+   a validator that accepts everything prints the same "100/100" as a correct
+   one, so the tampered run is the only evidence worth anything. Links the
+   vendored `src/randomx` only, no Bitcoin Core.
 2. **Job server + share validator**, no payouts. Miners connect, submit shares,
    the pool logs them and submits real blocks. Solo-with-extra-steps, but it
    proves the protocol end to end.
