@@ -48,6 +48,7 @@ import {
   serializeBlock, bitsToTarget, scaleTarget, sha256d, nextDiffFactor, maxFactorForWeight,
 } from './block.mjs';
 import { Store, loadConfig, pcn, buildPayoutOutputs } from './store.mjs';
+import { createApi } from './api.mjs';
 
 // ── config ──────────────────────────────────────────────────────────────────
 const cfgPath = process.argv.includes('--config')
@@ -119,6 +120,7 @@ const state = {
   jobSeq: 0,
   miners: new Map(),    // session id -> miner
   payout: null,         // the coinbase output set for the current template
+  net: null,            // last good node reading, for the public API
   accepted: 0,          // this process's counters; the ledger lives in SQLite
   blocksFound: 0,
   storeDown: null,      // set to a reason if the store dies
@@ -403,6 +405,77 @@ async function recordBlock(job, blockId, m, shareId) {
 }
 
 /**
+ * Network numbers for the public API, refreshed on a slow timer.
+ *
+ * Kept SEPARATE from the template poll because a failure here must not affect
+ * mining, and because an unreadable node has to leave the previous reading in
+ * place with its timestamp rather than replace it with zeros. A directory
+ * showing "0 H/s" reads as a dead pool.
+ */
+async function refreshNetworkStats() {
+  try {
+    const [info, hps] = await Promise.all([
+      cliJson(['getblockchaininfo']),
+      cli(['getnetworkhashps']).then(Number).catch(() => null),
+    ]);
+    let peers = null;
+    try { peers = Number(await cli(['getconnectioncount'])); } catch { /* leave unknown */ }
+    state.net = {
+      chain: info.chain,
+      blockHeight: info.blocks,
+      networkDifficulty: info.difficulty,
+      networkHashrate: hps,
+      lastNetworkBlockTime: info.mediantime ? info.time * 1000 || null : null,
+      connectedPeers: peers,
+      readAt: Date.now(),
+      readable: true,
+    };
+  } catch (e) {
+    if (state.net) state.net.readable = false;   // keep the last good reading, flagged
+    log(`network stats unreadable (${e.message.slice(0, 80)}) — serving the last known values`);
+  }
+}
+
+/** Everything the public API reports. Measured, never invented. */
+async function apiSnapshot() {
+  const n = state.net || {};
+  let poolHashrate = null, sharesPerSecond = null, totalBlocks = null,
+    totalPaid = null, lastPoolBlockTime = null;
+  try {
+    // Pool hashrate straight from the ledger: share weight IS expected hashes,
+    // so summing a window and dividing by its length is a direct measurement
+    // rather than a model.
+    const WINDOW_S = 600;
+    const since = Date.now() - WINDOW_S * 1000;
+    const rows = await store.shareSummary(since);
+    const work = rows.reduce((a, r) => a + r.weight, 0n);
+    const count = rows.reduce((a, r) => a + r.shares, 0);
+    poolHashrate = Number(work) / WINDOW_S;
+    sharesPerSecond = count / WINDOW_S;
+    const st = await store.stats();
+    totalBlocks = st.blocks;
+    totalPaid = Number(st.computed) / 1e8;
+    const [last] = await store.sql('SELECT IFNULL(MAX(found_at),0) FROM blocks;');
+    lastPoolBlockTime = Number(last) || null;
+  } catch (e) {
+    log(`api snapshot: ledger unreadable (${e.message.slice(0, 80)})`);
+  }
+  return {
+    connectedMiners: state.miners.size,
+    poolHashrate, sharesPerSecond, totalBlocks, totalPaid, lastPoolBlockTime,
+    chain: n.chain ?? null,
+    blockHeight: n.blockHeight ?? null,
+    networkDifficulty: n.networkDifficulty ?? null,
+    networkHashrate: n.networkHashrate ?? null,
+    lastNetworkBlockTime: n.lastNetworkBlockTime ?? null,
+    connectedPeers: n.connectedPeers ?? null,
+    nodeReadAt: n.readAt ?? null,
+    nodeReadable: n.readable ?? false,
+    open: CFG.allowlist.length === 0,
+  };
+}
+
+/**
  * Maturity and orphans. A found block's coinbase cannot be spent for 100
  * blocks, so its payouts sit as PENDING for ~17 hours. Miners must be able to
  * see that wait, or they report it as a bug — and they are right to.
@@ -533,6 +606,17 @@ const server = net.createServer((sock) => {
   setInterval(refreshTemplate, CFG.templatePollMs);
   setInterval(evaluateMaturity, CFG.maturityPollMs || 60000);
   await evaluateMaturity();
+  await refreshNetworkStats();
+  setInterval(refreshNetworkStats, CFG.networkStatsPollMs || 30000);
+
+  // The public API. Bound to loopback on purpose: Caddy terminates TLS and
+  // proxies in, so this process never parses bytes off the open internet.
+  if (CFG.apiPort) {
+    const api = createApi({ cfg: CFG, snapshot: apiSnapshot, log });
+    api.on('error', (e) => log(`api server error: ${e.message}`));
+    api.listen(CFG.apiPort, CFG.apiBind || '127.0.0.1',
+      () => log(`api on ${CFG.apiBind || '127.0.0.1'}:${CFG.apiPort} (/api/pools)`));
+  }
   server.listen(CFG.port, CFG.bind, () => log(`listening on ${CFG.bind}:${CFG.port}`));
 })();
 
