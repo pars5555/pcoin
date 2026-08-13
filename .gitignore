@@ -56,6 +56,13 @@ contrib/windows-tray/build.log
 # deposit history is nobody else's business.
 *-seed.enc.json
 *-xpub.txt
+# Anything else this project encrypts, by shape rather than by name. The rule
+# above is `*-seed.enc.json`, which did NOT match pcoin-bundle.enc.json — a
+# 9.5 MB blob holding the release keystore, the TLS private key, every wallet
+# backup and the retired seed phrases. It sat untracked and stageable until
+# someone looked. A pattern that only catches the file you thought of is not a
+# net, so this catches the shape.
+*.enc.json
 # Pool listings are only public addresses, so this is privacy rather than
 # custody: one file linking every address a system will ever issue hands an
 # observer the whole deposit history in one read.
