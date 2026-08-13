@@ -114,6 +114,7 @@ rule('RECONCILIATION');
       return { miner, amount: BigInt(amount), weight: BigInt(weight), W: BigInt(windowWeight), pot: BigInt(pot) };
     });
     const problems = [];
+    let checkedOnChain = false;
 
     const paid = parsed.reduce((a, r) => a + r.amount, 0n);
     // Coinbase payouts: the pool's own output is whatever is left, so the
@@ -156,7 +157,7 @@ rule('RECONCILIATION');
       }
       const chain = await store.reconcileAgainstChain(b.height, b.hash, actual);
       problems.push(...chain);
-      if (!chain.length) onChainChecked++;
+      if (!chain.length) { onChainChecked++; checkedOnChain = true; }
     } catch (e) {
       unchecked.push(`${b.height}: ${e.message.split('\n')[0].slice(0, 80)}`);
     }
@@ -165,13 +166,31 @@ rule('RECONCILIATION');
       bad++;
       console.log(`  ${bold('FAIL')} height ${b.height}`);
       for (const p of problems) console.log(`         ${p}`);
+    } else if (!checkedOnChain) {
+      // "ok" HERE WOULD MEAN ONLY "the ledger agrees with itself".
+      //
+      // Everything above this point re-derives the ledger from its own stored
+      // rows, which catches arithmetic drift and would happily certify a ledger
+      // describing a block that does not exist. The chain comparison is the one
+      // check that could not be faked by a wrong ledger -- so if it did not
+      // run, saying "ok" is an unknown wearing an answer's clothes.
+      console.log(`  ${bold('UNVERIFIED')} height ${b.height}  the ledger is self-consistent, but the`);
+      console.log('              block\'s real coinbase could NOT be read -- this is not agreement');
     } else {
       console.log(`  ok   height ${b.height}  ${pcn(b.value)} = ${pcn(paid)} to ${parsed.length} miners`
         + ` + ${pcn(b.fee)} fee + ${b.dust} sat dust`);
+      console.log(dim(`       and the block's own coinbase pays exactly that, read back off the chain`));
     }
   }
   if (!blocks.length) console.log(dim('  nothing to reconcile yet'));
-  else console.log(bad ? `\n  ${bold(`${bad} block(s) DO NOT RECONCILE`)}` : '\n  every block reconciles to the satoshi');
+  else {
+    console.log(bad ? `\n  ${bold(`${bad} block(s) DO NOT RECONCILE`)}`
+                    : '\n  every block reconciles to the satoshi');
+    // The line the first-block watcher greps for. It must say how many were
+    // actually compared against the chain, not merely that nothing complained.
+    console.log(`  ${onChainChecked} of ${blocks.length} verified against the coinbase ON THE CHAIN`);
+    for (const u of unchecked) console.log(`  ${bold('UNCHECKED')} (the node could not be read) ${u}`);
+  }
 }
 
 // ── balances ────────────────────────────────────────────────────────────────
