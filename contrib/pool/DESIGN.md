@@ -198,6 +198,27 @@ Each step is independently useful and testable:
 **Do not skip 3.** A payout engine that has never been reconciled against a real
 week of shares is how a pool loses its operator's money rather than its users'.
 
+## Decisions (owner, 2026-08-13)
+
+| question | decision |
+|---|---|
+| **Fee** | **2%** — published on the pool page. Normal, and honest about it. |
+| **Host** | **178.105.178.27** — PCoin-dedicated, already runs the market and pcnearner. Not a seed: validating shares is sustained CPU work and a seed's job is bootstrapping. |
+| **Launch** | **Fleet-only for one week**, then public. The payout path gets exercised against coins the owner already holds before it ever touches a stranger's. |
+
+Consequences worth writing down now, so they are not rediscovered:
+
+* **2% is taken from the block reward, not from a miner's balance.** 50 PCN
+  found → 49 PCN into PPLNS, 1 PCN to the pool. Never debit a miner's accrued
+  balance; a fee that can make a balance go *down* is the kind of thing people
+  screenshot.
+* **`.27` has 2 cores.** At 21.7 ms per share that is ~90 shares/sec absolute
+  ceiling, shared with the market, the price replica and pcnearner. Budget one
+  core for validation and keep vardiff honest — see §2.
+* **Fleet-only is enforced, not just intended.** Start with an allowlist of the
+  fleet's payout addresses; a stranger who finds the port gets a clean
+  rejection rather than silently accruing a balance nobody planned to pay.
+
 ## Open questions for the owner
 
 1. **Fee?** 0% buys goodwill at launch and costs a rounding error at this size.
