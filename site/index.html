@@ -333,6 +333,7 @@
       <a href="#mining">Mining</a>
       <a href="/pcnearner/">Earn with GPU</a>
       <a href="#calculator">Calculator</a>
+      <a href="#pool">Pool</a>
       <a href="#spend">Spend it</a>
       <a href="https://market.pc.am" rel="noopener">Buy PCN</a>
         <a href="#parameters">Parameters</a>
@@ -589,6 +590,92 @@
   .spend-host{grid-area:host;font-size:12.5px;opacity:.55;margin-top:4px;
     font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
   </style>
+
+  <!-- 3c · MINING POOL -->
+  <section id="pool">
+    <div class="wrap">
+      <span class="kicker">Mining pool</span>
+      <h2>Getting paid weekly instead of eventually</h2>
+      <div class="split">
+        <div class="col">
+          <p class="lede" style="margin-bottom:20px">
+            Mining alone is a lottery. Your computer either finds a whole block and earns the full
+            reward, or it finds nothing — and there is no partial credit. A typical PC can wait
+            <strong>days</strong> between wins. Most people install a miner, watch zero for a week,
+            and conclude it is broken.
+          </p>
+          <p style="margin-bottom:16px">
+            A <strong>pool</strong> fixes that. Everyone points their mining at one coordinator, which
+            hands out work that is deliberately <em>easier</em> than a real block. Each easy solution
+            you send back is called a <strong>share</strong>: it is worth nothing by itself, but it is
+            proof you did the work. When anyone in the pool finds a real block, the reward is split
+            across everyone in proportion to the shares they contributed.
+          </p>
+          <p>
+            You are paid for <em>your</em> work, whether or not you were the lucky one. The same
+            earnings, arriving steadily instead of rarely.
+          </p>
+        </div>
+        <div class="col">
+          <div class="honest-box" style="max-width:100%">
+            <b>What a pool does not do.</b>
+            <p style="margin:10px 0 0">
+              <b>It does not increase your earnings.</b> It reduces <i>variance</i>. After the pool fee
+              you will earn slightly <i>less</i> on average than mining alone. What you are buying is
+              predictability, and that is the whole product.
+            </p>
+            <p style="margin:10px 0 0">
+              <b>It does not make the chain faster.</b> Block spacing is set by the difficulty
+              algorithm, not by how miners organise.
+            </p>
+            <p style="margin:10px 0 0">
+              <b>It concentrates hashrate</b>, and on a network this small that is a real risk rather
+              than a theoretical one. A pool holding a majority of the network <i>is</i> the 51% problem
+              it was meant to reduce. We publish the pool’s share, we will cap it, and we would
+              rather see a second pool run by somebody else than grow this one.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="honest-box" style="max-width:100%;margin-top:22px">
+        <b>Invite-only right now — opening soon.</b>
+        <p style="margin:10px 0 0">
+          The pool is live and mining, but the connection is restricted to a short list of machines
+          while the payout accounting is checked against the chain by hand. That is deliberate: a pool
+          that has never had its arithmetic reconciled is how an operator loses other people’s money.
+          Payouts are being <i>computed and recorded</i> in this phase, and nothing is sent.
+        </p>
+        <p style="margin:10px 0 0">
+          When it opens you will not need new software — pool mining is built into the PCoin node
+          itself, so it is a one-line change to the miner you already run.
+        </p>
+      </div>
+
+      <div class="split" style="margin-top:22px">
+        <div class="col">
+          <h3 style="margin:0 0 8px">How it will pay</h3>
+          <ul style="margin:0;padding-left:18px;line-height:1.7">
+            <li><b>PPLNS</b> — the last N shares are paid when a block is found, so joining late
+              or leaving early earns you nothing extra.</li>
+            <li><b>2% fee</b>, taken off the block reward and never off a balance you have already
+              accrued.</li>
+            <li><b>Whole satoshis only.</b> Every split is integer arithmetic and every block
+              reconciles exactly: payouts plus fee plus rounding equals the reward.</li>
+          </ul>
+        </div>
+        <div class="col">
+          <h3 style="margin:0 0 8px">The wait nobody warns you about</h3>
+          <p style="margin:0">
+            A freshly mined block’s reward cannot be spent by anyone — pool or solo miner —
+            until it is <b>100 blocks deep</b>, which is roughly <b>17 hours</b>. Your balance will show
+            those earnings as <i>pending</i> during that time. That is a consensus rule of the chain,
+            not a delay the pool invents, and a pool that hid it would just be lying to you.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
 
   <section id="spend">
     <div class="wrap">
