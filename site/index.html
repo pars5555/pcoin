@@ -1305,9 +1305,19 @@ sudo systemctl stop pcoin-miner
   ];
 
   var SUBSIDY = 50;                 // PCN per block, until the first halving
-  var SNAPSHOT_DIFF = 0.0003401078; // fallback only; see note below
-  var SNAPSHOT_SPACING = 1012;      // measured median, same date
-  var SNAPSHOT_WHEN = "7 Aug 2026";
+  // FALLBACK ONLY -- used when explorer.pc.am cannot be reached. Re-measure it
+  // whenever difficulty moves materially, because a stale snapshot here does not
+  // fail visibly: it quietly quotes an earnings figure that is too GENEROUS by
+  // exactly the factor difficulty has risen. The 7 Aug figure (0.00034) survived
+  // until 14 Aug, by which point difficulty was 0.0097 -- 28x higher -- so any
+  // visitor who could not reach the explorer was shown roughly 28x the coins
+  // they would actually earn.
+  //   node: bitcoin-cli getblock $(bitcoin-cli getblockhash <tip>) | jq .difficulty
+  //   spacing: median gap over the last ~25 blocks, discarding negative gaps
+  //            (block timestamps are not monotonic in height on this chain)
+  var SNAPSHOT_DIFF = 0.009697080;  // measured 14 Aug 2026 at height 3389
+  var SNAPSHOT_SPACING = 556;       // measured median, same date
+  var SNAPSHOT_WHEN = "14 Aug 2026";
 
   var sel   = document.getElementById("calc-device");
   var thr   = document.getElementById("calc-threads");
