@@ -67,13 +67,32 @@ if [ "$SUPPLY_EVERY" = "1" ] || [ $(( HEIGHT % SUPPLY_EVERY )) -eq 0 ]; then
     # Integer satoshis throughout. The RPC prints PCN with 8 decimals; a float
     # comparison here would invent a mismatch out of rounding.
     ACTUAL_SAT=$(echo "$UTXO" | sed -n 's/.*"total_amount": *\([0-9]*\)\.\([0-9]*\).*/\1\2/p' | head -1)
+
+    # COMPARE AGAINST THE HEIGHT THE SNAPSHOT WAS TAKEN AT, never $HEIGHT.
+    #
+    # gettxoutsetinfo is O(entire UTXO set) and takes seconds. $HEIGHT was read
+    # before it started, so a block landing DURING the scan leaves the returned
+    # set exactly one subsidy ahead of $HEIGHT -- which is bit-for-bit the shape
+    # of real over-issuance. This fired for real at height 3624 on 15 Aug 2026:
+    # chain 18125000000000 vs schedule 18120000000000, a delta of exactly
+    # 5000000000 sat, and the chain was perfectly healthy.
+    #
+    # That failure mode is worse than no check. A supply alarm that cries wolf
+    # gets muted, and this is the one alarm that must never be ignored. The
+    # response carries its own height; use it and the race cannot happen.
+    SNAP_HEIGHT=$(echo "$UTXO" | sed -n 's/.*"height": *\([0-9]*\).*/\1/p' | head -1)
+    if [ -z "$SNAP_HEIGHT" ]; then
+      say "supply: gettxoutsetinfo returned no height -- NOT CHECKED (unknown, not ok)"
+      SNAP_HEIGHT=""
+    fi
+
     HALVING=210000
-    if [ "$HEIGHT" -lt "$HALVING" ] && [ -n "$ACTUAL_SAT" ]; then
-      EXPECT_SAT=$(( HEIGHT * 50 * 100000000 ))
+    if [ -n "$SNAP_HEIGHT" ] && [ "$SNAP_HEIGHT" -lt "$HALVING" ] && [ -n "$ACTUAL_SAT" ]; then
+      EXPECT_SAT=$(( SNAP_HEIGHT * 50 * 100000000 ))
       if [ "$ACTUAL_SAT" != "$EXPECT_SAT" ]; then
-        fail "SUPPLY MISMATCH at height $HEIGHT: chain holds ${ACTUAL_SAT} sat, schedule says ${EXPECT_SAT} sat"
+        fail "SUPPLY MISMATCH at height $SNAP_HEIGHT: chain holds ${ACTUAL_SAT} sat, schedule says ${EXPECT_SAT} sat"
       fi
-      say "supply: ${ACTUAL_SAT} sat == 50 x ${HEIGHT} PCN, exact"
+      say "supply: ${ACTUAL_SAT} sat == 50 x ${SNAP_HEIGHT} PCN, exact"
     else
       # Past the first halving the closed form needs the full sum; do not
       # guess, and do not report a guess as a pass.
