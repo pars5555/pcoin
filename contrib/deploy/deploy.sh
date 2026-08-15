@@ -45,7 +45,19 @@ CHECKOUT="/srv/pcoin"
 OWNER="www-data:www-data"
 BRANCH="${PCOIN_DEPLOY_BRANCH:-main}"
 DRY=0
+ACK=""
 [ "${1:-}" = "--dry-run" ] && DRY=1
+# --ack <sha>: I have read the hold on <sha> and its condition is met.
+#
+# Lifting a hold used to mean hand-editing /var/lib/pcoin-deploy.rev, which
+# works but leaves no record of who decided or why, and invites the shortcut
+# that actually breaks things: pointing the marker at HEAD, which skips EVERY
+# unread hold at once rather than the one you judged. Naming the commit makes
+# that impossible -- you can only ever acknowledge a hold you have looked at.
+if [ "${1:-}" = "--ack" ]; then
+  ACK="${2:-}"
+  [ -n "$ACK" ] || { printf 'deploy: --ack needs the commit carrying the hold\n' >&2; exit 2; }
+fi
 
 # Which sites live on this host. Selected by whether the docroot EXISTS, not by
 # hostname: the same script then runs unmodified everywhere, and a host that
@@ -106,13 +118,33 @@ else
   RANGE="HEAD -1"                      # first run: judge HEAD alone
 fi
 
+# An acknowledgement moves the window PAST the named commit and no further, so
+# every later commit is still read. git's A..B excludes A, which is exactly the
+# semantics wanted: "I have seen this one."
+if [ -n "$ACK" ]; then
+  git -C "$CHECKOUT" cat-file -e "$ACK^{commit}" 2>/dev/null \
+    || die "--ack $ACK is not a commit in this repository"
+  if ! git -C "$CHECKOUT" log $RANGE --pretty='%H' -- site/ | grep -q "^$(git -C "$CHECKOUT" rev-parse "$ACK")$"; then
+    die "--ack $ACK does not name an undeployed commit touching site/ (nothing to acknowledge)"
+  fi
+  ACK_SUBJ=$(git -C "$CHECKOUT" log -1 --pretty='%h %s' "$ACK")
+  say "acknowledging hold on: $ACK_SUBJ"
+  say "  (later commits are still checked; this skips only the one named)"
+  RANGE="$(git -C "$CHECKOUT" rev-parse "$ACK")..HEAD"
+  logger -t pcoin-deploy "hold acknowledged: $ACK_SUBJ by ${SUDO_USER:-$(id -un)}" 2>/dev/null || true
+fi
+
 HOLD=$(git -C "$CHECKOUT" log $RANGE --pretty='%h %s%n%b' -- site/ \
        | grep -iE '^Deploy-Hold:' || true)
 if [ -n "$HOLD" ]; then
   say ""
   say "REFUSING: an undeployed commit touching site/ carries a deploy hold:"
   printf '  %s\n' "$HOLD"
-  say "Deploy again once that condition is met."
+  say ""
+  say "Once that condition is genuinely met, acknowledge THAT commit by name:"
+  say "  sudo $0 --ack <sha>"
+  say "Do not point /var/lib/pcoin-deploy.rev at HEAD to get past this -- that"
+  say "skips every unread hold, not the one you just judged."
   exit 3
 fi
 
