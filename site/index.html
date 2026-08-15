@@ -1045,7 +1045,7 @@ curl -fsSL https://pc.am/dl/install.sh | sudo sh
 
   PCoin miner setup
   ------------------------------------------------------------
-  + node running, at height 2566
+  + node running, at height 3591
 
   Where should block rewards be paid?
   Payout address: pc1q…
@@ -1061,15 +1061,17 @@ curl -fsSL https://pc.am/dl/install.sh | sudo sh
   Mining.</span>
 
 <span class="c"># Watch it work. Press b for your balance, q to quit.</span>
+<span class="c"># A real session from 15 Aug 2026 — your share depends on the network</span>
+<span class="c"># size on the day, which only ever grows. Check pool.pc.am for today's.</span>
 pcoin-mine
 
 <span class="o">  PCoin miner
   Status         * mining with 3 of 4 cores
-  Hashrate       128 H/s   of 2.49 kH/s on the whole network -- 5.14%
-  A block every  3h 14m    estimate, and luck swings it wildly
+  Hashrate       128 H/s   of 53.5 kH/s on the whole network -- 0.24%
+  A block every  2d 17h    estimate, and luck swings it wildly
   Blocks found   0
 
-  Chain          2566   up to date, 8 peers
+  Chain          3591   up to date, 8 peers
   Paying to      pc1q…</span>
 
 <span class="c"># Rewards go straight to the address you gave — this machine never</span>
@@ -1180,7 +1182,7 @@ sudo systemctl stop pcoin-miner
           <h3>No premine — but the founder holds most of the coins today</h3>
           <p>There was no premine, no allocation and no sale: every PCN in existence was mined. But almost
           all of the mining so far has been done by the founder's own machines, so
-          <b>the founder still holds roughly three quarters of everything mined</b> — about 110,800 of ~147,000 PCN, spread across three addresses rather than one; the largest single address is ~48%.
+          <b>the founder still holds roughly three quarters of everything mined</b> — about <span id="own-held">130,100</span> of ~<span id="own-total">174,600</span> PCN, spread across three addresses rather than one; the largest single address is <span id="own-largest">39.6</span>%.
           You do not have to take that on trust: it is
           <a href="https://explorer.pc.am/api/addresses/top" rel="noopener">the top entry in the public rich
           list</a>, and you can check it yourself. That share falls as other people mine, and that is the
@@ -1441,6 +1443,35 @@ sudo systemctl stop pcoin-miner
       render();
     })
     .catch(function () { /* the snapshot notice above already says so */ });
+})();
+</script>
+<script>
+/* Fairness disclosure, derived at render time.
+   This claim has gone stale twice already (92% of 116,800, then 75% of 147,000).
+   The figures in the markup are true as of deploy; this refreshes them from the
+   same public APIs the paragraph links to, so nobody sees a number older than
+   their visit. A failed read resolves NOTHING -- on any error the deploy-time
+   figures stand, because an unreadable rich list is not a distribution of zero. */
+(function () {
+  var set = function (id, v) { var e = document.getElementById(id); if (e) e.textContent = v; };
+  var grp = function (n) { return Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ','); };
+  Promise.all([
+    fetch('https://pc.am/supply/circulating.txt', { cache: 'no-store' })
+      .then(function (r) { if (!r.ok) throw 0; return r.text(); }),
+    fetch('https://explorer.pc.am/api/addresses/top?limit=3', { cache: 'no-store' })
+      .then(function (r) { if (!r.ok) throw 0; return r.json(); })
+  ]).then(function (res) {
+    var circ = parseFloat(res[0]);
+    var rows = (res[1] && res[1].addresses) || [];
+    if (!isFinite(circ) || circ <= 0 || rows.length < 3) return;
+    var top3 = 0, i;
+    for (i = 0; i < 3; i++) top3 += parseFloat(rows[i].onchain_unspent_pcn) || 0;
+    var largest = parseFloat(rows[0].onchain_unspent_pcn) || 0;
+    if (top3 <= 0 || largest <= 0) return;
+    set('own-held', grp(top3));
+    set('own-total', grp(circ));
+    set('own-largest', (100 * largest / circ).toFixed(1));
+  }).catch(function () { /* keep the deploy-time figures */ });
 })();
 </script>
 </body>
