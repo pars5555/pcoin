@@ -127,8 +127,25 @@ The job carries:
 | `height` | the height being worked on |
 | `algo` | `rx/pcoin` |
 
-`nonce` on submit is 8 hex characters, the little-endian uint32 you wrote at
-offset 76.
+`nonce` on submit is 8 hex characters: **the four bytes exactly as they sit at
+offset 76**, in that order. This is the xmrig/Monero convention, so a
+Monero-lineage miner needs no special case.
+
+```
+nonce value 83  ->  bytes at offset 76 are 53 00 00 00  ->  "53000000"
+```
+
+The reverse spelling (`"00000053"`, the uint32 as big-endian text) is what
+PCoin's own node miner sends — `strprintf("%08x", nonce)` in
+`src/node/poolclient.cpp`. **The pool accepts both** and uses whichever one
+validates, so either spelling works today. New integrations should use the byte
+order above; the legacy form is a compatibility fallback that will be removed
+once no miner needs it.
+
+This mattered: the pool originally accepted only the legacy spelling, so every
+share from a standard xmrig was rebuilt into a header nobody had mined and
+rejected as *"share above target"* — a miner that hashes perfectly and earns
+nothing, with no error that points at the cause.
 
 **The login is a payout address, not an account.** There is no registration.
 It must be a v0 bech32 `pc1q…` address — a taproot `pc1p…` will pass a PCoin

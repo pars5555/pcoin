@@ -302,14 +302,60 @@ async function handleSubmit(m, params, id) {
   if (job.seen.has(nonce)) return { error: { code: -1, message: 'duplicate share' } };
   job.seen.add(nonce);
 
-  const header = Buffer.from(job.header);
-  header.writeUInt32LE(parseInt(nonceHex, 16) >>> 0, 76);
+  // THE NONCE HEX MEANS TWO DIFFERENT THINGS DEPENDING ON WHO IS MINING.
+  //
+  //   standard  xmrig and every Monero-lineage miner send the RAW BYTES exactly
+  //             as they sit at offset 76.            nonce 83 -> "53000000"
+  //   legacy    PCoin's own node miner sends strprintf("%08x", nonce), i.e. the
+  //             uint32 as big-endian TEXT            nonce 83 -> "00000053"
+  //             (src/node/poolclient.cpp:316) -- the same four bytes reversed.
+  //
+  // The node and this pool were written from the same assumption, so they agreed
+  // and the fleet mined happily. The disagreement is invisible until a
+  // third-party miner connects -- and then EVERY share it sends is rejected
+  // "share above target", because the pool rebuilds a header nobody mined and
+  // correctly rejects the hash of it. Confirmed against a patched xmrigCC:
+  // 100% rejection, while that miner's own hash matched the chain exactly.
+  //
+  // MINER-INTEGRATION.md 6 documents the STANDARD form, so until now this pool
+  // did not implement its own published spec.
+  //
+  // So: try the standard order first, fall back to the legacy one. The fallback
+  // costs one extra RandomX hash (~21 ms) and only on a share that would
+  // otherwise be rejected outright, so a hostile miner buys nothing but its own
+  // latency. Remove the fallback once no miner appears in the legacy log line.
+  // Whichever order a miner used last time is tried first, so only its FIRST
+  // share ever pays for two hashes. Without this memo every share from the
+  // existing fleet -- which all speaks the legacy order -- would cost double,
+  // for the whole migration.
+  const nonceBytes  = Buffer.from(nonce, 'hex');
+  const legacyBytes = Buffer.from(nonceBytes).reverse();
+  const standardFirst = m.nonceOrder !== 'legacy';
+  const orders = standardFirst
+    ? [{ name: 'standard', bytes: nonceBytes }, { name: 'legacy', bytes: legacyBytes }]
+    : [{ name: 'legacy', bytes: legacyBytes }, { name: 'standard', bytes: nonceBytes }];
+  // A palindromic nonce is identical either way -- do not pay for it twice.
+  if (legacyBytes.equals(nonceBytes)) orders.length = 1;
 
   // NEVER trust a hash the miner sends. Recompute.
-  const r = await validator.check(header.toString('hex'), job.target.toString('hex'));
-  if (r.dead) { job.seen.delete(nonce); return { error: { code: -1, message: 'pool validator unavailable' } }; }
-  if (r.err) return { error: { code: -1, message: 'malformed share' } };
-  if (!r.ok) { m.rejected++; return { error: { code: -1, message: 'share above target' } }; }
+  let header = null;
+  let r = null;
+  let order = null;
+  for (const cand of orders) {
+    const h = Buffer.from(job.header);
+    cand.bytes.copy(h, 76);
+    r = await validator.check(h.toString('hex'), job.target.toString('hex'));
+    if (r.dead) { job.seen.delete(nonce); return { error: { code: -1, message: 'pool validator unavailable' } }; }
+    if (r.err) return { error: { code: -1, message: 'malformed share' } };
+    if (r.ok) { header = h; order = cand.name; break; }
+  }
+  if (!header) { m.rejected++; return { error: { code: -1, message: 'share above target' } }; }
+  if (order && m.nonceOrder !== order) {
+    m.nonceOrder = order;
+    if (order === 'legacy') {
+      log(`${m.login} sends the LEGACY nonce byte order; it still works, and the fallback stays until nobody does`);
+    }
+  }
 
   // RECORD BEFORE ACKNOWLEDGING. A share the pool cannot store is a share the
   // pool will not pay, and answering "OK" for it is the exact shape of the bug
