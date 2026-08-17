@@ -152,6 +152,7 @@ setInterval(() => S.reload(), 30_000).unref?.();
 // ── delivery ───────────────────────────────────────────────────────────────
 import { makeNodeRpc, makeDelivery, makeBacking } from './delivery.mjs';
 import { makeNotifier, readNotifyConfig } from './notify.mjs';
+import { clientIp } from './clientip.mjs';
 
 const alertCfg = readNotifyConfig('/etc/pcoin/alert.conf');
 const notify = makeNotifier({
@@ -943,8 +944,9 @@ createServer(async (req, res) => {
       try {
         // The PRIMARY KEY decides, not a read-then-write check that two
         // simultaneous signups could both pass.
-        await q(`INSERT INTO users (email, salt, hash) VALUES (?,?,?)`,
-                [em, salt, hashPw(f.password, salt)]);
+        await q(`INSERT INTO users (email, salt, hash, signup_ip, last_ip, last_login)
+                 VALUES (?,?,?,?,?,NOW())`,
+                [em, salt, hashPw(f.password, salt), clientIp(req), clientIp(req)]);
       } catch (e) {
         if (e.code === 'ER_DUP_ENTRY') return json(res, 409, { error: 'account already exists' });
         throw e;
@@ -966,6 +968,10 @@ createServer(async (req, res) => {
       const h = Buffer.from(hashPw(f.password || '', acc.salt), 'hex');
       const w = Buffer.from(acc.hash, 'hex');
       if (h.length !== w.length || !timingSafeEqual(h, w)) return bad();
+      // Where this customer comes back from. Best-effort and unawaited: a
+      // bookkeeping write must never be able to stop someone signing in.
+      q(`UPDATE users SET last_ip = ?, last_login = NOW() WHERE email = ?`,
+        [clientIp(req), em]).catch(e => console.warn('[login] last_ip:', e.message));
       const tok = sign(`${em}|${Date.now() + 7 * 864e5}`);
       res.writeHead(200, { 'Content-Type': 'application/json',
         'Set-Cookie': `mkt=${tok}; Path=/; Max-Age=${7 * 86400}; HttpOnly; Secure; SameSite=Lax` });
@@ -1091,9 +1097,17 @@ createServer(async (req, res) => {
             `available against undelivered orders. Try a smaller amount.` });
         }
         await conn.query(
-          `INSERT INTO orders (order_id, email, usd, address, quoted_pcn, quoted_price, status)
-           VALUES (?,?,?,?,?,?, 'pending')`,
-          [orderId, email, usd, addr, w.pcn.toFixed(8), w.avgPrice.toFixed(10)]);
+          // Who placed this, and from where. The panel had the email but nothing
+          // else, so an operator looking at a flagged order could not tell a
+          // regular from a stranger, or two orders from one person behind two
+          // addresses. clientIp is the same resolver the admin login uses: it
+          // trusts CF-Connecting-IP only when the peer really is Cloudflare, so
+          // what lands here cannot be set by the buyer.
+          `INSERT INTO orders (order_id, email, usd, address, quoted_pcn, quoted_price, status,
+                               ip, user_agent)
+           VALUES (?,?,?,?,?,?, 'pending', ?, ?)`,
+          [orderId, email, usd, addr, w.pcn.toFixed(8), w.avgPrice.toFixed(10),
+           clientIp(req), String(req.headers['user-agent'] || '').slice(0, 255) || null]);
         await conn.commit();
       } catch (e) {
         await conn.rollback();

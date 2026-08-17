@@ -384,21 +384,75 @@ export function makeAdmin({ pool, cfg, settings, ladder, delivery, backing, noti
     padding:9px 0;border-bottom:1px solid var(--line)}
   .set label{font-weight:600}.set .h{color:var(--dim);font-size:12px}
   .login{max-width:380px;margin:80px auto}
-  code{background:var(--bg);padding:1px 5px;border-radius:5px}`;
+  code{background:var(--bg);padding:1px 5px;border-radius:5px}
 
-  const NAV = [['', 'Dashboard'], ['orders', 'Orders'], ['ladder', 'Ladder'], ['fills', 'Fills'],
-               ['ipn', 'IPN log'], ['users', 'Users'], ['settings', 'Settings'], ['audit', 'Audit']];
+  /* ── sidebar layout ──────────────────────────────────────────────────────
+     The same shape as the checker.pc.am panel: a fixed left rail with grouped
+     sections, content to the right. The horizontal nav had already run out of
+     room at eight items; it would have been unusable at twelve. */
+  .layout{display:flex;min-height:100vh}
+  .sidebar{width:230px;flex-shrink:0;background:var(--card);border-right:1px solid var(--line);
+    padding:18px 0;overflow-y:auto}
+  .sidebar-logo{padding:0 18px 14px;border-bottom:1px solid var(--line)}
+  .sidebar-logo b{font-size:15px}
+  .sidebar-logo small{display:block;color:var(--dim);font-size:11px;margin-top:2px}
+  .sidebar-section{padding:14px 18px 4px;color:var(--dim);font-size:10px;
+    text-transform:uppercase;letter-spacing:.8px}
+  .sidebar nav a{display:block;padding:7px 18px;color:var(--fg);text-decoration:none;
+    border-left:3px solid transparent;font-size:13px}
+  .sidebar nav a:hover{background:var(--bg)}
+  .sidebar nav a.on{border-left-color:var(--accent);color:var(--accent);
+    background:var(--bg);font-weight:600}
+  .main{flex:1;padding:22px 26px;min-width:0;overflow-x:auto}
+  .topbar{display:flex;align-items:center;gap:12px;margin-bottom:18px}
+  .topbar .who{margin-left:auto;color:var(--dim);font-size:12px}
+  @media(max-width:820px){
+    .layout{flex-direction:column}
+    .sidebar{width:auto;border-right:0;border-bottom:1px solid var(--line);padding:12px 0}
+    .sidebar nav{display:flex;flex-wrap:wrap;gap:2px;padding:0 10px}
+    .sidebar nav a{border-left:0;border-bottom:3px solid transparent;padding:6px 10px}
+    .sidebar nav a.on{border-left:0;border-bottom-color:var(--accent)}
+    .sidebar-section{display:none}
+  }
+  .kvgrid{display:grid;grid-template-columns:150px 1fr;gap:6px 14px;font-size:13px}
+  .kvgrid dt{color:var(--dim)}
+  .kvgrid dd{margin:0;word-break:break-all}
+  details.od summary{cursor:pointer;color:var(--accent);font-size:12px}
+  details.od[open] summary{margin-bottom:8px}`;
+
+  // Grouped, because a flat list of eight stops telling you what anything is
+  // for. Ordered so the things that cost money if ignored come first.
+  const NAV_GROUPS = [
+    ['Overview', [['', 'Dashboard']]],
+    ['Money',    [['orders', 'Orders'], ['ipn', 'Payments'], ['fills', 'Fills']]],
+    ['Market',   [['ladder', 'Ladder'], ['settings', 'Settings']]],
+    ['People',   [['users', 'Customers'], ['audit', 'Audit log']]],
+  ];
+  const NAV = NAV_GROUPS.flatMap(([, items]) => items);
 
   const page = (title, active, body, email, csrfTok = '') => `<!DOCTYPE html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)} · market admin</title><style>${CSS}</style></head><body>
-<header><b>market.pc.am</b><nav>${NAV.map(([h, l]) =>
-  `<a class="${active === h ? 'on' : ''}" href="/admin/${h}">${l}</a>`).join('')}</nav>
-<span style="margin-left:auto" class="s">${esc(email || '')}</span>
-<form class="inline" method="POST" action="/admin/logout">
-<input type="hidden" name="csrf" value="${csrfTok}">
-<button class="ghost">Sign out</button></form></header>
-<main>${body}</main></body></html>`;
+<div class="layout">
+  <div class="sidebar">
+    <div class="sidebar-logo"><b>market.pc.am</b><small>admin</small></div>
+    <nav>${NAV_GROUPS.map(([section, items]) =>
+      `<div class="sidebar-section">${esc(section)}</div>` +
+      items.map(([h, l]) =>
+        `<a class="${active === h ? 'on' : ''}" href="/admin/${h}">${esc(l)}</a>`).join('')
+    ).join('')}</nav>
+  </div>
+  <div class="main">
+    <div class="topbar">
+      <h1 style="margin:0;font-size:19px">${esc(title)}</h1>
+      <span class="who">${esc(email || '')}</span>
+      <form class="inline" method="POST" action="/admin/logout">
+        <input type="hidden" name="csrf" value="${csrfTok}">
+        <button class="ghost">Sign out</button></form>
+    </div>
+    ${body}
+  </div>
+</div></body></html>`;
 
   // STEP 1: who are you.
   const loginPage = (msg) => `<!DOCTYPE html><html lang="en"><head>
@@ -848,12 +902,17 @@ ${left !== undefined ? `<p class="s" style="color:var(--dim)">${left} attempt(s)
       const where = [], args = [];
       const st = u.searchParams.get('status'), qy = u.searchParams.get('q');
       if (st) { where.push('status = ?'); args.push(st); }
-      if (qy) { where.push('(order_id LIKE ? OR email LIKE ? OR address LIKE ? OR delivered_txid LIKE ?)');
-                args.push(`%${qy}%`, `%${qy}%`, `%${qy}%`, `%${qy}%`); }
+      if (qy) { where.push('(order_id LIKE ? OR email LIKE ? OR address LIKE ? OR ' +
+                           'delivered_txid LIKE ? OR ip LIKE ? OR invoice_id LIKE ?)');
+                args.push(`%${qy}%`, `%${qy}%`, `%${qy}%`, `%${qy}%`, `%${qy}%`, `%${qy}%`); }
       const L2 = listQuery(u, {
         table: 'orders', where, args,
-        cols: `order_id, email, usd, quoted_pcn, quoted_price, address, status, delivery_mode,
-               delivered_txid, delivery_error, created_at, paid_at, delivered_at`,
+        // Everything about the order. The point of this page is to answer "who
+        // is this, and what happened" without opening a database session — it
+        // carried the email and nothing else.
+        cols: `order_id, email, ip, user_agent, usd, quoted_pcn, quoted_price, address, status,
+               delivery_mode, delivered_txid, delivery_error, invoice_id, invoice_url,
+               paid_amount, pay_currency, created_at, paid_at, delivered_at`,
         sortable: ['created_at', 'paid_at', 'delivered_at', 'usd', 'quoted_pcn', 'status', 'order_id'],
         defaultSort: 'created_at',
       });
@@ -864,7 +923,7 @@ ${left !== undefined ? `<p class="s" style="color:var(--dim)">${left} attempt(s)
       return sendHtml(200, page('Orders', 'orders', flash + `
         <form class="filters" method="GET">
           <select name="status">${opts}</select>
-          <input name="q" placeholder="order, email, address or txid" value="${esc(qy || '')}">
+          <input name="q" placeholder="order, email, IP, address, txid or invoice" value="${esc(qy || '')}">
           <input name="per" type="number" min="10" max="200" value="${L2.per}" style="width:80px">
           <button>Filter</button>
           <a class="s" href="/admin/orders">clear</a>
@@ -873,7 +932,7 @@ ${left !== undefined ? `<p class="s" style="color:var(--dim)">${left} attempt(s)
         ${[['order_id', 'Order'], ['created_at', 'Created'], ['paid_at', 'Paid'], ['usd', 'USD'],
            ['quoted_pcn', 'PCN'], ['status', 'Status']]
           .map(([c, l]) => `<th><a href="${sortLink(u, c)}">${l}</a></th>`).join('')}
-        <th>To</th><th>Txid</th><th>Actions</th></tr></thead><tbody>
+        <th>Customer</th><th>To</th><th>Txid</th><th>Actions</th></tr></thead><tbody>
         ${rows.map(o => `<tr>
           <td class="mono">${esc(o.order_id)}</td>
           <td class="s">${o.created_at ? new Date(o.created_at).toISOString().slice(0, 16).replace('T', ' ') : ''}</td>
@@ -882,6 +941,10 @@ ${left !== undefined ? `<p class="s" style="color:var(--dim)">${left} attempt(s)
           <td>${money(o.quoted_pcn)}</td>
           <td>${statusPill(o.status)}${o.delivery_mode ? ` <span class="s">${esc(o.delivery_mode)}</span>` : ''}
               ${o.delivery_error ? `<div class="s bad">${esc(String(o.delivery_error).slice(0, 80))}</div>` : ''}</td>
+          <td class="s">
+            <div>${esc(o.email || '—')}</div>
+            <div class="mono" style="color:var(--dim)">${esc(o.ip || 'IP not recorded')}</div>
+          </td>
           <td class="mono s">${esc(String(o.address).slice(0, 18))}…</td>
           <td class="mono s">${o.delivered_txid ? esc(o.delivered_txid.slice(0, 14)) + '…' : '—'}</td>
           <td>${['awaiting_delivery', 'needs_review'].includes(o.status) ? `
@@ -901,7 +964,31 @@ ${left !== undefined ? `<p class="s" style="color:var(--dim)">${left} attempt(s)
                   onsubmit="return confirm('Expire this order and release its PCN?')">
               ${csrf}<input type="hidden" name="order_id" value="${esc(o.order_id)}">
               <button class="ghost">Expire</button></form>` : ''}
-          </td></tr>`).join('')}
+          </td></tr>
+        <tr><td colspan="10" style="padding-top:0">
+          <details class="od"><summary>full detail</summary>
+            <dl class="kvgrid">
+              <dt>Customer</dt><dd>${esc(o.email || '—')}</dd>
+              <dt>IP at order</dt><dd class="mono">${esc(o.ip || 'not recorded — predates IP capture')}</dd>
+              <dt>Browser</dt><dd class="s">${esc(o.user_agent || '—')}</dd>
+              <dt>Pays to</dt><dd class="mono">${esc(o.address)}</dd>
+              <dt>Quoted</dt><dd>${money(o.quoted_pcn)} PCN at $${money(o.quoted_price)} each · $${Number(o.usd).toFixed(2)}</dd>
+              <dt>Actually paid</dt><dd>${o.paid_amount ? `${esc(String(o.paid_amount))} ${esc(o.pay_currency || '')}` : '—'}</dd>
+              <dt>Invoice</dt><dd>${o.invoice_id
+                ? (o.invoice_url
+                    ? `<a href="${esc(o.invoice_url)}" target="_blank" rel="noreferrer noopener">${esc(o.invoice_id)}</a>`
+                    : esc(o.invoice_id))
+                : '—'}</dd>
+              <dt>Transaction</dt><dd class="mono">${o.delivered_txid
+                ? `<a href="https://explorer.pc.am/tx/${esc(o.delivered_txid)}" target="_blank" rel="noreferrer noopener">${esc(o.delivered_txid)}</a>`
+                : '—'}</dd>
+              <dt>Created</dt><dd>${o.created_at ? esc(new Date(o.created_at).toISOString()) : '—'}</dd>
+              <dt>Paid at</dt><dd>${o.paid_at ? esc(new Date(o.paid_at).toISOString()) : '—'}</dd>
+              <dt>Delivered</dt><dd>${o.delivered_at ? esc(new Date(o.delivered_at).toISOString()) : '—'}</dd>
+              ${o.delivery_error ? `<dt>Last error</dt><dd class="bad">${esc(o.delivery_error)}</dd>` : ''}
+            </dl>
+          </details>
+        </td></tr>`).join('')}
         </tbody></table></div>${pager(u, L2.page, rows.length, L2.per)}`, email, csrfTok));
     }
 
@@ -968,20 +1055,29 @@ ${left !== undefined ? `<p class="s" style="color:var(--dim)">${left} attempt(s)
 
     if (sub === 'users') {
       const L2 = listQuery(u, {
-        table: 'users u', cols: `u.email,
+        table: 'users u', cols: `u.email, u.created_at, u.signup_ip, u.last_ip, u.last_login,
           (SELECT COUNT(*) FROM orders o WHERE o.email=u.email) AS orders,
           (SELECT COALESCE(SUM(o.usd),0) FROM orders o WHERE o.email=u.email
              AND o.status IN ('awaiting_delivery','delivered','sending')) AS spent`,
-        sortable: ['u.email', 'orders', 'spent'], defaultSort: 'spent',
+        sortable: ['u.email', 'orders', 'spent', 'u.created_at', 'u.last_login'],
+        defaultSort: 'spent',
       });
       const rows = await q(L2.sql, L2.args);
-      return sendHtml(200, page('Users', 'users', flash + `
+      const when = t => (t ? new Date(t).toISOString().slice(0, 16).replace('T', ' ') : '—');
+      return sendHtml(200, page('Customers', 'users', flash + `
         <div class="wrap"><table><thead><tr>
-        ${[['u.email', 'Email'], ['orders', 'Orders'], ['spent', 'Paid $']]
+        ${[['u.email', 'Email'], ['u.created_at', 'Joined'], ['u.last_login', 'Last seen'],
+           ['orders', 'Orders'], ['spent', 'Paid $']]
           .map(([c, l]) => `<th><a href="${sortLink(u, c)}">${l}</a></th>`).join('')}
-        </tr></thead><tbody>
-        ${rows.map(r => `<tr><td>${esc(r.email)}</td><td>${r.orders}</td>
-          <td>$${Number(r.spent).toFixed(2)}</td></tr>`).join('')}
+        <th>Signed up from</th><th>Last IP</th></tr></thead><tbody>
+        ${rows.map(r => `<tr>
+          <td>${esc(r.email)}</td>
+          <td class="s">${when(r.created_at)}</td>
+          <td class="s">${when(r.last_login)}</td>
+          <td>${r.orders}</td>
+          <td>$${Number(r.spent).toFixed(2)}</td>
+          <td class="mono s">${esc(r.signup_ip || '—')}</td>
+          <td class="mono s">${esc(r.last_ip || '—')}</td></tr>`).join('')}
         </tbody></table></div>${pager(u, L2.page, rows.length, L2.per)}`, email, csrfTok));
     }
 
