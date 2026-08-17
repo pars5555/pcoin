@@ -15,14 +15,39 @@ import { readFileSync, existsSync } from 'node:fs';
 
 /** Reads TELEGRAM_TOKEN / ALERT_CHAT style config from a shell-ish env file.
  *  Same format the existing pcoin-notify uses, so there is one convention. */
-export function readNotifyConfig(path) {
-  if (!existsSync(path)) return {};
-  const out = {};
-  for (const line of readFileSync(path, 'utf8').split('\n')) {
-    const m = line.match(/^\s*([A-Z_]+)\s*=\s*(.*?)\s*$/);
-    if (m && !line.trim().startsWith('#')) out[m[1]] = m[2].replace(/^["']|["']$/g, '');
+export function readNotifyConfig(path, { log = console } = {}) {
+  // THIS MUST NEVER THROW. It is called at MODULE SCOPE by the market server,
+  // so anything it raises kills the whole process before the HTTP listener
+  // exists — and systemd restarts it into the same failure, forever.
+  //
+  // It guarded `existsSync` only, which is the wrong half of the problem. On
+  // 2026-08-15 alert.conf was REPLACED (new inode) with group `pcoin` instead
+  // of `pcoin-alert`, so existsSync still passed — the daemon can traverse the
+  // directory — and readFileSync threw EACCES. The running process survived
+  // solely because it had read the file into memory days earlier; the next
+  // restart, for any reason at all, would have taken market.pc.am down
+  // completely and kept it down. A shop that cannot reach its alert channel
+  // must still be a shop.
+  //
+  // Degrading loudly is the right trade: no token means makeNotifier already
+  // logs every message instead of sending it, which is a bad day, not an
+  // outage.
+  try {
+    if (!existsSync(path)) {
+      log.warn(`[notify] ${path} does not exist — alerts will be LOGGED ONLY`);
+      return {};
+    }
+    const out = {};
+    for (const line of readFileSync(path, 'utf8').split('\n')) {
+      const m = line.match(/^\s*([A-Z_]+)\s*=\s*(.*?)\s*$/);
+      if (m && !line.trim().startsWith('#')) out[m[1]] = m[2].replace(/^["']|["']$/g, '');
+    }
+    return out;
+  } catch (e) {
+    log.error(`[notify] CANNOT READ ${path} (${e.code || e.message}) — alerts are LOGGED ONLY. ` +
+              `Fix the permissions; the service is running blind but is NOT down.`);
+    return {};
   }
-  return out;
 }
 
 export function makeNotifier({ token, chatId, log = console, prefix = '' }) {
