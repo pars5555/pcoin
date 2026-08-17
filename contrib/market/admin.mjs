@@ -9,8 +9,11 @@
 //     set from the CLI — never from a config file, never from a chat message.
 //   * TOTP (RFC 6238) is required once enrolled. The panel enrols it itself so
 //     the shared secret is shown exactly once.
-//   * Login is rate-limited per account AND per IP, because one without the
-//     other just moves the guessing.
+//   * Login is TWO STEPS: password, then the 6-digit code on its own page.
+//     Rate-limited PER IP only — per-account limiting was removed because it
+//     let anyone who knew the admin address lock the owner out from anywhere.
+//     The code step carries its own far tighter budget, since reaching it
+//     already proves the password.
 //   * Every state-changing request needs a CSRF token bound to the session.
 //   * The session cookie is HttpOnly, Secure, SameSite=Strict.
 //   * serviceRate and the ladder's prices are deliberately NOT editable here.
@@ -26,8 +29,38 @@ import { clientIp, ipLabel } from './clientip.mjs';
 
 const SCRYPT = { N: 1 << 15, r: 8, p: 1, maxmem: 96 * 1024 * 1024 };
 const SESSION_HOURS = 12;
-const LOGIN_WINDOW_MS = 15 * 60 * 1000;
-const LOGIN_MAX_TRIES = 8;
+// Tuned for a human who mistypes, not for a lock that a stranger can spring.
+//
+// It was 8 tries per 15 minutes, counted per IP AND per email address. Both
+// halves were wrong.
+//
+// The per-EMAIL count was a remote denial of service against the owner: anyone
+// who knows the admin address could keep this account locked out indefinitely
+// from anywhere, without ever needing a password. It is gone — failures are
+// still counted per account, but only to ALERT, never to refuse.
+//
+// The per-IP count stays, because without any limit an unauthenticated stranger
+// can make the box compute unlimited scrypt hashes at N=2^15 — a CPU exhaustion
+// attack that needs no credentials at all. But 8 in 15 minutes is a threshold a
+// person hits by fumbling a TOTP code, which is exactly what happened: seven
+// failures, all from the owner's own address, all `bad totp`. 20 in 5 minutes
+// still caps the rate at four attempts a minute, and against a 12-character
+// scrypt password AND a six-digit TOTP that is not a search anyone finishes —
+// while leaving room to mistype a code repeatedly without being shut out.
+const LOGIN_WINDOW_MS = 5 * 60 * 1000;
+const LOGIN_MAX_TRIES = 20;
+
+// The CODE step gets its own, much tighter budget, and it is the one that
+// matters for guessing: reaching it already proves the password was right, so
+// all that stands between an attacker and the panel is six digits. Three tries
+// per five minutes caps that at 3-in-a-million per window. The password step
+// can afford to be lenient precisely because this one is not.
+const CODE_MAX_TRIES = 3;
+const CODE_WINDOW_MS = 5 * 60 * 1000;
+
+// How long the half-authenticated state between the two steps may live. Short,
+// because it is a bearer token that says "this browser proved the password".
+const PENDING_MS = 3 * 60 * 1000;
 
 // ── TOTP, RFC 6238 ─────────────────────────────────────────────────────────
 const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
@@ -193,6 +226,38 @@ export function makeAdmin({ pool, cfg, settings, ladder, delivery, backing, noti
     if (!isFinite(exp) || Date.now() >= exp) return null;
     return email;
   }
+  // ── the half-authenticated state between the two login steps ────────────
+  // Signed with a DISTINCT purpose string, so a pending token can never be
+  // presented as a session cookie and vice versa — they are different
+  // credentials with different powers, and sharing one HMAC key without a
+  // domain separator is how one becomes the other.
+  //
+  // It carries only the email and an expiry. It is not a session: it grants
+  // exactly one right, to submit a TOTP code for that account, for three
+  // minutes. Stealing it is worth strictly less than stealing the password it
+  // stands in for, because the code is still required.
+  const pendingSecret = () => cfg.sessionSecret + '|admin|2fa-pending';
+  const signPending = em => {
+    const p = `${em}|${Date.now() + PENDING_MS}`;
+    return `${p}.${createHmac('sha256', pendingSecret()).update(p).digest('hex')}`;
+  };
+  function verifyPending(tok) {
+    if (!tok) return null;
+    const i = tok.lastIndexOf('.');
+    if (i < 1) return null;
+    const p = tok.slice(0, i);
+    const want = createHmac('sha256', pendingSecret()).update(p).digest('hex');
+    const got = tok.slice(i + 1);
+    if (got.length !== want.length || !timingSafeEqual(Buffer.from(got), Buffer.from(want))) return null;
+    // Parsed from the RIGHT, like the session token: an email containing the
+    // delimiter must not be able to masquerade as another.
+    const cut = p.lastIndexOf('|');
+    if (cut < 1) return null;
+    const exp = Number(p.slice(cut + 1));
+    if (!isFinite(exp) || Date.now() >= exp) return null;
+    return p.slice(0, cut);
+  }
+
   // CSRF bound to the SESSION, not to the identity.
   //
   // This used to be HMAC(email), which made it a constant: the same admin got
@@ -237,13 +302,13 @@ export function makeAdmin({ pool, cfg, settings, ladder, delivery, backing, noti
   const CLEAR_FLASH = 'mktflash=; Path=/admin; Max-Age=0; HttpOnly; Secure; SameSite=Strict';
 
   const tries = new Map();   // key -> {n, until}
-  function throttled(key) {
+  function throttled(key, max = LOGIN_MAX_TRIES) {
     const t = tries.get(key);
     if (!t) return false;
     if (Date.now() > t.until) { tries.delete(key); return false; }
-    return t.n >= LOGIN_MAX_TRIES;
+    return t.n >= max;
   }
-  function noteFail(key) {
+  function noteFail(key, windowMs = LOGIN_WINDOW_MS) {
     // Bounded, and swept. Anyone can post arbitrary emails at the login form,
     // and an unbounded Map keyed by them is a memory-exhaustion primitive that
     // needs no account at all.
@@ -252,8 +317,8 @@ export function makeAdmin({ pool, cfg, settings, ladder, delivery, backing, noti
       for (const [k, v] of tries) if (v.until < now) tries.delete(k);
       if (tries.size > 5000) tries.clear();   // last resort: lose the window, keep the process
     }
-    const t = tries.get(key) || { n: 0, until: Date.now() + LOGIN_WINDOW_MS };
-    t.n++; t.until = Date.now() + LOGIN_WINDOW_MS;
+    const t = tries.get(key) || { n: 0, until: Date.now() + windowMs };
+    t.n++; t.until = Date.now() + windowMs;
     tries.set(key, t);
   }
 
@@ -335,7 +400,8 @@ export function makeAdmin({ pool, cfg, settings, ladder, delivery, backing, noti
 <button class="ghost">Sign out</button></form></header>
 <main>${body}</main></body></html>`;
 
-  const loginPage = (msg, needCode) => `<!DOCTYPE html><html lang="en"><head>
+  // STEP 1: who are you.
+  const loginPage = (msg) => `<!DOCTYPE html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>market admin</title><style>${CSS}</style></head><body><main class="login">
 <h2>market.pc.am admin</h2>
@@ -343,10 +409,29 @@ ${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
 <form method="POST" action="/admin/login">
 <p><input name="email" type="email" placeholder="email" style="width:100%" required autofocus></p>
 <p><input name="password" type="password" placeholder="password" style="width:100%" required></p>
-<p><input name="code" inputmode="numeric" autocomplete="one-time-code"
-   placeholder="6-digit code${needCode ? '' : ' (if enrolled)'}" style="width:100%"></p>
-<p><button style="width:100%">Sign in</button></p>
+<p><button style="width:100%">Continue</button></p>
 </form></main></body></html>`;
+
+  // STEP 2: prove it. Only reached once the password has verified, so the code
+  // field is alone on the page and autofocused — the common case is a phone in
+  // the other hand.
+  const codePage = (pending, msg, left) => `<!DOCTYPE html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>market admin</title><style>${CSS}</style></head><body><main class="login">
+<h2>Two-factor</h2>
+<p class="s" style="color:var(--dim)">Enter the 6-digit code from your authenticator.</p>
+${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
+<form method="POST" action="/admin/login">
+<input type="hidden" name="pending" value="${esc(pending)}">
+<p><input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*"
+   placeholder="6-digit code" style="width:100%;font-size:20px;letter-spacing:4px;text-align:center"
+   required autofocus></p>
+<p><button style="width:100%">Sign in</button></p>
+</form>
+${left !== undefined ? `<p class="s" style="color:var(--dim)">${left} attempt(s) left before this
+  address is blocked for ${Math.round(CODE_WINDOW_MS / 60000)} minutes.</p>` : ''}
+<p class="s"><a href="/admin">Start again</a></p>
+</main></body></html>`;
 
   // ── list helper: filtering, sorting, paging, all bound to allowlists ─────
   function listQuery(u, { cols, sortable, defaultSort, table, where = [], args = [] }) {
@@ -409,7 +494,9 @@ ${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
       const em = String(f.get('email') || '').trim().toLowerCase();
       const pw = String(f.get('password') || '');
       const code = String(f.get('code') || '');
-      if (throttled(`ip:${ip}`) || throttled(`em:${em}`)) {
+      // Per-IP only. See LOGIN_MAX_TRIES: gating on the email address let
+      // anyone lock the owner out of their own panel from anywhere.
+      if (throttled(`ip:${ip}`)) {
         await audit(em, 'login.throttled', null, ip);
         await alertOnce(`lock:${ip}`, () =>
           `⛔️ <b>Admin login locked out</b>\n<code>${esc(ipTxt)}</code> hit ${LOGIN_MAX_TRIES} ` +
@@ -422,6 +509,8 @@ ${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
       // One message for every failure: which of the three was wrong is not the
       // guesser's business.
       const bad = async why => {
+        // The account counter still runs, but only feeds the alert below —
+        // it can no longer refuse a login.
         noteFail(`ip:${ip}`); noteFail(`em:${em}`);
         await audit(em, 'login.fail', why, ip);
         // The panel is reachable from the whole internet, so somebody guessing
@@ -434,24 +523,71 @@ ${msg ? `<div class="msg err">${esc(msg)}</div>` : ''}
           `<code>${esc(ipTxt)}</code> — ${esc(why)}\nFurther failures from this address are ` +
           `suppressed for 15 minutes. If this was not you, nothing is wrong yet: the ` +
           `password is scrypt-hashed and 2FA is enrolled.`);
-        return rawSendHtml(401, loginPage('Wrong email, password or code.'));
+        return rawSendHtml(401, loginPage('Wrong email or password.'));
       };
+      // Issuing the real session is the same act whichever step reaches it.
+      const signIn = async (who, how) => {
+        tries.delete(`ip:${ip}`); tries.delete(`em:${em}`); tries.delete(`code:${ip}`);
+        await q(`UPDATE admins SET last_login=NOW() WHERE email=?`, [who]);
+        await audit(who, 'login.ok', how, ip);
+        await notify(`🔐 <b>Admin signed in</b>\n${esc(who)} from <code>${esc(ipTxt)}</code>` +
+                     `${how === 'no 2fa' ? '\n⚠️ 2FA is NOT enrolled on this account' : ''}`);
+        const tok = sign(`${who}|${Date.now() + SESSION_HOURS * 3600e3}`);
+        res.writeHead(302, { Location: '/admin', 'Set-Cookie':
+          `mktadm=${tok}; Path=/admin; Max-Age=${SESSION_HOURS * 3600}; HttpOnly; Secure; SameSite=Strict` });
+        return res.end();
+      };
+
+      // ── STEP 2: a code, against a pending token minted by step 1 ─────────
+      const pending = String(f.get('pending') || '');
+      if (pending) {
+        const who = verifyPending(pending);
+        if (!who) {
+          // Expired or forged. Back to the start rather than a code box that
+          // can never succeed.
+          return rawSendHtml(401, loginPage('That took too long — sign in again.'));
+        }
+        // Its own budget, far tighter than the password step: reaching here
+        // already proves the password, so six digits is all that is left.
+        if (throttled(`code:${ip}`, CODE_MAX_TRIES)) {
+          await audit(who, 'login.throttled', 'code', ip);
+          await alertOnce(`codelock:${ip}`, () =>
+            `⛔️ <b>Two-factor blocked</b>\n<code>${esc(ipTxt)}</code> got the password right for ` +
+            `<code>${esc(who)}</code> but failed the 6-digit code ${CODE_MAX_TRIES} times, and is ` +
+            `blocked for ${Math.round(CODE_WINDOW_MS / 60000)} minutes.\n` +
+            `<b>If that was not you, someone else knows the password.</b> Change it with ` +
+            `<code>market-admin set-password</code> on the server.`);
+          return rawSendHtml(429, loginPage(
+            `Too many incorrect codes. Wait ${Math.round(CODE_WINDOW_MS / 60000)} minutes.`));
+        }
+        const [acc2] = await q(
+          `SELECT email, totp_secret, totp_enabled FROM admins WHERE email=?`, [who]);
+        if (!acc2 || !acc2.totp_enabled) return rawSendHtml(401, loginPage('Sign in again.'));
+        if (!totpValid(acc2.totp_secret, code)) {
+          noteFail(`code:${ip}`, CODE_WINDOW_MS);
+          await audit(who, 'login.fail', 'bad totp', ip);
+          const left = Math.max(0, CODE_MAX_TRIES - (tries.get(`code:${ip}`)?.n ?? 1));
+          // A FRESH pending token, so a slow typist is not thrown back to the
+          // password step by the three-minute expiry.
+          return rawSendHtml(401, codePage(signPending(who), 'That code is not right.', left));
+        }
+        return signIn(who, '2fa');
+      }
+
+      // ── STEP 1: email and password ───────────────────────────────────────
       if (!acc) return bad('no such admin');
       const h = Buffer.from(hashPw(pw, acc.salt), 'hex');
       const w = Buffer.from(acc.hash, 'hex');
       if (h.length !== w.length || !timingSafeEqual(h, w)) return bad('bad password');
+
       if (acc.totp_enabled) {
-        if (!totpValid(acc.totp_secret, code)) return bad('bad totp');
+        // Password accepted. Ask for the code on its own page — and do NOT
+        // spend a code attempt merely to get here.
+        await audit(em, 'login.password-ok', 'awaiting 2fa', ip);
+        return rawSendHtml(200, codePage(signPending(em), null,
+                                         CODE_MAX_TRIES - (tries.get(`code:${ip}`)?.n ?? 0)));
       }
-      tries.delete(`ip:${ip}`); tries.delete(`em:${em}`);
-      await q(`UPDATE admins SET last_login=NOW() WHERE email=?`, [em]);
-      await audit(em, 'login.ok', acc.totp_enabled ? '2fa' : 'no 2fa', ip);
-      await notify(`🔐 <b>Admin signed in</b>\n${esc(em)} from <code>${esc(ipTxt)}</code>` +
-                   `${acc.totp_enabled ? '' : '\n⚠️ 2FA is NOT enrolled on this account'}`);
-      const tok = sign(`${em}|${Date.now() + SESSION_HOURS * 3600e3}`);
-      res.writeHead(302, { Location: '/admin', 'Set-Cookie':
-        `mktadm=${tok}; Path=/admin; Max-Age=${SESSION_HOURS * 3600}; HttpOnly; Secure; SameSite=Strict` });
-      return res.end();
+      return signIn(em, 'no 2fa');
     }
 
     if (!email) {
