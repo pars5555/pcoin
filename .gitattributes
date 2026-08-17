@@ -43,3 +43,15 @@ contrib/seed-monitoring/pcoin-notify        text eol=lf
 *.bat  text eol=crlf
 *.ps1  text eol=crlf
 *.iss  text eol=crlf
+
+# contrib/ops holds root-owned scripts for the payments host. Two of them carry
+# a `#!/bin/bash` shebang and no extension, so none of the rules above reach
+# them — a Windows checkout would rewrite them to CRLF and the kernel would then
+# refuse to run them, reporting `bad interpreter: /bin/bash^M`: an error that
+# names the interpreter rather than the stray carriage return, on a file that
+# looks perfectly correct in every editor. These are the caddy watchdog and the
+# Cloudflare firewall refresher, so the failure would be a host with no watchdog
+# and a stale allowlist, discovered later rather than at deploy time.
+contrib/ops/pcoin-caddy-watchdog  text eol=lf
+contrib/ops/pcoin-cf-firewall     text eol=lf
+contrib/ops/*.conf                text eol=lf
