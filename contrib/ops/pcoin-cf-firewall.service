@@ -1,0 +1,6 @@
+[Unit]
+Description=Refresh the Cloudflare-only firewall allowlist
+After=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pcoin-cf-firewall

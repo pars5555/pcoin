@@ -1,0 +1,50 @@
+[Unit]
+Description=PCoin market (buy/sell PCN)
+After=network-online.target pcoin-price.service mariadb.service
+Wants=pcoin-price.service
+
+[Service]
+ExecStart=/usr/bin/node /opt/pcoin-market/server.mjs
+WorkingDirectory=/opt/pcoin-market
+Restart=always
+RestartSec=5
+UMask=0077
+
+# This process is the internet-facing one: checkout, the NOWPayments IPN
+# endpoint and the admin panel all live in it. It used to run as root with the
+# full capability set and the node cookie, so any bug in it was root on the box
+# and unrestricted wallet RPC. Now it is an unprivileged account that can read
+# its config and talk to localhost, and nothing else. Its RPC credential is
+# whitelisted to seven methods node-side (see /var/lib/pcoin/pcoin.conf).
+User=pcoin-market
+Group=pcoin-market
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+# All state is in MariaDB — the daemon writes no files, so nothing is writable.
+ProtectSystem=strict
+ReadOnlyPaths=/etc/pcoin
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete
+# NOT MemoryDenyWriteExecute: V8 JIT-compiles, and it would refuse to start.
+
+[Install]
+WantedBy=multi-user.target

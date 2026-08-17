@@ -1,0 +1,47 @@
+[Unit]
+Description=PCoin price oracle
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/node /opt/pcoin-price/server.mjs
+WorkingDirectory=/opt/pcoin-price
+Restart=always
+RestartSec=5
+UMask=0077
+
+# Same reasoning as pcoin-market: this is a web-facing process and it was root
+# with every capability. It holds no keys and cannot spend, but it sets the
+# price four other products charge at, and root here is root everywhere.
+# It DOES write state.json (the AMM reserves and the retune clock), so unlike
+# the market it needs one writable directory — and only that one.
+User=pcoin-price
+Group=pcoin-price
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ReadOnlyPaths=/etc/pcoin
+ReadWritePaths=/opt/pcoin-price
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete
+
+[Install]
+WantedBy=multi-user.target

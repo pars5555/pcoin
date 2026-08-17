@@ -532,6 +532,46 @@ function ipnValid(rawBody, sigHeader) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+/** Report what a completed sale actually earned, from the gateway's own fee
+ *  breakdown. Never throws into the IPN path — a reporting bug must not cost a
+ *  delivery. */
+async function reportSaleEconomics(d) {
+  const usd = Number(d.price_amount);
+  const out = Number(d.outcome_amount);
+  const f = d.fee || {};
+  const wd = Number(f.withdrawalFee ?? 0);
+  const dep = Number(f.depositFee ?? 0);
+  const svc = Number(f.serviceFee ?? 0);
+  if (!isFinite(usd) || usd <= 0) return;
+
+  // outcome_amount is in outcome_currency. It is a stablecoin in every
+  // configuration this market has used, so treating it as dollars is right
+  // here — but say which currency, so a future switch to a volatile payout
+  // asset is visible rather than silently compared against USD.
+  const netKnown = isFinite(out) && out > 0;
+  const lostPct = netKnown ? ((usd - out) / usd) * 100 : null;
+
+  let verdict;
+  if (wd > 0) {
+    verdict = `⚠️ <b>The per-order withdrawal fee is STILL being charged</b> (${wd.toFixed(2)}). ` +
+              `Funds are being forwarded per payment instead of accumulating in Custody — ` +
+              `check Store Settings → Payout wallets.`;
+  } else if (netKnown && lostPct !== null && lostPct > 5) {
+    verdict = `⚠️ Fees took <b>${lostPct.toFixed(1)}%</b>, which is high for a sale with no ` +
+              `withdrawal fee. Worth a look at the gateway settings.`;
+  } else {
+    verdict = `✅ No per-order withdrawal fee. This is what Custody was turned on for.`;
+  }
+
+  await notify(
+    `💵 <b>Sale settled</b>  <code>${esc(String(d.order_id ?? '?'))}</code>\n` +
+    `customer paid <b>$${usd.toFixed(2)}</b> in ${esc(String(d.pay_currency ?? '?'))}\n` +
+    (netKnown ? `you received <b>${out} ${esc(String(d.outcome_currency ?? ''))}</b>` +
+                (lostPct !== null ? ` — ${lostPct.toFixed(1)}% to fees\n` : `\n`) : '') +
+    `deposit ${dep.toFixed(6)} · service ${svc.toFixed(6)} · withdrawal <b>${wd.toFixed(6)}</b>\n` +
+    verdict);
+}
+
 // ── pages ──────────────────────────────────────────────────────────────────
 // Throttles for alerts a stranger can trigger. Unbounded, they would be a
 // denial of service against the one channel carrying the double-send alarm.
@@ -727,6 +767,22 @@ createServer(async (req, res) => {
         // and message the operator. deliver() never throws — a delivery problem
         // must not turn into a non-200 that makes NOWPayments retry a payment
         // we have already recorded.
+        // WHAT DID THIS SALE ACTUALLY EARN?
+        //
+        // The gateway's fee breakdown arrives in the callback and was never
+        // read. It should have been: the first real sale took $20 and credited
+        // $14.34, because a payout wallet was configured and every single order
+        // triggered its own ~$5.39 on-chain withdrawal. That is 28% on a $20
+        // order, against 1,305 PCN handed over that the ladder prices at
+        // $19.59 — the market was selling below cost and nothing said so.
+        //
+        // Custody now holds funds instead of forwarding them per payment, and
+        // this is how we find out whether that worked: from the gateway's own
+        // numbers on a real sale, not from a settings page. It also stays
+        // useful afterwards, because a silent change to the payout
+        // configuration would show up here as a fee reappearing.
+        reportSaleEconomics(d).catch(e => console.error('[ipn] fee report:', e.message));
+
         if (!underpaid) await D.deliver(d.order_id);
       } else if (['failed', 'expired', 'refunded'].includes(d.payment_status)) {
         // Guarded on 'pending', exactly like the success branch is. Unguarded,

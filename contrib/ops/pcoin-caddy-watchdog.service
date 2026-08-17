@@ -1,0 +1,6 @@
+[Unit]
+Description=Restart caddy if it is running but not serving
+After=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pcoin-caddy-watchdog

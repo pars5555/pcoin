@@ -1,0 +1,72 @@
+#!/bin/bash
+# Caddy alive but not SERVING is the failure Restart=on-failure cannot see:
+# systemd only knows whether the process exists. This box terminates TLS for
+# market.pc.am, price.pc.am, pool.pc.am, pcnearner.pc.am and explorer2.pc.am,
+# so a wedged listener takes the payment surfaces down while `systemctl status`
+# still reads active.
+#
+# Deliberately conservative. Restarting caddy drops every in-flight connection
+# on five sites, so it must never fire on a blip:
+#   * probes the LOOPBACK, not the public name — a Cloudflare or DNS problem is
+#     not a caddy problem and must not trigger a restart
+#   * requires TWO consecutive failures 15s apart before acting
+#   * a single restart per run, then it reports and stops
+set -uo pipefail
+HOST=market.pc.am
+STATE=/var/lib/pcoin-caddy-watchdog
+CONF=/etc/pcoin/alert.conf
+mkdir -p "$STATE"
+
+probe() {
+  # -k: the origin serves a Cloudflare Origin cert, which is not in the trust
+  # store. We are testing "does caddy answer", not certificate validity.
+  local code
+  code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 8 \
+         --resolve "$HOST:443:127.0.0.1" "https://$HOST/api/ladder/state" 2>/dev/null)
+  [ -n "$code" ] && [ "$code" != "000" ]
+}
+
+notify() {
+  [ -r "$CONF" ] || { logger -t pcoin-caddy-watchdog "alert.conf unreadable: $1"; return; }
+  local tok chat
+  tok=$(sed -n 's/^TELEGRAM_TOKEN=//p' "$CONF" | head -1)
+  # MARKET_CHAT first, ALERT_CHAT as fallback. The file was replaced on
+  # 2026-08-15 and the replacement dropped MARKET_CHAT entirely, so reading
+  # only that key sent every alert to an empty chat id -- Telegram answers
+  # HTTP 400 and the watchdog would have reported success while nothing
+  # arrived. The Node services survived it because they fall back to
+  # config.json; this shell script had no such fallback.
+  chat=$(sed -n 's/^MARKET_CHAT=//p' "$CONF" | head -1)
+  [ -n "$chat" ] || chat=$(sed -n 's/^ALERT_CHAT=//p' "$CONF" | head -1)
+  [ -n "$tok" ] && [ -n "$chat" ] || return
+  curl -s --max-time 10 -o /dev/null -X POST \
+    "https://api.telegram.org/bot$tok/sendMessage" \
+    -H 'content-type: application/json' \
+    -d "$(printf '{"chat_id":"%s","parse_mode":"HTML","text":%s}' "$chat" \
+          "$(printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')")"
+}
+
+if probe; then
+  rm -f "$STATE/failing"
+  exit 0
+fi
+
+# One failure proves nothing.
+sleep 15
+if probe; then
+  logger -t pcoin-caddy-watchdog "single probe failure, recovered on retry — not restarting"
+  exit 0
+fi
+
+logger -t pcoin-caddy-watchdog "caddy not serving on loopback after two probes — restarting"
+systemctl restart caddy
+sleep 8
+if probe; then
+  logger -t pcoin-caddy-watchdog "restart restored service"
+  notify "🔁 <b>Caddy was wedged and has been restarted</b>
+It was running but not answering on the loopback, which takes market, price, pool, pcnearner and explorer2 down together. Service is back."
+else
+  logger -t pcoin-caddy-watchdog "STILL not serving after restart"
+  notify "🔴 <b>Caddy is DOWN and a restart did not fix it</b>
+market.pc.am, price.pc.am, pool.pc.am, pcnearner.pc.am and explorer2.pc.am are all unreachable. This needs a human."
+fi

@@ -1,0 +1,49 @@
+#!/bin/bash
+# Restrict :80 and :443 to Cloudflare's published ranges.
+#
+# Every hostname this box serves (market, price, explorer2, pcnearner) is a
+# PROXIED Cloudflare record, so no legitimate visitor ever reaches the origin
+# directly. Leaving 443 open to the world meant two things:
+#
+#   1. Anyone who learned the origin IP could skip the edge entirely, and with
+#      it Cloudflare's TLS, WAF and rate limiting.
+#   2. More sharply: CF-Connecting-IP is only trustworthy because Cloudflare
+#      overwrites it. A request that arrives directly can set it to anything,
+#      which is what the app reads to identify an admin and to key the login
+#      rate limiter. This rule is what makes that header safe to believe.
+#
+# 9444 (PCoin P2P) and 22 (SSH) are deliberately NOT restricted — the P2P port
+# must accept peers from anywhere, and locking SSH to Cloudflare would be
+# locking yourself out of the box.
+#
+# Re-run to refresh; Cloudflare adds ranges occasionally. Run by pcoin-cf-firewall.timer.
+set -euo pipefail
+LIST=/etc/pcoin/cloudflare-ips.txt
+TMP=$(mktemp)
+trap 'rm -f "$TMP"' EXIT
+
+{ curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4
+  echo
+  curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6; } > "$TMP" || {
+  echo "could not fetch Cloudflare ranges; leaving the firewall alone"; exit 0; }
+
+# Never apply a list that does not look like Cloudflare's.
+grep -q '^104\.16\.0\.0/13$'   "$TMP" || { echo "list failed sanity check (v4)"; exit 1; }
+grep -q '^2606:4700::/32$'     "$TMP" || { echo "list failed sanity check (v6)"; exit 1; }
+[ "$(grep -c '/' "$TMP")" -ge 15 ] || { echo "list too short"; exit 1; }
+
+if cmp -s "$TMP" "$LIST" && ufw status | grep -q '104.16.0.0/13'; then
+  echo "unchanged"; exit 0
+fi
+install -m 644 "$TMP" "$LIST"
+
+# Drop any blanket web rules, then allow only Cloudflare.
+while ufw status numbered | grep -qE '^\[[ 0-9]+\] (80|443)/tcp( \(v6\))? +ALLOW IN +Anywhere'; do
+  n=$(ufw status numbered | grep -E '^\[[ 0-9]+\] (80|443)/tcp( \(v6\))? +ALLOW IN +Anywhere' | head -1 | sed 's/^\[ *\([0-9]*\).*/\1/')
+  ufw --force delete "$n" >/dev/null
+done
+while read -r r; do
+  [ -z "$r" ] && continue
+  ufw allow from "$r" to any port 80,443 proto tcp comment 'cloudflare' >/dev/null
+done < "$LIST"
+echo "applied $(grep -c '/' "$LIST") Cloudflare ranges"

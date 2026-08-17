@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly refresh of Cloudflare's IP ranges
+# Cloudflare adds ranges rarely, but a range added after this box was set up
+# would have its visitors silently refused with no error anywhere on this side.
+[Timer]
+OnCalendar=weekly
+RandomizedDelaySec=6h
+Persistent=true
+[Install]
+WantedBy=timers.target
