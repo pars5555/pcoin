@@ -252,22 +252,66 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
         ]);
       } catch (e) {
         // The send may or may not have gone out — an RPC timeout says nothing
-        // about whether the node broadcast it. Look before concluding.
-        const found = await findSentTx(orderId).catch(() => null);
-        if (found) {
-          await recordSent(orderId, found);
+        // about whether the node broadcast it. Look before concluding, and if
+        // the LOOK itself fails, conclude nothing.
+        //
+        // This used to be `findSentTx(orderId).catch(() => null)`, which
+        // collapsed a THROWN lookup into the same `null` as a wallet that
+        // answered "no such transaction" — and then stated it to the operator
+        // as fact: "No transaction was found for this order, so nothing was
+        // sent." That sentence authorises a manual send. It is the one place in
+        // this file that discarded the distinction `alreadySent()` exists to
+        // preserve, and it sat immediately after the single operation whose
+        // fate is genuinely unknown.
+        //
+        // The two failures are also CORRELATED, not independent: whatever made
+        // sendtoaddress hit the 30 s timeout — a node mid-block-validation, a
+        // wallet still reloading after a bitcoind restart — is still true when
+        // findSentTx reuses the same client milliseconds later. So the bad path
+        // is the likely one, not the exotic one.
+        //
+        // Worse, the old code moved the row to needs_review, which removed it
+        // from reconcileSending (whose WHERE is status='sending') — the only
+        // automatic path that would have found the transaction once the node
+        // recovered. It stranded the order precisely when it most needed the
+        // sweep.
+        const seen = await alreadySent(orderId);
+
+        if (seen.known && seen.txid) {
+          await recordSent(orderId, seen.txid);
           await notify(`🟢 <b>Sent</b> (recovered after an RPC error)\n<code>${orderId}</code>\n` +
-                       `<code>${found}</code>`);
-          return { ok: true, mode: 'auto', txid: found, recovered: true };
+                       `<code>${seen.txid}</code>`);
+          return { ok: true, mode: 'auto', txid: seen.txid, recovered: true };
         }
+
+        if (!seen.known) {
+          // Stay in 'sending' ON PURPOSE so the reconcile sweep keeps asking.
+          // Guarded on the status so this cannot stomp a concurrent resolution.
+          await q(`UPDATE orders SET delivery_error=? WHERE order_id=? AND status='sending'`,
+                  [`send failed (${String(e.message).slice(0, 300)}) AND the wallet could not be ` +
+                   `asked whether it went out: ${String(seen.why).slice(0, 300)}`.slice(0, 2000),
+                   orderId]);
+          await notify(
+            `🔴 <b>Auto-send UNRESOLVED</b>\n<code>${orderId}</code>\n` +
+            `$${usd.toFixed(2)} → ${pcn.toFixed(8)} PCN to <code>${order.address}</code>\n` +
+            `<code>${String(e.message).slice(0, 250)}</code>\n\n` +
+            `The send failed AND the wallet could not be asked whether it went out ` +
+            `(<code>${String(seen.why).slice(0, 140)}</code>), so it is <b>not known</b> whether ` +
+            `coins left. Left <b>sending</b>; the reconcile sweep will keep retrying.\n` +
+            `<b>Do not send by hand until the node answers.</b>`);
+          return { ok: false, why: `send failed, fate unknown: ${e.message}`, unresolved: true };
+        }
+
+        // Only here is "nothing was sent" a fact: the wallet answered, and it
+        // said no.
         await q(`UPDATE orders SET status='needs_review', delivery_error=? WHERE order_id=?`,
                 [String(e.message).slice(0, 2000), orderId]);
         await notify(
           `🔴 <b>Auto-send FAILED</b>\n<code>${orderId}</code>\n` +
           `$${usd.toFixed(2)} → ${pcn.toFixed(8)} PCN to <code>${order.address}</code>\n` +
           `<code>${String(e.message).slice(0, 300)}</code>\n\n` +
-          `No transaction was found for this order, so nothing was sent. ` +
-          `Marked <b>needs_review</b> — check before sending by hand.`);
+          `The wallet <b>was</b> checked and holds no transaction for this order, so nothing was ` +
+          `sent. Marked <b>needs_review</b> — check before sending by hand.`);
         return { ok: false, why: e.message };
       }
 

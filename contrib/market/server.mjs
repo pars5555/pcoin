@@ -535,13 +535,31 @@ function ipnValid(rawBody, sigHeader) {
 /** Report what a completed sale actually earned, from the gateway's own fee
  *  breakdown. Never throws into the IPN path — a reporting bug must not cost a
  *  delivery. */
+const saleReported = new Set();
 async function reportSaleEconomics(d) {
+  // Once per payment. The branch that calls this accepts BOTH 'confirmed' and
+  // 'finished', and the gateway retries callbacks — so without this the same
+  // sale is announced two or more times, and an operator who sees two "Sale
+  // settled" messages reasonably concludes two people bought something.
+  const key = String(d.payment_id ?? d.order_id ?? '');
+  if (!key || saleReported.has(key)) return;
+  if (saleReported.size > 5000) saleReported.clear();   // bounded; worst case is a repeat
+  saleReported.add(key);
+
   const usd = Number(d.price_amount);
   const out = Number(d.outcome_amount);
   const f = d.fee || {};
-  const wd = Number(f.withdrawalFee ?? 0);
-  const dep = Number(f.depositFee ?? 0);
-  const svc = Number(f.serviceFee ?? 0);
+
+  // NOT `?? 0`. A fee object the gateway did not send, or sent under a
+  // different name after an API change, would become 0 and print the single
+  // most misleading sentence this function can produce: "No per-order
+  // withdrawal fee — this is what Custody was turned on for." That is a
+  // confident all-clear manufactured from an absent field, and it is exactly
+  // the `optInt("x", 0)` trap this estate has been bitten by before. A missing
+  // fee is UNKNOWN, and unknown says so.
+  const num = v => (v === undefined || v === null || !isFinite(Number(v)) ? null : Number(v));
+  const wd = num(f.withdrawalFee), dep = num(f.depositFee), svc = num(f.serviceFee);
+  const money = v => (v === null ? 'unknown' : v.toFixed(6));
   if (!isFinite(usd) || usd <= 0) return;
 
   // outcome_amount is in outcome_currency. It is a stablecoin in every
@@ -551,8 +569,13 @@ async function reportSaleEconomics(d) {
   const netKnown = isFinite(out) && out > 0;
   const lostPct = netKnown ? ((usd - out) / usd) * 100 : null;
 
+  // Three states, and the unknown one never masquerades as the good one.
   let verdict;
-  if (wd > 0) {
+  if (wd === null) {
+    verdict = `❔ The gateway sent no withdrawal fee field, so whether Custody is holding funds ` +
+              `is <b>unknown</b> from this callback — not confirmed either way. Check the ` +
+              `Custody balance directly.`;
+  } else if (wd > 0) {
     verdict = `⚠️ <b>The per-order withdrawal fee is STILL being charged</b> (${wd.toFixed(2)}). ` +
               `Funds are being forwarded per payment instead of accumulating in Custody — ` +
               `check Store Settings → Payout wallets.`;
@@ -568,7 +591,7 @@ async function reportSaleEconomics(d) {
     `customer paid <b>$${usd.toFixed(2)}</b> in ${esc(String(d.pay_currency ?? '?'))}\n` +
     (netKnown ? `you received <b>${out} ${esc(String(d.outcome_currency ?? ''))}</b>` +
                 (lostPct !== null ? ` — ${lostPct.toFixed(1)}% to fees\n` : `\n`) : '') +
-    `deposit ${dep.toFixed(6)} · service ${svc.toFixed(6)} · withdrawal <b>${wd.toFixed(6)}</b>\n` +
+    `deposit ${money(dep)} · service ${money(svc)} · withdrawal <b>${money(wd)}</b>\n` +
     verdict);
 }
 

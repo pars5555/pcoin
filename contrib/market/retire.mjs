@@ -140,7 +140,7 @@ export function makeRetire({ pool, node, settings, notify, log = console }) {
     if (safeTip <= from) return { ok: true, upToDate: true, at: from };
 
     const capLeft = Math.max(0, c.dailyCap - await retiredToday());
-    let scanned = 0, spent = 0, retired = 0, capped = false, cappedAt = null;
+    let scanned = 0, spent = 0, retired = 0, capped = false, cappedAt = null, failedAt = null;
 
     // Labelled so the cap can abandon the whole scan from inside the innermost
     // loop WITHOUT reaching setCursor(h) below — leaving the cursor on the last
@@ -212,11 +212,47 @@ export function makeRetire({ pool, node, settings, notify, log = console }) {
           } catch (e) {
             await conn.rollback();
             log.error(`[retire] ${tx.txid}:${vout} failed: ${e.message}`);
+            // The rollback undid the INSERT, so this output is NOT recorded as
+            // counted — which is correct. But the cursor below was advanced
+            // past this block regardless, so nothing would ever look at it
+            // again: the retirement was discarded silently and permanently,
+            // and the ladder never reflected that spending. Exactly the defect
+            // the daily cap had, one layer down.
+            //
+            // Stop the scan here instead. Every part of this loop is
+            // idempotent — outputs already handled are protected by the UNIQUE
+            // (txid, vout), and the cursor only advances at the end of a fully
+            // processed block — so the next pass resumes at this block and
+            // retries this output. A transient failure costs a re-read of a
+            // few blocks; a permanent one keeps failing loudly instead of
+            // losing inventory quietly.
+            failedAt = { h, txid: tx.txid, vout, why: e.message };
+            // No release() here: the `finally` below runs before this break
+            // propagates, and releasing a pooled connection twice hands the
+            // same handle out to two callers.
+            break scan;
           } finally { conn.release(); }
         }
       }
       await setCursor(h);
       scanned++;
+    }
+
+    if (failedAt) {
+      // A stalled cursor is invisible: usage simply stops moving the price and
+      // that looks the same as nobody spending anything.
+      await notify(
+        `🔴 <b>Retirement STALLED</b>
+A retirement failed at block ${failedAt.h} and the scan ` +
+        `stopped there rather than skipping past it, so nothing after that block is being ` +
+        `retired and the price has stopped responding to usage.
+` +
+        `<code>${String(failedAt.txid).slice(0, 24)}…:${failedAt.vout}</code>
+` +
+        `<code>${String(failedAt.why).slice(0, 200)}</code>
+` +
+        `Nothing is lost — it retries from this block on the next pass — but if it keeps ` +
+        `failing it needs a look.`).catch(() => {});
     }
 
     if (retired > 0) {
