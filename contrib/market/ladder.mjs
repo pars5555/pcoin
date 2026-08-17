@@ -215,24 +215,56 @@ export function makeLadder(pool, { notify = null, log = console } = {}) {
   /** reserved -> sold. Called when payment confirms.
    *  Idempotent: a second call finds no 'reserved' rows and does nothing, which
    *  is what makes a NOWPayments callback retry safe. */
-  async function settleLadder(orderId) {
+  async function settleLadder(orderId, conn = null) {
     return moveFills(orderId, 'sold', (c, f) =>
       c.query(`UPDATE ladder_rungs SET qty_sold = qty_sold + ?, qty_reserved = qty_reserved - ?
-                WHERE rung_no = ?`, [f.qty, f.qty, f.rung_no]));
+                WHERE rung_no = ?`, [f.qty, f.qty, f.rung_no]), conn);
   }
 
   /** reserved -> released. Called when an order fails, expires, or is refunded.
    *  Only ever touches 'reserved' rows, so it can never un-sell a paid order. */
-  async function releaseLadder(orderId) {
+  async function releaseLadder(orderId, conn = null) {
     return moveFills(orderId, 'released', (c, f) =>
       c.query(`UPDATE ladder_rungs SET qty_reserved = qty_reserved - ? WHERE rung_no = ?`,
-              [f.qty, f.rung_no]));
+              [f.qty, f.rung_no]), conn);
   }
 
-  async function moveFills(orderId, toState, applyRung) {
-    const conn = await pool.getConnection();
+  /** `outerConn` runs this inside the CALLER's transaction instead of its own.
+   *  The sweeper needs that: expiring an order and giving its rungs back have
+   *  to be one atomic act, or there is a window where the order is terminal and
+   *  the inventory is already back on sale (see sweepExpiredOrders). */
+  async function moveFills(orderId, toState, applyRung, outerConn = null) {
+    const conn = outerConn || await pool.getConnection();
     try {
-      await conn.beginTransaction();
+      if (!outerConn) await conn.beginTransaction();
+
+      // LOCK ORDER: ladder_rungs BEFORE ladder_fills, ascending rung_no.
+      //
+      // This is not decoration. reserveLadder takes rungsWithStock(conn, true)
+      // -- a `SELECT ... FROM ladder_rungs ... ORDER BY rung_no FOR UPDATE` --
+      // and only then INSERTs into ladder_fills: rungs, then fills. This
+      // function used to do the exact opposite, locking ladder_fills first and
+      // reaching ladder_rungs afterwards through applyRung. Two transactions
+      // running concurrently -- one buyer reserving, one payment settling --
+      // could therefore each hold what the other was waiting for, and InnoDB
+      // resolves that by killing one of them. The victim is arbitrary: it can
+      // be the settle, which is the transaction that runs when a customer has
+      // already paid.
+      //
+      // Acquiring the rung locks first, in the same ascending order, means
+      // every writer queues on the same resource in the same sequence. The
+      // DISTINCT read below is a plain snapshot read and does not need to lock
+      // -- fills for an order are written once, at reservation, and never
+      // added to afterwards.
+      const [which] = await conn.query(
+        `SELECT DISTINCT rung_no FROM ladder_fills
+          WHERE order_id = ? AND state = 'reserved' ORDER BY rung_no`, [orderId]);
+      if (which.length) {
+        await conn.query(
+          `SELECT rung_no FROM ladder_rungs WHERE rung_no IN (${which.map(() => '?').join(',')})
+            ORDER BY rung_no FOR UPDATE`, which.map(r => r.rung_no));
+      }
+
       const [fills] = await conn.query(
         `SELECT rung_no, qty FROM ladder_fills WHERE order_id = ? AND state = 'reserved' FOR UPDATE`,
         [orderId]);
@@ -240,10 +272,12 @@ export function makeLadder(pool, { notify = null, log = console } = {}) {
       await conn.query(
         `UPDATE ladder_fills SET state = ?, settled_at = NOW()
           WHERE order_id = ? AND state = 'reserved'`, [toState, orderId]);
-      await conn.commit();
+      if (!outerConn) await conn.commit();
       return fills.length;
-    } catch (e) { await conn.rollback(); throw e; }
-    finally { conn.release(); }
+    } catch (e) {
+      if (!outerConn) await conn.rollback();
+      throw e;                       // an outer caller owns its own rollback
+    } finally { if (!outerConn) conn.release(); }
   }
 
   /** Abandoned orders must give their inventory back, or the ladder slowly
@@ -254,16 +288,43 @@ export function makeLadder(pool, { notify = null, log = console } = {}) {
         `SELECT order_id FROM orders
           WHERE status = 'pending' AND created_at < (NOW() - INTERVAL ? HOUR)`, [ORDER_TTL_HOURS]);
       for (const o of stale) {
-        // Flip the order first, and only if it is STILL pending. If a payment
-        // landed in between, the IPN has already moved it and this affects no
-        // rows — so we must not release inventory the buyer has now paid for.
-        const r = await q(
-          `UPDATE orders SET status = 'expired' WHERE order_id = ? AND status = 'pending'`,
-          [o.order_id]);
-        if (r.affectedRows === 1) {
-          const n = await releaseLadder(o.order_id);
-          console.log(`[ladder] expired ${o.order_id}, released ${n} rung reservation(s)`);
-        }
+        // ONE TRANSACTION for the flip and the release.
+        //
+        // These used to be two autocommit statements, and the gap between them
+        // was a window where the order was already 'expired' and its rungs were
+        // already back on sale. The IPN handler accepts a payment for an
+        // 'expired' order on purpose -- the sweeper may have timed it out
+        // minutes before a slow chain confirmed -- so the sequence was:
+        //
+        //   1. sweeper commits status='expired'
+        //   2. sweeper releases the rungs; someone else buys them
+        //   3. the original buyer's payment lands, the order moves to
+        //      awaiting_delivery, and settleLadder finds no 'reserved' fills
+        //
+        // The buyer has paid for inventory that was resold at those prices. The
+        // UNBACKED alert in the IPN handler catches it, but only after the money
+        // is taken -- it is a smoke alarm, not a fix. Holding both writes in one
+        // transaction removes the window: a concurrent payment either sees the
+        // order still 'pending' (and the row lock makes it wait), or sees it
+        // expired with the inventory already given back.
+        const conn = await pool.getConnection();
+        try {
+          await conn.beginTransaction();
+          const [r] = await conn.query(
+            `UPDATE orders SET status = 'expired' WHERE order_id = ? AND status = 'pending'`,
+            [o.order_id]);
+          if (r.affectedRows === 1) {
+            const n = await releaseLadder(o.order_id, conn);
+            await conn.commit();
+            console.log(`[ladder] expired ${o.order_id}, released ${n} rung reservation(s)`);
+          } else {
+            // A payment landed first. Touch nothing.
+            await conn.rollback();
+          }
+        } catch (e) {
+          await conn.rollback();
+          console.error(`[ladder] could not expire ${o.order_id}: ${e.message}`);
+        } finally { conn.release(); }
       }
 
       // Self-heal. Everywhere an order leaves 'pending', the status change and
