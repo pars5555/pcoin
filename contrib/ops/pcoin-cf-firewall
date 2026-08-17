@@ -37,11 +37,50 @@ if cmp -s "$TMP" "$LIST" && ufw status | grep -q '104.16.0.0/13'; then
 fi
 install -m 644 "$TMP" "$LIST"
 
-# Drop any blanket web rules, then allow only Cloudflare.
-while ufw status numbered | grep -qE '^\[[ 0-9]+\] (80|443)/tcp( \(v6\))? +ALLOW IN +Anywhere'; do
-  n=$(ufw status numbered | grep -E '^\[[ 0-9]+\] (80|443)/tcp( \(v6\))? +ALLOW IN +Anywhere' | head -1 | sed 's/^\[ *\([0-9]*\).*/\1/')
+# Drop any blanket web rules, then allow only Cloudflare — EXCEPT rules an
+# operator has deliberately marked to keep.
+#
+# This loop used to delete every blanket 80/443 rule it found, unconditionally,
+# and that would have broken pool.pc.am on the first Monday it ran. pool.pc.am
+# is deliberately NOT a proxied Cloudflare record: miners reach it directly and
+# it holds a Let's Encrypt certificate, so it needs inbound :80 for the HTTP-01
+# challenge. Rules granting that were added by hand on 2026-08-13 with the
+# comments "pool.pc.am ACME" and "pool.pc.am API". A weekly job that silently
+# removes them means renewal fails and nobody learns until the certificate
+# expires roughly two months later — the worst possible delay between cause and
+# symptom.
+#
+# So the rule is now: a blanket rule whose comment matches KEEP_RE is a decision
+# somebody made, and this script does not overrule decisions. It reports what it
+# kept, because a preserved hole that nobody remembers is its own problem.
+#
+# `|| true` on the two greps below is load-bearing under `set -euo pipefail`:
+# grep exits 1 when it matches nothing, and a failing command substitution kills
+# the script outright. Without it, the first run where EVERY blanket rule was on
+# the keep-list exited silently right here — after writing the IP list but before
+# applying a single Cloudflare rule. It looked like it had worked, because the
+# rules were already there from the previous run. A script that does nothing and
+# says nothing is the failure this whole file exists to prevent.
+KEEP_RE='pool\.pc\.am|KEEP'
+kept=0
+while :; do
+  line=$(ufw status numbered \
+         | grep -E '^\[[ 0-9]+\] (80|443)/tcp( \(v6\))? +ALLOW IN +Anywhere' \
+         | grep -vE "$KEEP_RE" | head -1 || true)
+  [ -z "$line" ] && break
+  n=$(printf '%s' "$line" | sed 's/^\[ *\([0-9]*\).*/\1/')
   ufw --force delete "$n" >/dev/null
 done
+kept=$(ufw status numbered \
+       | grep -E '^\[[ 0-9]+\] (80|443)/tcp( \(v6\))? +ALLOW IN +Anywhere' \
+       | grep -cE "$KEEP_RE" || true)
+kept=${kept:-0}
+if [ "$kept" -gt 0 ]; then
+  echo "kept $kept deliberate blanket rule(s) — the origin is NOT Cloudflare-only:"
+  ufw status numbered \
+    | grep -E '^\[[ 0-9]+\] (80|443)/tcp( \(v6\))? +ALLOW IN +Anywhere' \
+    | grep -E "$KEEP_RE" | sed 's/^/  /'
+fi
 while read -r r; do
   [ -z "$r" ] && continue
   ufw allow from "$r" to any port 80,443 proto tcp comment 'cloudflare' >/dev/null

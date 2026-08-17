@@ -17,13 +17,19 @@
 //      hrp) before an order is accepted, not after taking the money.
 //
 // LIMITS
-//   min order      $10
-//   sell cap       $20 per user per day (a global backstop also lives in the
-//                  price oracle, so one compromised account cannot drain it)
+//   Every limit is a LIVE SETTING in the admin panel, not a constant -- see
+//   settings.mjs. Hardcoding them here is how this comment came to advertise a
+//   $10 minimum long after it became $20.
 //
-// Payouts are NOT automatic in this version. A confirmed purchase is recorded
-// as `awaiting_delivery` and an operator releases it. That keeps a spending key
-// off this box entirely until the flow has been watched working with real money.
+// PAYOUTS ARE AUTOMATIC BELOW `autoMaxUsd`, AND THERE IS A SPENDING KEY ON THIS
+// BOX. This paragraph used to say the opposite -- that nothing is sent
+// automatically and no spending key is present -- and both stopped being true
+// when auto-send shipped. A confirmed purchase at or below the limit is signed
+// and broadcast by this process from the `market-hot` wallet, usually within a
+// minute; anything larger is queued for a human and sent from a wallet that has
+// never been online. The float is what bounds the loss from a break-in here,
+// which is why it is kept small and why delivery.mjs is the only file that can
+// spend.
 
 import { createServer } from 'node:http';
 import { createHmac, randomBytes, timingSafeEqual, scryptSync } from 'node:crypto';

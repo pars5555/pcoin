@@ -239,6 +239,34 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
         return { ok: true, already: true, why: 'another worker owns this order' };
       }
 
+      // RE-CHECK THE FLOOR, NOW THAT THIS ORDER IS UNAMBIGUOUSLY OURS.
+      //
+      // The check further up ran BEFORE the claim, so two orders arriving
+      // together both read the same balance and both concluded there was room.
+      // Each is individually affordable; together they are not, and the second
+      // send takes the wallet under the very reserve the floor exists to
+      // protect — or fails outright with the buyer already paid. The claim is
+      // the first moment this order is exclusively ours, so it is the only
+      // honest moment to ask "is there still enough".
+      //
+      // An unreadable balance resolves nothing and does NOT block the send: the
+      // pre-claim check already passed on a real reading, and refusing here on
+      // an RPC hiccup would strand a paid order for no evidence.
+      const bal2 = await floatBalance().catch(() => null);
+      if (bal2 !== null && bal2 - pcn < S.stop()) {
+        await q(`UPDATE orders SET status='awaiting_delivery', delivery_mode='manual',
+                        delivery_error=? WHERE order_id=? AND status='sending'`,
+                [`float fell below the reserve between the check and the claim: ` +
+                 `${bal2.toFixed(8)} PCN, needs ${pcn.toFixed(8)} + ${S.stop()}`, orderId]);
+        await notify(
+          `🔴 <b>Auto-send stopped at the last moment — float too low</b>\n` +
+          `<code>${orderId}</code>  ${pcn.toFixed(8)} PCN\n` +
+          `The wallet held ${bal.toFixed(2)} PCN when this order was checked and ` +
+          `${bal2.toFixed(2)} by the time it was claimed — a concurrent send took the room. ` +
+          `<b>Nothing was sent.</b> It is back in the manual queue.`);
+        return { ok: true, mode: 'manual', why: 'float fell below reserve after claim' };
+      }
+
       let txid;
       try {
         // The comment is the idempotency key. It is what lets a crashed send be

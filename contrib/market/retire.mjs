@@ -43,6 +43,15 @@
 
 export function makeRetire({ pool, node, settings, notify, log = console }) {
   let lastNodeFail = 0, lastNodeAlert = 0;
+  // ONE SCAN AT A TIME.
+  //
+  // The caller is a fire-and-forget setInterval. A pass that walks a long block
+  // range, or waits on a slow node, can still be running when the next tick
+  // fires — and two concurrent scans each read `retiredToday()` before either
+  // has written, so both believe the full daily allowance is free and together
+  // they retire up to twice the cap. They can also both claim the same output,
+  // where one loses the UNIQUE race and now aborts the whole scan.
+  let scanning = false;
   const q = async (sql, args = []) => (await pool.query(sql, args))[0];
   const UNITS = 1e8;
   const toUnits = pcn => Math.round(Number(pcn) * UNITS);
@@ -100,6 +109,15 @@ export function makeRetire({ pool, node, settings, notify, log = console }) {
 
   /** One pass. Returns what it did, for the log and the operator. */
   async function scan() {
+    if (scanning) {
+      log.warn('[retire] previous scan still running — skipping this tick');
+      return { ok: true, skipped: 'already scanning' };
+    }
+    scanning = true;
+    try { return await scanInner(); } finally { scanning = false; }
+  }
+
+  async function scanInner() {
     const c = cfg();
     if (!c.on) return { ok: true, skipped: 'retirement is switched off' };
     if (!(c.ratio > 0)) return { ok: true, skipped: 'ratio is zero' };

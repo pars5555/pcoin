@@ -188,6 +188,12 @@ export function makeAdmin({ pool, cfg, settings, ladder, delivery, backing, noti
     // who reached the CLI could take the account over silently, and there was
     // nothing to notice afterwards either. It is run as root from a terminal,
     // so it is normally the owner; "normally" is not a control.
+    // A password change must not leave the old sessions alive — that is the
+    // whole point of changing it.
+    if (before?.length) {
+      try { await q(`UPDATE admins SET sess_epoch = sess_epoch + 1 WHERE email=?`, [em]); }
+      catch (e) { /* the audit line below still records the change */ }
+    }
     await audit(em, before?.length ? 'password.changed' : 'admin.created', null, 'cli');
     await notify(before?.length
       ? `🔑 <b>Admin password CHANGED</b> for ${esc(em)}\nSet from the server CLI. If this was ` +
@@ -211,6 +217,48 @@ export function makeAdmin({ pool, cfg, settings, ladder, delivery, backing, noti
   // root through the CLI, so there is no registration path to validate here.
   const secret = () => cfg.sessionSecret + '|admin';
   const sign = p => `${p}.${createHmac('sha256', secret()).update(p).digest('hex')}`;
+  // A SESSION CAN NOW BE REVOKED.
+  //
+  // Nothing used to end one: signing out only cleared the browser's cookie, and
+  // a password change or turning 2FA off left every issued token valid until it
+  // expired 12 hours later. If a token ever leaked there was no way to kill it
+  // short of rotating sessionSecret and logging everyone out — and the account
+  // whose password you had just changed *because* you were worried stayed
+  // reachable with the old session.
+  //
+  // The token now carries the account's `sess_epoch`, and verify() compares it
+  // against the database. Bumping the column invalidates every token issued
+  // before it, instantly, for that account alone.
+  async function verifyLive(tok) {
+    const parsed = verify(tok);
+    if (!parsed) return null;
+    const { email: em, epoch } = parsed;
+    try {
+      // q() ALREADY returns the rows array — `const [r] = await q(...)` would
+      // bind r to the first ROW, and `r.length` is then undefined, which read as
+      // "no such admin" and refused every session. Same footgun the review found
+      // elsewhere in this file.
+      const rows = await q(`SELECT sess_epoch FROM admins WHERE email=?`, [em]);
+      if (!rows.length) return null;
+      // An epoch mismatch is a revoked session, not an error.
+      if (Number(rows[0].sess_epoch) !== epoch) return null;
+      return em;
+    } catch (e) {
+      // The database is unreachable. Refuse rather than fall back to trusting
+      // the signature alone: an admin panel that fails OPEN when it cannot check
+      // revocation is worse than one that briefly refuses a valid operator.
+      log.warn('[admin] cannot check session epoch:', e.message);
+      return null;
+    }
+  }
+
+  async function bumpEpoch(em, why) {
+    try {
+      await q(`UPDATE admins SET sess_epoch = sess_epoch + 1 WHERE email=?`, [em]);
+      await audit(em, 'sessions.revoked', why, 'system');
+    } catch (e) { log.warn('[admin] could not revoke sessions:', e.message); }
+  }
+
   function verify(tok) {
     if (!tok) return null;
     const i = tok.lastIndexOf('.');
@@ -219,12 +267,18 @@ export function makeAdmin({ pool, cfg, settings, ladder, delivery, backing, noti
     const want = createHmac('sha256', secret()).update(p).digest('hex');
     const got = tok.slice(i + 1);
     if (got.length !== want.length || !timingSafeEqual(Buffer.from(got), Buffer.from(want))) return null;
-    const cut = p.lastIndexOf('|');
-    if (cut < 1) return null;
-    const email = p.slice(0, cut);
-    const exp = Number(p.slice(cut + 1));
+    // payload is `email|epoch|expiry`, parsed from the RIGHT so an email
+    // containing the delimiter cannot masquerade as another account.
+    const cutExp = p.lastIndexOf('|');
+    if (cutExp < 1) return null;
+    const exp = Number(p.slice(cutExp + 1));
     if (!isFinite(exp) || Date.now() >= exp) return null;
-    return email;
+    const head = p.slice(0, cutExp);
+    const cutEpoch = head.lastIndexOf('|');
+    if (cutEpoch < 1) return null;
+    const epoch = Number(head.slice(cutEpoch + 1));
+    if (!Number.isInteger(epoch) || epoch < 0) return null;
+    return { email: head.slice(0, cutEpoch), epoch };
   }
   // ── the half-authenticated state between the two login steps ────────────
   // Signed with a DISTINCT purpose string, so a pending token can never be
@@ -537,7 +591,7 @@ ${left !== undefined ? `<p class="s" style="color:var(--dim)">${left} attempt(s)
     const ipTxt = ipLabel(ip);
     const cookie = (req.headers.cookie || '').split(/;\s*/).find(c => c.startsWith('mktadm='));
     const sessTok = cookie ? cookie.slice(7) : '';
-    const email = verify(sessTok);
+    const email = await verifyLive(sessTok);
     // Derived once per request and threaded into every page, so the token a
     // form carries is always the one this session's POST will be checked against.
     const csrfTok = csrfFor(sessTok);
@@ -583,10 +637,14 @@ ${left !== undefined ? `<p class="s" style="color:var(--dim)">${left} attempt(s)
       const signIn = async (who, how) => {
         tries.delete(`ip:${ip}`); tries.delete(`em:${em}`); tries.delete(`code:${ip}`);
         await q(`UPDATE admins SET last_login=NOW() WHERE email=?`, [who]);
+        // Stamp the token with the account's CURRENT epoch, so bumping the
+        // column later invalidates it.
+        const erows = await q(`SELECT sess_epoch FROM admins WHERE email=?`, [who]);
+        const epoch = Number(erows?.[0]?.sess_epoch ?? 0);
         await audit(who, 'login.ok', how, ip);
         await notify(`🔐 <b>Admin signed in</b>\n${esc(who)} from <code>${esc(ipTxt)}</code>` +
                      `${how === 'no 2fa' ? '\n⚠️ 2FA is NOT enrolled on this account' : ''}`);
-        const tok = sign(`${who}|${Date.now() + SESSION_HOURS * 3600e3}`);
+        const tok = sign(`${who}|${epoch}|${Date.now() + SESSION_HOURS * 3600e3}`);
         res.writeHead(302, { Location: '/admin', 'Set-Cookie':
           `mktadm=${tok}; Path=/admin; Max-Age=${SESSION_HOURS * 3600}; HttpOnly; Secure; SameSite=Strict` });
         return res.end();
@@ -651,6 +709,10 @@ ${left !== undefined ? `<p class="s" style="color:var(--dim)">${left} attempt(s)
 
     // ---- everything below is authenticated ----
     if (sub === 'logout' && req.method === 'POST') {
+      // Actually END the session, rather than only asking the browser to forget
+      // it. Clearing the cookie alone left the token valid for another 12 hours
+      // in anything that had a copy.
+      await bumpEpoch(email, 'sign out');
       res.writeHead(302, { Location: '/admin',
         'Set-Cookie': 'mktadm=; Path=/admin; Max-Age=0; HttpOnly; Secure; SameSite=Strict' });
       return res.end();
@@ -822,12 +884,14 @@ ${left !== undefined ? `<p class="s" style="color:var(--dim)">${left} attempt(s)
           await q(`UPDATE admins SET totp_enabled=1 WHERE email=?`, [email]);
           await audit(email, 'totp.enabled', null, ip);
           await notify(`🔐 <b>2FA enabled</b> for ${esc(email)}`);
+          await bumpEpoch(email, '2FA enabled');
           return done('/admin/settings', 'ok',
                       'Two-factor is on. You will need a code next time you sign in.');
         } else if (act === 'totp/disable') {
           await q(`UPDATE admins SET totp_enabled=0, totp_secret=NULL WHERE email=?`, [email]);
           await audit(email, 'totp.disabled', null, ip);
           await notify(`⚠️ <b>2FA DISABLED</b> for ${esc(email)}`);
+          await bumpEpoch(email, '2FA disabled');
           return done('/admin/settings', 'err', 'Two-factor is off.');
         } else {
           return done('/admin', 'err', `Unknown action: ${act}`);

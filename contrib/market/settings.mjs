@@ -25,10 +25,14 @@ export const DEFS = {
     help: 'A hard dollar ceiling, kept as a backstop. The real limit is the PCN cap below.' },
   maxOrderPcn:         { type: 'num', def: 2000, min: 1,    max: 100000,
     label: 'Maximum order (PCN)',
+    // The old text quoted the retired $0.001 ladder ("$2,000 buys 57% of the
+    // coins"). Under the live $0.015 floor the same $2,000 buys ~35%, so the
+    // number an operator was shown while setting a cap was wrong by a factor of
+    // 1.6 — on the page where that decision is made.
     help: 'The limit that actually matters. A cap in DOLLARS means something different at ' +
-          'each end of the ladder: $2,000 buys 57% of the coins at the $0.001 floor and 0.02% ' +
-          'at $10. A cap in coins stays the same share of the inventory for the ladder’s ' +
-          'whole life. 2,000 PCN is 2% of it.' },
+          'each end of the ladder: at the $0.015 floor $2,000 buys around a third of the ' +
+          'inventory, and near the $10 top rung it buys a rounding error. A cap in COINS ' +
+          'stays the same share of the ladder for its whole life.' },
   accountCapPcn:       { type: 'num', def: 12000, min: 1,   max: 1000000,
     label: 'Per-account cap (PCN)',
     help: 'Total PCN one account may buy within the window below. This is the limit that ' +
