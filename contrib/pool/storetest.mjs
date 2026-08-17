@@ -160,6 +160,24 @@ section('vardiff -- the direction that silently zeroes a miner');
   ok(worstWeight >= 256n, 'so a share is always worth at least 256 hashes of real work',
     `worst weight ${worstWeight}`);
 
+  // A MINER WITH NO SHARES MUST STILL BE EASED. This is the case the controller
+  // could not see: retune() only ran on submit, and `rate > 0` skipped an empty
+  // window anyway -- so a miner too slow to produce its FIRST share was never
+  // reconsidered and sat at startFactor forever. Four phones at 10% did exactly
+  // that: logged in, hashing, earning nothing, no error anywhere.
+  // Guard: the `rate === 0` branch in retune() plus the timer sweep in
+  // refreshTemplate(). nextDiffFactor models the arithmetic here.
+  //
+  // rate is UNKNOWN, not zero -- but the direction is known, so ease by the
+  // maximum step rather than pretending to compute a ratio from no data.
+  const noShares = Math.min(MAX, 1000 * 4);
+  ok(noShares > 1000, 'a miner that has submitted nothing gets an easier target, not silence',
+    `1000 -> ${noShares}`);
+  // And it must converge from there rather than jumping to the rail.
+  let climb = 1000;
+  for (let i = 0; i < 6; i++) climb = Math.min(MAX, climb * 4);
+  ok(climb <= MAX, 'repeated empty windows stay inside the ceiling', `${climb}`);
+
   // CONTROL: the config's old ceiling allowed exactly the failure seen live.
   const capped = targetWeight(Buffer.from(T(NET * 100000000n), 'hex'));
   ok(capped === 1n, 'CONTROL: at the old maxFactor of 1e8 a share is worth 1 hash',

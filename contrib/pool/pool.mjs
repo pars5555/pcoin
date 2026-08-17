@@ -238,6 +238,14 @@ async function refreshTemplate() {
       log(`payout set NOT rebuilt (${e.message.slice(0, 120)}); keeping the previous one`);
     }
 
+    // Retune miners on a TIMER as well as on submit.
+    //
+    // retune() was only ever reached from handleSubmit, so it could only help a
+    // miner that had already managed a share. A miner too slow for that was
+    // never reconsidered -- the one case where the difficulty is most obviously
+    // wrong was the one case the controller could not see.
+    for (const m of state.miners.values()) retune(m);
+
     if (changed) {
       log(`tip -> height ${t.height - 1}, next ${t.height}, bits ${t.bits}`);
       state.jobs.clear();          // work on a stale tip is wasted
@@ -259,6 +267,34 @@ function retune(m) {
   if (elapsed < CFG.vardiff.retuneSeconds) return;
   const rate = m.windowShares / elapsed;                 // shares/sec
   const want = 1 / CFG.vardiff.targetSeconds;
+
+  // ZERO SHARES IS THE LOUDEST SIGNAL THERE IS, AND IT USED TO BE IGNORED.
+  //
+  // `rate > 0` skipped a miner that had submitted NOTHING -- and retune() only
+  // ran from handleSubmit, so a miner too slow to produce its first share never
+  // had its difficulty reconsidered at all. It sat at startFactor forever.
+  //
+  // That is not a corner case, it is the miner this pool exists for: a phone at
+  // 10% is a few H/s, and at startFactor 1000 against current difficulty its
+  // first share would take HOURS. Four phones sat logged in, hashing, earning
+  // nothing, with no error anywhere -- the exact silent failure the whole
+  // vardiff section is supposed to prevent.
+  //
+  // So an empty window eases by the maximum step. rate is unknown, not zero;
+  // what is known is that it is below target, and which way to move.
+  if (rate === 0) {
+    const chainCap = state.netTarget ? maxFactorForWeight(state.netTarget) : CFG.vardiff.maxFactor;
+    const next = Math.min(CFG.vardiff.maxFactor, chainCap, m.diffFactor * 4);
+    if (next !== m.diffFactor) {
+      log(`vardiff ${m.login.slice(0, 12)}… ${m.diffFactor} -> ${next} (no shares in ${Math.round(elapsed)}s)`);
+      m.diffFactor = next;
+      const j = makeJob(m);
+      if (j) send(m.sock, { jsonrpc: '2.0', method: 'job', params: j });
+    }
+    m.windowStart = now; m.windowShares = 0;
+    return;
+  }
+
   if (rate > 0) {
     // The direction is load-bearing and got shipped inverted; it now lives in
     // block.mjs next to scaleTarget, which is the other half of the same trap,
