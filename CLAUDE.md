@@ -486,6 +486,37 @@ and `aicontrol.pc.am` are proxied through Cloudflare (104.21.52.61 /
 `aicontrol.pc.am` is **not** hosted on this box — don't look for it in
 `/etc/apache2`.
 
+**Seed 4 + second explorer** — Netcup, `152.53.171.190`, Debian 13 trixie,
+**16-core AMD EPYC Genoa, 62 GB RAM, 2 TB disk**: by a wide margin the largest
+box in the estate. Added 2026-08-18. SSH is **key-only** (`~/.ssh/id_ed25519`);
+password auth was turned off after both key holders were confirmed, on a box
+fail2ban had already banned 23 addresses on.
+
+**It is shared, not PCoin-dedicated.** Another session migrated `checker.pc.am`
+and its CRM here: Apache owns :80/:443, MariaDB holds `checker_pc_am`, Docker
+runs `crm-web` + `crm-db`. So: **graceful `reload` of Apache only**, never a
+restart; do not install a second web server; do not touch `/opt/crm` or the
+`crm-*` containers.
+
+Unlike the other seeds this node runs **natively under systemd, not Docker**,
+and was built with **`-DENABLE_WALLET=OFF`** — there is no `wallet.dat` here and
+no path by which a spending key could arrive. Three units, each its own
+unprivileged user with `CapabilityBoundingSet=` empty:
+
+| unit | user | what it is |
+|---|---|---|
+| `pcoind` | `pcoin` | the node, `txindex=1`, P2P 9444, RPC loopback-only |
+| `pcoin-indexer` / `pcoin-explorer` | `pcoinx` | explorer3.pc.am, behind an Apache vhost |
+| `pcoin-miner` | `pcoinm` | 1 of 16 threads, **solo**, paying the treasury directly |
+
+Each daemon has its own `rpcauth` identity under `rpcwhitelistdefault=0`, so the
+explorer cannot mine and the miner cannot `stop` the node — both verified
+returning HTTP 403, not assumed. `pcoind.service` is `Type=simple`, **not**
+`notify`: this binary is built without libsystemd and can never send `READY=1`,
+so a notify unit would sit in `activating` forever and silently block every
+`After=pcoind.service` unit from ever starting. An `ExecStartPost` running
+`bitcoin-cli -rpcwait` restores the readiness gate that notify would have given.
+
 **Three Windows miners** — all run `C:\PCoin\bitcoind.exe -datadir=C:\PCoin\data`
 plus `PCoinTray.exe`. They are reached through the AI Control API at
 `https://aicontrol.pc.am` via `scratchpad/run_remote.py`
@@ -1033,8 +1064,9 @@ Open items, roughly in order of how much damage they do if ignored:
     `#include`d anywhere. It is dead, not active.~~ **WRONG on both counts,
     corrected 2026-08-12.** Commit `2776061` replaced Bitcoin's 2,552 lines with
     PCoin's own 48, and the file is `#include`d at `chainparams.cpp:9` and *used*
-    at `:212` (`vFixedSeeds = chainparams_seed_main`). It holds **all three seed
-    IPs** as BIP155 tuples and is the bootstrap fallback when DNS is down,
+    at `:212` (`vFixedSeeds = chainparams_seed_main`). It holds **all five seed
+    addresses** — four IPv4 and one IPv6, seed 4 and its AAAA added 2026-08-18 —
+    as BIP155 tuples, and is the bootstrap fallback when DNS is down,
     blocked, or `-dnsseed=0`. Do not "clean up" a file that is load-bearing.
 
     While you are here — **how a node finds peers, in order**: `peers.dat`

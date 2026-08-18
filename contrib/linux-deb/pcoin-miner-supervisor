@@ -19,6 +19,9 @@ CONF=/etc/pcoin/miner.conf
 
 TTL=120       # mining stops this long after the last keep-alive
 POLL=30       # keep-alive interval, comfortably inside TTL
+FALLBACK_AFTER=300   # pool unreachable this long -> mine SOLO rather than idle
+POOL_RETRY=900       # ...and re-try the pool this often once we have fallen back
+NOPEER_WARN=600      # in IBD with zero peers this long -> say so, loudly
 
 log() { printf '%s\n' "$*"; }   # journald captures stdout
 
@@ -74,14 +77,33 @@ esac
 if [ -n "$POOL_URL" ]; then
     log "pool mining: no sync wait needed, the pool supplies the block"
 else
+    WAITED=0
     while :; do
-        INFO=$($CLI getblockchaininfo 2>/dev/null) || { sleep 10; continue; }
+        INFO=$($CLI getblockchaininfo 2>/dev/null) || { sleep 10; WAITED=$((WAITED + 10)); continue; }
         case "$INFO" in
             *'"initialblockdownload": false'*) break ;;
         esac
         H=$(printf '%s' "$INFO" | sed -n 's/.*"blocks": *\([0-9]*\).*/\1/p')
-        log "syncing (height ${H:-?}) -- not mining yet"
+        PEERS=$($CLI getconnectioncount 2>/dev/null || echo '?')
+        # "Syncing" and "cannot sync" look identical from in here, and they are
+        # not the same thing. IBD clears when the tip is younger than 24h, and the
+        # only thing that can freshen the tip is a PEER. With zero peers this loop
+        # is not progress, it is a deadlock -- and it used to print "not mining
+        # yet" forever while pcoin-mine on the same screen said "0 peers".
+        if [ "$PEERS" = "0" ] && [ "$WAITED" -ge "$NOPEER_WARN" ]; then
+            log "STUCK: $((WAITED / 60)) min in sync with ZERO peers."
+            log "  This node cannot sync because it has nothing to sync FROM,"
+            log "  so this wait will never finish on its own."
+            log "  Fix: give it a peer, then restart the node --"
+            log "    echo 'addnode=<host>:9444' | sudo tee -a /etc/pcoin/pcoin.conf"
+            log "    sudo systemctl restart pcoind"
+            log "  Refusing to mine meanwhile is deliberate: mining with no peers"
+            log "  builds a private fork whose blocks are worth nothing."
+        else
+            log "syncing (height ${H:-?}, ${PEERS} peer(s)) -- not mining yet"
+        fi
         sleep 20
+        WAITED=$((WAITED + 20))
     done
     log "chain is synced; starting the miner"
 fi
@@ -95,22 +117,110 @@ fi
 # does not merely stop pool mining: it moves the payouts to PAYOUT_ADDRESS with
 # nothing anywhere saying so. The tray had the identical hazard for the same
 # reason, and both are fixed the same way.
-start() {
-    if [ -n "$POOL_URL" ]; then
-        OUT=$($CLI startpoolmining "$POOL_URL" "$ADDR" "$THREADS" "$TTL" 2>&1) || {
-            log "startpoolmining failed: $OUT"
-            return 1
-        }
-        log "pool mining for $POOL_URL with $THREADS thread(s), credited to $ADDR"
-        return 0
-    fi
+# MODE tracks what this node is ACTUALLY doing, which is not always what
+# miner.conf asks for: a pool that has gone away moves us to solo (below).
+MODE=none
+POOL_BAD_SINCE=0     # unix time the pool first stopped supplying work, 0 = fine
+LAST_POOL_TRY=0      # unix time we last attempted the pool
+now() { date +%s; }
+
+start_solo() {
     OUT=$($CLI startmining "$ADDR" "$THREADS" "$TTL" 2>&1) || {
         log "startmining failed: $OUT"
         return 1
     }
-    log "mining with $THREADS thread(s) to $ADDR"
+    MODE=solo
+    log "mining SOLO with $THREADS thread(s) to $ADDR"
     return 0
 }
+
+start_pool() {
+    OUT=$($CLI startpoolmining "$POOL_URL" "$ADDR" "$THREADS" "$TTL" 2>&1) || {
+        log "startpoolmining failed: $OUT"
+        return 1
+    }
+    MODE=pool
+    LAST_POOL_TRY=$(now)
+    log "pool mining for $POOL_URL with $THREADS thread(s), credited to $ADDR"
+    return 0
+}
+
+start() {
+    if [ -n "$POOL_URL" ]; then start_pool; return $?; fi
+    start_solo
+}
+
+# In pool mode, '"mining": true' means only that the worker threads exist. It
+# is IsRunning(), and IsRunning() stays TRUE while the pool is unreachable and
+# every worker idles at 100ms sleeps (src/node/cpuminer.cpp:500-505, and the
+# supervisor retires the job at :417-432 with the comment "STOP HASHING").
+#
+# So in pool mode the old substring test was not a health check at all: it
+# passed forever against a dead pool, logged nothing, and restarted nothing,
+# while the machine earned nothing. poolstate is the field that tells the
+# truth -- disconnected, connecting, loggingin, mining, refused.
+#
+# When the pool stops supplying work for FALLBACK_AFTER, mine SOLO to the SAME
+# address instead of idling. Nothing is lost by doing so: the pool credits the
+# same address it would have paid, and solo pays it directly in the coinbase.
+check_pool() {
+    [ "$MODE" = pool ] || return 0
+    # Backslash-free on purpose. This was a sed with a  backreference and the
+    # backslash did not survive being written through a shell; the replacement
+    # became a literal control character, STATE came out EMPTY on every poll,
+    # and a healthy pool was therefore judged dead. Caught by the harness in
+    # contrib/linux-deb/test-miner-supervisor.sh, which is why that test exists.
+    STATE=$(printf '%s' "$1" | grep -o 'poolstate[^,]*' | tr -d ' ":}' | sed s/poolstate//)
+    if [ -z "$STATE" ]; then
+        # No poolstate field at all: an older node, or a truncated read. That is
+        # UNKNOWN, and unknown is not evidence the pool is down. Resolve nothing
+        # and do not start the fallback clock -- otherwise a parsing change would
+        # quietly migrate every pool miner on the fleet to solo.
+        return 0
+    fi
+    if [ "$STATE" = mining ]; then
+        if [ "$POOL_BAD_SINCE" -ne 0 ]; then
+            log "pool is supplying work again"
+            POOL_BAD_SINCE=0
+        fi
+        return 0
+    fi
+    if [ "$POOL_BAD_SINCE" -eq 0 ]; then
+        POOL_BAD_SINCE=$(now)
+        log "pool stopped supplying work (state=${STATE:-unknown}); watching it"
+        return 0
+    fi
+    BAD=$(( $(now) - POOL_BAD_SINCE ))
+    if [ "$BAD" -ge "$FALLBACK_AFTER" ]; then
+        log "pool down $((BAD / 60)) min -- falling back to SOLO so this machine keeps earning"
+        $CLI stopmining >/dev/null 2>&1 || true
+        if start_solo; then
+            POOL_BAD_SINCE=0
+        else
+            log "solo fallback failed; will retry on the next poll"
+        fi
+    fi
+}
+
+# Once on solo, go back to the pool periodically. startpoolmining SUCCEEDS
+# against a pool that is switched off -- it validates three strings and spawns
+# threads without touching a socket -- so a retry cannot be trusted on its
+# return code. Pre-age POOL_BAD_SINCE so a retry gets 60s to prove it reaches
+# state=mining, instead of the full FALLBACK_AFTER of idling all over again.
+retry_pool() {
+    [ -n "$POOL_URL" ] || return 0
+    [ "$MODE" = solo ] || return 0
+    [ $(( $(now) - LAST_POOL_TRY )) -ge "$POOL_RETRY" ] || return 0
+    log "re-trying the pool after $(( POOL_RETRY / 60 )) min on solo"
+    $CLI stopmining >/dev/null 2>&1 || true
+    if start_pool; then
+        POOL_BAD_SINCE=$(( $(now) - FALLBACK_AFTER + 60 ))
+    else
+        LAST_POOL_TRY=$(now)
+        start_solo || true
+    fi
+}
+
 start || exit 1
 
 MISSES=0
@@ -123,9 +233,13 @@ while :; do
         MISSES=0
         NEXT="$POLL"
         case "$INFO" in
-            *'"mining": true'*) : ;;
+            *'"mining": true'*)
+                # threads exist; in pool mode that is not the same as working
+                check_pool "$INFO"
+                ;;
             *) log "miner had stopped; restarting it"; start || true ;;
         esac
+            retry_pool
     else
         # A failed read says nothing about whether mining is running, so do not
         # treat it as "stopped". Only a run of failures means the node probably

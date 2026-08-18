@@ -178,15 +178,34 @@ $seedPrompt = ''
 if ($keep.ContainsKey('seedprompt')) { $seedPrompt = $keep['seedprompt'] }
 $fastMode = '0'
 if ($keep.ContainsKey('fastmode')) { $fastMode = $keep['fastmode'] }
+$poolUrl = ''
+if ($keep.ContainsKey('poolurl')) { $poolUrl = $keep['poolurl'] }
+$percent = ''
+if ($keep.ContainsKey('percent')) { $percent = $keep['percent'] }
+
+# -Threads not passed means 'leave this machine as it is', NOT 'stop mining'.
+#
+# The parameter defaults to 0, and 0 means OFF: LoadConfig turns threads=0
+# into _mining=false. So every upgrade that did not repeat -Threads silently
+# stopped a machine that had been mining, and the one-liner published on
+# pc.am does not include -Threads -- the advertised way to upgrade was also
+# the way to stop earning. Only an EXPLICIT -Threads is an instruction.
+$threadsOut = $Threads
+if (-not $PSBoundParameters.ContainsKey('Threads') -and $keep.ContainsKey('threads')) {
+  $threadsOut = $keep['threads']
+  Write-Output "  keeping existing thread count ($threadsOut)"
+}
 
 @("address=$addr",
   "addresswallet=$addrWallet",
   "datadir=$DataDir",
-  "threads=$Threads",
+  "threads=$threadsOut",
   "seedprompt=$seedPrompt",
-  "fastmode=$fastMode") |
+  "fastmode=$fastMode",
+  "poolurl=$poolUrl",
+  "percent=$percent") |
     Set-Content -Encoding ascii $trayCfg
-if ($Threads -gt 0) { Write-Output "  configured to mine with $Threads cores" }
+if ($threadsOut -gt 0) { Write-Output "  configured to mine with $threadsOut cores" }
 else { Write-Output '  configured; mining is OFF' }
 
 # --- best-effort host tweaks (need admin; not fatal) ---------------------
