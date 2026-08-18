@@ -358,7 +358,7 @@ async function publicServiceRates() {
 
 /** May we sell right now? Fails CLOSED: an unreadable oracle blocks the sale.
  *  This path takes money, and "I could not check" is not "it is fine". */
-async function saleGate() {
+async function saleGate(usd = null) {
   // The master switch, checked first: an operator turning sales off means off,
   // regardless of what every other signal says.
   if (!S.get('saleOpen')) {
@@ -366,7 +366,7 @@ async function saleGate() {
   }
   const st = await L.ladderState();
   if (st.marginalPrice === null) {
-    return { open: false, reason: 'the ladder is sold out — there is no more PCN to sell here.' };
+    return { open: false, reason: 'the ladder is sold out \u2014 there is no more PCN to sell here.' };
   }
   const { rates, ageMs, error } = await publicServiceRates();
   if (!rates.length) {
@@ -374,32 +374,67 @@ async function saleGate() {
       `sales are paused: the rate oracle at price.pc.am cannot be read (${error}), ` +
       `so we cannot confirm that what you buy here is worth the same to the services that accept it.` };
   }
-  // Measure against the price a buyer will ACTUALLY be charged, not only the
-  // published one. `marginalPrice` counts sold rungs alone, so that
-  // reservations cannot walk the public number up (see ladder.mjs). But that
-  // means large pending reservations can leave the published price sitting next
-  // to serviceRate while the next real fill happens several rungs higher — the
-  // gate would read "in step" and sell at a price it never checked. Judge on
-  // whichever of the two is further from the credit rate.
-  const prices = [st.marginalPrice, st.nextFillPrice].filter(x => typeof x === 'number' && x > 0);
-  const div = r => Math.max(...prices.map(pp => Math.abs(pp - r) / r * 100));
+
+  // JUDGE ON THE PRICE THE BUYER ACTUALLY PAYS.
+  //
+  // This used to judge on max(marginalPrice, nextFillPrice) -- the worst rung
+  // anywhere in the book. That paused the entire market over a single unpaid
+  // $50 order, and it was not an edge case: the rung step is 6.79%, so any
+  // order spanning three rungs exceeds a 20% limit on its own. With
+  // maxOrderUsd at $2000 the market advertised orders it structurally could
+  // not process without shutting itself down. Measured on the live book:
+  // $40 -> 14.0% (fine), $45 -> 21.8% (paused), $100 -> 38.9%, $2000 -> 833%.
+  //
+  // Worse, the two numbers being compared come from the SAME ladder.
+  // /opt/pcoin-price/server.mjs polls this box's own /api/ladder/state and
+  // takes marginalPrice to drive serviceRate. marginalPrice ignores
+  // reservations (deliberately -- see ladder.mjs, so nobody can walk the
+  // published price with orders they never pay for) while nextFillPrice
+  // includes them. So the gate was comparing the ladder against itself under
+  // two different reservation policies, and ANY pending order guaranteed a
+  // gap. It reintroduced, in the gate, exactly the griefing vector ladder.mjs
+  // had closed in the published price.
+  //
+  // walkUsd prices the order against rungsWithStock, and availUnits subtracts
+  // qty_reserved -- so avgPrice is what THIS buyer pays given everyone else's
+  // outstanding holds. That answers the question the gate actually exists to
+  // ask ("will this customer be shortchanged?") instead of a hypothetical one
+  // about the worst rung some other, larger order might reach.
+  //
+  // With no usd (the status banner, /api/ladder/gate, the gate watcher) there
+  // is no buyer, so judge on the published price -- the number serviceRate
+  // tracks. That answers "is the system in step?", which is what a banner
+  // should say.
+  let judged, judgedLabel;
+  if (typeof usd === 'number' && usd > 0) {
+    const rungs = await L.rungsWithStock();
+    const w = L.walkUsd(rungs, usd);
+    // An order that cannot be filled is not a divergence problem; the quote and
+    // checkout paths report that themselves with a clearer message.
+    judged = w.pcn > 0 ? w.avgPrice : st.marginalPrice;
+    judgedLabel = 'the price you would pay';
+  } else {
+    judged = st.marginalPrice;
+    judgedLabel = 'the ladder price';
+  }
+
+  const div = r => Math.abs(judged - r) / r * 100;
   const worst = rates.reduce((a, b) => (div(b) > div(a) ? b : a));
   const divergencePct = div(worst);
   const spread = rates.length > 1 && Math.min(...rates) !== Math.max(...rates)
     ? { oracleDisagrees: true, ratesSeen: [...new Set(rates)].sort() } : {};
   if (divergencePct > S.get('maxDivergencePct')) {
-    const shown = Math.max(...prices.map(pp => Math.abs(pp - worst))) === Math.abs(st.marginalPrice - worst)
-      ? st.marginalPrice : st.nextFillPrice;
-    return { open: false, divergencePct, serviceRate: worst, marginalPrice: st.marginalPrice,
-      nextFillPrice: st.nextFillPrice, ...spread,
+    return { open: false, divergencePct, serviceRate: worst, judgedPrice: judged,
+      marginalPrice: st.marginalPrice, nextFillPrice: st.nextFillPrice, ...spread,
       reason:
-      `sales are paused: the ladder price ($${shown.toFixed(6)}) and the rate the ` +
+      `sales are paused: ${judgedLabel} ($${judged.toFixed(6)}) and the rate the ` +
       `services credit PCN at ($${worst.toFixed(6)}) have drifted ${divergencePct.toFixed(1)}% apart, ` +
       `past the ${S.get('maxDivergencePct')}% limit. Selling into that gap would shortchange you. ` +
       `This clears itself once the two are back in step.` };
   }
-  return { open: true, divergencePct, serviceRate: worst, marginalPrice: st.marginalPrice,
-           nextFillPrice: st.nextFillPrice, rateAgeMs: ageMs, ...spread };
+  return { open: true, divergencePct, serviceRate: worst, judgedPrice: judged,
+           marginalPrice: st.marginalPrice, nextFillPrice: st.nextFillPrice,
+           rateAgeMs: ageMs, ...spread };
 }
 
 // ── auth ───────────────────────────────────────────────────────────────────
@@ -856,7 +891,7 @@ createServer(async (req, res) => {
       // holds. But it must carry the gate, so the page can grey the button out
       // and explain, rather than let someone fill in an address and a payment
       // amount only to be refused at the click that matters.
-      const gate = await saleGate();
+      const gate = await saleGate(usd);
       return json(res, 200, {
         // Names kept from the AMM response so nothing downstream has to change.
         pcn: w.pcn,
@@ -1023,7 +1058,7 @@ createServer(async (req, res) => {
       // The interlock, checked before anything is reserved or any invoice is
       // raised. Fails closed by construction: saleGate() returns open:false
       // when it cannot read the rate at all.
-      const gate = await saleGate();
+      const gate = await saleGate(usd);
       if (!gate.open) return json(res, 503, { error: gate.reason, saleOpen: false });
 
       // Checked inside the transaction below as well; this is the cheap early
