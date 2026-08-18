@@ -30,7 +30,23 @@
 // cannot overshoot.
 
 export const UNITS = 1e8;
-export const ORDER_TTL_HOURS = 24;      // unpaid orders release their inventory
+// 2 hours, not 24. An unpaid order holds real inventory, and on a ladder whose
+// rungs are ~1000 PCN a single $50 order holds three of them -- which is enough
+// to put every subsequent buyer several rungs up while serviceRate, which tracks
+// the reservation-free price, stays put. One abandoned order therefore priced
+// every other customer out for a full day. That happened on 2026-08-19.
+//
+// Shortening this is safe for the customer, and deliberately so: the IPN success
+// branch accepts `status IN ('pending','expired')` precisely because "the sweeper
+// may have timed the order out minutes before a slow chain confirmed it, and a
+// payment that arrived is a payment that arrived". A late payer still gets
+// recorded and still gets their coins; what they lose is the RESERVATION, not
+// the purchase.
+//
+// NOWPayments also reports failed/expired/refunded over IPN, and that path
+// releases inventory immediately. This constant is only the backstop for an
+// order that goes silent -- which is exactly the case that was costing a day.
+export const ORDER_TTL_HOURS = 2;       // unpaid orders release their inventory
 
 export const toUnits = pcn => Math.round(Number(pcn) * UNITS);
 export const fromUnits = u => u / UNITS;
