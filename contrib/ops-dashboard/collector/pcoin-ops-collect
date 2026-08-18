@@ -1,0 +1,75 @@
+#!/bin/bash
+# Collect peer and chain-tip facts from the seed and post them to the ops
+# dashboard.
+#
+# This runs ON the seed because the seed's RPC is bound to loopback inside its
+# container and is deliberately unreachable from anywhere else. Rather than open
+# that up or put an SSH key on a web box, the seed pushes a small summary out.
+#
+# The bearer token authorises writing peer stats and nothing else — it cannot
+# read the dashboard, cannot spend, and cannot reach the node.
+set -euo pipefail
+
+ENDPOINT="${OPS_ENDPOINT:-https://explorer.pc.am/admin/collect}"
+TOKEN_FILE="/etc/pcoin-ops-token"
+[ -r "$TOKEN_FILE" ] || { echo "no token at $TOKEN_FILE" >&2; exit 1; }
+TOKEN="$(cat "$TOKEN_FILE")"
+
+CLI="docker exec pcoin-seed bitcoin-cli"
+
+PEERS="$($CLI getpeerinfo 2>/dev/null || echo '[]')"
+TIPS="$($CLI getchaintips  2>/dev/null || echo '[]')"
+MEMPOOL="$($CLI getmempoolinfo 2>/dev/null || echo '{}')"
+
+PAYLOAD="$(PEERS="$PEERS" TIPS="$TIPS" MEMPOOL="$MEMPOOL" python3 - <<'PY'
+import json, os, collections, datetime
+
+peers = json.loads(os.environ["PEERS"] or "[]")
+tips  = json.loads(os.environ["TIPS"]  or "[]")
+mp    = json.loads(os.environ["MEMPOOL"] or "{}")
+
+by = collections.defaultdict(lambda: {"connections": 0, "height": None, "inbound": 0, "outbound": 0})
+for p in peers:
+    ip = p.get("addr", "").rsplit(":", 1)[0].strip("[]")
+    e = by[ip]
+    e["connections"] += 1
+    if p.get("inbound"): e["inbound"] += 1
+    else:                e["outbound"] += 1
+    h = p.get("synced_blocks")
+    if h is not None and (e["height"] is None or h > e["height"]):
+        e["height"] = h
+
+rows = [{"ip": k, **v} for k, v in by.items()]
+rows.sort(key=lambda r: (-(r["height"] or 0), -r["connections"]))
+
+# Only branches that are actually competing. A headers-only tip rooted at
+# genesis is a permanent artefact of this chain's early history, not a fork
+# anyone is building on, and counting it would raise a false alarm forever.
+forks = [t for t in tips
+         if t.get("status") not in ("active", "headers-only") and (t.get("branchlen") or 0) >= 2]
+
+print(json.dumps({
+    "peers": {
+        "total": len(peers),
+        "distinctIps": len(by),
+        "inbound": sum(1 for p in peers if p.get("inbound")),
+        "outbound": sum(1 for p in peers if not p.get("inbound")),
+        "byIp": rows,
+        "at": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+    },
+    "tips": {
+        "total": len(tips),
+        "competing": len(forks),
+        "worst": max((t.get("branchlen") or 0) for t in forks) if forks else 0,
+    },
+    "mempoolCount": mp.get("size", 0),
+}))
+PY
+)"
+
+curl -sf --max-time 25 -X POST "$ENDPOINT" \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     --data "$PAYLOAD" >/dev/null
+
+echo "posted $(echo "$PAYLOAD" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["peers"]["distinctIps"], "IPs,", d["peers"]["total"], "conns,", d["tips"]["competing"], "competing tips")')"

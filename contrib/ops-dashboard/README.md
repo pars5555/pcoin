@@ -60,6 +60,27 @@ handle /admin/* {
 The cookie `Path` must match the mount point too, or a successful login hands
 back a cookie the next request will not send.
 
+## The collector
+
+The peers/tips panels are fed by `collector/pcoin-ops-collect`, which runs **on
+the seed** (not on this host) from `/etc/cron.d/pcoin-ops` every 4 minutes as
+root, reading its bearer token from `/etc/pcoin-ops-token`. It runs there
+because the seed's RPC is loopback-bound inside its container and deliberately
+unreachable from anywhere else — the seed pushes a summary out rather than
+letting anything in.
+
+Two lessons already paid for:
+
+* **The cron line discards output** (`>/dev/null 2>&1`), and the script uses
+  `curl -sf`, so a failing POST is completely silent. When the dashboard moved
+  from `/ops/` to `/admin/` on 2026-08-12, the collector kept posting to the
+  old path and nobody noticed for six days — the UI now shows a loud staleness
+  banner precisely because "no fresh snapshot" must never look like "fresh and
+  quiet". If the banner is up, run the script by hand on the seed and read the
+  exit code: `22` means an HTTP-level rejection (wrong path, wrong token).
+* The deployed copy used to be the only copy. The file here is the master;
+  deploy by copying it to `/usr/local/bin/pcoin-ops-collect` on the seed.
+
 ## Configuration
 
 `config.json` lives beside `server.mjs` on the server and is **NOT in this
