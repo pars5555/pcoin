@@ -754,23 +754,29 @@ These are real incidents, not hypotheticals. Each one cost hours or money.
 * **Do not modify the Android app directory** while another workflow is editing
   it, and remember it has no version control — there is no undo.
 * **Never import a scratchpad helper to read it.** See §5 on `deploy_tray.py`.
-* **Browser automation always uses the dedicated Edge instance on port 9136.**
-  Never 9222, never the user's normal Edge. Two sessions sharing one browser
+* **Browser automation always uses the dedicated Edge instance on port 9761.**
+  Never 9222, never 9136, never the user's normal Edge. Two sessions sharing one browser
   produced mixed-up state — Play Console tabs from another session appearing in
   the middle of a form this session was filling. Check first, launch if absent:
 
   ```powershell
   # reuse if alive, otherwise start it
-  if (-not (Get-NetTCPConnection -LocalPort 9136 -State Listen -EA SilentlyContinue)) {
+  if (-not (Get-NetTCPConnection -LocalPort 9761 -State Listen -EA SilentlyContinue)) {
       Start-Process 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe' -ArgumentList @(
-        '--remote-debugging-port=9136',
-        '--user-data-dir=C:\Users\pars\AppData\Local\Temp\edge-claude-9136',
+        '--remote-debugging-port=9761',
+        '--user-data-dir=C:\Users\pars\AppData\Local\Temp\edge-claude-9761',
         '--no-first-run','--no-default-browser-check','--start-maximized')
   }
   ```
 
-  The profile at `edge-claude-9136` persists logins between runs, so the user
-  signs in once per site rather than every session. Two things that cost time
+  The profile at `edge-claude-9761` persists logins between runs, so the user
+  signs in once per site rather than every session.
+
+  **The port moved from 9136 to 9761 on 2026-08-16** because another project
+  was using 9136 — an instance there had been running since 13 Aug. Sharing a
+  CDP port is exactly the cross-session tab bleed this rule exists to stop, so
+  the port is per-project and must stay unique. If 9761 is ever occupied by
+  something that is not this project's Edge, move again and update this line. Two things that cost time
   before: **the browser exits on its own** and every call then times out — check
   the port before blaming the page; and **x.com floods CDP with events**, so use
   a client that does NOT call `Runtime.enable` / `Page.enable` / `DOM.enable`
