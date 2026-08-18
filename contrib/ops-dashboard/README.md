@@ -7,6 +7,31 @@ your own miners and the deposit addresses of every PCN payment integration.
 Deployed at **`https://explorer.pc.am/admin/`** (178.105.3.51, `/opt/pcoin-ops`,
 systemd unit `pcoin-ops`, loopback-bound on 8787, proxied by Caddy).
 
+## Layout
+
+A left rail with one page per subject, in the shape of a conventional admin
+panel; every listing has numbered pagination (25 rows/page):
+
+| page | what it shows |
+|---|---|
+| `./` | dashboard — stat cards plus a short preview of each section |
+| `./blocks` | recent blocks, paged back to genesis via `before_height`; each row shows who the coinbase paid |
+| `./census` | the full miner census (window selectable 100/200/500 blocks), labelled as the proxy it is |
+| `./peers` | the collector's peer snapshot, with a loud staleness banner when the snapshot is old |
+| `./fleet` / `./payments` | fleet balances split by the `PAYMENT - ` label prefix, with totals rows |
+| `./address?a=…` | detail for one address: balance cards, mempool state, paginated confirmed history |
+
+Detail pages use **query strings, not path segments** (`./address?a=…`), so
+every page sits exactly one segment under the mount and relative links keep
+working — see the trailing-slash section below. Height/txid links point at the
+public explorer on the same host (`/block/{hash}`, `/tx/{txid}`), by hash so a
+reorg cannot swap the page underneath.
+
+The unknown-is-not-zero doctrine survives everywhere it matters: a null
+`spendable` renders as *unknown*, an unobservable mempool is a warning banner
+rather than a zero, a failed balances read on the dashboard says "unreadable",
+and a block whose coinbase could not be fetched says so instead of "no miner".
+
 ## Why this is private, and must stay private
 
 It links payout addresses to balances and to the operator's own fleet. That is

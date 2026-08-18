@@ -22,6 +22,14 @@
 // the block it may have mined. The two panels are kept apart on purpose so
 // they are not read as one number.
 //
+// LAYOUT
+// One page per subject, a shared left rail, and numbered pagination on every
+// listing. Every internal link is RELATIVE and every page sits exactly one
+// path segment under the mount (./census, ./address?a=…) — that is what lets
+// the app live under /admin/ without knowing it (see README, "the trailing
+// slash is load-bearing"). Detail pages use query strings, not path segments,
+// so relative resolution never changes depth.
+//
 // Listens on loopback only; Caddy terminates TLS and proxies.
 
 import { createServer } from 'node:http';
@@ -33,6 +41,7 @@ const STATE  = '/opt/pcoin-ops/state.json';
 const PORT   = 8787;
 const EXPLORER = 'http://127.0.0.1:8080/api';   // the explorer runs on this box
 const GATE = 2800;
+const PER  = 25;                                 // rows per page, everywhere
 
 const cfg = JSON.parse(readFileSync(CONFIG, 'utf8'));
 
@@ -40,6 +49,7 @@ const cfg = JSON.parse(readFileSync(CONFIG, 'utf8'));
 // records" -- never as "a stranger", because only the owner can tell the
 // difference between someone else's miner and their own forgotten config.
 const FLEET = cfg.fleet || {};
+const isPayment = label => String(label || '').startsWith('PAYMENT - ');
 
 // ── auth ───────────────────────────────────────────────────────────────────
 function hashPw(pw) {
@@ -182,6 +192,29 @@ async function fleetBalances() {
   })).sort((x, y) => Number(y.total) - Number(x.total));
 }
 
+/** One page of recent blocks, newest first, with the coinbase payout address
+ *  of each displayed block. Page N is computed from the tip, so page numbers
+ *  shift when the chain extends -- fine for an operator view. */
+async function blocksList(pageNo) {
+  const st = await j(`${EXPLORER}/status`, 15e3);
+  const tip = st.index.indexed_height;
+  const pages = Math.max(1, Math.ceil((tip + 1) / PER));
+  const p = Math.min(Math.max(1, pageNo), pages);
+  const before = tip - (p - 1) * PER + 1;   // exclusive upper bound
+  const q = p === 1 ? '' : `&before_height=${before}`;
+  const d = await j(`${EXPLORER}/blocks?limit=${PER}${q}`, p === 1 ? 15e3 : 300e3);
+  const blocks = d.blocks || [];
+  await Promise.all(blocks.map(async b => {
+    // Same cache key the census uses, so this is usually already warm.
+    try {
+      const t = await j(`${EXPLORER}/block/${b.height}/txs?limit=1`, 3600e3);
+      const out = ((t.txs || [])[0]?.outputs || []).find(o => o.address && (o.value_sat || 0) > 0);
+      b.miner = out ? out.address : null;      // null: no addressed output (e.g. genesis)
+    } catch { b.miner = undefined; }           // undefined: unreadable, NOT "none"
+  }));
+  return { tip, page: p, pages, blocks };
+}
+
 function readState() {
   if (!existsSync(STATE)) return {};
   try { return JSON.parse(readFileSync(STATE, 'utf8')); } catch { return {}; }
@@ -191,7 +224,9 @@ function readState() {
 const esc = s => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const pcn = n => Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const dur = s => s == null ? '—' : s < 90 ? `${s}s` : s < 5400 ? `${(s / 60).toFixed(1)}m` : `${(s / 3600).toFixed(1)}h`;
+const dur = s => s == null ? '—' : s < 0 ? `−${dur(-s)}` : s < 90 ? `${s}s` : s < 5400 ? `${(s / 60).toFixed(1)}m` : `${(s / 3600).toFixed(1)}h`;
+const short = a => a && a.length > 22 ? `${a.slice(0, 13)}…${a.slice(-6)}` : (a || '');
+const intp = (v, d) => { const n = parseInt(v, 10); return Number.isFinite(n) && n > 0 ? n : d; };
 
 const CSS = `
 :root{--bg:#0d0f14;--panel:#151823;--edge:#242938;--ink:#e8eaf2;--dim:#98a0b4;
@@ -199,46 +234,133 @@ const CSS = `
       --mono:ui-monospace,"Cascadia Code",Menlo,Consolas,monospace}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}
-.wrap{max-width:1180px;margin:0 auto;padding:22px}
-header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;
-       border-bottom:1px solid var(--edge);padding-bottom:14px;margin-bottom:22px}
 h1{font-size:19px;margin:0;letter-spacing:-.01em}
 h2{font-size:15px;margin:0 0 12px;color:var(--dim);text-transform:uppercase;letter-spacing:.07em}
 .muted{color:var(--dim);font-size:13px}
+.layout{display:flex;min-height:100vh}
+.sidebar{width:226px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--edge);
+         display:flex;flex-direction:column;position:sticky;top:0;height:100vh;overflow-y:auto}
+.sb-logo{padding:18px 20px 14px;border-bottom:1px solid var(--edge)}
+.sb-logo h2{margin:0;font-size:16px;color:var(--ink);text-transform:none;letter-spacing:-.01em}
+.sb-logo small{color:var(--dim);font-size:11px}
+.sidebar nav{flex:1;padding:8px 0 14px}
+.sb-sec{padding:14px 20px 4px;color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.09em}
+.sidebar nav a{display:block;padding:8px 20px;color:var(--ink);text-decoration:none;font-size:13.5px;
+               border-left:3px solid transparent}
+.sidebar nav a:hover{background:rgba(139,92,246,.06)}
+.sidebar nav a.active{background:rgba(139,92,246,.13);border-left-color:var(--accent);color:#c4b5fd}
+.sb-foot{padding:14px 20px;border-top:1px solid var(--edge);font-size:13px}
+.sb-foot a{color:var(--dim)}
+.main{flex:1;min-width:0;padding:22px 30px}
+.tophead{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;
+         border-bottom:1px solid var(--edge);padding-bottom:12px;margin-bottom:20px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(178px,1fr));gap:12px;margin-bottom:22px}
 .card{background:var(--panel);border:1px solid var(--edge);border-radius:12px;padding:14px 16px}
 .card .k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.07em}
 .card .v{font-size:24px;font-weight:650;margin-top:5px;letter-spacing:-.02em}
 .card .s{color:var(--dim);font-size:12px;margin-top:3px}
 .panel{background:var(--panel);border:1px solid var(--edge);border-radius:12px;padding:16px 18px;margin-bottom:22px}
+.panel .more{float:right;font-size:12px}
 table{width:100%;border-collapse:collapse;font-size:13.5px}
 th{text-align:left;color:var(--dim);font-weight:600;font-size:11px;text-transform:uppercase;
    letter-spacing:.06em;padding:7px 9px;border-bottom:1px solid var(--edge)}
 td{padding:7px 9px;border-bottom:1px solid rgba(255,255,255,.045)}
 tr:last-child td{border-bottom:0}
+tr.total td{border-top:1px solid var(--edge);border-bottom:0;font-weight:700}
 .mono{font-family:var(--mono);font-size:12.5px}
 .num{text-align:right;font-variant-numeric:tabular-nums}
 .tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;font-weight:600}
 .tag.you{background:rgba(45,212,191,.14);color:var(--teal)}
+.tag.pay{background:rgba(139,92,246,.16);color:#c4b5fd}
 .tag.other{background:rgba(255,255,255,.06);color:var(--dim)}
 .ok{color:var(--good)} .warn{color:var(--warn)} .bad{color:var(--bad)}
 .bar{height:5px;border-radius:3px;background:rgba(255,255,255,.07);overflow:hidden;margin-top:6px}
 .bar>i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--teal))}
 .note{border-left:3px solid var(--accent);background:rgba(139,92,246,.07);padding:11px 14px;
       border-radius:0 8px 8px 0;color:var(--dim);font-size:13px;margin:14px 0 0}
+.note.warn{border-left-color:var(--warn);background:rgba(251,191,36,.07)}
 a{color:var(--accent)}
+.pager{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:14px;font-size:13px}
+.pager a,.pager .cur,.pager .off,.pager .gap{padding:4px 10px;border-radius:7px}
+.pager a{background:var(--panel);border:1px solid var(--edge);text-decoration:none}
+.pager a:hover{border-color:var(--accent)}
+.pager .cur{background:var(--accent);color:#0d0f14;font-weight:700}
+.pager .off{color:var(--dim);opacity:.5}
+.pager .gap{color:var(--dim)}
+.wrap{max-width:1180px;margin:0 auto;padding:22px}
 .login{max-width:340px;margin:14vh auto;padding:26px}
-input{width:100%;padding:10px 12px;border-radius:9px;border:1px solid var(--edge);
-      background:var(--bg);color:var(--ink);font:inherit;margin-top:6px}
-button{margin-top:14px;width:100%;padding:10px;border-radius:9px;border:0;cursor:pointer;
+input,select{padding:10px 12px;border-radius:9px;border:1px solid var(--edge);
+      background:var(--bg);color:var(--ink);font:inherit}
+.login input{width:100%;margin-top:6px}
+button{padding:10px;border-radius:9px;border:0;cursor:pointer;
        background:linear-gradient(135deg,var(--accent),var(--teal));color:#0d0f14;font-weight:700;font:inherit;font-weight:700}
-`;
+.login button{margin-top:14px;width:100%}
+@media(max-width:880px){
+  .layout{flex-direction:column}
+  .sidebar{width:100%;height:auto;position:static;border-right:0;border-bottom:1px solid var(--edge)}
+  .sidebar nav{display:flex;flex-wrap:wrap;gap:2px;padding:6px 10px}
+  .sb-sec{width:100%;padding:8px 10px 2px}
+  .sidebar nav a{border-left:0;border-radius:7px;padding:6px 10px}
+  .sidebar nav a.active{border-left:0}
+  .sb-foot{display:none}
+  .main{padding:16px}
+}`;
 
 function page(title, body) {
   return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow,noarchive">
 <title>${esc(title)}</title><style>${CSS}</style></head><body>${body}</body></html>`;
+}
+
+const NAV = [
+  ['Overview', [['.', 'dash', 'Dashboard']]],
+  ['Chain',    [['./blocks', 'blocks', 'Blocks']]],
+  ['Miners',   [['./census', 'census', 'Miner census']]],
+  ['Network',  [['./peers', 'peers', 'Peers on the seed']]],
+  ['Money',    [['./fleet', 'fleet', 'Fleet balances'],
+                ['./payments', 'payments', 'Payment rails']]],
+];
+
+function shell(active, title, sub, inner) {
+  const nav = NAV.map(([sec, items]) =>
+    `<div class="sb-sec">${esc(sec)}</div>` +
+    items.map(([href, key, label]) =>
+      `<a href="${href}"${key === active ? ' class="active"' : ''}>${esc(label)}</a>`).join('')
+  ).join('');
+  return page(`PCoin ops — ${title}`, `<div class="layout">
+  <aside class="sidebar">
+    <div class="sb-logo"><h2>⛏ PCoin ops</h2><small>private operator view</small></div>
+    <nav>${nav}</nav>
+    <div class="sb-foot"><a href="./logout">Sign out</a></div>
+  </aside>
+  <main class="main">
+    <div class="tophead">
+      <div><h1>${esc(title)}</h1>${sub ? `<div class="muted">${sub}</div>` : ''}</div>
+      <div class="muted">refreshed ${new Date().toISOString().replace('T', ' ').slice(0, 16)} UTC · <a href="./logout">sign out</a></div>
+    </div>
+    ${inner}
+  </main></div>`);
+}
+
+/** Standard numbered pagination bar. Keeps whatever query the base carries. */
+function pager(base, p, pages) {
+  if (pages <= 1) return '';
+  const link = n => `${base}${base.includes('?') ? '&' : '?'}p=${n}`;
+  const wanted = [...new Set([1, 2, p - 2, p - 1, p, p + 1, p + 2, pages - 1, pages]
+    .filter(n => n >= 1 && n <= pages))].sort((a, b) => a - b);
+  let prev = 0;
+  const items = [];
+  for (const n of wanted) {
+    if (n - prev > 1) items.push('<span class="gap">…</span>');
+    items.push(n === p ? `<span class="cur">${n}</span>` : `<a href="${link(n)}">${n}</a>`);
+    prev = n;
+  }
+  return `<div class="pager">
+    ${p > 1 ? `<a href="${link(p - 1)}">‹ prev</a>` : '<span class="off">‹ prev</span>'}
+    ${items.join('')}
+    ${p < pages ? `<a href="${link(p + 1)}">next ›</a>` : '<span class="off">next ›</span>'}
+  </div>`;
 }
 
 function loginPage(err) {
@@ -252,88 +374,293 @@ function loginPage(err) {
   </form></div>`);
 }
 
-function dash(d) {
-  const c = d.chain, ce = d.census, st = d.state || {};
-  const gateCard = c.lwmaActive
-    ? `<div class="card"><div class="k">LWMA</div><div class="v ok">active</div><div class="s">since height ${c.gate}</div></div>`
-    : `<div class="card"><div class="k">To LWMA gate</div><div class="v warn">${c.toGate}</div><div class="s">blocks to ${c.gate}</div></div>`;
+const addrCell = a => `<a class="mono" href="./address?a=${encodeURIComponent(a)}">${esc(short(a))}</a>`;
+const identTag = (mine, label) => mine
+  ? `<span class="tag ${isPayment(label) ? 'pay' : 'you'}">${esc(label)}</span>`
+  : '<span class="tag other">not in your records</span>';
+
+/** Freshness of the collector snapshot. Unknown-shaped: no timestamp is
+ *  reported as "unknown", never as "fresh". */
+function snapshotAge(st) {
+  const iso = st.at || null;
+  if (!iso) return { text: 'no snapshot timestamp', stale: true };
+  const ms = Date.now() - Date.parse(iso);
+  if (!Number.isFinite(ms)) return { text: `unparseable timestamp ${iso}`, stale: true };
+  const s = Math.floor(ms / 1000);
+  return { text: `collected ${dur(s)} ago`, stale: s > 15 * 60, sec: s };
+}
+
+// ── pages ──────────────────────────────────────────────────────────────────
+async function dashboardPage() {
+  const [c, ce, fl] = await Promise.all([chain(), census(200), fleetBalances().catch(() => null)]);
+  const st = readState();
+  const age = snapshotAge(st);
 
   const health = c.status === 'ok' && c.blocksUnwound === 0
     ? '<span class="ok">healthy</span>' : `<span class="bad">${esc(c.status)} · unwound ${c.blocksUnwound}</span>`;
-
+  const gateCard = c.lwmaActive
+    ? `<div class="card"><div class="k">LWMA</div><div class="v ok">active</div><div class="s">since height ${c.gate}</div></div>`
+    : `<div class="card"><div class="k">To LWMA gate</div><div class="v warn">${c.toGate}</div><div class="s">blocks to ${c.gate}</div></div>`;
   const yoursPct = ce.total ? (ce.yours / ce.total * 100) : 0;
+  const mp = st.mempoolCount ?? c.mempool?.tx_count;   // unknown stays unknown
 
-  const censusRows = ce.rows.map(r => `<tr>
-      <td class="mono">${esc(r.address)}</td>
-      <td>${r.mine ? `<span class="tag you">${esc(r.label)}</span>` : '<span class="tag other">not in your records</span>'}</td>
+  const topMiners = ce.rows.slice(0, 6).map(r => `<tr>
+      <td>${addrCell(r.address)}</td>
+      <td>${identTag(r.mine, r.label)}</td>
       <td class="num">${r.blocks}</td>
       <td class="num">${(r.share * 100).toFixed(1)}%</td>
     </tr>`).join('');
 
-  // Labels live in config, not in the collector: the seed should not need to
-  // know which IP is whose, and the map changes far more often than the script.
-  const LABELS = cfg.peerLabels || {};
+  const miners = (fl || []).filter(f => !isPayment(f.label));
+  const rails  = (fl || []).filter(f => isPayment(f.label));
+  const sum = rows => rows.reduce((s, r) => s + Number(r.total || 0), 0);
+
+  const moneyRows = fl === null
+    ? '<tr><td colspan="3" class="muted">balances unreadable right now — not zero, unread</td></tr>'
+    : `<tr><td><a href="./fleet">Your miners</a></td><td class="num">${miners.length}</td><td class="num">${pcn(sum(miners))}</td></tr>
+       <tr><td><a href="./payments">Payment rails</a></td><td class="num">${rails.length}</td><td class="num">${pcn(sum(rails))}</td></tr>`;
+
   const peers = st.peers || null;
-  const peerRows = peers ? (peers.byIp || []).map(p => ({ ...p, label: LABELS[p.ip] || null })).map(p => `<tr>
-      <td class="mono">${esc(p.ip)}</td>
-      <td>${p.label ? `<span class="tag you">${esc(p.label)}</span>` : '<span class="tag other">unidentified</span>'}</td>
-      <td class="num">${p.connections}</td>
-      <td class="num">${p.height ?? '—'}</td>
-    </tr>`).join('') : '';
+  const tips = st.tips || null;
 
-  const fleetRows = (d.fleet || []).map(f => `<tr>
-      <td class="mono">${esc(f.address)}</td>
-      <td>${esc(f.label)}</td>
-      <td class="num">${pcn(f.mature)}</td>
-      <td class="num">${pcn(f.immature)}</td>
-      <td class="num">${pcn(f.total)}</td>
-    </tr>`).join('');
-
-  return page('PCoin ops', `<div class="wrap">
-  <header>
-    <div><h1>PCoin ops</h1><div class="muted">private · refreshed ${new Date().toISOString().replace('T',' ').slice(0,19)} UTC</div></div>
-    <div class="muted">${health} · tip ${dur(c.tipAge)} old · <a href="./logout">sign out</a></div>
-  </header>
-
+  return shell('dash', 'Dashboard', `${health} · tip ${dur(c.tipAge)} old`, `
   <div class="grid">
-    <div class="card"><div class="k">Height</div><div class="v">${c.height.toLocaleString()}</div><div class="s">mempool ${st.mempoolCount ?? c.mempool?.tx_count ?? 0} tx</div></div>
+    <div class="card"><div class="k">Height</div><div class="v">${c.height.toLocaleString()}</div><div class="s">mempool ${mp == null ? '—' : mp} tx</div></div>
     ${gateCard}
     <div class="card"><div class="k">Network hashrate</div><div class="v">${c.hashrate ? Math.round(c.hashrate).toLocaleString() : '—'}<span style="font-size:14px;color:var(--dim)"> H/s</span></div><div class="s">from observed spacing</div></div>
     <div class="card"><div class="k">Block spacing</div><div class="v">${c.medianSpacing ? dur(c.medianSpacing) : '—'}</div><div class="s">median · mean ${dur(c.meanSpacing)} · target 10m</div></div>
     <div class="card"><div class="k">Difficulty</div><div class="v" style="font-size:18px">${c.difficulty ? c.difficulty.toExponential(4) : '—'}</div><div class="s">retargets ${c.lwmaActive ? 'every block' : 'every 2016'}</div></div>
     <div class="card"><div class="k">Your share of blocks</div><div class="v">${yoursPct.toFixed(0)}%</div>
-      <div class="bar"><i style="width:${Math.min(100,yoursPct).toFixed(1)}%"></i></div>
+      <div class="bar"><i style="width:${Math.min(100, yoursPct).toFixed(1)}%"></i></div>
       <div class="s">${ce.yours} of ${ce.total} last ${ce.blocksRead}</div></div>
   </div>
 
   <div class="panel">
-    <h2>Miner census — last ${ce.blocksRead} blocks</h2>
+    <a class="more" href="./census">full census →</a>
+    <h2>Top payout addresses — last ${ce.blocksRead} blocks</h2>
     <table><thead><tr><th>Payout address</th><th>Identified</th><th class="num">Blocks</th><th class="num">Share</th></tr></thead>
-    <tbody>${censusRows}</tbody></table>
-    <div class="note"><b>${ce.distinct} distinct payout addresses</b> — this is a proxy, not a miner count.
+    <tbody>${topMiners}</tbody></table>
+    <div class="note">${ce.distinct} distinct payout addresses in the window — a <b>proxy</b>, not a miner count. Details on the census page.</div>
+  </div>
+
+  <div class="panel">
+    <a class="more" href="./peers">peer list →</a>
+    <h2>Network</h2>
+    ${peers ? `<p style="margin:0">${peers.distinctIps} distinct IPs · ${peers.total} connections to the seed
+       ${tips ? ` · ${tips.total} chain tips (${tips.competing} competing, worst branch ${tips.worst})` : ''}</p>
+       <p class="muted" style="margin:6px 0 0">${age.stale ? `<span class="warn">⚠ snapshot ${esc(age.text)} — the collector on the seed may be down</span>` : esc(age.text)}</p>`
+      : '<p class="muted">No peer snapshot yet. The collector on the seed posts one every few minutes.</p>'}
+  </div>
+
+  <div class="panel">
+    <h2>Money</h2>
+    <table><thead><tr><th>Group</th><th class="num">Addresses</th><th class="num">On-chain PCN</th></tr></thead>
+    <tbody>${moneyRows}</tbody></table>
+  </div>`);
+}
+
+async function censusPage(url) {
+  const w = [100, 200, 500].includes(intp(url.searchParams.get('w'), 200)) ? intp(url.searchParams.get('w'), 200) : 200;
+  const ce = await census(w);
+  const pages = Math.max(1, Math.ceil(ce.rows.length / PER));
+  const p = Math.min(intp(url.searchParams.get('p'), 1), pages);
+  const rows = ce.rows.slice((p - 1) * PER, p * PER).map((r, i) => `<tr>
+      <td class="num muted">${(p - 1) * PER + i + 1}</td>
+      <td class="mono"><a href="./address?a=${encodeURIComponent(r.address)}">${esc(r.address)}</a></td>
+      <td>${identTag(r.mine, r.label)}</td>
+      <td class="num">${r.blocks}</td>
+      <td class="num">${(r.share * 100).toFixed(1)}%</td>
+    </tr>`).join('');
+  const winSel = [100, 200, 500].map(n => n === w ? `<span class="cur" style="padding:4px 10px;border-radius:7px;background:var(--accent);color:#0d0f14;font-weight:700">${n}</span>`
+    : `<a style="padding:4px 10px" href="./census?w=${n}">${n}</a>`).join(' ');
+
+  return shell('census', 'Miner census', `${ce.distinct} distinct payout addresses over the last ${ce.blocksRead} blocks · you: ${ce.yours} of ${ce.total}`, `
+  <div class="panel">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:8px">
+      <h2 style="margin:0">Payout addresses</h2>
+      <div class="muted" style="font-size:13px">window: ${winSel} blocks</div>
+    </div>
+    <table><thead><tr><th class="num">#</th><th>Payout address</th><th>Identified</th><th class="num">Blocks</th><th class="num">Share</th></tr></thead>
+    <tbody>${rows || '<tr><td colspan="5" class="muted">nothing in this window</td></tr>'}</tbody></table>
+    ${pager(`./census?w=${w}`, p, pages)}
+    <div class="note"><b>This is a proxy, not a miner count.</b>
     A blockchain records who was <i>paid</i>, not who was mining: one operator can rotate a fresh address every
     block, a pool of a hundred looks like one address, and anyone who found nothing in this window is invisible.
     Read it as a floor on the number of independent participants, never as a total.</div>
-  </div>
+  </div>`);
+}
 
-  <div class="panel">
-    <h2>Peers on the seed${peers ? ` — ${peers.distinctIps} distinct IPs, ${peers.total} connections` : ''}</h2>
-    ${peers ? `<table><thead><tr><th>IP</th><th>Identified</th><th class="num">Conns</th><th class="num">Height</th></tr></thead>
-      <tbody>${peerRows}</tbody></table>
-      <div class="note">A peer is a <b>node</b>, not a miner, and nothing here links an IP to a block it may have
-      mined — the chain does not record that. Several connections from one IP usually means several nodes behind
-      one NAT, not several miners. Collected ${esc(peers.at || 'unknown')}.</div>`
-    : `<p class="muted">No peer snapshot yet. The collector on the seed posts one every few minutes.</p>`}
-  </div>
+async function peersPage(url) {
+  const st = readState();
+  const peers = st.peers || null;
+  if (!peers) {
+    return shell('peers', 'Peers on the seed', null,
+      '<div class="panel"><p class="muted">No peer snapshot yet. The collector on the seed posts one every few minutes.</p></div>');
+  }
+  const age = snapshotAge(st);
+  const c = await chain().catch(() => null);
+  // Labels live in config, not in the collector: the seed should not need to
+  // know which IP is whose, and the map changes far more often than the script.
+  const LABELS = cfg.peerLabels || {};
+  const all = (peers.byIp || []).map(pr => ({ ...pr, label: LABELS[pr.ip] || null }));
+  const pages = Math.max(1, Math.ceil(all.length / PER));
+  const p = Math.min(intp(url.searchParams.get('p'), 1), pages);
+  const rows = all.slice((p - 1) * PER, p * PER).map(pr => `<tr>
+      <td class="mono">${esc(pr.ip)}</td>
+      <td>${pr.label ? `<span class="tag you">${esc(pr.label)}</span>` : '<span class="tag other">unidentified</span>'}</td>
+      <td class="num">${pr.connections}</td>
+      <td class="num">${pr.inbound ?? '—'} / ${pr.outbound ?? '—'}</td>
+      <td class="num">${pr.height ?? '—'}${c && pr.height != null && pr.height < c.height - 2 ? ` <span class="warn">(${c.height - pr.height} behind)</span>` : ''}</td>
+    </tr>`).join('');
 
+  return shell('peers', 'Peers on the seed', `${peers.distinctIps} distinct IPs · ${peers.total} connections`, `
+  ${age.stale ? `<div class="note warn" style="margin:0 0 18px"><b>Snapshot is stale</b> — ${esc(age.text)}. The collector on the seed normally posts every few minutes; this list describes the network as of then, not now.</div>` : ''}
   <div class="panel">
-    <h2>Your fleet — on-chain balances</h2>
-    <table><thead><tr><th>Address</th><th>Device</th><th class="num">Mature</th><th class="num">Immature</th><th class="num">Total PCN</th></tr></thead>
-    <tbody>${fleetRows || '<tr><td colspan="5" class="muted">no fleet addresses configured</td></tr>'}</tbody></table>
-    <div class="note">Balances only. Whether a miner is <i>running</i> is not visible from the chain — a machine
-    that is on but unlucky looks identical to one that is off. Use the peer panel above as a liveness hint: if a
-    site's IP is not connected, nothing there is mining.</div>
-  </div>
+    <h2>Connected IPs</h2>
+    <table><thead><tr><th>IP</th><th>Identified</th><th class="num">Conns</th><th class="num">In / out</th><th class="num">Height</th></tr></thead>
+    <tbody>${rows}</tbody></table>
+    ${pager('./peers', p, pages)}
+    <div class="note">A peer is a <b>node</b>, not a miner, and nothing here links an IP to a block it may have
+    mined — the chain does not record that. Several connections from one IP usually means several nodes behind
+    one NAT, not several miners. Collected ${esc(peers.at || 'unknown')}.</div>
+  </div>`);
+}
+
+async function moneyPage(url, wantPayments) {
+  const fl = await fleetBalances();
+  const rows0 = fl.filter(f => isPayment(f.label) === wantPayments);
+  const pages = Math.max(1, Math.ceil(rows0.length / PER));
+  const p = Math.min(intp(url.searchParams.get('p'), 1), pages);
+  const slice = rows0.slice((p - 1) * PER, p * PER);
+  const rows = slice.map(f => `<tr>
+      <td class="mono"><a href="./address?a=${encodeURIComponent(f.address)}">${esc(f.address)}</a></td>
+      <td>${esc(wantPayments ? String(f.label).replace(/^PAYMENT - /, '') : f.label)}</td>
+      <td class="num">${pcn(f.mature)}</td>
+      <td class="num">${pcn(f.immature)}</td>
+      <td class="num">${pcn(f.total)}</td>
+      <td class="num">${pcn(f.lifetime)}</td>
+    </tr>`).join('');
+  const sum = k => rows0.reduce((s, r) => s + Number(r[k] || 0), 0);
+  const totalRow = rows0.length ? `<tr class="total"><td></td><td>Total (all ${rows0.length})</td>
+      <td class="num">${pcn(sum('mature'))}</td><td class="num">${pcn(sum('immature'))}</td>
+      <td class="num">${pcn(sum('total'))}</td><td class="num">${pcn(sum('lifetime'))}</td></tr>` : '';
+
+  const [key, title, head, note] = wantPayments
+    ? ['payments', 'Payment rails', 'Service',
+       'One row per service that accepts PCN. Deposit addresses are per-user and <b>reused</b> — a deposit address IS a customer, which is why this page is private. Balances only; whether the watcher on each service is crediting is monitored by <code>pcoin-deposit-watch</code>, not visible here.']
+    : ['fleet', 'Fleet balances', 'Device',
+       'Balances only. Whether a miner is <i>running</i> is not visible from the chain — a machine that is on but unlucky looks identical to one that is off. Use the peers page as a liveness hint: if a site’s IP is not connected, nothing there is mining. A LOW balance on a forwarding device usually means it is <b>working</b> — it sweeps to the treasury by design.'];
+
+  return shell(key, title, `${rows0.length} address${rows0.length === 1 ? '' : 'es'} on record`, `
+  <div class="panel">
+    <h2>On-chain balances</h2>
+    <table><thead><tr><th>Address</th><th>${head}</th><th class="num">Mature</th><th class="num">Immature</th><th class="num">Total PCN</th><th class="num">Lifetime in</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="6" class="muted">no ${wantPayments ? 'payment' : 'fleet'} addresses configured</td></tr>`}${totalRow}</tbody></table>
+    ${pager(`./${key}`, p, pages)}
+    <div class="note">${note}</div>
+  </div>`);
+}
+
+async function blocksPage(url) {
+  const d = await blocksList(intp(url.searchParams.get('p'), 1));
+  const now = Math.floor(Date.now() / 1000);
+  const rows = d.blocks.map(b => {
+    const minerCell = b.miner === undefined ? '<span class="muted">unreadable</span>'
+      : b.miner === null ? '—'
+      : `${addrCell(b.miner)} ${FLEET[b.miner] ? `<span class="tag ${isPayment(FLEET[b.miner]) ? 'pay' : 'you'}">${esc(FLEET[b.miner])}</span>` : ''}`;
+    const reward = b.subsidy_pcn != null ? pcn(Number(b.subsidy_pcn) + Number(b.total_fees_pcn || 0)) : '—';
+    return `<tr>
+      <td class="num"><a href="/block/${esc(b.hash)}" target="_blank" rel="noopener">${b.height.toLocaleString()}</a></td>
+      <td class="muted">${esc((b.time_iso || '').replace('T', ' ').replace('Z', ''))}</td>
+      <td class="num">${dur(now - (b.time || now))}</td>
+      <td class="num">${b.n_tx ?? '—'}</td>
+      <td class="num">${reward}</td>
+      <td class="num">${b.difficulty ? Number(b.difficulty).toExponential(3) : '—'}</td>
+      <td>${minerCell}</td>
+    </tr>`;
+  }).join('');
+
+  return shell('blocks', 'Blocks', `tip ${d.tip.toLocaleString()} · newest first`, `
+  <div class="panel">
+    <h2>Recent blocks</h2>
+    <table><thead><tr><th class="num">Height</th><th>Time (UTC)</th><th class="num">Age</th><th class="num">Txs</th><th class="num">Reward</th><th class="num">Difficulty</th><th>Paid to</th></tr></thead>
+    <tbody>${rows || '<tr><td colspan="7" class="muted">nothing indexed yet</td></tr>'}</tbody></table>
+    ${pager('./blocks', d.page, d.pages)}
+    <div class="note">Height links open the public explorer view (by hash, so a reorg cannot swap the page under
+    you). Block timestamps are <b>not monotonic</b> on this chain — a negative age is a real timestamp, not a bug.
+    Page numbers are anchored to the tip, so they shift as the chain extends.</div>
+  </div>`);
+}
+
+async function addressPage(url) {
+  const a = String(url.searchParams.get('a') || '');
+  if (!/^[0-9a-z]{8,120}$/i.test(a)) {
+    return shell('dash', 'Address', null, '<div class="panel"><p class="bad">That does not look like an address.</p></div>');
+  }
+  const info = await j(`${EXPLORER}/address/${encodeURIComponent(a)}`, 15e3);
+  const per = PER;
+  const total = info.balance?.lifetime?.tx_count ?? 0;
+  const pages = Math.max(1, Math.ceil(total / per));
+  const p = Math.min(intp(url.searchParams.get('p'), 1), pages);
+  const hist = await j(`${EXPLORER}/address/${encodeURIComponent(a)}/txs?limit=${per}&offset=${(p - 1) * per}`, 15e3);
+
+  const label = FLEET[a] || null;
+  const conf = info.balance?.confirmed || {};
+  const life = info.balance?.lifetime || {};
+  const unconf = info.balance?.unconfirmed || {};
+
+  // Unknown-shaped rendering: a null spendable is "could not observe the
+  // mempool", never zero. See §7.1.
+  const spendable = conf.spendable_sat === null
+    ? `<span class="warn" title="${esc(conf.spendable_unknown_reason || '')}">unknown</span>`
+    : pcn(conf.spendable_pcn);
+
+  const cards = `
+  <div class="grid">
+    <div class="card"><div class="k">Mature</div><div class="v">${pcn(conf.mature_pcn)}</div><div class="s">${conf.mature_utxo_count ?? '—'} UTXOs</div></div>
+    <div class="card"><div class="k">Immature</div><div class="v">${pcn(conf.immature_pcn)}</div>
+      <div class="s">${conf.next_maturity_in_blocks != null ? `next matures in ${conf.next_maturity_in_blocks} blocks` : `${conf.immature_utxo_count ?? 0} coinbase UTXOs < 100 conf`}</div></div>
+    <div class="card"><div class="k">Spendable now</div><div class="v">${spendable}</div><div class="s">mature minus pending spends</div></div>
+    <div class="card"><div class="k">On-chain total</div><div class="v">${pcn(conf.onchain_unspent_pcn)}</div><div class="s">as of height ${conf.as_of_height ?? '—'}</div></div>
+    <div class="card"><div class="k">Lifetime received</div><div class="v">${pcn(life.received_pcn)}</div><div class="s">sent ${pcn(life.sent_pcn)} · ${life.tx_count ?? 0} txs</div></div>
+    <div class="card"><div class="k">Active</div><div class="v" style="font-size:18px">${life.first_height != null ? `${life.first_height.toLocaleString()} → ${life.last_height.toLocaleString()}` : '—'}</div><div class="s">first / last block height</div></div>
+  </div>`;
+
+  const mempoolPanel = unconf.known === false
+    ? `<div class="note warn" style="margin:0 0 18px"><b>Mempool unobservable</b> — ${esc(unconf.reason || 'node unreachable')}. Unconfirmed activity is <i>unknown</i>, not zero.</div>`
+    : (unconf.tx_count > 0
+      ? `<div class="note" style="margin:0 0 18px">${unconf.tx_count} unconfirmed tx: receiving ${pcn(unconf.receiving_pcn)} PCN, spending ${pcn(unconf.spending_pcn)} PCN. Unconfirmed items are kept out of the paged history below so pages do not shift.</div>`
+      : '');
+
+  const items = hist.confirmed?.items || [];
+  const histRows = items.map(t => `<tr>
+      <td class="num"><a href="/block/${esc(t.block_hash || '')}" target="_blank" rel="noopener">${t.height?.toLocaleString() ?? '—'}</a></td>
+      <td class="muted">${esc((t.time_iso || '').replace('T', ' ').replace('Z', ''))}</td>
+      <td class="mono"><a href="/tx/${esc(t.txid)}" target="_blank" rel="noopener">${esc(short(t.txid))}</a></td>
+      <td class="num ok">${Number(t.received_sat) ? `+${pcn(t.received_pcn)}` : ''}</td>
+      <td class="num bad">${Number(t.sent_sat) ? `−${pcn(t.sent_pcn)}` : ''}</td>
+      <td class="num">${pcn(t.net_pcn)}</td>
+      <td class="num muted">${t.confirmations ?? '—'}</td>
+    </tr>`).join('');
+
+  const histTotal = hist.confirmed?.total ?? total;
+  const histPages = Math.max(1, Math.ceil(histTotal / per));
+
+  return shell(label ? (isPayment(label) ? 'payments' : 'fleet') : 'census',
+    label || 'Address', `<span class="mono" style="font-size:12px">${esc(a)}</span>`, `
+  ${label ? `<p style="margin:0 0 14px">${identTag(true, label)} <a class="muted" style="margin-left:10px" href="/address/${encodeURIComponent(a)}" target="_blank" rel="noopener">open in public explorer ↗</a></p>`
+          : `<p style="margin:0 0 14px"><span class="tag other">not in your records</span> <a class="muted" style="margin-left:10px" href="/address/${encodeURIComponent(a)}" target="_blank" rel="noopener">open in public explorer ↗</a></p>`}
+  ${info.used === false ? '<div class="note warn" style="margin:0 0 18px">This address has never appeared on chain.</div>' : ''}
+  ${mempoolPanel}
+  <h2 style="margin-bottom:10px">Balance</h2>
+  ${cards}
+  <div class="panel">
+    <h2>History — ${histTotal.toLocaleString()} confirmed transaction${histTotal === 1 ? '' : 's'}</h2>
+    <table><thead><tr><th class="num">Height</th><th>Time (UTC)</th><th>Txid</th><th class="num">Received</th><th class="num">Sent</th><th class="num">Net PCN</th><th class="num">Conf</th></tr></thead>
+    <tbody>${histRows || '<tr><td colspan="7" class="muted">no confirmed history</td></tr>'}</tbody></table>
+    ${pager(`./address?a=${encodeURIComponent(a)}`, p, histPages)}
+    <div class="note">Newest first, paged by offset — if the chain extends or reorgs between two clicks, a row can
+    shift across a page boundary. Coinbase rewards need 100 confirmations before they are spendable.</div>
   </div>`);
 }
 
@@ -398,8 +725,15 @@ createServer(async (req, res) => {
       return send(200, 'application/json', JSON.stringify({ chain: c, census: ce, fleet: fl, state: readState() }, null, 2));
     }
 
-    const [c, ce, fl] = await Promise.all([chain(), census(200), fleetBalances().catch(() => [])]);
-    return send(200, 'text/html', dash({ chain: c, census: ce, fleet: fl, state: readState() }));
+    if (path === '/')         return send(200, 'text/html', await dashboardPage());
+    if (path === '/census')   return send(200, 'text/html', await censusPage(url));
+    if (path === '/peers')    return send(200, 'text/html', await peersPage(url));
+    if (path === '/fleet')    return send(200, 'text/html', await moneyPage(url, false));
+    if (path === '/payments') return send(200, 'text/html', await moneyPage(url, true));
+    if (path === '/blocks')   return send(200, 'text/html', await blocksPage(url));
+    if (path === '/address')  return send(200, 'text/html', await addressPage(url));
+
+    return send(302, 'text/html', '', { Location: './' });
   } catch (err) {
     return send(500, 'text/html', page('error', `<div class="wrap"><div class="panel"><h1>Upstream error</h1>
       <p class="muted">${esc(err.message)}</p><p class="muted">Nothing is inferred from a failed read — the
