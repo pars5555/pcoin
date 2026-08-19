@@ -588,6 +588,7 @@ async function poolPage(url) {
   const b = pool.blocks || {};
 
   const all = pool.miners || [];
+  const activeNow = all.filter(m => m.lastShareAt && now - m.lastShareAt < 600).length;
   const pages = Math.max(1, Math.ceil(all.length / PER));
   const p = Math.min(intp(url.searchParams.get('p'), 1), pages);
   const rows = all.slice((p - 1) * PER, p * PER).map((m, i) => {
@@ -597,33 +598,64 @@ async function poolPage(url) {
       <td class="num muted">${(p - 1) * PER + i + 1}</td>
       <td class="mono"><a href="./address?a=${encodeURIComponent(m.address)}">${esc(m.address)}</a>
           ${FLEET[m.address] ? `<span class="tag you">${esc(FLEET[m.address])}</span>` : ''}</td>
+      <td>${active ? '<span class="tag you">⛏ mining</span>' : '<span class="tag other">idle</span>'}</td>
       <td class="num">${(m.share24h * 100).toFixed(1)}%</td>
       <td class="num">${m.share24h && pool.poolHashrate ? hr(m.share24h * pool.poolHashrate) : '—'}</td>
-      <td class="num">${m.shares24h.toLocaleString()}</td>
-      <td class="num ${active ? 'ok' : ''}">${lastAge == null ? '—' : dur(lastAge) + ' ago'}</td>
+      <td class="num ${active ? 'ok' : 'muted'}">${lastAge == null ? 'over a week' : dur(lastAge) + ' ago'}</td>
       <td class="num">${m.blocksFound || ''}</td>
       <td class="num">${pcn(m.paidSat / 1e8)}</td>
     </tr>`;
   }).join('');
 
-  return shell('pool', 'Pool miners', `the pool's own share log — the chain cannot show this`, `
+  // One sentence of context from the chain side, so "how many miners are
+  // there" has a complete answer on this one page. Optional: if the explorer
+  // is unreachable the page still renders, just without this line.
+  let censusLine = '';
+  try {
+    const ce = await census(200);
+    const pct = ce.total ? Math.round(ce.poolBlocks / ce.total * 100) : 0;
+    censusLine = ` The pool won <b>${ce.poolBlocks} of the last ${ce.blocksRead} blocks</b> (${pct}%);
+      the rest went to <a href="./census">${ce.distinct} solo miner${ce.distinct === 1 ? '' : 's'}</a> mining on their own.`;
+  } catch { /* explorer unreadable -- say nothing rather than guess */ }
+
+  return shell('pool', 'Pool miners', `who is actually mining through the pool — from its own log; the chain cannot show this`, `
   ${age.stale ? `<div class="note warn" style="margin:0 0 18px"><b>Snapshot is stale</b> — ${esc(age.text)}. The collector on the pool host normally posts every few minutes; these numbers describe the pool as of then, not now.</div>` : ''}
-  <div class="grid">
-    <div class="card"><div class="k">Workers connected</div><div class="v">${pool.connectedMiners ?? '—'}</div><div class="s">${all.length} on record this week</div></div>
-    <div class="card"><div class="k">Pool hashrate</div><div class="v" style="font-size:20px">${hr(pool.poolHashrate)}</div><div class="s">${netPct != null ? `${netPct.toFixed(0)}% of the network` : 'network share unknown'}</div></div>
-    <div class="card"><div class="k">Blocks found</div><div class="v">${(b.mature ?? 0) + (b.pending ?? 0)}</div><div class="s">${b.pending ?? 0} maturing · ${b.orphaned ?? 0} orphaned · ${b.found24h ?? '—'} in 24 h</div></div>
-    <div class="card"><div class="k">Pool fee</div><div class="v">${pool.feePercent ?? '—'}%</div><div class="s">PPLNS · paid in the coinbase</div></div>
+
+  <div class="panel" style="font-size:15px;line-height:1.7">
+    <b>${pool.connectedMiners ?? '—'} machines are connected to the pool right now</b>, of which
+    ${activeNow} actually sent work in the last 10 minutes. Over the past week
+    <b>${all.length} different miners</b> used the pool at least once. Together the connected ones run at
+    <b>${hr(pool.poolHashrate)}</b>${netPct != null ? ` — about <b>${netPct.toFixed(0)}%</b> of the whole network's mining power` : ''}.${censusLine}
   </div>
+
+  <div class="grid">
+    <div class="card"><div class="k">Mining right now</div><div class="v">${pool.connectedMiners ?? '—'}</div><div class="s">machines connected this minute</div></div>
+    <div class="card"><div class="k">Pool speed</div><div class="v" style="font-size:20px">${hr(pool.poolHashrate)}</div><div class="s">all connected machines combined</div></div>
+    <div class="card"><div class="k">Blocks won</div><div class="v">${(b.mature ?? 0) + (b.pending ?? 0)}</div><div class="s">${b.found24h ?? '—'} in the last 24 h · ${b.pending ?? 0} reward${(b.pending ?? 0) === 1 ? '' : 's'} still locked · ${b.orphaned ?? 0} lost</div></div>
+    <div class="card"><div class="k">Pool fee</div><div class="v">${pool.feePercent ?? '—'}%</div><div class="s">the other ${pool.feePercent != null ? 100 - pool.feePercent : '—'}% goes to the miners</div></div>
+  </div>
+
   <div class="panel">
-    <h2>Workers</h2>
-    <table><thead><tr><th class="num">#</th><th>Payout address</th><th class="num">24 h share</th><th class="num">≈ Hashrate</th><th class="num">Shares 24 h</th><th class="num">Last share</th><th class="num">Blocks</th><th class="num">Paid PCN</th></tr></thead>
+    <h2>Every miner in the pool</h2>
+    <table><thead><tr><th class="num">#</th><th>Miner (payout address)</th><th>Status</th><th class="num">Share of work (24 h)</th><th class="num">≈ Speed</th><th class="num">Last seen</th><th class="num">Blocks found</th><th class="num">Earned PCN</th></tr></thead>
     <tbody>${rows || '<tr><td colspan="8" class="muted">no workers on record</td></tr>'}</tbody></table>
     ${pager('./pool', p, pages)}
-    <div class="note">These are the pool's <b>real workers</b>, read from its share log — exactly what the chain
-    cannot show, because every pool block's coinbase pays the whole recent window at once. ≈Hashrate is the
-    worker's 24 h share of work applied to the pool's current rate, so a machine that just joined or just left
-    reads low for a while. "Paid" sums the coinbase outputs this pool has computed for that address. Anyone
-    listed here also appears in the fleet or census pages only if they mine solo on the side.</div>
+    <div class="note"><b>How to read this table.</b><br>
+    <b>Miner</b> — the PCoin address a machine asked to be paid at. One person can run several machines on one
+    address, so this is "one payee", not necessarily "one computer".<br>
+    <b>Status</b> — <i>mining</i> means it sent the pool a piece of work within the last 10 minutes; <i>idle</i>
+    means it is connected or recent, but not currently working.<br>
+    <b>Share of work (24 h)</b> — of all the work the whole pool received in the last 24 hours, how much came
+    from this miner. This is also roughly the share of every reward they earn.<br>
+    <b>≈ Speed</b> — that share applied to the pool's current speed. A machine that joined or left recently
+    reads low until a full day passes.<br>
+    <b>Last seen</b> — when their most recent piece of work arrived.<br>
+    <b>Blocks found</b> — blocks this miner personally solved. Finding a block is luck; earnings do NOT depend
+    on it, because every reward is split among everyone by work done.<br>
+    <b>Earned PCN</b> — everything the pool's blocks have paid to this address so far.<br><br>
+    Payment is automatic and happens inside each won block itself: ${pool.feePercent ?? '—'}% to the pool,
+    the rest split in proportion to recent work. A new block's reward unlocks after 100 more blocks are mined
+    on top of it (that is what "still locked" above means).</div>
   </div>`);
 }
 
