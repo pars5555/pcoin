@@ -1187,6 +1187,18 @@ sudo systemctl stop pcoin-miner
           it stronger.</b> That is exactly why participation matters.</p>
         </div>
         <div class="honest-card">
+          <h3>Right now, one miner finds most of the blocks</h3>
+          <p>Measured over blocks 4125–4274 on 19 August 2026, a single address — <b>not one of
+          ours</b> — found <b>71%</b> of them (95% confidence 64–78%). A miner holding more than half of
+          the hashrate can reorganise recent blocks and reverse a payment that already looked settled.
+          Nothing has gone wrong: there have been no reorgs and the supply is exact. But the capability
+          is real, so every service that accepts PCN now waits <b>100 confirmations</b> before crediting
+          a deposit. Recompute it yourself from the
+          <a href="https://explorer.pc.am" rel="noopener">public explorer</a> — every coinbase is on
+          the chain — and use a window of several hundred blocks, because 60 blocks is mostly sampling
+          noise. <b>More independent miners is the only thing that fixes this.</b></p>
+        </div>
+        <div class="honest-card">
           <h3>Open source, auditable</h3>
           <p>The full source is public on <a href="https://github.com/pars5555/pcoin" rel="noopener">GitHub</a>
           under the <b>MIT license</b>, based on Bitcoin Core. Don't trust our claims — read the diff.</p>
