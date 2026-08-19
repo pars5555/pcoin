@@ -1,0 +1,98 @@
+#!/bin/bash
+# Can a BRAND NEW node still join the PCoin network?
+#
+# This is the one question no seed can answer about itself. Each seed runs
+# pcoin-seed-watch, which checks its own container, peers, tip and listener from
+# the inside -- all four can pass on all three seeds while a new node still
+# cannot bootstrap, because bootstrapping depends on things that live outside
+# any of them:
+#
+#   * seed.pc.am resolving, and resolving to the RIGHT hosts. The name is a
+#     plain unproxied A record set; a DNS edit, an expired record or a
+#     Cloudflare orange-cloud toggle breaks bootstrap without touching a single
+#     server. An orange cloud is the nasty one: 9444 is not HTTP, so proxying
+#     that record silently makes every A record useless while every seed stays
+#     perfectly healthy.
+#   * 9444 being reachable ACROSS the internet, not just bound locally. A
+#     provider firewall, a ufw rule or a dropped Docker port publish all look
+#     like health from inside the box.
+#
+# So this runs from 116.203.221.42 -- the only host in the fleet that is NOT a
+# seed -- and looks in from where a stranger stands.
+#
+# Alerts only on a real loss of capability. seed.pc.am has three A records
+# precisely so losing one is survivable, so one dead seed is a WARNING and all
+# three dead is the emergency. Paging for a single seed would train the reader
+# to ignore it, and the message that matters would go with it.
+#
+# Exit is always 0: a detected problem is an alert, not a cron mail as well.
+
+set -u
+NOTIFY="${NOTIFY:-/usr/local/bin/pcoin-notify}"
+NAME="${NAME:-seed.pc.am}"
+PORT="${PORT:-9444}"
+EXPECTED="${EXPECTED:-35.239.156.16 35.238.47.14 178.105.3.51 152.53.171.190}"
+
+log()   { logger -t pcoin-bootstrap-watch -- "$*" 2>/dev/null || printf '%s\n' "$*"; }
+alert() { log "ALERT: $1 -- $2"; [ -x "$NOTIFY" ] && "$NOTIFY" "$1" "$2" >/dev/null 2>&1; }
+
+# ── 1. does the name resolve at all? ──
+IPS=$(dig +short A "$NAME" @1.1.1.1 2>/dev/null | grep -E '^[0-9]+\.' | sort)
+if [ -z "$IPS" ]; then
+    IPS=$(dig +short A "$NAME" @8.8.8.8 2>/dev/null | grep -E '^[0-9]+\.' | sort)
+    [ -n "$IPS" ] && log "note: 1.1.1.1 returned nothing, 8.8.8.8 did"
+fi
+if [ -z "$IPS" ]; then
+    alert "PCoin BOOTSTRAP DOWN: $NAME does not resolve" \
+          "Two independent resolvers returned no A record for $NAME. No new node can find the network. Existing nodes keep running, so nothing else will look wrong."
+    exit 0
+fi
+
+# ── 2. is it pointing where we think? ──
+# Catches an orange-cloud toggle (9444 is not HTTP, so proxying kills bootstrap
+# while every seed stays green) and any stale or unexpected record.
+for ip in $IPS; do
+    case "$ip" in
+        104.2*|172.6[4-9].*|172.7[01].*|188.114.*|162.159.*|104.1[6-9].*)
+            alert "PCoin BOOTSTRAP BROKEN: $NAME is Cloudflare-PROXIED" \
+                  "$NAME resolves to $ip, a Cloudflare edge address. Port $PORT is the P2P protocol, not HTTP, so a proxied record cannot carry it. Every seed will still report healthy. Set the record back to DNS-only (grey cloud)."
+            exit 0 ;;
+    esac
+done
+
+MISSING=""
+for want in $EXPECTED; do
+    echo "$IPS" | grep -qx "$want" || MISSING="$MISSING $want"
+done
+EXTRA=""
+for got in $IPS; do
+    echo "$EXPECTED" | tr ' ' '\n' | grep -qx "$got" || EXTRA="$EXTRA $got"
+done
+[ -n "$MISSING" ] && alert "PCoin seed DNS changed: records missing" \
+    "$NAME no longer lists:$MISSING . Currently: $(echo $IPS). Bootstrap still works while at least one seed answers, but the redundancy is gone."
+[ -n "$EXTRA" ] && alert "PCoin seed DNS changed: unexpected record" \
+    "$NAME lists an address not in the expected set:$EXTRA . Currently: $(echo $IPS). If this is intentional, update EXPECTED in $0."
+
+# ── 3. can a stranger actually open 9444? ──
+# The real test. `listening` inside the box proves the socket is bound; only a
+# connection from off-box proves the path.
+UP=0; DOWN=""
+for ip in $EXPECTED; do
+    if timeout 12 bash -c "exec 3<>/dev/tcp/$ip/$PORT" 2>/dev/null; then
+        UP=$((UP+1))
+    else
+        DOWN="$DOWN $ip"
+    fi
+done
+
+TOTAL=$(echo $EXPECTED | wc -w)
+if [ "$UP" -eq 0 ]; then
+    alert "PCoin BOOTSTRAP DOWN: no seed accepts $PORT" \
+          "All $TOTAL seeds refused a connection to $PORT from outside:$DOWN . NO NEW NODE CAN JOIN THE NETWORK. Existing nodes are unaffected and every seed's own health check may still pass, which is why this check runs off-box."
+elif [ -n "$DOWN" ]; then
+    alert "PCoin seed unreachable on $PORT (redundancy reduced)" \
+          "$UP of $TOTAL seeds still accept $PORT. Unreachable from outside:$DOWN . Bootstrap still works; fix before another one goes."
+else
+    log "bootstrap ok: $NAME -> $(echo $IPS | tr '\n' ' '), $UP/$TOTAL seeds accept $PORT"
+fi
+exit 0
