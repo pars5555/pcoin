@@ -16,7 +16,8 @@ panel; every listing has numbered pagination (25 rows/page):
 |---|---|
 | `./` | dashboard — stat cards plus a short preview of each section |
 | `./blocks` | recent blocks, paged back to genesis via `before_height`; each row shows who the coinbase paid |
-| `./census` | the full miner census (window selectable 100/200/500 blocks), labelled as the proxy it is |
+| `./census` | who won each block (window selectable 100/200/500). A split coinbase is counted ONCE as the pool, not once per participant |
+| `./pool` | the pool's REAL workers from its share log: 24 h share, ≈hashrate, last share, blocks found, paid |
 | `./peers` | the collector's peer snapshot, with a loud staleness banner when the snapshot is old |
 | `./fleet` / `./payments` | fleet balances split by the `PAYMENT - ` label prefix, with totals rows |
 | `./address?a=…` | detail for one address: balance cards, mempool state, paginated confirmed history |
@@ -60,14 +61,24 @@ handle /admin/* {
 The cookie `Path` must match the mount point too, or a successful login hands
 back a cookie the next request will not send.
 
-## The collector
+## The collectors
 
-The peers/tips panels are fed by `collector/pcoin-ops-collect`, which runs **on
-the seed** (not on this host) from `/etc/cron.d/pcoin-ops` every 4 minutes as
-root, reading its bearer token from `/etc/pcoin-ops-token`. It runs there
-because the seed's RPC is loopback-bound inside its container and deliberately
-unreachable from anywhere else — the seed pushes a summary out rather than
-letting anything in.
+Two hosts push data in through `/collect`; the dashboard itself reaches out to
+nothing but the explorer beside it. Each snapshot carries its **own** `at`
+timestamp and the UI judges staleness per-source — a fresh pool snapshot must
+never make a dead peer collector look alive.
+
+* `collector/pcoin-ops-collect` — peers/tips, runs **on the seed** from
+  `/etc/cron.d/pcoin-ops` every 4 minutes as root. It runs there because the
+  seed's RPC is loopback-bound inside its container and deliberately
+  unreachable from anywhere else — the seed pushes a summary out rather than
+  letting anything in.
+* `collector/pcoin-pool-collect` — the pool's real workers, shares and found
+  blocks, runs **on the pool host** from root's crontab every 4 minutes. Same
+  reasoning: the pool API is loopback-bound and the SQLite share log is
+  root-only.
+
+Both read the bearer token from `/etc/pcoin-ops-token` on their own host.
 
 Two lessons already paid for:
 

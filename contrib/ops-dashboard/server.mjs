@@ -104,8 +104,19 @@ async function j(url, ttl = 20e3) {
   return v;
 }
 
-/** Distinct coinbase payout addresses over the last N blocks. A PROXY for
- *  miner count, not a miner count -- see the header. */
+/** Who won each of the last N blocks. Every block is counted ONCE:
+ *
+ *  A solo block's coinbase pays exactly one address, and that address gets
+ *  the block. A POOL block's coinbase pays every recent worker (that is how
+ *  this pool pays out), so the split coinbase itself is the signature: more
+ *  than one addressed output means "the pool won this block", and it is
+ *  attributed to the pool as one entity — NOT to each participant, which
+ *  would count one block twenty times and drown the solo miners. The real
+ *  workers behind the pool entity are on the ./pool page, from the pool's
+ *  own share log.
+ *
+ *  Still a PROXY for solo miner count, not a miner count -- see the header. */
+const POOL_KEY = '__pool__';
 async function census(window = 200) {
   const st = await j(`${EXPLORER}/status`, 15e3);
   const tip = st.index.indexed_height;
@@ -121,21 +132,23 @@ async function census(window = 200) {
     const cb = (b.txs || [])[0];
     if (!cb) continue;
     read++;
-    for (const o of cb.outputs || []) {
-      if (o.address && (o.value_sat || 0) > 0) {
-        counts.set(o.address, (counts.get(o.address) || 0) + 1);
-      }
-    }
+    const paid = [...new Set((cb.outputs || [])
+      .filter(o => o.address && (o.value_sat || 0) > 0).map(o => o.address))];
+    if (paid.length > 1)      counts.set(POOL_KEY, (counts.get(POOL_KEY) || 0) + 1);
+    else if (paid.length === 1) counts.set(paid[0], (counts.get(paid[0]) || 0) + 1);
   }
   const rows = [...counts.entries()]
-    .map(([address, blocks]) => ({ address, blocks, mine: !!FLEET[address], label: FLEET[address] || null }))
+    .map(([address, blocks]) => address === POOL_KEY
+      ? { address, blocks, pool: true, mine: false, label: null }
+      : { address, blocks, pool: false, mine: !!FLEET[address], label: FLEET[address] || null })
     .sort((a, b) => b.blocks - a.blocks);
   const total = rows.reduce((s, r) => s + r.blocks, 0) || 1;
   rows.forEach(r => { r.share = r.blocks / total; });
   const v = {
-    tip, window, blocksRead: read, distinct: rows.length, rows,
+    tip, window, blocksRead: read, rows, total,
+    distinct: rows.filter(r => !r.pool).length,
+    poolBlocks: counts.get(POOL_KEY) || 0,
     yours: rows.filter(r => r.mine).reduce((s, r) => s + r.blocks, 0),
-    total,
   };
   cache.set(key, { at: Date.now(), v });
   return v;
@@ -208,8 +221,10 @@ async function blocksList(pageNo) {
     // Same cache key the census uses, so this is usually already warm.
     try {
       const t = await j(`${EXPLORER}/block/${b.height}/txs?limit=1`, 3600e3);
-      const out = ((t.txs || [])[0]?.outputs || []).find(o => o.address && (o.value_sat || 0) > 0);
-      b.miner = out ? out.address : null;      // null: no addressed output (e.g. genesis)
+      const paid = [...new Set(((t.txs || [])[0]?.outputs || [])
+        .filter(o => o.address && (o.value_sat || 0) > 0).map(o => o.address))];
+      b.poolPaid = paid.length > 1;            // split coinbase = a pool block
+      b.miner = paid[0] ?? null;               // null: no addressed output (e.g. genesis)
     } catch { b.miner = undefined; }           // undefined: unreadable, NOT "none"
   }));
   return { tip, page: p, pages, blocks };
@@ -316,7 +331,8 @@ function page(title, body) {
 const NAV = [
   ['Overview', [['.', 'dash', 'Dashboard']]],
   ['Chain',    [['./blocks', 'blocks', 'Blocks']]],
-  ['Miners',   [['./census', 'census', 'Miner census']]],
+  ['Miners',   [['./census', 'census', 'Miner census'],
+                ['./pool', 'pool', 'Pool miners']]],
   ['Network',  [['./peers', 'peers', 'Peers on the seed']]],
   ['Money',    [['./fleet', 'fleet', 'Fleet balances'],
                 ['./payments', 'payments', 'Payment rails']]],
@@ -379,14 +395,27 @@ const identTag = (mine, label) => mine
   ? `<span class="tag ${isPayment(label) ? 'pay' : 'you'}">${esc(label)}</span>`
   : '<span class="tag other">not in your records</span>';
 
-/** Freshness of the collector snapshot. Unknown-shaped: no timestamp is
- *  reported as "unknown", never as "fresh". */
-function snapshotAge(st) {
-  const iso = st.at || null;
-  if (!iso) return { text: 'no snapshot timestamp', stale: true };
-  const ms = Date.now() - Date.parse(iso);
-  if (!Number.isFinite(ms)) return { text: `unparseable timestamp ${iso}`, stale: true };
-  const s = Math.floor(ms / 1000);
+/** One census table row. The pool is a single entity here on purpose — its
+ *  real workers live on ./pool, not in this table. */
+const censusCells = r => r.pool
+  ? `<td><a href="./pool"><b>Mining pool</b></a> <span class="muted">(split coinbase — workers on the pool page)</span></td>
+     <td><span class="tag pay">POOL</span></td>`
+  : `<td class="mono"><a href="./address?a=${encodeURIComponent(r.address)}">${esc(r.address)}</a></td>
+     <td>${identTag(r.mine, r.label)}</td>`;
+
+/** Freshness of one collector snapshot. Takes that snapshot's OWN timestamp —
+ *  epoch seconds, ISO, or "YYYY-MM-DD HH:MM UTC" — never the state file's
+ *  global one, because several collectors share the file and the freshest
+ *  would mask a dead one. Unknown-shaped: no timestamp is reported as
+ *  "unknown", never as "fresh". */
+function snapshotAge(t) {
+  if (t == null || t === '') return { text: 'no snapshot timestamp', stale: true };
+  const ms = typeof t === 'number' ? t * 1000
+    : Date.parse(String(t).replace(/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})(:\d{2})? UTC$/, '$1T$2$3Z')
+        .replace(/T(\d{2}:\d{2})Z$/, 'T$1:00Z'));
+  const age = Date.now() - ms;
+  if (!Number.isFinite(age)) return { text: `unparseable timestamp ${t}`, stale: true };
+  const s = Math.floor(age / 1000);
   return { text: `collected ${dur(s)} ago`, stale: s > 15 * 60, sec: s };
 }
 
@@ -394,7 +423,9 @@ function snapshotAge(st) {
 async function dashboardPage() {
   const [c, ce, fl] = await Promise.all([chain(), census(200), fleetBalances().catch(() => null)]);
   const st = readState();
-  const age = snapshotAge(st);
+  const age = snapshotAge(st.peers?.at ?? st.at);
+  const pool = st.pool || null;
+  const poolAge = pool ? snapshotAge(pool.at) : null;
 
   const health = c.status === 'ok' && c.blocksUnwound === 0
     ? '<span class="ok">healthy</span>' : `<span class="bad">${esc(c.status)} · unwound ${c.blocksUnwound}</span>`;
@@ -405,8 +436,8 @@ async function dashboardPage() {
   const mp = st.mempoolCount ?? c.mempool?.tx_count;   // unknown stays unknown
 
   const topMiners = ce.rows.slice(0, 6).map(r => `<tr>
-      <td>${addrCell(r.address)}</td>
-      <td>${identTag(r.mine, r.label)}</td>
+      ${r.pool ? '<td><a href="./pool"><b>Mining pool</b></a></td><td><span class="tag pay">POOL</span></td>'
+               : `<td>${addrCell(r.address)}</td><td>${identTag(r.mine, r.label)}</td>`}
       <td class="num">${r.blocks}</td>
       <td class="num">${(r.share * 100).toFixed(1)}%</td>
     </tr>`).join('');
@@ -430,17 +461,28 @@ async function dashboardPage() {
     <div class="card"><div class="k">Network hashrate</div><div class="v">${c.hashrate ? Math.round(c.hashrate).toLocaleString() : '—'}<span style="font-size:14px;color:var(--dim)"> H/s</span></div><div class="s">from observed spacing</div></div>
     <div class="card"><div class="k">Block spacing</div><div class="v">${c.medianSpacing ? dur(c.medianSpacing) : '—'}</div><div class="s">median · mean ${dur(c.meanSpacing)} · target 10m</div></div>
     <div class="card"><div class="k">Difficulty</div><div class="v" style="font-size:18px">${c.difficulty ? c.difficulty.toExponential(4) : '—'}</div><div class="s">retargets ${c.lwmaActive ? 'every block' : 'every 2016'}</div></div>
-    <div class="card"><div class="k">Your share of blocks</div><div class="v">${yoursPct.toFixed(0)}%</div>
+    <div class="card"><div class="k">Your solo blocks</div><div class="v">${yoursPct.toFixed(0)}%</div>
       <div class="bar"><i style="width:${Math.min(100, yoursPct).toFixed(1)}%"></i></div>
-      <div class="s">${ce.yours} of ${ce.total} last ${ce.blocksRead}</div></div>
+      <div class="s">${ce.yours} of ${ce.total} last ${ce.blocksRead} · pool work not included</div></div>
   </div>
 
   <div class="panel">
     <a class="more" href="./census">full census →</a>
-    <h2>Top payout addresses — last ${ce.blocksRead} blocks</h2>
-    <table><thead><tr><th>Payout address</th><th>Identified</th><th class="num">Blocks</th><th class="num">Share</th></tr></thead>
+    <h2>Who won the blocks — last ${ce.blocksRead}</h2>
+    <table><thead><tr><th>Winner</th><th>Identified</th><th class="num">Blocks</th><th class="num">Share</th></tr></thead>
     <tbody>${topMiners}</tbody></table>
-    <div class="note">${ce.distinct} distinct payout addresses in the window — a <b>proxy</b>, not a miner count. Details on the census page.</div>
+    <div class="note">${ce.distinct} distinct solo payout addresses plus the pool as one entity — a <b>proxy</b>, not a miner count. Details on the census page.</div>
+  </div>
+
+  <div class="panel">
+    <a class="more" href="./pool">pool miners →</a>
+    <h2>Mining pool</h2>
+    ${pool ? `<p style="margin:0">${pool.connectedMiners ?? '—'} workers connected ·
+       ${pool.poolHashrate != null ? Math.round(pool.poolHashrate).toLocaleString() + ' H/s' : '—'}
+       ${pool.poolHashrate && pool.networkHashrate ? ` (${(pool.poolHashrate / pool.networkHashrate * 100).toFixed(0)}% of network)` : ''}
+       · ${pool.blocks?.found24h ?? '—'} blocks in 24 h · fee ${pool.feePercent ?? '—'}%</p>
+       <p class="muted" style="margin:6px 0 0">${poolAge.stale ? `<span class="warn">⚠ snapshot ${esc(poolAge.text)} — the collector on the pool host may be down</span>` : esc(poolAge.text)}</p>`
+      : '<p class="muted">No pool snapshot yet. The collector on the pool host posts one every few minutes.</p>'}
   </div>
 
   <div class="panel">
@@ -466,27 +508,29 @@ async function censusPage(url) {
   const p = Math.min(intp(url.searchParams.get('p'), 1), pages);
   const rows = ce.rows.slice((p - 1) * PER, p * PER).map((r, i) => `<tr>
       <td class="num muted">${(p - 1) * PER + i + 1}</td>
-      <td class="mono"><a href="./address?a=${encodeURIComponent(r.address)}">${esc(r.address)}</a></td>
-      <td>${identTag(r.mine, r.label)}</td>
+      ${censusCells(r)}
       <td class="num">${r.blocks}</td>
       <td class="num">${(r.share * 100).toFixed(1)}%</td>
     </tr>`).join('');
   const winSel = [100, 200, 500].map(n => n === w ? `<span class="cur" style="padding:4px 10px;border-radius:7px;background:var(--accent);color:#0d0f14;font-weight:700">${n}</span>`
     : `<a style="padding:4px 10px" href="./census?w=${n}">${n}</a>`).join(' ');
 
-  return shell('census', 'Miner census', `${ce.distinct} distinct payout addresses over the last ${ce.blocksRead} blocks · you: ${ce.yours} of ${ce.total}`, `
+  return shell('census', 'Miner census', `${ce.distinct} distinct solo winners + the pool (${ce.poolBlocks} blocks) over the last ${ce.blocksRead} · your solo: ${ce.yours} of ${ce.total}`, `
   <div class="panel">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:8px">
-      <h2 style="margin:0">Payout addresses</h2>
+      <h2 style="margin:0">Who won the blocks</h2>
       <div class="muted" style="font-size:13px">window: ${winSel} blocks</div>
     </div>
-    <table><thead><tr><th class="num">#</th><th>Payout address</th><th>Identified</th><th class="num">Blocks</th><th class="num">Share</th></tr></thead>
+    <table><thead><tr><th class="num">#</th><th>Winner</th><th>Identified</th><th class="num">Blocks</th><th class="num">Share</th></tr></thead>
     <tbody>${rows || '<tr><td colspan="5" class="muted">nothing in this window</td></tr>'}</tbody></table>
     ${pager(`./census?w=${w}`, p, pages)}
-    <div class="note"><b>This is a proxy, not a miner count.</b>
-    A blockchain records who was <i>paid</i>, not who was mining: one operator can rotate a fresh address every
-    block, a pool of a hundred looks like one address, and anyone who found nothing in this window is invisible.
-    Read it as a floor on the number of independent participants, never as a total.</div>
+    <div class="note"><b>Every block is counted once.</b> A split coinbase — one paying several addresses — is a
+    pool block and is attributed to the <a href="./pool">pool</a> as a single entity, because those outputs are
+    the pool's payout run, not twenty separate wins. The pool's real workers, with live hashrates from its share
+    log, are on the pool page.<br><br>
+    <b>The solo rows are still a proxy, not a miner count.</b> A blockchain records who was <i>paid</i>, not who
+    was mining: one operator can rotate a fresh address every block, and anyone who found nothing in this window
+    is invisible. Read it as a floor on the number of independent solo participants, never as a total.</div>
   </div>`);
 }
 
@@ -497,7 +541,7 @@ async function peersPage(url) {
     return shell('peers', 'Peers on the seed', null,
       '<div class="panel"><p class="muted">No peer snapshot yet. The collector on the seed posts one every few minutes.</p></div>');
   }
-  const age = snapshotAge(st);
+  const age = snapshotAge(st.peers?.at ?? st.at);
   const c = await chain().catch(() => null);
   // Labels live in config, not in the collector: the seed should not need to
   // know which IP is whose, and the map changes far more often than the script.
@@ -523,6 +567,63 @@ async function peersPage(url) {
     <div class="note">A peer is a <b>node</b>, not a miner, and nothing here links an IP to a block it may have
     mined — the chain does not record that. Several connections from one IP usually means several nodes behind
     one NAT, not several miners. Collected ${esc(peers.at || 'unknown')}.</div>
+  </div>`);
+}
+
+async function poolPage(url) {
+  const st = readState();
+  const pool = st.pool || null;
+  if (!pool) {
+    return shell('pool', 'Pool miners', null,
+      '<div class="panel"><p class="muted">No pool snapshot yet. The collector on the pool host posts one every few minutes.</p></div>');
+  }
+  const age = snapshotAge(pool.at);
+  const now = Math.floor(Date.now() / 1000);
+  const hr = n => n == null ? '—'
+    : n >= 1e6 ? `${(n / 1e6).toFixed(2)} MH/s`
+    : n >= 1e3 ? `${(n / 1e3).toFixed(1)} kH/s`
+    : `${Math.round(n)} H/s`;
+  const netPct = pool.poolHashrate && pool.networkHashrate
+    ? (pool.poolHashrate / pool.networkHashrate * 100) : null;
+  const b = pool.blocks || {};
+
+  const all = pool.miners || [];
+  const pages = Math.max(1, Math.ceil(all.length / PER));
+  const p = Math.min(intp(url.searchParams.get('p'), 1), pages);
+  const rows = all.slice((p - 1) * PER, p * PER).map((m, i) => {
+    const lastAge = m.lastShareAt ? now - m.lastShareAt : null;
+    const active = lastAge != null && lastAge < 10 * 60;
+    return `<tr>
+      <td class="num muted">${(p - 1) * PER + i + 1}</td>
+      <td class="mono"><a href="./address?a=${encodeURIComponent(m.address)}">${esc(m.address)}</a>
+          ${FLEET[m.address] ? `<span class="tag you">${esc(FLEET[m.address])}</span>` : ''}</td>
+      <td class="num">${(m.share24h * 100).toFixed(1)}%</td>
+      <td class="num">${m.share24h && pool.poolHashrate ? hr(m.share24h * pool.poolHashrate) : '—'}</td>
+      <td class="num">${m.shares24h.toLocaleString()}</td>
+      <td class="num ${active ? 'ok' : ''}">${lastAge == null ? '—' : dur(lastAge) + ' ago'}</td>
+      <td class="num">${m.blocksFound || ''}</td>
+      <td class="num">${pcn(m.paidSat / 1e8)}</td>
+    </tr>`;
+  }).join('');
+
+  return shell('pool', 'Pool miners', `the pool's own share log — the chain cannot show this`, `
+  ${age.stale ? `<div class="note warn" style="margin:0 0 18px"><b>Snapshot is stale</b> — ${esc(age.text)}. The collector on the pool host normally posts every few minutes; these numbers describe the pool as of then, not now.</div>` : ''}
+  <div class="grid">
+    <div class="card"><div class="k">Workers connected</div><div class="v">${pool.connectedMiners ?? '—'}</div><div class="s">${all.length} on record this week</div></div>
+    <div class="card"><div class="k">Pool hashrate</div><div class="v" style="font-size:20px">${hr(pool.poolHashrate)}</div><div class="s">${netPct != null ? `${netPct.toFixed(0)}% of the network` : 'network share unknown'}</div></div>
+    <div class="card"><div class="k">Blocks found</div><div class="v">${(b.mature ?? 0) + (b.pending ?? 0)}</div><div class="s">${b.pending ?? 0} maturing · ${b.orphaned ?? 0} orphaned · ${b.found24h ?? '—'} in 24 h</div></div>
+    <div class="card"><div class="k">Pool fee</div><div class="v">${pool.feePercent ?? '—'}%</div><div class="s">PPLNS · paid in the coinbase</div></div>
+  </div>
+  <div class="panel">
+    <h2>Workers</h2>
+    <table><thead><tr><th class="num">#</th><th>Payout address</th><th class="num">24 h share</th><th class="num">≈ Hashrate</th><th class="num">Shares 24 h</th><th class="num">Last share</th><th class="num">Blocks</th><th class="num">Paid PCN</th></tr></thead>
+    <tbody>${rows || '<tr><td colspan="8" class="muted">no workers on record</td></tr>'}</tbody></table>
+    ${pager('./pool', p, pages)}
+    <div class="note">These are the pool's <b>real workers</b>, read from its share log — exactly what the chain
+    cannot show, because every pool block's coinbase pays the whole recent window at once. ≈Hashrate is the
+    worker's 24 h share of work applied to the pool's current rate, so a machine that just joined or just left
+    reads low for a while. "Paid" sums the coinbase outputs this pool has computed for that address. Anyone
+    listed here also appears in the fleet or census pages only if they mine solo on the side.</div>
   </div>`);
 }
 
@@ -567,6 +668,7 @@ async function blocksPage(url) {
   const rows = d.blocks.map(b => {
     const minerCell = b.miner === undefined ? '<span class="muted">unreadable</span>'
       : b.miner === null ? '—'
+      : b.poolPaid ? '<a href="./pool"><b>Mining pool</b></a> <span class="tag pay">POOL</span>'
       : `${addrCell(b.miner)} ${FLEET[b.miner] ? `<span class="tag ${isPayment(FLEET[b.miner]) ? 'pay' : 'you'}">${esc(FLEET[b.miner])}</span>` : ''}`;
     const reward = b.subsidy_pcn != null ? pcn(Number(b.subsidy_pcn) + Number(b.total_fees_pcn || 0)) : '—';
     return `<tr>
@@ -727,6 +829,7 @@ createServer(async (req, res) => {
 
     if (path === '/')         return send(200, 'text/html', await dashboardPage());
     if (path === '/census')   return send(200, 'text/html', await censusPage(url));
+    if (path === '/pool')     return send(200, 'text/html', await poolPage(url));
     if (path === '/peers')    return send(200, 'text/html', await peersPage(url));
     if (path === '/fleet')    return send(200, 'text/html', await moneyPage(url, false));
     if (path === '/payments') return send(200, 'text/html', await moneyPage(url, true));

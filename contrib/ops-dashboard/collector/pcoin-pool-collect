@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Collect pool facts -- the REAL workers, their shares, and the blocks the pool
+# found -- and post them to the ops dashboard.
+#
+# Runs ON the pool host: the pool API is loopback-bound and the SQLite store is
+# readable only by root and the pool's own user. Same shape as
+# pcoin-ops-collect on the seed: the box that owns the data pushes a summary
+# out; nothing opens inward.
+#
+# Why the dashboard needs this at all: pool blocks pay every recent worker
+# directly in the coinbase, so the CHAIN shows the payout split but not who was
+# hashing, at what rate, or when they last submitted a share. Only the pool's
+# share log knows that.
+set -euo pipefail
+
+ENDPOINT="${OPS_ENDPOINT:-https://explorer.pc.am/admin/collect}"
+TOKEN_FILE="/etc/pcoin-ops-token"
+[ -r "$TOKEN_FILE" ] || { echo "no token at $TOKEN_FILE" >&2; exit 1; }
+TOKEN="$(cat "$TOKEN_FILE")"
+
+# Unknown stays unknown: if the pool API is down its fields arrive as null,
+# never as zero.
+API="$(curl -sf --max-time 10 http://127.0.0.1:8790/api/pools/pcoin || echo '{}')"
+
+PAYLOAD="$(API="$API" python3 - <<'PY'
+import json, os, sqlite3, time
+
+api = (json.loads(os.environ["API"] or "{}").get("pool")) or {}
+now = int(time.time())
+day_ms = (now - 86400) * 1000
+
+db = sqlite3.connect("file:/opt/pcoin-pool/pool.sqlite?mode=ro", uri=True)
+db.row_factory = sqlite3.Row
+
+shares = {r["miner"]: r for r in db.execute(
+    "SELECT miner, COUNT(*) AS n, SUM(weight) AS w, MAX(at) AS last "
+    "FROM shares WHERE at > ? GROUP BY miner", (day_ms,))}
+week_last = {r["miner"]: r["last"] for r in db.execute(
+    "SELECT miner, MAX(at) AS last FROM shares WHERE at > ? GROUP BY miner",
+    ((now - 7 * 86400) * 1000,))}
+found = {r["finder"]: r["n"] for r in db.execute(
+    "SELECT finder, COUNT(*) AS n FROM blocks GROUP BY finder")}
+paid = {r["miner"]: r["s"] for r in db.execute(
+    "SELECT miner, SUM(amount) AS s FROM payouts GROUP BY miner")}
+
+# Anyone with a share this week, a block ever, or a payout ever. A worker that
+# went quiet yesterday must not vanish from the operator's view.
+addrs = set(week_last) | set(found) | set(paid)
+total_w = sum((r["w"] or 0) for r in shares.values()) or 1
+miners = []
+for a in addrs:
+    s = shares.get(a)
+    last_ms = (s["last"] if s else week_last.get(a)) or None
+    miners.append({
+        "address": a,
+        "shares24h": s["n"] if s else 0,
+        "weight24h": (s["w"] or 0) if s else 0,
+        "share24h": ((s["w"] or 0) / total_w) if s else 0,
+        "lastShareAt": int(last_ms / 1000) if last_ms else None,
+        "blocksFound": found.get(a, 0),
+        "paidSat": int(paid.get(a) or 0),
+    })
+miners.sort(key=lambda m: -m["weight24h"])
+
+states = {r[0]: r[1] for r in db.execute("SELECT state, COUNT(*) FROM blocks GROUP BY state")}
+heights = [r[0] for r in db.execute("SELECT height FROM blocks ORDER BY height DESC LIMIT 500")]
+found24 = db.execute("SELECT COUNT(*) FROM blocks WHERE found_at > ?", (day_ms,)).fetchone()[0]
+
+cfg = json.load(open("/opt/pcoin-pool/pool.config.json"))
+ps = api.get("poolStats") or {}
+ns = api.get("networkStats") or {}
+print(json.dumps({"pool": {
+    "at": now,
+    "address": cfg.get("poolAddress"),
+    "feePercent": cfg.get("feePercent"),
+    "connectedMiners": ps.get("connectedMiners"),
+    "poolHashrate": ps.get("poolHashrate"),
+    "sharesPerSecond": ps.get("sharesPerSecond"),
+    "networkHashrate": ns.get("networkHashrate"),
+    "blocks": {
+        "mature": states.get("mature", 0),
+        "pending": states.get("pending", 0),
+        "orphaned": states.get("orphaned", 0),
+        "found24h": found24,
+        "heights": heights,
+    },
+    "miners": miners[:200],
+}}))
+PY
+)"
+
+curl -sf --max-time 25 -X POST "$ENDPOINT" \
+     -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     --data "$PAYLOAD" >/dev/null
+
+echo "posted $(printf '%s' "$PAYLOAD" | python3 -c 'import json,sys;d=json.load(sys.stdin)["pool"];print(len(d["miners"]),"miners,",d["blocks"]["mature"]+d["blocks"]["pending"],"blocks,",d["connectedMiners"],"connected")')"
