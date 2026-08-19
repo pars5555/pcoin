@@ -740,6 +740,29 @@ class MinerService : Service() {
      */
     private fun isSyncing(stats: NodeController.Stats): Boolean {
         if (stats.height < 0 || stats.headers < 0) return true
+        // ZERO PEERS IS NOT "IN SYNC", IT IS "IN SYNC WITH NOTHING".
+        //
+        // Without this, a fresh install that cannot reach any seed mines a
+        // private chain from block 1 while the screen says "Mining". At height 0
+        // headers is also 0, so the tolerance test below passes trivially, and
+        // after SYNC_GRACE_MS the initialBlockDownload term stops counting -- so
+        // the gate opens on a node that has never spoken to anybody. Every block
+        // it then finds is worth nothing, and it is self-reinforcing: its own
+        // first block makes the tip look recent, which clears the node's IBD
+        // latch permanently.
+        //
+        // That is not a hypothetical. Every automatic way this app can find a
+        // first peer belongs to us -- one DNS name, the fixed seeds, and the two
+        // addnode entries NodeController writes, which resolve to a single
+        // machine. There is no in-app way to add a peer by hand, so an outage on
+        // our side on someone's FIRST run is exactly when this fires.
+        //
+        // The count is already here: NodeController reads getconnectioncount and
+        // the notification already displays it. The gate simply never asked.
+        // A negative value means the reading FAILED, and an unreadable peer count
+        // is not permission to mine either -- both are "do not know", and both
+        // resolve to "keep waiting".
+        if (stats.peers <= 0) return true
         // Tolerate being a couple of blocks behind. `height == headers` is far
         // too strict on a fast chain: PCoin is currently producing a block
         // every ~6 s, so a node at the tip is momentarily "behind" almost
