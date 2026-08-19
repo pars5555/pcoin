@@ -117,9 +117,9 @@ if not hs:
 lag = int(os.environ.get("PEER_LAG", "10"))
 behind = sum(1 for x in hs if x < h - lag)
 ahead  = sum(1 for x in hs if x > h + 2)
-print(len(hs), max(hs) - min(hs), behind, ahead)
+print(len(hs), max(hs) - min(hs), behind, ahead, max(hs))
 ' 2>/dev/null)
-read -r NPEER SPREAD BEHIND AHEAD <<< "${PEERSTAT:-0 0 0 0}"
+read -r NPEER SPREAD BEHIND AHEAD MAXH <<< "${PEERSTAT:-0 0 0 0 0}"
 
 # A peer below our tip is usually just syncing, and a node that joins mid-run
 # will always look "stuck" for one reading. One observation resolves nothing --
@@ -155,8 +155,26 @@ fi
 # actionable.
 if [ "${BEHIND:-0}" -gt 0 ] && [ "${PREV_BEHIND:-0}" -gt 0 ]; then
     HALF=$(( ${NPEER:-0} / 2 ))
-    if [ "${BEHIND:-0}" -gt "$HALF" ] && [ "${NPEER:-0}" -gt 3 ]; then
+    if [ "${BEHIND:-0}" -gt "$HALF" ] && [ "${NPEER:-0}" -gt 3 ] \
+             && { [ "${AHEAD:-0}" -gt 0 ] || [ "${MAXH:-0}" -gt "${HEIGHT:-0}" ]; }; then
         bad "$BEHIND of ${NPEER} peers are behind after two checks -- more than half the network disagrees with this node"
+        elif [ "${BEHIND:-0}" -gt "$HALF" ] && [ "${NPEER:-0}" -gt 3 ]; then
+            # Most peers behind us, but NOBODY is ahead and our tip is the highest
+            # header any peer holds. That is not a fork -- it is proof of the
+            # opposite. Had we split off, the majority would be building somewhere
+            # we cannot see, and at least one peer would be ahead of us.
+            #
+            # This fired every ten minutes on 2026-08-19 saying "more than half the
+            # network disagrees with this node", while all four of our own nodes AND
+            # the peers' own maximum agreed on the same hash at the same height.
+            # What it was really seeing: long-lived INBOUND connections from
+            # third-party nodes that had stalled days earlier -- one stuck 181 blocks
+            # back on a connection ten days old. Real, worth knowing, and not ours to
+            # fix, which is exactly the case the comment above says must NOT fail the
+            # unit. It failed it four times in half an hour instead.
+            say "note: $BEHIND of ${NPEER} peers are >$PEER_LAG blocks behind -- but 0 are"
+            say "      ahead and our tip ($HEIGHT) is the highest header any peer holds,"
+            say "      so this node is NOT the odd one out. Stalled third-party nodes."
     else
         say "note: $BEHIND of ${NPEER} peer(s) persistently >$PEER_LAG blocks behind."
         say "      Those are other operators' nodes. Nothing to do here, but they are"
