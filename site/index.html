@@ -1192,8 +1192,10 @@ sudo systemctl stop pcoin-miner
           ours</b> — found <b>71%</b> of them (95% confidence 64–78%). A miner holding more than half of
           the hashrate can reorganise recent blocks and reverse a payment that already looked settled.
           Nothing has gone wrong: there have been no reorgs and the supply is exact. But the capability
-          is real, so every service that accepts PCN now waits <b>100 confirmations</b> before crediting
-          a deposit. Recompute it yourself from the
+          is real, and against a miner holding a majority no confirmation depth is provably safe —
+          waiting longer buys time and cost, not certainty. If you are accepting PCN for anything that
+          matters, wait deeper than you would on a chain with spread-out hashrate, and watch for
+          reorgs rather than trusting depth alone. Recompute the share yourself from the
           <a href="https://explorer.pc.am" rel="noopener">public explorer</a> — every coinbase is on
           the chain — and use a window of several hundred blocks, because 60 blocks is mostly sampling
           noise. <b>More independent miners is the only thing that fixes this.</b></p>
