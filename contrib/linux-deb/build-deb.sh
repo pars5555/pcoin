@@ -43,15 +43,37 @@ ln -s /opt/pcoin/bin/pcoin-mine  "$OUT/pkg/usr/bin/pcoin-mine"
 # with "libevent_extra-2.1.so.7: cannot open shared object file". Ubuntu 26.04
 # ships libevent_core only, so it hit this immediately.
 #
-# The alternatives (A | B) cover the 64-bit time_t rename: Debian 12 and older
-# Ubuntu use libevent-*-2.1-7, newer Ubuntu uses the -7t64 names.
-#
-# Sanity check the assumption rather than trusting it: if the binary stops
-# needing libevent one day (a static build), this list should shrink too.
+# It happened AGAIN in v1.3.0 with libsqlite3-0, libstdc++6 and libgcc-s1
+# undeclared, so printing the list below is no longer enough on its own -- the
+# Depends line is now CHECKED against it further down, and a mismatch fails the
+# build. See soname_pkg() and the enforcement block after the glibc floor.
 if command -v objdump >/dev/null 2>&1; then
     echo "shared libraries the binary actually needs:"
     objdump -p "$SRC/bitcoind" | awk '/NEEDED/ {print "  " $2}'
 fi
+
+# soname -> Debian package. This is the map the Depends line is CHECKED against
+# below; printing the NEEDED list was not enough, because printing something
+# nobody diffs is the same as not knowing it. v1.3.0 shipped without
+# libsqlite3-0, libstdc++6 or libgcc-s1 declared: the package installed cleanly
+# on Ubuntu 24.04 and then every start died with
+#   "libsqlite3.so.0: cannot open shared object file"
+# which is exactly the libevent incident from CLAUDE.md 7.12, wearing a
+# different library's clothes. Adding a soname here without adding its package
+# to Depends now fails the build instead of shipping.
+soname_pkg() {
+    case "$1" in
+        libevent_core-2.1.so.7)     echo "libevent-core-2.1-7" ;;
+        libevent_extra-2.1.so.7)    echo "libevent-extra-2.1-7" ;;
+        libevent_pthreads-2.1.so.7) echo "libevent-pthreads-2.1-7" ;;
+        libsqlite3.so.0)            echo "libsqlite3-0" ;;
+        libstdc++.so.6)             echo "libstdc++6" ;;
+        libgcc_s.so.1)              echo "libgcc-s1" ;;
+        libm.so.6|libc.so.6|ld-linux-x86-64.so.2|libpthread.so.0|libdl.so.2|librt.so.1)
+                                    echo "libc6" ;;
+        *)                          echo "" ;;
+    esac
+}
 
 # The libc floor is READ FROM THE BINARY, not written down here.
 #
@@ -72,6 +94,43 @@ if [ -z "$LIBC" ]; then
 fi
 echo "glibc floor read from the binary: $LIBC"
 
+# The (A | B) alternatives cover the 64-bit time_t rename: Debian 12 and older
+# Ubuntu use libevent-*-2.1-7, newer Ubuntu uses the -7t64 names.
+#
+# adduser is here because the postinst calls it and Debian 13 minimal no longer
+# ships it. The postinst falls back to useradd, but a declared dependency is
+# what makes the good path happen under apt.
+DEPENDS="libc6 (>= $LIBC), adduser, libsqlite3-0, libstdc++6, libgcc-s1"
+DEPENDS="$DEPENDS, libevent-core-2.1-7t64 | libevent-core-2.1-7"
+DEPENDS="$DEPENDS, libevent-extra-2.1-7t64 | libevent-extra-2.1-7"
+DEPENDS="$DEPENDS, libevent-pthreads-2.1-7t64 | libevent-pthreads-2.1-7"
+
+# ENFORCE the map: every soname the binaries actually need must resolve to a
+# package that appears in Depends. This is the check that would have caught
+# both shipped bugs -- the missing libevent modules and the missing
+# libsqlite3-0 -- before a user ever saw them. It is deliberately a build
+# FAILURE, not a warning: a warning in build output is a warning nobody reads.
+if command -v objdump >/dev/null 2>&1; then
+    MISSING=""
+    for BIN in bitcoind bitcoin-cli; do
+        [ -f "$SRC/$BIN" ] || continue
+        for SO in $(objdump -p "$SRC/$BIN" | awk '/NEEDED/ {print $2}'); do
+            PKG=$(soname_pkg "$SO")
+            if [ -z "$PKG" ]; then
+                MISSING="$MISSING\n  $SO (from $BIN) -- unknown soname, add it to soname_pkg()"
+            elif ! printf '%s' "$DEPENDS" | grep -q -- "$PKG"; then
+                MISSING="$MISSING\n  $SO (from $BIN) -- needs '$PKG' in Depends"
+            fi
+        done
+    done
+    if [ -n "$MISSING" ]; then
+        printf 'REFUSING TO BUILD: undeclared shared-library dependencies:%b\n' "$MISSING" >&2
+        echo "An install that succeeds proves the files were copied, nothing more." >&2
+        exit 1
+    fi
+    echo "dependency check: every NEEDED soname is covered by Depends"
+fi
+
 SIZE=$(du -sk "$OUT/pkg" | cut -f1)
 
 cat > "$OUT/pkg/DEBIAN/control" <<EOF
@@ -82,7 +141,7 @@ Priority: optional
 Architecture: amd64
 Maintainer: PCoin Project <pcoin@pc.am>
 Installed-Size: $SIZE
-Depends: libc6 (>= $LIBC), libevent-core-2.1-7t64 | libevent-core-2.1-7, libevent-extra-2.1-7t64 | libevent-extra-2.1-7, libevent-pthreads-2.1-7t64 | libevent-pthreads-2.1-7
+Depends: $DEPENDS
 Homepage: https://pc.am
 Description: PCoin full node and CLI
  PCoin (PCN) is an independent Layer-1 blockchain: Bitcoin's economics with
@@ -160,8 +219,22 @@ cat > "$OUT/pkg/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
 set -e
 if ! getent passwd pcoin >/dev/null; then
-    adduser --system --group --home /var/lib/pcoin --no-create-home \
-            --gecos "PCoin node" pcoin >/dev/null
+    # adduser is Priority:important, NOT essential, and Debian 13 (trixie)
+    # minimal installs and every debian:13 container ship without it. The
+    # package declares Depends: adduser so apt pulls it in -- but `dpkg -i`
+    # does not resolve dependencies, and install.sh falls back to exactly that.
+    # Without this branch the postinst died with "adduser: not found" (exit
+    # 127) AFTER the files were unpacked, leaving the package half-configured.
+    # useradd/groupadd come from `passwd`, which is Priority:required, so they
+    # are always present.
+    if command -v adduser >/dev/null 2>&1; then
+        adduser --system --group --home /var/lib/pcoin --no-create-home \
+                --gecos "PCoin node" pcoin >/dev/null
+    else
+        getent group pcoin >/dev/null || groupadd --system pcoin
+        useradd --system --gid pcoin --home-dir /var/lib/pcoin --no-create-home \
+                --shell /usr/sbin/nologin --comment "PCoin node" pcoin
+    fi
 fi
 mkdir -p /var/lib/pcoin
 chown pcoin:pcoin /var/lib/pcoin

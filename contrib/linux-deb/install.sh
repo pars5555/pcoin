@@ -71,6 +71,33 @@ fi
 printf '  %schecksum verified%s\n\n' "$G" "$N"
 
 printf '%sInstalling...%s\n' "$B" "$N"
+# SHIM for what the published v1.3.0 .deb under-declares. Two separate bugs,
+# both found by installing into a container that had never seen PCoin:
+#
+#   adduser       -- called by the postinst, not declared. Debian 13 minimal and
+#                    every debian:13 container ship without it, so the install
+#                    unpacked the files and then died "adduser: not found"
+#                    (exit 127), leaving the package half-configured.
+#   libsqlite3-0  -- linked by bitcoind, not declared. On Ubuntu 24.04 the
+#                    package installed CLEANLY and then every start died with
+#                    "libsqlite3.so.0: cannot open shared object file".
+#                    libstdc++6/libgcc-s1 are in the same boat but are present
+#                    on essentially every real system.
+#
+# Both are fixed in build-deb.sh, which now REFUSES to build if a NEEDED soname
+# is not covered by Depends. But that .deb is already published, and this script
+# is served from pc.am rather than the release, so it can repair the broken
+# install for everyone TODAY. Remove this block once no supported release
+# predates the fix.
+if command -v apt-get >/dev/null 2>&1; then
+    SHIM=""
+    command -v adduser >/dev/null 2>&1 || SHIM="$SHIM adduser"
+    ldconfig -p 2>/dev/null | grep -q 'libsqlite3\.so\.0' || SHIM="$SHIM libsqlite3-0"
+    if [ -n "$SHIM" ]; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -q $SHIM >/dev/null 2>&1 || true
+    fi
+fi
+
 # apt-get resolves the libevent dependencies; plain dpkg -i would not.
 if command -v apt-get >/dev/null 2>&1; then
     # NEEDRESTART_SUSPEND silences Ubuntu's "services being deferred" wall of
