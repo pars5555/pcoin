@@ -35,15 +35,21 @@ const SCRYPT_MAXMEM = 256 * 1024 * 1024;
 function ask(question) {
   return new Promise((resolve) => {
     const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
-    const NL = String.fromCharCode(10);
-    let muted = false;
+    // Echo suppression that still SHOWS the prompt. An earlier version wrote the
+    // prompt itself and then muted everything, but readline redraws the line on
+    // the first keypress -- and the mute swallowed the redraw, erasing the
+    // prompt and leaving the script looking dead while it waited for input.
+    // Re-emitting `question` on redraw is what pcoin-seed-vault.mjs does, and
+    // that one has been driven by hand plenty of times.
     rl._writeToOutput = function (str) {
-      if (!muted) { rl.output.write(str); return; }
-      if (str.includes(NL)) rl.output.write(NL);
+      if (str.includes(question)) rl.output.write(question);
+      else rl.output.write('');
     };
-    rl.output.write(question);
-    muted = true;
-    rl.question('', (a) => { muted = false; rl.close(); resolve(a); });
+    rl.question(question, (a) => {
+      rl.close();
+      process.stdout.write('\n');
+      resolve(a);
+    });
   });
 }
 
