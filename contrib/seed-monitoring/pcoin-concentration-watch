@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+"""Alert when one party is finding too many of the blocks.
+
+WHY THIS EXISTS. On 2026-08-20 a single outside address went from mining
+nothing to finding ~70% of blocks in about a day, and it was found BY HAND,
+days late, and only because somebody went back to re-check a figure that had
+already been published wrongly. Nothing on any box was watching the one number
+that decides whether the chain can be reorganised at will.
+
+Deposit crediting on every PCN service gates on confirmations, and confirmations
+are worthless against a majority miner -- they buy time, not safety. So the
+thing worth alerting on is not "was there a reorg" (by then the money is gone)
+but "is somebody in a position to cause one".
+
+HOW IT MEASURES. A pool block pays many addresses in its coinbase; a solo block
+pays one. That is the whole classifier, and it is read straight off the chain
+from the node this runs on -- no explorer, no third party, nothing to be lied to
+by. `getblock <hash> 2` carries the coinbase outputs, so one RPC per block.
+
+WINDOW SIZE IS THE WHOLE GAME. A 60-block window at p=0.5 has a standard error
+of ~6.5 points, so single readings swing +/-13 points at 95% confidence and look
+like trends when they are noise. Four consecutive 60-block readings taken during
+the incident read 50.0, 56.7, 41.7 and 53.3 -- all the same number. The default
+here is 300 blocks and it should not be lowered to make the script faster.
+
+The alert text always carries the window and the confidence interval, because a
+bare percentage invites exactly the over-reading that caused the original
+mistake.
+
+Usage:
+    pcoin-concentration-watch [--window N] [--warn PCT] [--crit PCT] [--dry-run]
+
+Exits 0 even when it alerts: this is a monitor, and a monitor that fails a
+timer unit just buries its own message.
+"""
+
+import argparse
+import collections
+import json
+import math
+import os
+import shutil
+import subprocess
+import sys
+
+CLI_CANDIDATES = [
+    ["/opt/pcoin/bin/bitcoin-cli", "-conf=/etc/pcoin/pcoin.conf"],
+    ["docker", "exec", "pcoin-seed", "bitcoin-cli"],
+    ["bitcoin-cli"],
+]
+NOTIFY = "/usr/local/bin/pcoin-notify"
+
+
+def find_cli():
+    """Pick whichever way this box talks to its node.
+
+    Seeds are inconsistent on purpose -- some run the node natively under
+    systemd, some in a container -- and hard-coding one shape is how a monitor
+    silently stops covering half the fleet.
+    """
+    for cand in CLI_CANDIDATES:
+        exe = cand[0]
+        if exe == "docker":
+            if not shutil.which("docker"):
+                continue
+        elif not (os.path.isfile(exe) or shutil.which(exe)):
+            continue
+        try:
+            subprocess.run(cand + ["getblockcount"], capture_output=True,
+                           timeout=20, check=True)
+            return cand
+        except Exception:
+            continue
+    return None
+
+
+def rpc(cli, *args):
+    r = subprocess.run(cli + list(args), capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or r.stdout).strip()[:200])
+    out = r.stdout.strip()
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        return out
+
+
+def classify(block):
+    """-> ('pool', None) or ('solo', address) or (None, None) if unreadable.
+
+    An unreadable block resolves NOTHING. It is not a solo block and it is not a
+    pool block; it is dropped from the denominator. Counting it either way would
+    move the very number this alert fires on.
+    """
+    txs = block.get("tx") or []
+    if not txs:
+        return None, None
+    cb = txs[0]
+    paying = []
+    for o in cb.get("vout") or []:
+        if float(o.get("value") or 0) <= 0:
+            continue  # the witness commitment is a zero-value OP_RETURN
+        spk = o.get("scriptPubKey") or {}
+        addr = spk.get("address")
+        if not addr:
+            addrs = spk.get("addresses") or []
+            addr = addrs[0] if addrs else None
+        paying.append(addr)
+    if not paying:
+        return None, None
+    if len(paying) >= 3:
+        return "pool", None
+    return "solo", paying[0]
+
+
+def ci95(k, n):
+    if not n:
+        return 0.0, 0.0, 0.0
+    p = k / float(n)
+    se = math.sqrt(p * (1 - p) / n)
+    return 100 * p, 100 * max(0.0, p - 1.96 * se), 100 * min(1.0, p + 1.96 * se)
+
+
+def notify(subject, body, dry):
+    if dry or not os.path.isfile(NOTIFY):
+        print("--- would alert ---\n%s\n%s" % (subject, body))
+        return
+    try:
+        subprocess.run([NOTIFY, subject, body], timeout=60)
+    except Exception as e:
+        print("notify failed: %s" % e, file=sys.stderr)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--window", type=int, default=300)
+    ap.add_argument("--warn", type=float, default=40.0)
+    ap.add_argument("--crit", type=float, default=50.0)
+    ap.add_argument("--dry-run", action="store_true")
+    a = ap.parse_args()
+
+    cli = find_cli()
+    if not cli:
+        # A monitor that cannot read the chain must say so, not report 0%.
+        print("no usable bitcoin-cli on this host", file=sys.stderr)
+        return 0
+
+    tip = int(rpc(cli, "getblockcount"))
+    lo = max(1, tip - a.window + 1)
+
+    pool = 0
+    solo = collections.Counter()
+    unreadable = 0
+    for h in range(lo, tip + 1):
+        try:
+            bh = rpc(cli, "getblockhash", str(h))
+            kind, addr = classify(rpc(cli, "getblock", bh, "2"))
+        except Exception:
+            kind, addr = None, None
+        if kind == "pool":
+            pool += 1
+        elif kind == "solo":
+            solo[addr] += 1
+        else:
+            unreadable += 1
+
+    n = pool + sum(solo.values())
+    if n < a.window * 0.8:
+        print("only %d/%d blocks readable -- refusing to judge" % (n, a.window),
+              file=sys.stderr)
+        return 0
+
+    top_addr, top_n = (solo.most_common(1) or [(None, 0)])[0]
+    tp, tlo, thi = ci95(top_n, n)
+    pp, plo, phi = ci95(pool, n)
+
+    line = ("window %d-%d (%d blocks): top solo %.1f%% [%.0f-%.0f] %s | pool %.1f%% [%.0f-%.0f]"
+            % (lo, tip, n, tp, tlo, thi, (top_addr or "-"), pp, plo, phi))
+    print(line)
+
+    # Alert on the CONFIDENCE INTERVAL, not the point estimate. Waiting for the
+    # midpoint to cross 50 means waiting until it is already comfortably past.
+    level = None
+    if tp >= a.crit or thi >= a.crit:
+        level = "CRITICAL" if tp >= a.crit else "WARNING"
+    elif tp >= a.warn:
+        level = "WARNING"
+
+    if level:
+        body = (
+            "One address is finding %.1f%% of blocks (95%% CI %.0f-%.0f%%),\n"
+            "measured over %d blocks, heights %d-%d.\n\n"
+            "  address: %s\n"
+            "  pool share over the same window: %.1f%%\n\n"
+            "A party above 50%% can reorganise recent blocks and reverse a payment\n"
+            "that already looked settled. Confirmation depth does not fix this --\n"
+            "it buys time, not safety.\n\n"
+            "Check before acting: this is one window, and concentration moves fast.\n"
+            "  https://explorer.pc.am"
+            % (tp, tlo, thi, n, lo, tip, top_addr or "?", pp)
+        )
+        notify("PCoin %s: hashrate concentration %.0f%%" % (level, tp), body, a.dry_run)
+
+    # pp, not pool: `pool` is a COUNT of blocks and a.crit is a PERCENTAGE.
+    # Comparing them fired this alert at 32.7% -- caught only because the alert
+    # body printed the real figure next to the word "majority" and the two
+    # disagreed. An alert that cries wolf gets muted, taking the real one with it.
+    if pp >= a.crit:
+        notify("PCoin WARNING: the pool holds %.0f%% of blocks" % pp,
+               "pool.pc.am found %.1f%% of the last %d blocks (95%% CI %.0f-%.0f%%).\n"
+               "A pool majority is a softer failure than one solo miner -- its miners\n"
+               "can leave in one config line -- but it is still a majority behind one\n"
+               "endpoint we operate." % (pp, n, plo, phi), a.dry_run)
+
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as e:
+        print("concentration-watch failed: %s" % e, file=sys.stderr)
+        sys.exit(0)

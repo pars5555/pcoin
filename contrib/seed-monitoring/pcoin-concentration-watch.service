@@ -1,0 +1,14 @@
+[Unit]
+Description=PCoin hashrate concentration check (is one party able to reorg?)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# 300 blocks of getblock is a couple of minutes of RPC; nothing else waits on it.
+ExecStart=/usr/local/bin/pcoin-concentration-watch --window 300
+Nice=10
+IOSchedulingClass=idle
+# Never let a monitor failure look like an outage -- pcoin-notify dedupes, and
+# the script already swallows its own errors and exits 0.
+SuccessExitStatus=0

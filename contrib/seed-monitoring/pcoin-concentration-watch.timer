@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the PCoin concentration check regularly
+
+[Timer]
+# Every 30 min. Concentration moved from 0% to 70% in about a day during the
+# 2026-08-20 incident, so hourly would still have been fast enough -- but the
+# check is cheap and the cost of noticing late is a reorged deposit.
+OnBootSec=10min
+OnUnitActiveSec=30min
+RandomizedDelaySec=3min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
