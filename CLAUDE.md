@@ -431,7 +431,26 @@ Two things that still need a manual bump:
   pinned defaults and the installer refuses to run on a hash mismatch, so
   forgetting the SHA bump breaks every new install.
 * **`pc.am/dl/SHA256SUMS.txt`** — copy the release's `SHA256SUMS` up with the
-  explanatory preamble.
+  explanatory preamble. It should list **every** published artifact: the Android
+  APK was missing from it until 2026-08-21, so pc.am served a download with
+  nothing to check it against.
+
+> **THE `dl/` COPIES DO DRIFT, AND ONE OF THEM WAS BROKEN FOR WEEKS.** This is
+> not hypothetical. Audited 2026-08-21: `pc.am/dl/install.ps1` was *older than
+> the repo* and missing commit `d1ae0f2`, whose whole point was that
+> **`-Threads` not passed means "leave this machine alone", not "stop mining"**.
+> The parameter defaults to 0 and 0 means OFF, so the live installer wrote
+> `threads=0` on every upgrade — and the upgrade one-liner advertised on pc.am
+> does not pass `-Threads`. **The published way to upgrade was also the published
+> way to silently stop earning.**
+>
+> Nothing detects this, because both copies are individually valid. **Diff them:**
+> ```
+> curl -sL https://pc.am/dl/install.ps1 | sha256sum
+> sha256sum contrib/windows-tray/install.ps1
+> ```
+> Same for `install.sh`. Do it whenever either file is touched, and after any
+> release — a repo-only fix leaves the live one-liner broken and looks done.
 
 `site/index.html` only needs redeploying when its *content* changes. If you find
 yourself editing a download URL there, something has regressed.
@@ -531,10 +550,26 @@ code assuming `getrawtransaction` works will fail against a PC node.
 > This has actually happened. Read it with an editor, never with an import.
 
 **Phones** — reached over `adb -s <serial>` from PowerShell (MSYS/Git Bash
-rewrites `/data/local/tmp` into a Windows path). Pixel 4a and SM-S135DL mine; the
-**Z Flip 5 is the designated test device**; a moto g play was removed from the
-fleet but is still listed in `backup_phones.ps1:14` and `upgrade_phones.ps1:17` —
-running either as-is touches a device that is no longer part of the network.
+rewrites `/data/local/tmp` into a Windows path). **Do not trust a written list of
+which phones mine — enumerate `pm list packages | grep pcoin` instead.** Audited
+2026-08-21: of the three phones this file described as mining, **two had no PCoin
+app installed at all** (Pixel 4a and SM-S135DL). The fleet was smaller than the
+docs claimed and nobody knew.
+
+State as of that audit, with the app actually present and running:
+
+| serial | device | build | notes |
+|---|---|---|---|
+| `292db7881f3f7ece` | SM-N960U | v0.4.0 **debug**-signed | mining, 20% (2 of 8 cores) |
+| `ZY22K8JLCH` | moto g play 2024 | v0.4.0 debug | mining, 20% |
+| `08101JEC203020` | Pixel 4a | v0.4.1 **release**-signed | reinstalled 2026-08-21, 20%, forwards to treasury |
+| `R9WW80FT3DP` | SM-S135DL | none | deliberately left bare at the owner's request |
+| `R5CX1443RKR` | Z Flip 5 | none | **test device, and the owner asked that the miner never go back on it** |
+| `ZY22KFX8TV` | moto g play | wallet | **the owner's personal phone, holds the treasury — never experiment** |
+
+Note the two moto g plays: `ZY22K8JLCH` is a fleet miner, `ZY22KFX8TV` is the
+treasury phone. Guard on the serial before any install, force-stop or uninstall.
+`backup_phones.ps1:14` and `upgrade_phones.ps1:17` still name a removed device.
 
 **Install path for a new PC**: `contrib/windows-tray/install.ps1`, which
 downloads the pinned release zip, verifies the pinned SHA-256, and defaults to
@@ -594,8 +629,18 @@ allocating change).
   phrase, so the user ends up restorable in the same step.
 * Reinstalling the tray app into a different directory, or any tool that rewrites
   `pcoin-tray.cfg` if a phrase were ever stored there.
-* For the currently-installed debug builds on the phones, **there is no phrase at
-  all — the wallet file *is* the coins.**
+* ~~For the currently-installed debug builds on the phones, there is no phrase at
+  all — the wallet file *is* the coins.~~ **WRONG, corrected 2026-08-21.** The
+  debug build on the SM-N960U (`am.pc.pcoinminer` v0.4.0) shows a **VIEW RECOVERY
+  PHRASE** button and holds a real BIP39 phrase. Checked on the device, not
+  inferred. The dangerous-sounding version of this claim was driving a "sweep the
+  coins before any uninstall" plan that was not actually necessary.
+  What *is* still true: an uninstall wipes app-private storage, so the phrase must
+  be **read out and written down before** the uninstall, not after — and the
+  release key (`2dc08424…`) differs from the debug key (`de1fd650…`), so an
+  in-place upgrade is impossible and the uninstall is unavoidable. Check
+  `apksigner verify --print-certs` on both APKs before assuming `install -r` will
+  work; matching signer digests are what decide it.
 
 **Backups.** `D:\pc.am\wallet-backups`. Produced by
 `scratchpad/backup_phones.ps1` (`run-as am.pc.pcoinminer … backupwallet`, base64
@@ -734,6 +779,25 @@ These are real incidents, not hypotheticals. Each one cost hours or money.
    name does nothing (it must be wrapped in `mcp_call`), long scripts fail
    (Windows caps a command line at 32k, hence the chunking), and any
    `[scriptblock]::Create((iwr …))` payload is blocked by AMSI on the device.
+
+   **A SLOW script reads as a DEAD device.** Measured 2026-08-21: any payload
+   that blocks for more than roughly a minute — a `Start-Sleep` poll loop, or an
+   `Invoke-WebRequest` pulling the 9.8 MB win64 zip — makes the agent stop
+   answering, and the API then returns `{"ok":false,"error":"Device is offline",
+   "code":"no_tunnel"}`. The device is fine and **the script usually runs to
+   completion**; only the answer is lost. This cost a destructive script half a
+   run: it deleted an unlocked `wallet.dat` and left the locked `blocks/` and
+   `chainstate/` behind, a state neither "before" nor "after".
+   **Do the waiting on YOUR side, not the device's:** send short scripts that
+   return immediately and poll from the caller. And before re-running anything
+   destructive after a `no_tunnel`, READ THE DEVICE STATE — "offline" is not
+   "it did not run".
+
+   Also on this transport: the bearer key must be **CR-stripped**. A key read
+   from a file on `D:` and piped through carries `\r`, which makes the header
+   malformed; Node rejects the request with a bare `400` and no body, on every
+   path, which looks exactly like "wrong endpoint / not this service" and sent a
+   whole session down the wrong path. `tr -d '\r'` fixes it.
    **Rule: when a string crosses a transport you do not control, assume it is
    mutated. Verify the received text, not the sent text.**
 
@@ -764,6 +828,23 @@ These are real incidents, not hypotheticals. Each one cost hours or money.
     compared against the real one. **Rule: an install that succeeds proves the
     files were copied, nothing more. Test a package on a machine that has never
     had the software's dependencies — a dev box always has them already.**
+
+    **IT HAPPENED AGAIN in v1.3.0, and the printed list is why.** Three more
+    undeclared libraries — `libsqlite3-0`, `libstdc++6`, `libgcc-s1` — plus
+    `adduser`, which the postinst calls and Debian 13 no longer ships. Two
+    distinct failures, both invisible on a dev box:
+    *Debian 13* died `adduser: not found` (exit 127) leaving the package
+    half-configured; *Ubuntu 24.04* installed **cleanly**, reported `ii`, and
+    then every start died `libsqlite3.so.0: cannot open shared object file`.
+    The fix above printed the NEEDED list at build time precisely so it could be
+    diffed against `Depends` — and nobody ever diffed it. **Printing something
+    nobody compares is the same as not knowing it.** So `build-deb.sh` now maps
+    every soname to a package and **fails the build** when one is not covered,
+    and the postinst falls back to `useradd` (from `passwd`, Priority:required)
+    when `adduser` is absent, because `dpkg -i` resolves no dependencies at all.
+    Shipped as v1.3.2 — same binaries as v1.3.0, metadata only, so the fix could
+    not smuggle a behaviour change in with it.
+    **Rule, sharpened: a check that only prints is not a check. Make it refuse.**
 
 ## 8. Operating rules
 
@@ -949,6 +1030,7 @@ command, not the answer.**
 | your fleet's hashrate and balances | `https://explorer.pc.am/admin/` (§8b) |
 | the live PCN rate | `https://price.pc.am` |
 | is anything broken right now | the private ops channel; `pcoin-deposit-watch` and `pcoin-seed-watch` post there |
+| can one party reorg the chain | `pcoin-concentration-watch --window 300 --dry-run` on any seed, or wait for its 30-min alert |
 
 Two things that are *not* time-sensitive, and are the reason people misread
 those numbers when they do fetch them:
@@ -1006,6 +1088,24 @@ Open items, roughly in order of how much damage they do if ignored:
    from a host that is NOT a seed. All alert to the private channel. What is
    still true: the deployed copies of some of those scripts are the only copy —
    see the version-control note at the end of this list.
+
+   **Added 2026-08-21: `pcoin-concentration-watch`**, on a 30-minute timer on
+   seeds 3 and 5, tracked in the repo. It answers the one question none of the
+   others did — *is a single party in a position to reorganise the chain* — by
+   classifying the last 300 coinbases off the local node (a pool block pays many
+   addresses, a solo block pays one). Three deliberate choices:
+   it alerts on the **upper bound of the confidence interval**, not the point
+   estimate, because waiting for the midpoint to cross 50% means waiting until it
+   is comfortably past; the window is **300 blocks and must not be shrunk for
+   speed** (at p≈0.5 a 60-block window swings ±13 points at 95%, which is how a
+   wrong figure got published in the first place); and re-alerts are gated on
+   **change, not time**, after the first version sent the same 66% twenty-four
+   times in eight hours and taught everyone to ignore it.
+
+   Why it exists: an outside address went from mining nothing to ~70% of blocks
+   in a day, and it was found **by hand, days late**, only because somebody
+   re-checked a number they had already published wrongly. Reorg alarms are the
+   wrong instrument — by the time a reorg is visible the money is gone.
 6. Version reporting is inconsistent: the binary says `v29.4.0`, the P2P user
    agent is still `/Satoshi:29.4.0/`, releases say v1.2.0. PCoin nodes are
    indistinguishable from Bitcoin nodes on the wire by user agent.
