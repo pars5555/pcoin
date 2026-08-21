@@ -846,6 +846,41 @@ These are real incidents, not hypotheticals. Each one cost hours or money.
     not smuggle a behaviour change in with it.
     **Rule, sharpened: a check that only prints is not a check. Make it refuse.**
 
+13. **One unrelated bug stopped a payment rail, and the endpoint still said
+    HTTP 200.** `checker.pc.am` runs every cron job through a single web
+    endpoint (`/etc/cron.d/checker_pc_am` curls `/cron?key=…` once a minute).
+    On 2026-08-21 19:24 a deploy taught `insertCard()` to write a
+    `notify_owner` column that no migration had created. That `INSERT` threw,
+    and because the call sat **outside any try/catch** in
+    `public/handlers/cron.php`, the exception aborted the whole request — so
+    section 5, *the PCN deposit watcher*, never ran. The last successful poll
+    was 19:23:25 and the rail was blind for 29 consecutive ticks. Three things
+    conspired to hide it: `curl -sf … -o /dev/null` discards both body and
+    status, the handler's own error page still returns **200**, and the
+    response body — normally a JSON summary — was simply empty, which nothing
+    was comparing against. Sections 6 and 7 were already individually wrapped;
+    1-4 never were, and all four run *before* the money path. Fixed in two
+    parts: `sql/029_notify_owner.sql` adds the column (type and default read
+    off the binding, not guessed), and sections 1-4 now carry the same
+    try/catch the file already used further down.
+    **The same bug was live on a second rail.** An audit the next day found
+    webbuilderbot carried the identical shape -- five sections (workspace
+    rotation, three Opus Queue blocks, sandbox crons) running unprotected
+    ahead of its PCN watcher, whose own try/catch existed only to stop an
+    explorer outage taking the rest of the cron down. Protection in one
+    direction reads as protection, so nobody looked at the other. Fixed in
+    `fe2543e`. The other four rails are immune by construction: each runs the
+    watcher as its own dedicated process (a `--once` script, a systemd unit,
+    or an in-process timer), sharing nothing that can abort it.
+    **What actually worked: the monitoring.** `pcoin-deposit-watch` reads
+    checker's `last_poll_at` against `STALE_SECONDS=900` and alerted at 19:40,
+    19:45 and 19:50 — *"No tick for 16 min … Deposits are not being credited"* —
+    then went back to "all PCN deposit watchers healthy" at 19:55:01, which is
+    what confirmed the fix independently of anything I asserted.
+    **Rule: an ordered list of jobs sharing one process is a chain, and a chain
+    fails whole. Isolate every step that runs before money moves, and never
+    let a health check read a status code that the error path also returns.**
+
 ## 8. Operating rules
 
 * **Phones**: only the **Z Flip 5** is the designated test device. No mining, no
@@ -912,16 +947,18 @@ people will ever read, and the only one that reaches users nobody can contact.
 | **@PCoinPCN** (Telegram, `-1003712285504`) | `pcoin-announce` | anything users must ACT on, or would want to know |
 | **explorer.pc.am/admin/** | `178.105.3.51:/opt/pcoin-ops` (from `contrib/ops-dashboard`) | a new miner, a new payment integration, a retired address — §8c |
 
-### 8c. The five services that accept PCN
+### 8c. The six services that accept PCN
 
-All five are live and have credited real deposits. The fifth was described here
-as "still in review" until 2026-08-21, when a consistency audit found it had
-quietly taken and credited 100 PCN on 2026-08-13 -- a rail nobody counted as
-live, and therefore one nobody was monitoring. A sixth, `portrait2video`
-(`pars5555/portrait2video`), is implemented but has issued no deposit address
-yet; it must not take money until it is registered in the ops dashboard and in
-`pcoin-deposit-watch`. **Deposit addresses are per-user and REUSED**, which is
-the whole reason the ledger key below is not negotiable.
+Five have credited real deposits. The fifth was described here as "still in
+review" until 2026-08-21, when a consistency audit found it had quietly taken
+and credited 100 PCN on 2026-08-13 -- a rail nobody counted as live, and
+therefore one nobody was monitoring.
+
+The sixth, `portrait2video`, went live on 2026-08-21 and is registered in both
+places before it has taken a single satoshi, which is the order that incident
+argues for. It has issued one address and credited nothing yet.
+**Deposit addresses are per-user and REUSED**, which is the whole reason the
+ledger key below is not negotiable.
 
 | service | credits you get | deposit address | code |
 |---|---|---|---|
@@ -930,6 +967,7 @@ the whole reason the ledger key below is not negotiable.
 | **aicontrol.pc.am** | USD credit | `pc1q8ghcjcxxuv6wg4sp7zhs6udv3vfpm6y8l9kfm5` | `oonak-ai/aicontrol-server` |
 | **3dmodels.pc.am** | credits | `pc1qtadn46mj4p6w9gwgykz8j7h8yh89k90rsqxgsv` | own repo, **no remote** — one disk |
 | **3dmodel.oonak.ai** | credits | `pc1qpj707j3m5uqchj6j2vswvgnsfsags9lp0stffl` | `d:\xampp\htdocs\3dmodel` — **LIVE** — credited 100 PCN on 2026-08-13, verified 2026-08-21 |
+| **portrait2video** | USD balance | `pc1q6lvqmgu086e8cmvsk84jj93jl6ymhqp0h0xsh3` | `pars5555/portrait2video`, on 167.233.206.186 — live 2026-08-21, **no deposit credited yet** |
 
 `3dmodel.oonak.ai` and `3dmodels.pc.am` are **different products with different
 wallets**. Nothing may be shared between them, and a reviewer who reads the
@@ -962,6 +1000,19 @@ Monitoring: `pcoin-deposit-watch` (every 5 min, both hosts) watches the
 watchers, and `pcoin-payment-report` (every 2 min) posts each credit to the
 private ops channel with who/where/PCN/USD/rate-used/rate-now. Both live only
 on the servers — see §9.
+
+`portrait2video` is the first rail that is **not on a watcher host**: SQLite on
+its own box, with no local config to read credentials from and no database to
+query. Granting the ops server SSH to the machine that takes payments, in order
+to answer four integers, is a worse trade than asking over HTTP — so it exposes
+a read-only status endpoint (heartbeat age, stuck count, reorg count; no money,
+no addresses, no user data) and the bearer token lives in
+`/etc/pcoin-deposit-watch.conf`, mode 600, on the watcher host. An empty token
+disables the endpoint rather than opening it, and an unset `P2V_MONITOR_URL`
+raises `PCN monitor NOT CONFIGURED` rather than passing silently. All four
+paths — healthy, stale, unreachable, unconfigured — were exercised on
+2026-08-21, because a monitor only ever observed saying "healthy" has not been
+tested.
 
 ### The rule that keeps it honest
 
