@@ -833,9 +833,14 @@ people will ever read, and the only one that reaches users nobody can contact.
 
 ### 8c. The five services that accept PCN
 
-Four are live and have each credited three real deposits; the fifth is a
-third-party integration still in review. **Deposit addresses are per-user and
-REUSED**, which is the whole reason the ledger key below is not negotiable.
+All five are live and have credited real deposits. The fifth was described here
+as "still in review" until 2026-08-21, when a consistency audit found it had
+quietly taken and credited 100 PCN on 2026-08-13 -- a rail nobody counted as
+live, and therefore one nobody was monitoring. A sixth, `portrait2video`
+(`pars5555/portrait2video`), is implemented but has issued no deposit address
+yet; it must not take money until it is registered in the ops dashboard and in
+`pcoin-deposit-watch`. **Deposit addresses are per-user and REUSED**, which is
+the whole reason the ledger key below is not negotiable.
 
 | service | credits you get | deposit address | code |
 |---|---|---|---|
@@ -843,7 +848,7 @@ REUSED**, which is the whole reason the ledger key below is not negotiable.
 | **webbuilderbot** | USD balance | `pc1q59d4tnhq6k3qqa9u5gvtuj05zswnjz3a900uxa` | `oonak-ai/ai-tgbot`, on 116.203.221.42 |
 | **aicontrol.pc.am** | USD credit | `pc1q8ghcjcxxuv6wg4sp7zhs6udv3vfpm6y8l9kfm5` | `oonak-ai/aicontrol-server` |
 | **3dmodels.pc.am** | credits | `pc1qtadn46mj4p6w9gwgykz8j7h8yh89k90rsqxgsv` | own repo, **no remote** — one disk |
-| **3dmodel.oonak.ai** | credits | `pc1qpj707j3m5uqchj6j2vswvgnsfsags9lp0stffl` | `d:\xampp\htdocs\3dmodel` — **IN REVIEW, do not treat as live** |
+| **3dmodel.oonak.ai** | credits | `pc1qpj707j3m5uqchj6j2vswvgnsfsags9lp0stffl` | `d:\xampp\htdocs\3dmodel` — **LIVE** — credited 100 PCN on 2026-08-13, verified 2026-08-21 |
 
 `3dmodel.oonak.ai` and `3dmodels.pc.am` are **different products with different
 wallets**. Nothing may be shared between them, and a reviewer who reads the
