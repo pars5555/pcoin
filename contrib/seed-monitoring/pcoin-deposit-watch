@@ -324,9 +324,14 @@ if not isinstance(deps, dict):
     print("ERR deposits.json is %s, expected an object" % type(deps).__name__)
     raise SystemExit(0)
 stuck = []
+reorged = []
 for key, d in deps.items():
     if not isinstance(d, dict):
         continue
+    # Reorg flag is set on CREDITED rows, so scan for it before the
+    # seen/confirming filter or it can never be seen.
+    if d.get("reorg_flagged_at"):
+        reorged.append(str(d.get("txid", key))[:12])
     if d.get("status") not in ("seen", "confirming"):
         continue
     # `created` is a unix timestamp. A row with no timestamp cannot be aged, so
@@ -340,16 +345,23 @@ for key, d in deps.items():
         stuck.append("%s %.2fPCN %s" % (str(d.get("txid", key))[:12],
                                         (d.get("amount_sat") or 0) / 1e8,
                                         d.get("status")))
-print("OK %d %s" % (len(stuck), "; ".join(stuck[:5])))
+print("OK %d %d %s" % (len(stuck), len(reorged),
+                       "; ".join(stuck[:5]) or "-"))
 PYEOF
 )
         case "${oon_out:-}" in
             OK*)
                 oon_n=$(printf '%s' "$oon_out" | awk '{print $2}')
-                oon_detail=$(printf '%s' "$oon_out" | cut -d' ' -f3-)
+                oon_r=$(printf '%s' "$oon_out" | awk '{print $3}')
+                oon_detail=$(printf '%s' "$oon_out" | cut -d' ' -f4-)
                 if [ "${oon_n:-0}" -gt 0 ]; then
                     alert "PCN deposit STUCK: 3dmodel.oonak.ai" \
                           "$oon_n deposit(s) held for over ${STUCK_HOURS}h. Money is recorded and not credited. $oon_detail"
+                fi
+                # Symmetry with every other rail, all of which get a reorg
+                # check. The rail FLAGS and never reverses -- a human decides.
+                if [ "${oon_r:-0}" -gt 0 ]; then
+                    alert "PCN reorg on credited deposit: 3dmodel.oonak.ai"                           "$oon_r credited deposit(s) flagged as reorged. Credit was NOT reversed automatically -- a human decides. Review before the balance is spent."
                 fi
                 ;;
             *)
