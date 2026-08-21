@@ -27,8 +27,20 @@ The alert text always carries the window and the confidence interval, because a
 bare percentage invites exactly the over-reading that caused the original
 mistake.
 
+RE-ALERTING IS GATED ON CHANGE, NOT ON TIME. On 2026-08-21 this script sent the
+same 66% twenty-four times in eight hours from two hosts, because every timer
+tick that found the condition true announced it again. Nobody needs the same
+fact every thirty minutes; they need to know when it CHANGES. State lives in
+STATE_PATH and a re-alert now requires one of: a different top address, a level
+transition (including clearing), a move of >=5 percentage points, or
+--remind-hours elapsed since the last send (the condition staying true deserves
+an occasional reminder, not a drumbeat). The measurement itself still runs and
+still prints every tick, so the journal shows the monitor alive either way.
+--dry-run never touches state.
+
 Usage:
-    pcoin-concentration-watch [--window N] [--warn PCT] [--crit PCT] [--dry-run]
+    pcoin-concentration-watch [--window N] [--warn PCT] [--crit PCT]
+                              [--remind-hours H] [--state PATH] [--dry-run]
 
 Exits 0 even when it alerts: this is a monitor, and a monitor that fails a
 timer unit just buries its own message.
@@ -42,6 +54,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
 CLI_CANDIDATES = [
     ["/opt/pcoin/bin/bitcoin-cli", "-conf=/etc/pcoin/pcoin.conf"],
@@ -49,6 +62,7 @@ CLI_CANDIDATES = [
     ["bitcoin-cli"],
 ]
 NOTIFY = "/usr/local/bin/pcoin-notify"
+STATE_PATH = "/var/lib/pcoin-concentration-watch.json"
 
 
 def find_cli():
@@ -131,11 +145,49 @@ def notify(subject, body, dry):
         print("notify failed: %s" % e, file=sys.stderr)
 
 
+def load_state(path):
+    """Missing or corrupt state means 'never alerted', which errs toward
+    alerting once more -- the safe direction for a monitor."""
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_state(path, state):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(state, f, indent=1)
+    os.replace(tmp, path)  # atomic: a killed run can never leave half a file
+
+
+def send_decision(prev, level, addr, value, remind_s, now):
+    """Why this send should happen, or None to suppress.
+
+    The question is never "is the condition true" -- the measurement already
+    decided that. The question is "does the reader learn anything new".
+    """
+    if not prev:
+        return "new condition"
+    if prev.get("level") != level:
+        return "level changed %s -> %s" % (prev.get("level"), level)
+    if addr is not None and prev.get("addr") != addr:
+        return "top address changed"
+    if abs(value - prev.get("value", 0.0)) >= 5.0:
+        return "moved %.1f -> %.1f points" % (prev.get("value", 0.0), value)
+    if now - prev.get("at", 0) >= remind_s:
+        return "reminder: condition persists"
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--window", type=int, default=300)
     ap.add_argument("--warn", type=float, default=40.0)
     ap.add_argument("--crit", type=float, default=50.0)
+    ap.add_argument("--remind-hours", type=float, default=6.0)
+    ap.add_argument("--state", default=STATE_PATH)
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
 
@@ -178,6 +230,11 @@ def main():
             % (lo, tip, n, tp, tlo, thi, (top_addr or "-"), pp, plo, phi))
     print(line)
 
+    state = load_state(a.state)
+    now = time.time()
+    remind_s = a.remind_hours * 3600
+    dirty = False
+
     # Alert on the CONFIDENCE INTERVAL, not the point estimate. Waiting for the
     # midpoint to cross 50 means waiting until it is already comfortably past.
     level = None
@@ -187,30 +244,63 @@ def main():
         level = "WARNING"
 
     if level:
-        body = (
-            "One address is finding %.1f%% of blocks (95%% CI %.0f-%.0f%%),\n"
-            "measured over %d blocks, heights %d-%d.\n\n"
-            "  address: %s\n"
-            "  pool share over the same window: %.1f%%\n\n"
-            "A party above 50%% can reorganise recent blocks and reverse a payment\n"
-            "that already looked settled. Confirmation depth does not fix this --\n"
-            "it buys time, not safety.\n\n"
-            "Check before acting: this is one window, and concentration moves fast.\n"
-            "  https://explorer.pc.am"
-            % (tp, tlo, thi, n, lo, tip, top_addr or "?", pp)
-        )
-        notify("PCoin %s: hashrate concentration %.0f%%" % (level, tp), body, a.dry_run)
+        reason = send_decision(state.get("solo"), level, top_addr, tp, remind_s, now)
+        if reason:
+            body = (
+                "One address is finding %.1f%% of blocks (95%% CI %.0f-%.0f%%),\n"
+                "measured over %d blocks, heights %d-%d.\n\n"
+                "  address: %s\n"
+                "  pool share over the same window: %.1f%%\n\n"
+                "A party above 50%% can reorganise recent blocks and reverse a payment\n"
+                "that already looked settled. Confirmation depth does not fix this --\n"
+                "it buys time, not safety.\n\n"
+                "Re-alert because: %s. Next reminder in %.0fh unless it changes.\n"
+                "  https://explorer.pc.am"
+                % (tp, tlo, thi, n, lo, tip, top_addr or "?", pp, reason, a.remind_hours)
+            )
+            notify("PCoin %s: hashrate concentration %.0f%%" % (level, tp), body, a.dry_run)
+            state["solo"] = {"level": level, "addr": top_addr, "value": tp, "at": now}
+            dirty = True
+        else:
+            nxt = (state["solo"].get("at", 0) + remind_s - now) / 3600
+            print("suppressed: unchanged (%.1f%% vs %.1f%% last sent); reminder in %.1fh"
+                  % (tp, state["solo"].get("value", 0.0), max(0, nxt)))
+    elif state.get("solo"):
+        # The all-clear is a state change too, and the one people stop watching
+        # for. It is sent exactly once, because the state that caused it is
+        # deleted in the same breath.
+        notify("PCoin OK: hashrate concentration cleared",
+               "Top solo address is now %.1f%% (95%% CI %.0f-%.0f%%) over the last %d\n"
+               "blocks -- below the %.0f%% warning line. Previous condition: %s at %.1f%%."
+               % (tp, tlo, thi, n, a.warn,
+                  state["solo"].get("level"), state["solo"].get("value", 0.0)), a.dry_run)
+        del state["solo"]
+        dirty = True
 
     # pp, not pool: `pool` is a COUNT of blocks and a.crit is a PERCENTAGE.
     # Comparing them fired this alert at 32.7% -- caught only because the alert
     # body printed the real figure next to the word "majority" and the two
     # disagreed. An alert that cries wolf gets muted, taking the real one with it.
     if pp >= a.crit:
-        notify("PCoin WARNING: the pool holds %.0f%% of blocks" % pp,
-               "pool.pc.am found %.1f%% of the last %d blocks (95%% CI %.0f-%.0f%%).\n"
-               "A pool majority is a softer failure than one solo miner -- its miners\n"
-               "can leave in one config line -- but it is still a majority behind one\n"
-               "endpoint we operate." % (pp, n, plo, phi), a.dry_run)
+        reason = send_decision(state.get("pool"), "WARNING", None, pp, remind_s, now)
+        if reason:
+            notify("PCoin WARNING: the pool holds %.0f%% of blocks" % pp,
+                   "pool.pc.am found %.1f%% of the last %d blocks (95%% CI %.0f-%.0f%%).\n"
+                   "A pool majority is a softer failure than one solo miner -- its miners\n"
+                   "can leave in one config line -- but it is still a majority behind one\n"
+                   "endpoint we operate.\n\nRe-alert because: %s."
+                   % (pp, n, plo, phi, reason), a.dry_run)
+            state["pool"] = {"level": "WARNING", "addr": None, "value": pp, "at": now}
+            dirty = True
+    elif state.get("pool"):
+        notify("PCoin OK: pool majority cleared",
+               "pool.pc.am is now %.1f%% of the last %d blocks (95%% CI %.0f-%.0f%%)."
+               % (pp, n, plo, phi), a.dry_run)
+        del state["pool"]
+        dirty = True
+
+    if dirty and not a.dry_run:
+        save_state(a.state, state)
 
     return 0
 
