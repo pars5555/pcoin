@@ -245,6 +245,36 @@ node pcoin-seed-vault.mjs new --system myapp</code></pre>
   the address and the index as a backstop — a collision should fail the insert, not
   silently credit one user's deposit to another.</p>
 
+    <h3>Deleting a user must not be able to rewind it</h3>
+  <p>If you allocate with <code>MAX(derivation_index) + 1</code>, then anything that
+    deletes address rows &mdash; a user purge, a GDPR erasure, a test cleanup &mdash;
+    lowers the maximum, and <strong>the next user is handed an address that already
+    belonged to somebody else</strong>. That breaks the one invariant the whole ledger
+    rests on. Two things go wrong at once: an older deposit to that address credits the
+    new owner, and if you also deleted the idempotency row, the same deposit can be
+    credited a second time.</p>
+  <p>This is not hypothetical. One live integration had already recycled derivation
+    index 0 before anyone noticed, and had a deposit row pointing at an address with no
+    owner record at all.</p>
+  <p>Allocate from a counter that only ever goes up, bumped <strong>inside the same
+    transaction</strong> as the address insert:</p>
+  <pre><code>-- inside the transaction that inserts the address
+  SELECT value FROM settings WHERE `key` = 'pcn_next_index' FOR UPDATE;
+  -- ...use it, then...
+  INSERT INTO settings (`key`, `value`) VALUES ('pcn_next_index', ?)
+    ON DUPLICATE KEY UPDATE `value` = ?;</code></pre>
+  <p>Do not bump it through a helper that uses a different connection &mdash; the read
+    and the write would land in different transactions and you would be back to the race
+    the lock exists to prevent.</p>
+  <p>Seed the counter <em>above</em> anything ever issued, not at
+    <code>MAX + 1</code>. Seeding from the maximum inherits the very gap the deletions
+    created, because those indexes are gone from the table. There are 2<sup>31</sup>
+    indexes available; starting at 1000 costs nothing and guarantees no address ever
+    handed out can be handed out again.</p>
+  <p>Retiring an index strands no money. The coins sit at an address derived from your
+    seed at a known path, so you can always spend them &mdash; with or without a database
+    row.</p>
+
   <h2 id="api">4. The explorer API</h2>
   <p><code>https://explorer.pc.am/api</code> — HTTP, no auth, no key.</p>
 
@@ -302,6 +332,31 @@ node pcoin-seed-vault.mjs new --system myapp</code></pre>
     input is one outage from crediting nonsense.</p>
   </div>
 
+    <h3>The address history is the only thing driving your credits</h3>
+  <p>Almost every integration is built the same way: fetch the recent transactions for
+    each address, and credit what you find. That means <strong>a deposit you hold is
+    retried only while it stays inside that page of results</strong>. Deposit addresses
+    are per-user and reused forever, so a busy address eventually pushes a held deposit
+    out of the window &mdash; and from that moment it is money received, recorded, and
+    never credited again, with nothing alerting.</p>
+  <p>A deposit can be held for entirely ordinary reasons: coinbase immaturity, a
+    spending cap, an unreadable rate, a failed second-source check. All of them are
+    correct. None of them should be permanent.</p>
+  <p>Two defences, and you want both:</p>
+  <ul>
+      <li>Ask for a large page. <code>limit</code> is capped at <strong>200</strong>;
+      anything higher is rejected with <code>400 bad_request</code>, so
+      <code>limit=250</code> silently stops your watcher reading the chain at all.</li>
+      <li>Re-drive held rows from <strong>your own table</strong>, not from the
+      explorer's page: each tick, select everything in <code>seen</code> or
+      <code>confirming</code> and re-check those txids directly via
+      <code>/tx/{txid}</code>. A held row must be reachable from your database.</li>
+  </ul>
+  <p>And when you monitor for stuck money, watch <code>seen</code> as well as
+    <code>confirming</code>. A transaction that is recorded but never mined sits in
+    <code>seen</code> forever, and a monitor that only looks at <code>confirming</code>
+    will never mention it.</p>
+
   <h2 id="gates">5. The gates</h2>
   <p>All of them. None optional.</p>
 
@@ -332,6 +387,21 @@ node pcoin-seed-vault.mjs new --system myapp</code></pre>
 <span class="c">// right: judge the deposit's own block, and assert it twice --</span>
 <span class="c">// once from the address summary, once from the authoritative /tx</span>
 <span class="k">if</span> (deposit.height &lt; MIN_HEIGHT) reject(<span class="s">"pre-LWMA"</span>);</code></pre>
+
+    <h3>A missing height holds. It never rejects.</h3>
+  <p><code>(int) null</code> is <code>0</code>, and <code>0</code> is below any
+    sane <code>min_height</code>. If your gate reacts to that by writing
+    <code>status = 'rejected'</code>, one malformed explorer item permanently keeps a
+    customer's money &mdash; usually with a note blaming a pre-fork block that has
+    nothing to do with it. <code>rejected</code> is normally terminal, so the row is
+    skipped forever, and held-money alerts never match it because they look for
+    <code>seen</code> and <code>confirming</code>.</p>
+  <pre><code>if (!isset($t['height']) || !is_numeric($t['height']) || (int) $t['height'] &lt;= 0) {
+      $summary['skipped'][] = 'no_height';
+      continue;                       // hold. the next tick re-reads it.
+  }</code></pre>
+  <p>Reserve <code>rejected</code> for things you have positively established, from
+    data you actually read. Everything else holds.</p>
 
   <h3>Coinbase deposits need 100 confirmations</h3>
   <p><code>startmining "&lt;address&gt;"</code> needs no wallet, so a user can point a
@@ -544,6 +614,28 @@ credited_rate_usd  DECIMAL(18,8)   -- the rate AT THE MOMENT OF CREDIT</code></p
   their money, or costs you yours, and both are silent. The deposit is on the chain
   and is not going anywhere &mdash; there is never a reason to resolve the question
   early.</p>
+
+    <h3>A refusal must not fall back to the cache</h3>
+  <p>Sanity-check the rate: a floor, a ceiling, and a limit on how far it may move in
+    one poll against the last value you accepted. Then be careful where the refusal
+    lands. Most integrations wrap the whole fetch in one <code>try</code>, with a
+    <code>catch</code> that falls back to a cached rate &mdash; which is right when the
+    oracle is <em>unreachable</em>.</p>
+  <p>It is exactly wrong when the oracle <em>answered</em> and you rejected what it
+    said. The cache was filled by the same oracle, so falling back to it launders the
+    reading you just refused into a usable one. This was shipped, in this exact form:
+    every band and staleness violation threw, landed in the generic catch, and came back
+    out as <code>usable: true</code> from cache. The guards were present and caught
+    nothing.</p>
+  <pre><code>catch (DomainException $e) {      // the oracle answered; the answer was insane
+      return ['usable' =&gt; false, 'error' =&gt; $e-&gt;getMessage()];   // refuse. no cache.
+  } catch (Throwable $e) {          // the oracle could not be reached
+      return $recentCache ?: ['usable' =&gt; false];                // cache is legitimate
+  }</code></pre>
+  <p>Two different failures, two different answers. If you cannot tell them apart in
+    your code, you cannot tell them apart in production either. Test the refusal
+    direction explicitly &mdash; a guard that has only ever been observed letting good
+    data through has not been tested.</p>
 
   <h3>The oracle has two clocks. Read both.</h3>
   <p>A healthy-looking response can still be quoting a frozen price, because
