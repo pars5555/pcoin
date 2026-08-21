@@ -1,0 +1,366 @@
+#!/bin/bash
+# Watch the PCN deposit watchers.
+#
+# Every payment integration already reports whether it WOULD credit. None of
+# them reported whether they were RUNNING, and that is the gap this closes.
+#
+# The failure this exists for actually happened, twice, in one session:
+#
+#   * A previous session inspected checker, webbuilderbot and aicontrol, found
+#     no scheduler in the place it looked, and recorded all three as having no
+#     watcher. All three were running. That error was harmless -- it
+#     under-reported health.
+#   * 3dmodels' watcher ran every minute, logged a clean tick, and could not
+#     credit anything at all: /tx/{txid} returns an envelope it did not unwrap,
+#     so an internal consistency check compared height 0 against the real one
+#     and held every deposit forever. `enabled: true`, fresh pool, valid xpub,
+#     cron firing -- every observable signal said healthy. It was found only
+#     because the owner sent real money and watched nothing happen.
+#
+# So this checks LIVENESS and PROGRESS, not configuration. Configuration is
+# what already looked fine in both cases.
+#
+# Checks, per integration present on this host:
+#   1. heartbeat age            -- is the watcher ticking at all?
+#   2. heartbeat ok flag        -- is it ticking but erroring? (different fault)
+#   3. deposits stuck confirming -- is it ticking, healthy, and still not paying?
+#   4. reorg-flagged credits    -- did a credited deposit leave the chain?
+#
+# Check 3 is the one that would have caught 3dmodels. A watcher can be alive and
+# still never settle anything; only the age of an unsettled deposit shows that.
+#
+# Credentials are read from each app's own config at run time. They are
+# deliberately NOT copied into a config of their own: a second copy is a second
+# thing to rotate and the first one to go stale.
+#
+# Alerting is delegated to pcoin-notify, which owns the destination and the
+# dedupe window. Nothing here contains a token. If pcoin-notify is missing this
+# still runs and logs -- a monitor that dies because it cannot report is worse
+# than one that reports nowhere.
+#
+# Exit code is 0 unless the script itself broke. A detected problem is an alert,
+# not a non-zero exit: cron mail on top of a Telegram alert is just noise.
+
+set -u
+
+# All three are overridable so the detection paths can be exercised without
+# waiting for a real outage -- and, in the case of NOTIFY, without firing a
+# false "watcher STOPPED" at whoever reads the alert channel. A monitor that has
+# only ever been observed saying "healthy" has not been tested; that is the
+# exact mistake this script exists to catch, and it applies to the script too.
+#   STALE_SECONDS=0 ./pcoin-deposit-watch          -> every heartbeat reads stale
+#   NOTIFY=/tmp/echo-notify ./pcoin-deposit-watch  -> alerts go nowhere real
+NOTIFY="${NOTIFY:-/usr/local/bin/pcoin-notify}"
+STALE_SECONDS="${STALE_SECONDS:-900}"      # 15 min; watchers tick every 60 s
+STUCK_HOURS="${STUCK_HOURS:-6}"            # 6 conf is ~1 h, so 6 h is well past
+PROBLEMS=0
+
+log() { logger -t pcoin-deposit-watch -- "$*" 2>/dev/null || printf '%s\n' "$*"; }
+
+alert() {   # alert <subject> <body>
+    PROBLEMS=$((PROBLEMS + 1))
+    log "ALERT: $1 -- $2"
+    [ -x "$NOTIFY" ] && "$NOTIFY" "$1" "$2" >/dev/null 2>&1
+}
+
+now=$(date +%s)
+
+# mysql_q <user> <pass> <db> <sql>  -- one scalar, empty on any failure.
+mysql_q() {
+    mysql -h127.0.0.1 -u"$1" -p"$2" "$3" -N -B --raw -e "$4" 2>/dev/null
+}
+
+# ---------------------------------------------------------------- checks ----
+
+# check_heartbeat <label> <age_seconds|empty> <extra>
+#
+# An UNREADABLE heartbeat is not a healthy one and not a dead one -- it is
+# unknown, and it gets its own message. Collapsing it into either direction is
+# the mistake this whole codebase is written against.
+check_heartbeat() {
+    local label="$1" age="$2" extra="${3:-}"
+    if [ -z "$age" ]; then
+        alert "PCN watcher unreadable: $label" \
+              "Could not read $label's heartbeat. This is NOT proof the watcher is down, and NOT proof it is up -- the check itself failed. $extra"
+        return
+    fi
+    if [ "$age" -gt "$STALE_SECONDS" ]; then
+        alert "PCN watcher STOPPED: $label" \
+              "No tick for $((age / 60)) min (threshold $((STALE_SECONDS / 60)) min). Deposits are not being credited. $extra"
+    fi
+}
+
+# check_deposits <label> <user> <pass> <db> <deposits_table> <seen_col>
+# Watches 'seen' as well as 'confirming'.
+#
+# 'seen' is a mempool sighting: recorded, owed to a user, and not yet credited.
+# A transaction that never confirms -- dropped, replaced, or simply never mined
+# -- leaves the row in 'seen' forever, and every held-money check in this
+# estate looked only at 'confirming', so that money was invisible. The two
+# states differ in how far a deposit got, not in whether somebody is waiting
+# for it.
+check_deposits() {
+    local label="$1" u="$2" p="$3" db="$4" tbl="$5" seen="$6"
+
+    local stuck
+    stuck=$(mysql_q "$u" "$p" "$db" \
+        "SELECT COUNT(*) FROM \`$tbl\` WHERE status IN ('seen','confirming') AND \`$seen\` < (NOW() - INTERVAL $STUCK_HOURS HOUR);")
+    if [ -z "$stuck" ]; then
+        # An empty result is a FAILED query, not "no stuck deposits". Saying
+        # nothing here would be the monitor reproducing the bug it is watching
+        # for: a check that cannot run reported as a check that passed.
+        alert "PCN monitor BROKEN: $label" \
+              "The stuck-deposit query returned nothing against $db.$tbl. Assume deposits are UNMONITORED on $label until this is fixed."
+    elif [ "$stuck" -gt 0 ]; then
+        local detail
+        detail=$(mysql_q "$u" "$p" "$db" \
+            "SELECT GROUP_CONCAT(CONCAT(LEFT(txid,12),' h',IFNULL(block_height,'?'),' conf',confirmations) SEPARATOR '; ')
+               FROM \`$tbl\` WHERE status IN ('seen','confirming') AND \`$seen\` < (NOW() - INTERVAL $STUCK_HOURS HOUR) LIMIT 5;")
+        alert "PCN deposit STUCK: $label" \
+              "$stuck deposit(s) held for over ${STUCK_HOURS}h (status seen or confirming). The watcher may be running and still not settling -- check its log for a hold reason. $detail"
+    fi
+
+    # The three integrations mark a post-credit reorg THREE different ways, and
+    # none of them is wrong -- but a monitor that knows only one of them reports
+    # "no reorgs" on the other two forever:
+    #
+    #   checker, 3dmodels : column reorg_flagged_at (timestamp, NULL = clean)
+    #   aicontrol         : column reorg_flagged    (tinyint)
+    #   webbuilderbot     : NO column -- it writes note LIKE 'REORG %' and
+    #                       pings its admin directly (PcoinWatcher::recheckCredited)
+    #
+    # So try each, and if NOT ONE of them can be evaluated, say so loudly rather
+    # than returning a comfortable zero.
+    local reorged=""
+    for q in "reorg_flagged_at IS NOT NULL" "reorg_flagged = 1" "note LIKE 'REORG %'"; do
+        reorged=$(mysql_q "$u" "$p" "$db" \
+            "SELECT COUNT(*) FROM \`$tbl\` WHERE status='credited' AND $q;")
+        [ -n "$reorged" ] && break
+    done
+
+    if [ -z "$reorged" ]; then
+        alert "PCN monitor BROKEN: $label" \
+              "No reorg marker on $db.$tbl could be evaluated (tried reorg_flagged_at, reorg_flagged, note LIKE 'REORG %'). A credited deposit could leave the chain on $label and nothing would notice."
+    elif [ "$reorged" -gt 0 ]; then
+        alert "PCN REORG on credited deposit: $label" \
+              "$reorged credited deposit(s) flagged as reorged. Credit was NOT reversed automatically -- a human decides. Review before the balance is spent."
+    fi
+}
+
+# ------------------------------------------------------------- checker ------
+CHK=/var/www/checker_pc_am/config/config.json
+if [ -r "$CHK" ]; then
+    eval "$(python3 -c "
+import json;d=json.load(open('$CHK'))
+print('u=%r;p=%r;db=%r' % (d['db_user'],d['db_pass'],d['db_name']))
+" 2>/dev/null)"
+    if [ -n "${u:-}" ]; then
+        last=$(mysql_q "$u" "$p" "$db" \
+            "SELECT JSON_UNQUOTE(JSON_EXTRACT(value,'\$.last_poll_at')) FROM settings WHERE \`key\`='pcoin';")
+        age=""; [ -n "$last" ] && [ "$last" != "null" ] && age=$((now - last))
+        check_heartbeat "checker.pc.am" "$age" "Cron: /etc/cron.d/checker_pc_am hits /cron every minute."
+        check_deposits  "checker.pc.am" "$u" "$p" "$db" pcn_deposits first_seen_at
+    fi
+    unset u p db
+fi
+
+# -------------------------------------------------------- webbuilderbot -----
+WBB=/var/www/ai-bots/bots/webbuilderbot/config.json
+if [ -r "$WBB" ]; then
+    eval "$(python3 -c "
+import json;d=json.load(open('$WBB'))
+print('u=%r;p=%r;db=%r' % (d['db_user'],d['db_pass'],d['db_name']))
+" 2>/dev/null)"
+    if [ -n "${u:-}" ]; then
+        last=$(mysql_q "$u" "$p" "$db" \
+            "SELECT JSON_UNQUOTE(JSON_EXTRACT(value,'\$.last_poll_at')) FROM settings WHERE name='pcoin';")
+        [ -z "$last" ] && last=$(mysql_q "$u" "$p" "$db" \
+            "SELECT JSON_UNQUOTE(JSON_EXTRACT(value,'\$.last_poll_at')) FROM settings WHERE \`key\`='pcoin';")
+        age=""; [ -n "$last" ] && [ "$last" != "null" ] && age=$((now - last))
+        check_heartbeat "webbuilderbot" "$age" "Cron: pars crontab runs cron/1min.php every minute."
+        check_deposits  "webbuilderbot" "$u" "$p" "$db" pcn_deposits first_seen_at
+    fi
+    unset u p db
+fi
+
+# ------------------------------------------------------------ aicontrol -----
+AIC=/var/www/ai-control-server/.env
+if [ -r "$AIC" ]; then
+    u=$(grep -E '^DB_USER=' "$AIC" | head -1 | cut -d= -f2-)
+    p=$(grep -E '^DB_PASS=' "$AIC" | head -1 | cut -d= -f2-)
+    db=$(grep -E '^DB_NAME=' "$AIC" | head -1 | cut -d= -f2-)
+    if [ -n "${u:-}" ]; then
+        hb=$(mysql_q "$u" "$p" "$db" \
+            "SELECT value FROM settings WHERE \`key\`='pcoin_watcher_heartbeat';")
+        last=$(printf '%s' "$hb" | python3 -c "import json,sys;print(json.load(sys.stdin).get('at',''))" 2>/dev/null)
+        okflag=$(printf '%s' "$hb" | python3 -c "import json,sys;print(json.load(sys.stdin).get('ok'))" 2>/dev/null)
+        err=$(printf '%s' "$hb" | python3 -c "import json,sys;print(json.load(sys.stdin).get('last_error') or '')" 2>/dev/null)
+        age=""; [ -n "$last" ] && age=$((now - last))
+        check_heartbeat "aicontrol" "$age" "In-process setInterval in pm2 'ai-control-server' -- pm2 restart revives it."
+        if [ "$okflag" = "False" ]; then
+            alert "PCN watcher ERRORING: aicontrol" \
+                  "aicontrol's watcher is ticking but its last tick threw: $err. Running-and-failing is a different fault from stopped."
+        fi
+        check_deposits "aicontrol" "$u" "$p" "$db" pcn_deposits first_seen_at
+    fi
+    unset u p db
+fi
+
+# ------------------------------------------------------------- 3dmodels -----
+# No DB heartbeat: its watcher is a CLI script under cron that appends a line
+# per tick. The log's mtime is therefore a true external pulse, and needs no
+# rebuild of the image to obtain.
+M3D_LOG=/var/www/3dmodels.pc.am/logs/pcn.log
+M3D_DIR=/var/www/3dmodels.pc.am/code
+if [ -d "$M3D_DIR" ]; then
+    if [ -r "$M3D_LOG" ]; then
+        mtime=$(stat -c %Y "$M3D_LOG" 2>/dev/null)
+        age=""; [ -n "$mtime" ] && age=$((now - mtime))
+        check_heartbeat "3dmodels.pc.am" "$age" "Cron: root crontab runs scripts/pcn-watch.php --once every minute."
+    else
+        check_heartbeat "3dmodels.pc.am" "" "Log $M3D_LOG is unreadable."
+    fi
+
+    # A hold reason repeating every tick is the 3dmodels signature: alive,
+    # clean exit, crediting nothing. Worth an alert on its own.
+    if [ -r "$M3D_LOG" ]; then
+        held=$(tail -n 30 "$M3D_LOG" 2>/dev/null | grep -c 'skipped=' )
+        if [ "${held:-0}" -ge 25 ]; then
+            reason=$(tail -n 5 "$M3D_LOG" | grep -o 'skipped=[^ ]*' | tail -1)
+            alert "PCN watcher HOLDING: 3dmodels.pc.am" \
+                  "The last 30 ticks all skipped ($reason). The watcher is alive and settling nothing -- this is what a silent credit outage looks like."
+        fi
+    fi
+
+    # HELD MONEY on 3dmodels, which nothing checked until now.
+    #
+    # Every other rail gets check_deposits() against its database. 3dmodels did
+    # not, because its MariaDB lives inside a container with no host-reachable
+    # port -- so the one service whose silent credit outage this whole script was
+    # written for was the one service whose deposits table was never read. The
+    # log heartbeat above proves the watcher RAN; it cannot prove a deposit was
+    # settled, and those are exactly the two things the 3dmodels incident showed
+    # are different.
+    #
+    # Reached the only way it can be: through the db container, with the root
+    # password read from the secret file INSIDE that container so it never
+    # appears here or in a process list.
+    if command -v docker >/dev/null 2>&1; then
+        m3dbc=$(cd "$M3D_DIR" 2>/dev/null && docker compose ps -q db 2>/dev/null)
+        if [ -n "$m3dbc" ]; then
+            m3pwf=$(docker inspect "$m3dbc" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | sed -n 's/^MARIADB_ROOT_PASSWORD_FILE=//p')
+            m3db=$(docker inspect "$m3dbc" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | sed -n 's/^MARIADB_DATABASE=//p')
+            if [ -n "$m3pwf" ] && [ -n "$m3db" ]; then
+                m3stuck=$(docker exec -i "$m3dbc" sh -lc "mariadb -N -uroot -p\"\$(cat $m3pwf)\" \"$m3db\" -e \"SELECT COUNT(*) FROM pcn_deposits WHERE status IN ('seen','confirming') AND first_seen_at < (NOW() - INTERVAL $STUCK_HOURS HOUR);\"" 2>/dev/null | tr -d '[:space:]')
+                if [ -z "$m3stuck" ]; then
+                    # Same rule as everywhere else: a query that did not run is
+                    # not a clean result.
+                    alert "PCN monitor BROKEN: 3dmodels.pc.am"                           "The held-deposit query returned nothing against the 3dmodels db container. Assume its deposits are UNMONITORED until this is fixed."
+                elif [ "$m3stuck" -gt 0 ]; then
+                    m3detail=$(docker exec -i "$m3dbc" sh -lc "mariadb -N -uroot -p\"\$(cat $m3pwf)\" \"$m3db\" -e \"SELECT GROUP_CONCAT(CONCAT(LEFT(txid,12),' ',FORMAT(amount_sat/1e8,2),'PCN ',status) SEPARATOR '; ') FROM pcn_deposits WHERE status IN ('seen','confirming') AND first_seen_at < (NOW() - INTERVAL $STUCK_HOURS HOUR) LIMIT 5;\"" 2>/dev/null)
+                    alert "PCN deposit STUCK: 3dmodels.pc.am"                           "$m3stuck deposit(s) held for over ${STUCK_HOURS}h. Money is recorded and not credited. $m3detail"
+                fi
+            fi
+        fi
+    fi
+fi
+
+# ------------------------------------------------------- 3dmodel.oonak.ai ----
+# THE FIFTH RAIL, AND THE ONE NOTHING WATCHED.
+#
+# It went dark for nearly two hours on 2026-08-21 with nobody noticing, and the
+# reason is structural rather than an oversight in the checks below: this script
+# only ever ran on the two hosts that do NOT host it. 3dmodel.oonak.ai lives on
+# its own box (it migrated there on 2026-08-21, which is the same day it went
+# quiet), so every check in this file was blind to it by construction. The fix
+# is therefore two things -- this section, and installing the script on that
+# host at all.
+#
+# It is FILE-BASED, not SQL. There is no database to query, so both checks read
+# the filesystem:
+#   * the pulse is the rail log's mtime -- cron appends one line per tick, the
+#     same shape as the 3dmodels check above, and it needs nothing from the app;
+#   * the money is in deposits.json, a dict keyed "txid:address" (the correct
+#     key -- vout is always 0 for these, so keying on it silently drops a second
+#     deposit to the same address).
+OON_LOG=${OON_LOG:-/var/log/3dmodel-pcn.log}
+OON_DIR=${OON_DIR:-/var/www/3dmodel/data/pcn}
+if [ -d "$OON_DIR" ]; then
+    if [ -r "$OON_LOG" ]; then
+        mtime=$(stat -c %Y "$OON_LOG" 2>/dev/null)
+        age=""; [ -n "$mtime" ] && age=$((now - mtime))
+        check_heartbeat "3dmodel.oonak.ai" "$age" \
+            "Cron: /etc/cron.d/3dmodel-pcn runs app/api/pcn-watch.php --once every minute as www-data."
+    else
+        check_heartbeat "3dmodel.oonak.ai" "" "Log $OON_LOG is unreadable."
+    fi
+
+    # HELD MONEY, read straight out of deposits.json.
+    #
+    # Same rule as every other rail: a read that did not happen is NOT a clean
+    # result. If the file is missing, unparseable, or python is absent, that is
+    # an alert saying the deposits are unmonitored -- never a silent pass. The
+    # 3dmodels incident was precisely a rail that looked healthy while settling
+    # nothing, and the only thing that shows it is the age of an unsettled row.
+    oon_dep="$OON_DIR/deposits.json"
+    if ! command -v python3 >/dev/null 2>&1; then
+        alert "PCN monitor BROKEN: 3dmodel.oonak.ai" \
+              "python3 is not installed on this host, so deposits.json cannot be read. Assume 3dmodel.oonak.ai deposits are UNMONITORED until this is fixed."
+    elif [ ! -r "$oon_dep" ]; then
+        alert "PCN monitor BROKEN: 3dmodel.oonak.ai" \
+              "$oon_dep is missing or unreadable. Assume 3dmodel.oonak.ai deposits are UNMONITORED until this is fixed."
+    else
+        oon_out=$(STUCK_HOURS="$STUCK_HOURS" python3 - "$oon_dep" <<'PYEOF' 2>/dev/null
+import json, os, sys, time
+path = sys.argv[1]
+cutoff = time.time() - float(os.environ.get("STUCK_HOURS", "6")) * 3600
+try:
+    with open(path, encoding="utf-8") as fh:
+        deps = json.load(fh)
+except Exception as exc:                      # unparseable == unknown, not clean
+    print("ERR %s" % str(exc)[:120])
+    raise SystemExit(0)
+if not isinstance(deps, dict):
+    print("ERR deposits.json is %s, expected an object" % type(deps).__name__)
+    raise SystemExit(0)
+stuck = []
+for key, d in deps.items():
+    if not isinstance(d, dict):
+        continue
+    if d.get("status") not in ("seen", "confirming"):
+        continue
+    # `created` is a unix timestamp. A row with no timestamp cannot be aged, so
+    # it counts as stuck rather than being quietly skipped.
+    ts = d.get("created")
+    try:
+        ts = float(ts)
+    except (TypeError, ValueError):
+        ts = 0.0
+    if ts < cutoff:
+        stuck.append("%s %.2fPCN %s" % (str(d.get("txid", key))[:12],
+                                        (d.get("amount_sat") or 0) / 1e8,
+                                        d.get("status")))
+print("OK %d %s" % (len(stuck), "; ".join(stuck[:5])))
+PYEOF
+)
+        case "${oon_out:-}" in
+            OK*)
+                oon_n=$(printf '%s' "$oon_out" | awk '{print $2}')
+                oon_detail=$(printf '%s' "$oon_out" | cut -d' ' -f3-)
+                if [ "${oon_n:-0}" -gt 0 ]; then
+                    alert "PCN deposit STUCK: 3dmodel.oonak.ai" \
+                          "$oon_n deposit(s) held for over ${STUCK_HOURS}h. Money is recorded and not credited. $oon_detail"
+                fi
+                ;;
+            *)
+                alert "PCN monitor BROKEN: 3dmodel.oonak.ai" \
+                      "Could not read held deposits from $oon_dep (${oon_out:-no output}). Assume 3dmodel.oonak.ai deposits are UNMONITORED until this is fixed."
+                ;;
+        esac
+    fi
+fi
+
+if [ "$PROBLEMS" -eq 0 ]; then
+    log "all PCN deposit watchers healthy"
+fi
+exit 0
