@@ -1,0 +1,5 @@
+[taker fee (KMD)](https://kmdexplorer.gleec.com/tx/TODO_TAKER_FEE_TXID)
+[maker payment (PCN)](https://explorer.pc.am/tx/TODO_MAKER_PAYMENT_TXID)
+[taker payment (KMD)](https://kmdexplorer.gleec.com/tx/TODO_TAKER_PAYMENT_TXID)
+[taker payment spent (KMD)](https://kmdexplorer.gleec.com/tx/TODO_TAKER_PAYMENT_SPENT_TXID)
+[maker payment spent (PCN)](https://explorer.pc.am/tx/TODO_MAKER_PAYMENT_SPENT_TXID)

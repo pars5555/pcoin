@@ -1,0 +1,16 @@
+[Unit]
+Description=PCoin ElectrumX fleet health check
+Documentation=https://github.com/pars5555/pcoin/blob/main/contrib/electrumx/README.md
+OnFailure=pcoin-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pcoin-electrumx-watch
+
+# The check must never be the thing that loads the box.
+Nice=10
+MemoryMax=128M
+CPUQuota=15%
+# Six endpoints, each opening a TLS connection and two HTTPS calls to the
+# explorer. 120s is generous; a hang past that IS the finding.
+TimeoutStartSec=120

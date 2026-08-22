@@ -1,0 +1,15 @@
+[Unit]
+Description=Run the PCoin ElectrumX fleet health check every 10 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+
+# Both hosts run this check, and each tests BOTH servers. Without a spread they
+# would fire together and a single transient blip would fail four checks in the
+# same second, which reads as a fleet outage rather than a hiccup.
+RandomizedDelaySec=180
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,77 @@
+#!/bin/bash
+# Watch the PCoin ElectrumX fleet and fail loudly when it stops being listable.
+#
+# WHY THIS IS NOT "is the service running".
+#
+# Komodo's rule is written down and it is unforgiving: "Failing servers will
+# result in an automatic delisting of your coin upon the next release." Their
+# scanner is an outside client. So the only question that matters is what an
+# outside client sees, and there are at least five ways to fail it while
+# `systemctl is-active electrumx` says "active":
+#
+#   * the certificate expired -- renewal worked, nothing restarted, and
+#     ElectrumX reads the certificate exactly once, at startup
+#   * the wss port is not actually serving, so the coin quietly vanishes from
+#     the web wallet's generated config without anyone filing a delisting
+#   * the index stalled while the node kept moving
+#   * the index is running but WRONG, returning empty histories
+#   * a firewall or provider change closed the port from the outside while
+#     loopback still answers
+#
+# So this checks EVERY advertised endpoint of BOTH servers, by public hostname,
+# over the real transports, with certificate verification on -- from whichever
+# host it runs on. Installed on both, each machine is also the other's outside
+# observer, which is the only way a host that has fallen off the internet
+# entirely gets noticed by something other than a human.
+#
+# Conventions match the rest of contrib/seed-monitoring: this decides WHAT is
+# wrong, exits non-zero, and lets OnFailure= + pcoin-notify decide where that
+# goes. No credential lives in here.
+set -u
+
+CHECK=${CHECK:-/usr/local/bin/pcoin-electrumx-check}
+SERVERS=${SERVERS:-"electrum1.pc.am electrum2.pc.am"}
+# Addresses to cross-check the index against explorer.pc.am. Two, deliberately:
+# one ordinary payment address and one large mining address with hundreds of
+# transactions, because a deserializer bug can produce a correct answer for a
+# short history and a wrong one for a long one.
+ADDRS=${ADDRS:-"pc1qnfk7xenwzxx7h4mx88g004crlx0m2zcjg3nq4j pc1q85lry2j8n5yphq44mk86vc6u3rwygwlnc5ryc7"}
+MIN_CERT_DAYS=${MIN_CERT_DAYS:-10}
+MAX_LAG=${MAX_LAG:-3}
+
+# host:port:proto triples to test per server. tcp is included because it is
+# advertised in PEERS and used for peer discovery between the two servers.
+PORTS=${PORTS:-"50001:t 50002:s 50004:w"}
+
+addr_args=()
+for a in $ADDRS; do addr_args+=(--address "$a"); done
+
+failed=0
+report=""
+
+for host in $SERVERS; do
+	for pp in $PORTS; do
+		port=${pp%%:*}
+		proto=${pp##*:}
+		out=$("$CHECK" "$host:$port:$proto" \
+			--max-lag "$MAX_LAG" --min-cert-days "$MIN_CERT_DAYS" \
+			"${addr_args[@]}" 2>&1)
+		rc=$?
+		if [ $rc -ne 0 ]; then
+			failed=$((failed + 1))
+			report+=$'\n'"FAIL $host:$port ($proto)"$'\n'"$(echo "$out" | grep -E '\[FAIL\]|Traceback|Error' | head -6)"
+		else
+			report+=$'\n'"ok   $host:$port ($proto)"
+		fi
+	done
+done
+
+printf '%s\n' "${report# }"
+
+if [ "$failed" -gt 0 ]; then
+	echo
+	echo "UNHEALTHY: $failed endpoint check(s) failed. Komodo delists on failing servers."
+	exit 1
+fi
+echo
+echo "all ElectrumX endpoints healthy"

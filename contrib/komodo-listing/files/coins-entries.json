@@ -1,0 +1,60 @@
+[
+  {
+    "coin": "PCN",
+    "name": "pcoin",
+    "fname": "PCoin",
+    "sign_message_prefix": "PCoin Signed Message:\n",
+    "rpcport": 9443,
+    "pubtype": 55,
+    "p2shtype": 56,
+    "wiftype": 183,
+    "txversion": 2,
+    "txfee": 10000,
+    "segwit": true,
+    "bech32_hrp": "pc",
+    "mm2": 1,
+    "required_confirmations": 10,
+    "mature_confirmations": 100,
+    "avg_blocktime": 600,
+    "protocol": {
+      "type": "UTXO",
+      "chain_variant": "BTC"
+    },
+    "derivation_path": "m/44'/9444'",
+    "links": {
+      "github": "https://github.com/pars5555/pcoin",
+      "homepage": "https://pc.am"
+    }
+  },
+  {
+    "coin": "PCN-segwit",
+    "name": "pcoin",
+    "fname": "PCoin",
+    "sign_message_prefix": "PCoin Signed Message:\n",
+    "rpcport": 9443,
+    "pubtype": 55,
+    "p2shtype": 56,
+    "wiftype": 183,
+    "txversion": 2,
+    "txfee": 10000,
+    "segwit": true,
+    "bech32_hrp": "pc",
+    "address_format": {
+      "format": "segwit"
+    },
+    "orderbook_ticker": "PCN",
+    "mm2": 1,
+    "required_confirmations": 10,
+    "mature_confirmations": 100,
+    "avg_blocktime": 600,
+    "protocol": {
+      "type": "UTXO",
+      "chain_variant": "BTC"
+    },
+    "derivation_path": "m/84'/9444'",
+    "links": {
+      "github": "https://github.com/pars5555/pcoin",
+      "homepage": "https://pc.am"
+    }
+  }
+]
