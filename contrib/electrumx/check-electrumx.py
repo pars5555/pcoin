@@ -21,12 +21,23 @@ Check 4 is the point of the whole script. A server can pass 1-3 while returning
 an empty history for every address on the chain -- that is exactly what a coin
 class with the wrong version bytes or a mis-chosen deserializer looks like.
 
-Everywhere below, an unreadable answer is UNKNOWN and fails the check. It never
-becomes a zero and never becomes a pass: a comparison against a reference that
-could not be read would "confirm" a server that indexes nothing at all.
+An unreadable answer is UNKNOWN. It never becomes a zero and never becomes a
+pass: a comparison against a reference that could not be read would "confirm" a
+server that indexes nothing at all.
+
+But UNKNOWN is not the same as BROKEN, and conflating them is its own bug. An
+unreachable explorer, or two indexes momentarily at different heights, says
+nothing about this ElectrumX server. Reporting that as a failure produced two
+false alarms in the first six hours -- and a monitor that cries wolf gets muted,
+taking the real alert with it. So there are three outcomes, not two:
+
+    exit 0   every check passed
+    exit 1   the SERVER is broken -- alert
+    exit 2   the server looks fine, but a reference-dependent check could not be
+             completed. Not a pass. pcoin-electrumx-watch escalates only if this
+             persists across consecutive runs.
 
 Stdlib only, so it runs from a monitoring unit on a box with no venv.
-Exit status is 0 only if every check passed.
 """
 import argparse
 import base64
@@ -36,6 +47,7 @@ import os
 import socket
 import ssl
 import sys
+import time
 import urllib.request
 
 EXPLORER = "https://explorer.pc.am"
@@ -379,21 +391,29 @@ def explorer_json(path, timeout=20):
 
 
 def explorer_balance(addr):
-    """Confirmed balance in satoshis from explorer.pc.am, or None if unknown.
+    """(satoshis, as_of_height) from explorer.pc.am, or (None, None) if unknown.
 
     The field is onchain_unspent_sat, NOT mature_sat. Electrum's
     blockchain.scripthash.get_balance has no notion of coinbase maturity -- it
     sums every confirmed UTXO -- so mature_sat is the wrong comparison and would
     report a false MISMATCH on any mining address holding immature coinbases,
     which on this chain is most of them.
+
+    The HEIGHT is returned because the balance alone is not comparable. These are
+    two independently-advancing indexes: when one has ingested a block the other
+    has not, their answers differ by exactly that block's effect and BOTH are
+    correct. On this chain that is not a rare race -- one address mines ~70% of
+    blocks, so most new blocks move it by exactly one 50 PCN coinbase. Comparing
+    without aligning heights produced two false MISMATCH alerts in six hours,
+    each off by exactly 5000000000 sat.
     """
     d = explorer_json(f"/api/address/{addr}")
     if not isinstance(d, dict):
-        return None
+        return None, None
     conf = (d.get("balance") or {}).get("confirmed")
     if isinstance(conf, dict) and isinstance(conf.get("onchain_unspent_sat"), int):
-        return conf["onchain_unspent_sat"]
-    return None
+        return conf["onchain_unspent_sat"], conf.get("as_of_height")
+    return None, None
 
 
 def main():
@@ -422,23 +442,39 @@ def main():
     if proto not in ("t", "s", "w"):
         ap.error("proto must be t, s or w")
 
-    out = {"server": a.server, "checks": {}, "ok": True}
+    out = {"server": a.server, "checks": {}, "ok": True, "unverified": False}
 
     def fail(name, detail):
-        out["checks"][name] = {"ok": False, "detail": detail}
+        """The SERVER is broken. Alert."""
+        out["checks"][name] = {"state": "FAIL", "detail": detail}
         out["ok"] = False
 
+    def unverified(name, detail):
+        """The server looks fine but a check could not be COMPLETED.
+
+        Distinct from fail on purpose. An unreachable explorer, or two indexes
+        momentarily at different heights, says nothing about this ElectrumX
+        server -- and shouting "Komodo delists on failing servers" at it is a
+        false alarm. It is still not a pass: the caller gets exit code 2 and
+        decides, and pcoin-electrumx-watch only escalates when it persists.
+        """
+        out["checks"][name] = {"state": "UNVERIFIED", "detail": detail}
+        out["unverified"] = True
+
     def good(name, detail):
-        out["checks"][name] = {"ok": True, "detail": detail}
+        out["checks"][name] = {"state": "ok", "detail": detail}
 
     def report():
         if a.json:
             print(json.dumps(out, indent=1))
         else:
             for name, res in out["checks"].items():
-                print(f"  [{'ok  ' if res['ok'] else 'FAIL'}] {name}: {res['detail']}")
-            print("PASS" if out["ok"] else "FAIL")
-        return 0 if out["ok"] else 1
+                print(f"  [{res['state']:<10}] {name}: {res['detail']}")
+            print("PASS" if out["ok"] and not out["unverified"]
+                  else ("FAIL" if not out["ok"] else "UNVERIFIED"))
+        if not out["ok"]:
+            return 1
+        return 2 if out["unverified"] else 0
 
     try:
         cli = Electrum(host, port, proto, insecure=a.insecure)
@@ -483,8 +519,9 @@ def main():
 
         status = explorer_json("/api/status")
         if not isinstance(status, dict):
-            # Unreadable reference is UNKNOWN, not "in sync".
-            fail("lag", "could not read explorer.pc.am/api/status to compare -- UNVERIFIED")
+            # Unreadable reference is UNKNOWN, not "in sync" -- and not this
+            # server's fault either.
+            unverified("lag", "could not read explorer.pc.am/api/status to compare")
         else:
             exp_h = status["chain"]["height"]
             lag = exp_h - head["height"]
@@ -496,20 +533,44 @@ def main():
         for addr in a.address:
             try:
                 sh = scripthash(address_to_script(addr))
-                bal = cli.call("blockchain.scripthash.get_balance", [sh])
                 hist = cli.call("blockchain.scripthash.get_history", [sh])
             except Exception as e:
                 fail(f"address:{addr}", f"{type(e).__name__}: {e}")
                 continue
-            got = bal["confirmed"]
-            ref = explorer_balance(addr)
+
+            # Align the two indexes on a common height before comparing. Both
+            # advance independently, so a bare balance-vs-balance check is a race
+            # that this chain loses constantly -- see explorer_balance().
+            got = ref = ref_h = our_h = None
+            for attempt in range(4):
+                try:
+                    our_h = cli.call("blockchain.headers.subscribe")["height"]
+                    bal = cli.call("blockchain.scripthash.get_balance", [sh])
+                except Exception as e:
+                    fail(f"address:{addr}", f"{type(e).__name__}: {e}")
+                    got = None
+                    break
+                got = bal["confirmed"]
+                ref, ref_h = explorer_balance(addr)
+                if ref is None or ref_h == our_h:
+                    break
+                time.sleep(3)   # let the slower index catch up, then re-read BOTH
+
+            if got is None:
+                continue
             if ref is None:
-                fail(f"address:{addr}",
-                     f"electrumx says {got} sat over {len(hist)} txs, but "
-                     f"explorer.pc.am was unreadable -- UNVERIFIED, not confirmed")
+                unverified(f"address:{addr}",
+                           f"electrumx says {got} sat over {len(hist)} txs; "
+                           f"explorer.pc.am was unreadable, so nothing was compared")
+            elif ref_h != our_h:
+                unverified(f"address:{addr}",
+                           f"could not align heights after 4 tries "
+                           f"(electrumx at {our_h}, explorer at {ref_h}); "
+                           f"balances {got} vs {ref} are not comparable")
             elif ref != got:
                 fail(f"address:{addr}",
-                     f"MISMATCH: electrumx {got} sat vs explorer.pc.am {ref} sat")
+                     f"MISMATCH at the same height {our_h}: "
+                     f"electrumx {got} sat vs explorer.pc.am {ref} sat")
             else:
                 # Report unconfirmed explicitly. Without it, "0 sat over 1 txs"
                 # reads as a contradiction -- the confirmed balance is being

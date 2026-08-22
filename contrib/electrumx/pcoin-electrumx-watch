@@ -24,6 +24,21 @@
 # observer, which is the only way a host that has fallen off the internet
 # entirely gets noticed by something other than a human.
 #
+# AND WHY IT IS NOT TRIGGER-HAPPY EITHER.
+#
+# The first version treated "could not verify" as "failed". In six hours that
+# produced two false alarms: explorer.pc.am was briefly unreachable, and twice
+# the two indexes were one block apart while a 50 PCN coinbase landed on the
+# address being compared -- which on this chain happens constantly, because one
+# miner finds ~70% of blocks. Neither said anything about the ElectrumX servers,
+# and both shouted "Komodo delists on failing servers" at them.
+#
+# That is how a channel gets muted, taking the one real alert with it. So a
+# check that cannot be COMPLETED (exit 2) is now separated from a check that
+# FAILED (exit 1), and only a run of consecutive unverified rounds escalates --
+# because a reference that is unreadable for half an hour IS worth knowing about,
+# while one unreadable for thirty seconds is not.
+#
 # Conventions match the rest of contrib/seed-monitoring: this decides WHAT is
 # wrong, exits non-zero, and lets OnFailure= + pcoin-notify decide where that
 # goes. No credential lives in here.
@@ -38,15 +53,22 @@ SERVERS=${SERVERS:-"electrum1.pc.am electrum2.pc.am"}
 ADDRS=${ADDRS:-"pc1qnfk7xenwzxx7h4mx88g004crlx0m2zcjg3nq4j pc1q85lry2j8n5yphq44mk86vc6u3rwygwlnc5ryc7"}
 MIN_CERT_DAYS=${MIN_CERT_DAYS:-10}
 MAX_LAG=${MAX_LAG:-3}
+# Consecutive unverified rounds before escalating. At a 10-minute timer, 3 means
+# the reference has to be unusable for ~30 minutes before anyone is woken.
+UNVERIFIED_LIMIT=${UNVERIFIED_LIMIT:-3}
+STATE=${STATE:-/var/lib/pcoin-electrumx-watch/unverified_streak}
 
 # host:port:proto triples to test per server. tcp is included because it is
 # advertised in PEERS and used for peer discovery between the two servers.
 PORTS=${PORTS:-"50001:t 50002:s 50004:w"}
 
+mkdir -p "$(dirname "$STATE")"
+
 addr_args=()
 for a in $ADDRS; do addr_args+=(--address "$a"); done
 
 failed=0
+unverified=0
 report=""
 
 for host in $SERVERS; do
@@ -56,22 +78,44 @@ for host in $SERVERS; do
 		out=$("$CHECK" "$host:$port:$proto" \
 			--max-lag "$MAX_LAG" --min-cert-days "$MIN_CERT_DAYS" \
 			"${addr_args[@]}" 2>&1)
-		rc=$?
-		if [ $rc -ne 0 ]; then
+		case $? in
+		0)
+			report+=$'\n'"ok         $host:$port ($proto)"
+			;;
+		2)
+			unverified=$((unverified + 1))
+			report+=$'\n'"UNVERIFIED $host:$port ($proto)"$'\n'"$(echo "$out" | grep 'UNVERIFIED' | head -3)"
+			;;
+		*)
 			failed=$((failed + 1))
-			report+=$'\n'"FAIL $host:$port ($proto)"$'\n'"$(echo "$out" | grep -E '\[FAIL\]|Traceback|Error' | head -6)"
-		else
-			report+=$'\n'"ok   $host:$port ($proto)"
-		fi
+			report+=$'\n'"FAIL       $host:$port ($proto)"$'\n'"$(echo "$out" | grep -E '\[FAIL' | head -4)"
+			;;
+		esac
 	done
 done
 
 printf '%s\n' "${report# }"
+echo
 
+# A real failure resets nothing and escalates immediately.
 if [ "$failed" -gt 0 ]; then
-	echo
-	echo "UNHEALTHY: $failed endpoint check(s) failed. Komodo delists on failing servers."
+	echo "UNHEALTHY: $failed endpoint check(s) FAILED. Komodo delists on failing servers."
 	exit 1
 fi
-echo
+
+if [ "$unverified" -gt 0 ]; then
+	streak=$(( $(cat "$STATE" 2>/dev/null || echo 0) + 1 ))
+	echo "$streak" > "$STATE"
+	if [ "$streak" -ge "$UNVERIFIED_LIMIT" ]; then
+		echo "UNHEALTHY: $unverified check(s) have been UNVERIFIABLE for $streak"
+		echo "consecutive rounds. The servers themselves look fine -- this is most"
+		echo "likely explorer.pc.am, which every index cross-check depends on."
+		exit 1
+	fi
+	echo "$unverified check(s) unverified (streak $streak/$UNVERIFIED_LIMIT)."
+	echo "Servers look healthy; the reference could not be read. Not escalating yet."
+	exit 0
+fi
+
+: > "$STATE"
 echo "all ElectrumX endpoints healthy"

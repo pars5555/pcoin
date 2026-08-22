@@ -147,10 +147,36 @@ service.
    a machine that falls off the internet is noticed by something other than a
    person.
 
-Everywhere in this tooling, **an unreadable answer is UNKNOWN and fails the
-check.** It never becomes a zero and never becomes a pass. A balance comparison
-against a reference that could not be fetched would "confirm" a server that
-indexes nothing at all.
+Everywhere in this tooling, **an unreadable answer is UNKNOWN.** It never becomes
+a zero and never becomes a pass — a balance comparison against a reference that
+could not be fetched would "confirm" a server that indexes nothing at all.
+
+**But UNKNOWN is not BROKEN, and the first version conflated them.** In its first
+six hours the monitor raised two false alarms: once because `explorer.pc.am` was
+briefly unreachable, and twice because the two indexes were one block apart while
+a 50 PCN coinbase landed on the address being compared. Both deltas were exactly
+`5000000000` sat, both indexes were correct, and neither said anything about
+ElectrumX — yet both shouted *"Komodo delists on failing servers"*. That is how a
+channel gets muted, taking the real alert with it.
+
+So `check-electrumx.py` now has three outcomes:
+
+| exit | meaning |
+|---|---|
+| `0` | every check passed |
+| `1` | the **server** is broken — escalate immediately |
+| `2` | the server looks fine, but a reference-dependent check could not be **completed** |
+
+and two things changed to make that honest:
+
+* **Balance comparisons align on height first.** The explorer reports
+  `as_of_height`; the check re-reads both sides until that equals ElectrumX's tip,
+  up to four times. Only then is a difference a MISMATCH. Without this, a chain
+  where one miner finds ~70% of blocks races constantly.
+* **`pcoin-electrumx-watch` escalates an unverified round only after
+  `UNVERIFIED_LIMIT` consecutive ones** (default 3, so ~30 minutes at a 10-minute
+  timer). A reference unreadable for half an hour is worth knowing; one
+  unreadable for thirty seconds is not.
 
 ---
 
