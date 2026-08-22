@@ -485,9 +485,15 @@ namespace PCoinTray
             stack.Children.Add(_slider);
 
             _toggle.Margin = new Thickness(0, 10, 0, 0);
-            _toggle.Padding = new Thickness(0, 7, 0, 7);
+            // This is the primary action of the whole window, so it should read
+            // as one. 7px of padding and no minimum height rendered it as a thin
+            // strip -- narrower than the cards above it and easy to mistake for a
+            // label rather than the button you are meant to press.
+            _toggle.Padding = new Thickness(0, 12, 0, 12);
+            _toggle.MinHeight = 44;
             _toggle.HorizontalAlignment = HorizontalAlignment.Stretch;
-            _toggle.FontSize = 13;
+            _toggle.FontSize = 14;
+            _toggle.FontWeight = FontWeights.SemiBold;
             _toggle.Cursor = Cursors.Hand;
             _toggle.Click += (s, e) =>
             {
