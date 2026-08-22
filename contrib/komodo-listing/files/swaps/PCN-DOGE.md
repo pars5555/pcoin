@@ -1,0 +1,5 @@
+[taker fee (DOGE)](https://dogechain.info/tx/TODO_TAKER_FEE_TXID)
+[maker payment (PCN)](https://explorer.pc.am/tx/TODO_MAKER_PAYMENT_TXID)
+[taker payment (DOGE)](https://dogechain.info/tx/TODO_TAKER_PAYMENT_TXID)
+[taker payment spent (DOGE)](https://dogechain.info/tx/TODO_TAKER_PAYMENT_SPENT_TXID)
+[maker payment spent (PCN)](https://explorer.pc.am/tx/TODO_MAKER_PAYMENT_SPENT_TXID)

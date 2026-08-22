@@ -126,7 +126,7 @@ PCoin forked.
 | `electrums/PCN` | 2 servers, SSL + `ws_url`, contact on each |
 | `explorers/PCN` | two independent explorers |
 | `icons_original/pcn.png` | 256×256 PNG |
-| `swaps/PCN-KMD.md` | the five txids from the completed swap |
+| `swaps/PCN-DOGE.md` | the five txids from the completed swap |
 
 **On the `-segwit` sibling:** PCoin's own wallets — the Android app and the
 Windows tray — are BIP84-only and produce `pc1q…` addresses, and every mining

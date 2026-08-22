@@ -73,7 +73,7 @@ if [c['coin'] for c in parsed[-len(ours):]] != [o['coin'] for o in ours]:
     sys.exit("FAIL: our entries are not the last ones after insertion")
 open(path, 'w', encoding='utf-8', newline='').write(new_text)
 
-for rel in ('electrums/PCN', 'explorers/PCN', 'swaps/PCN-KMD.md', 'icons_original/pcn.png'):
+for rel in ('electrums/PCN', 'explorers/PCN', 'swaps/PCN-DOGE.md', 'icons_original/pcn.png'):
     s = os.path.join(src, rel)
     d = os.path.join(dest, rel)
     os.makedirs(os.path.dirname(d), exist_ok=True)
@@ -109,15 +109,15 @@ w, h = struct.unpack('>II', hdr[16:24])
 if w < 128 or h < 128:
     sys.exit(f"FAIL: icon is {w}x{h}, minimum is 128x128")
 
-swap = open(os.path.join(dest, 'swaps/PCN-KMD.md'), encoding='utf-8').read()
+swap = open(os.path.join(dest, 'swaps/PCN-DOGE.md'), encoding='utf-8').read()
 if 'TODO_' in swap:
-    print("WARNING: swaps/PCN-KMD.md still has placeholder txids.")
+    print("WARNING: swaps/PCN-DOGE.md still has placeholder txids.")
     print("         The completed swap is a HARD requirement -- do not open the")
     print("         PR until the five real transaction links are in that file.")
 else:
     lines = [l for l in swap.splitlines() if l.strip()]
     if len(lines) != 5:
-        sys.exit(f"FAIL: swaps/PCN-KMD.md has {len(lines)} lines, expected exactly 5")
+        sys.exit(f"FAIL: swaps/PCN-DOGE.md has {len(lines)} lines, expected exactly 5")
 
 print(f"applied: {len(ours)} coins entries, icon {w}x{h}, {len(srv)} electrum servers")
 PY
