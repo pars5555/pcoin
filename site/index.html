@@ -656,7 +656,10 @@
         <pre style="margin:0;padding:12px 14px;overflow-x:auto;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid var(--line-soft)"><code>$P = if (Test-Path C:\PCoin\bitcoin-cli.exe) { 'C:\PCoin' } else { "$env:LOCALAPPDATA\PCoin" }
 &amp; "$P\bitcoin-cli.exe" -datadir="$P\data" `
   startpoolmining "pool.pc.am:3333" "&lt;your pc1q… address&gt;" 4</code></pre>
-        <p style="margin:12px 0 4px"><b>Linux</b> — the <code>.deb</code> installs the CLI as
+        <p style="margin:14px 0 4px"><b>Linux — nothing installed yet?</b> Same idea, one command:</p>
+        <pre style="margin:0;padding:12px 14px;overflow-x:auto;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid var(--line-soft)"><code>curl -fsSL https://pc.am/dl/mine.sh | sudo sh</code></pre>
+        <p style="margin:8px 0 0;font-size:.93em;opacity:.85">It installs if needed, asks for your payout address and thread count, waits until the node has finished syncing, then starts mining and re-applies it after a reboot.</p>
+        <p style="margin:14px 0 4px"><b>Linux — already installed?</b> The <code>.deb</code> installs the CLI as
         <code>pcoin-cli</code>:</p>
         <pre style="margin:0;padding:12px 14px;overflow-x:auto;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid var(--line-soft)"><code>sudo -u pcoin pcoin-cli -datadir=/var/lib/pcoin \
   startpoolmining "pool.pc.am:3333" "&lt;your pc1q… address&gt;" 4</code></pre>
