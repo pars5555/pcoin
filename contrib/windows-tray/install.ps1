@@ -30,7 +30,7 @@ param(
     [string]$Sha256 = '6ae7182d1310066b58cd358e3c45214ea4663ca791b93cac16cd80a53df9bbbe',
     # All three seeds, not just one. The node also carries them compiled in as
     # of v1.2.1, so this is belt and braces rather than the only route in.
-    [string[]]$AddNode = @('35.239.156.16:9444', '35.238.47.14:9444', '178.105.3.51:9444'),
+    [string[]]$AddNode = @('35.239.156.16:9444', '178.105.3.51:9444', '152.53.171.190:9444'),
     [switch]$NoStart
 )
 
