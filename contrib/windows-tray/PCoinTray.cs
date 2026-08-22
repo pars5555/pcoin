@@ -672,14 +672,40 @@ namespace PCoinTray
             }
         }
 
-        //! Extra arguments applied to both bitcoind and bitcoin-cli, so the two
-        //! always agree about which datadir and network they are talking about.
+        //! Arguments applied to BOTH bitcoind and bitcoin-cli, so the two always
+        //! agree about which datadir and network they are talking about.
+        //!
+        //! ONLY put an argument here if bitcoin-cli itself declares it. The two
+        //! binaries have separate argument tables, and Core does not ignore an
+        //! argument it does not know: bitcoin-cli exits 1 with "Error parsing
+        //! command line arguments: Invalid parameter -x", which Cli() reads as
+        //! "the call failed". A daemon-only flag added here therefore does not
+        //! degrade one feature, it silently fails EVERY RPC the tray makes.
+        string CommonArgs()
+        {
+            return string.IsNullOrEmpty(_datadir) ? "" : "-datadir=\"" + _datadir + "\"";
+        }
+
+        //! Arguments for bitcoind: everything above, plus the daemon-only flags.
+        //!
+        //! -randomxfastmode is registered by the node's SetupServerArgs and by
+        //! nothing else, so it MUST NOT reach bitcoin-cli. It did until v1.3.6,
+        //! and the result was that ticking "Fast mode" bricked the whole tray:
+        //! every Cli() call exited 1, so _nodeUp could never become true, the
+        //! "intent is on but the node is not hashing" recovery could never fire,
+        //! ReviveNode() bailed out because bitcoind really was running, and
+        //! startmining was never issued. The node sat there in perfect health,
+        //! fast mode and all, mining NOTHING, while the tray showed "The PCoin
+        //! node is not answering" -- and the node reported mining=false with an
+        //! empty modereason, because a dataset nobody asked for has nothing to
+        //! say for itself. That cost a full evening to find; keep the split.
+        //!
+        //! Mining-only. The verification path stays in light mode whatever this
+        //! says, so the worst case of getting it wrong is a slower or a hungrier
+        //! miner -- never a different view of the chain.
         string NodeArgs()
         {
-            var args = string.IsNullOrEmpty(_datadir) ? "" : "-datadir=\"" + _datadir + "\"";
-            // Mining-only. The verification path stays in light mode whatever
-            // this says, so the worst case of getting it wrong is a slower or a
-            // hungrier miner -- never a different view of the chain.
+            var args = CommonArgs();
             if (_fastMode) args += " -randomxfastmode";
             return args;
         }
@@ -1742,6 +1768,16 @@ namespace PCoinTray
             {
                 try
                 {
+                    // Hold off the watchdog for the whole restart. This is the
+                    // one moment the node is MEANT to be down, and ReviveNode()
+                    // cannot tell a deliberate stop from a crash: it would see
+                    // no bitcoind, call EnsureNode() from its own thread, and
+                    // race this one into starting a SECOND bitcoind on a single
+                    // data directory -- the corruption EnsureNode's own comment
+                    // warns about. Reusing _reviveBusy keeps that to one flag
+                    // rather than inventing a second thing to keep in step.
+                    _reviveBusy = true;
+
                     // Stop mining first so no worker is mid-batch, then ask the
                     // node to stop. `stop` is a clean shutdown -- killing the
                     // process instead risks the unclean-shutdown rescan that
@@ -1781,6 +1817,11 @@ namespace PCoinTray
                     if (_nodeUp && _mining) SetMode(_percent);
                 }
                 catch (Exception ex) { Program.Note("fast-mode restart: " + ex.Message); }
+                // Must be a finally: leaving this set on the way out through an
+                // exception would disable the node watchdog for the rest of the
+                // session, turning a one-off restart failure into a machine that
+                // never recovers a node again.
+                finally { _reviveBusy = false; }
             }) { IsBackground = true, Name = "pcoin-fastmode" };
             t.Start();
         }
@@ -1986,7 +2027,8 @@ namespace PCoinTray
         {
             try
             {
-                string full = NodeArgs();
+                // CommonArgs(), never NodeArgs(): see the comment on both.
+                string full = CommonArgs();
                 full = (full.Length == 0 ? "" : full + " ") + args;
                 var psi = new ProcessStartInfo(Path.Combine(_dir, "bitcoin-cli.exe"), full)
                 {
