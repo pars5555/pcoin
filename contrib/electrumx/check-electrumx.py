@@ -511,8 +511,16 @@ def main():
                 fail(f"address:{addr}",
                      f"MISMATCH: electrumx {got} sat vs explorer.pc.am {ref} sat")
             else:
+                # Report unconfirmed explicitly. Without it, "0 sat over 1 txs"
+                # reads as a contradiction -- the confirmed balance is being
+                # compared against a total that includes the mempool, and the
+                # honest answer ("it is there, it has not confirmed") is exactly
+                # the information the line was hiding.
+                pending = (f", plus {bal['unconfirmed']} sat unconfirmed"
+                           if bal.get("unconfirmed") else "")
                 good(f"address:{addr}",
-                     f"{got} sat over {len(hist)} txs, matches explorer.pc.am")
+                     f"{got} sat confirmed over {len(hist)} txs{pending}, "
+                     f"confirmed matches explorer.pc.am")
     except Exception as e:
         fail("protocol", f"{type(e).__name__}: {e}")
     finally:
