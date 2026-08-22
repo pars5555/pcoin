@@ -286,6 +286,16 @@ CREATE TABLE IF NOT EXISTS shares (
 -- memory set dies with the process and this does not.
 CREATE UNIQUE INDEX IF NOT EXISTS shares_job_nonce ON shares(job_id, nonce);
 CREATE INDEX IF NOT EXISTS shares_miner ON shares(miner);
+-- Covering index for the two window queries: pplnsWindow walks back from the
+-- newest share, shareSummary sums a recent time slice. Both filter on a range
+-- over at/id and neither can use shares_miner to do it.
+--
+-- REQUIRED, not an optimisation. Those queries say GROUP BY +miner precisely
+-- to stop the planner choosing shares_miner for grouping; without this index
+-- there is nothing left to seek on, so they fall back to a full scan PLUS a
+-- temp b-tree -- slower than before the + was added. Schema and queries ship
+-- together or not at all.
+CREATE INDEX IF NOT EXISTS shares_at_miner ON shares(at, miner, weight);
 
 CREATE TABLE IF NOT EXISTS blocks (
   hash          TEXT PRIMARY KEY,
@@ -448,10 +458,41 @@ export class Store {
   async pplnsWindow(lastShareId, netTargetHex) {
     const blockWork = targetWeight(Buffer.from(netTargetHex, 'hex'));
     const N = blockWork * this.windowMultiplier;
+    // BOUNDED SCAN. The window is the newest shares walked back until their
+    // cumulative weight reaches N -- a few thousand rows in practice. But the
+    // outer `cum - weight < N` filter cannot be pushed into a window function,
+    // so `FROM shares WHERE id <= ?` made SQLite build a running total over
+    // EVERY row first: 1.09 s of CPU per call against 835k shares, run once per
+    // templatePollMs (2 s). That is ~54% of a core, permanently, and it grew
+    // with the table -- the pool's own service accounting showed 1d 14h of CPU
+    // burned in 4d 18h.
+    //
+    // So scan only the newest `limit` rows -- but trust that ONLY once those
+    // rows provably outweigh N. If they do, the window lies entirely inside
+    // them and the result is identical (checked against the unbounded query on
+    // the live table at four values of N: byte for byte the same). If they do
+    // not, the window would be silently TRUNCATED and miners UNDERPAID -- so
+    // widen and look again rather than answer. Being slow is recoverable;
+    // quietly paying the wrong people is not.
+    let limit = 65536;
+    for (;;) {
+      const [covered] = (await this.db.run(
+        `SELECT IFNULL(SUM(weight),0) FROM (SELECT weight FROM shares`
+        + ` WHERE id <= ${num(lastShareId)} ORDER BY id DESC LIMIT ${num(limit)});`)).rows;
+      if (BigInt(covered) >= N) break;
+      const [have] = (await this.db.run(
+        `SELECT COUNT(*) FROM shares WHERE id <= ${num(lastShareId)};`)).rows;
+      // Every share that exists still weighs less than N: the window IS the
+      // whole table, and looking wider cannot add a row.
+      if (limit >= Number(have)) { limit = Number(have) || 1; break; }
+      limit *= 2;
+    }
+
     const r = await this.db.run(
       `SELECT miner, SUM(weight), COUNT(*) FROM (`
       + `  SELECT miner, weight, SUM(weight) OVER (ORDER BY id DESC ROWS UNBOUNDED PRECEDING) AS cum`
-      + `  FROM shares WHERE id <= ${num(lastShareId)}`
+      + `  FROM (SELECT id, miner, weight FROM shares WHERE id <= ${num(lastShareId)}`
+      + `        ORDER BY id DESC LIMIT ${num(limit)})`
       + `) WHERE cum - weight < ${num(N)} GROUP BY miner ORDER BY 2 DESC;`);
     const entries = r.rows.map((line) => {
       const [m, w, n] = line.split('|');
@@ -779,8 +820,24 @@ export class Store {
   }
 
   async shareSummary(sinceMs) {
+    // GROUP BY +miner, not GROUP BY miner. The unary + is load-bearing.
+    //
+    // With a plain `GROUP BY miner` SQLite picks shares_miner -- because it
+    // supplies grouping order -- and SCANS THE WHOLE TABLE, then throws away
+    // everything outside the window. At 834k rows to find the ~868 in a ten
+    // minute window that cost 0.27 s of CPU per call, and apiSnapshot() runs
+    // it on every public API request. It was the largest single consumer on
+    // the box: 26 hours of CPU in 4.7 days.
+    //
+    // The + disqualifies shares_miner for grouping, so the planner uses the
+    // covering index shares_at_miner(at, miner, weight) to seek straight to
+    // the window: SEARCH ... USING COVERING INDEX (at>?), 0.00 s. Output is
+    // byte-identical -- this changes the plan, not the answer.
+    //
+    // Adding the index alone does NOT work; SQLite keeps preferring the
+    // grouping index even after ANALYZE. Index and + must ship together.
     const r = await this.db.run(
-      `SELECT miner, COUNT(*), SUM(weight), MAX(at) FROM shares WHERE at >= ${num(sinceMs)} GROUP BY miner ORDER BY 3 DESC;`);
+      `SELECT miner, COUNT(*), SUM(weight), MAX(at) FROM shares WHERE at >= ${num(sinceMs)} GROUP BY +miner ORDER BY 3 DESC;`);
     return r.rows.map((line) => {
       const [miner, n, w, last] = line.split('|');
       return { miner, shares: Number(n), weight: BigInt(w), last: Number(last) };

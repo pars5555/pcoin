@@ -693,8 +693,29 @@ const server = net.createServer((sock) => {
 
   // The public API. Bound to loopback on purpose: Caddy terminates TLS and
   // proxies in, so this process never parses bytes off the open internet.
+  // apiSnapshot() is recomputed on EVERY public API request -- by the pool
+  // dashboard, by miners, by monitoring -- and it is not free. The hashrate
+  // window is 600 s, so serving a snapshot a few seconds old changes nothing
+  // anyone can observe, while collapsing a steady request rate into one
+  // query per interval.
+  //
+  // In-flight requests share one promise rather than each starting their own
+  // query: without that, a burst on a cold cache stampedes and the cache makes
+  // things worse under exactly the load it exists to absorb. A failed snapshot
+  // is never cached -- an error must not be served for the next 5 seconds.
+  let snapValue = null, snapAt = 0, snapInFlight = null;
+  const SNAP_TTL_MS = CFG.apiCacheMs || 5000;
+  async function cachedSnapshot() {
+    if (snapValue && Date.now() - snapAt < SNAP_TTL_MS) return snapValue;
+    if (snapInFlight) return snapInFlight;
+    snapInFlight = apiSnapshot()
+      .then((s) => { snapValue = s; snapAt = Date.now(); snapInFlight = null; return s; })
+      .catch((e) => { snapInFlight = null; throw e; });
+    return snapInFlight;
+  }
+
   if (CFG.apiPort) {
-    const api = createApi({ cfg: CFG, snapshot: apiSnapshot, log });
+    const api = createApi({ cfg: CFG, snapshot: cachedSnapshot, log });
     api.on('error', (e) => log(`api server error: ${e.message}`));
     api.listen(CFG.apiPort, CFG.apiBind || '127.0.0.1',
       () => log(`api on ${CFG.apiBind || '127.0.0.1'}:${CFG.apiPort} (/api/pools)`));
