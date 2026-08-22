@@ -16,8 +16,13 @@
 #
 # All three verified resolving from seed.pc.am and accepting tcp/9444 on
 # 2026-08-04. Reverse DNS: two GCP, one Hetzner; all static addresses.
+#
+# 35.238.47.14 (GCP "tbots") decommissioned 2026-08-22: the box was destroyed
+# after its apps + the keystore-vault mirror were migrated to 35.239.156.16, and
+# its A record was removed from seed.pc.am the same day. Already-shipped binaries
+# still carry this IP and will time out on it once before falling through to the
+# remaining seeds; new binaries built after this commit will not.
 35.239.156.16:9444
-35.238.47.14:9444
 178.105.3.51:9444
 #
 # Seed 4 added 2026-08-18: 152.53.171.190 (Netcup, Debian 13, 16-core EPYC).

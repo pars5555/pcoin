@@ -962,7 +962,7 @@ ledger key below is not negotiable.
 
 | service | credits you get | deposit address | code |
 |---|---|---|---|
-| **checker.pc.am** | credits | `pc1qnfk7xenwzxx7h4mx88g004crlx0m2zcjg3nq4j` | `pars5555/checker-pc-am`, on 35.238.47.14 |
+| **checker.pc.am** | credits | `pc1qnfk7xenwzxx7h4mx88g004crlx0m2zcjg3nq4j` | `pars5555/checker-pc-am`, on 152.53.171.190 |
 | **webbuilderbot** | USD balance | `pc1q59d4tnhq6k3qqa9u5gvtuj05zswnjz3a900uxa` | `oonak-ai/ai-tgbot`, on 116.203.221.42 |
 | **aicontrol.pc.am** | USD credit | `pc1q8ghcjcxxuv6wg4sp7zhs6udv3vfpm6y8l9kfm5` | `oonak-ai/aicontrol-server` |
 | **3dmodels.pc.am** | credits | `pc1qtadn46mj4p6w9gwgykz8j7h8yh89k90rsqxgsv` | own repo, **no remote** — one disk |
