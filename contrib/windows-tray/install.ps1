@@ -299,9 +299,14 @@ try {
     $who = (Get-CimInstance Win32_ComputerSystem).UserName
     if ($who) {
         $exePath = Join-Path $InstallDir 'PCoinTray.exe'
-        schtasks /create /tn PCoinMiner /tr $exePath /sc onlogon /ru $who /it /rl LIMITED /f | Out-Null
+        # 2>$null matters: without admin schtasks prints a bare
+        #   ERROR: Access is denied.
+        # straight to stderr, which lands in the middle of a successful install
+        # and reads like the whole thing failed. It did not -- the Startup
+        # shortcut already covers autostart. Say that instead.
+        schtasks /create /tn PCoinMiner /tr $exePath /sc onlogon /ru $who /it /rl LIMITED /f 2>$null | Out-Null
         if ($LASTEXITCODE -eq 0) { Write-Output "  autostart task created for $who" }
-        else { Write-Output '  autostart task could not be created (shortcut still applies)' }
+        else { Write-Output '  autostart task needs admin -- skipped (the Startup shortcut already starts it at logon)' }
     }
 } catch {
     Write-Output ('  autostart task skipped: ' + $_.Exception.Message)
@@ -355,3 +360,21 @@ if (-not $NoStart) {
     }
 }
 Write-Output 'PCOIN_INSTALL_DONE'
+
+# A run without admin succeeds, but silently does less. List exactly what was
+# missed and the one command that adds it, so 'skipped (needs admin)' three
+# lines up is actionable rather than just noted.
+$isAdmin = ([Security.Principal.WindowsPrincipal] `
+    [Security.Principal.WindowsIdentity]::GetCurrent()
+  ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    Write-Output ''
+    Write-Output '  WHAT ADMIN WOULD HAVE ADDED (everything above still works):'
+    Write-Output '    - Defender exclusions, so scans do not throttle the miner'
+    Write-Output '    - an inbound firewall rule for port 9444 (better peer connectivity)'
+    Write-Output '    - a logon scheduled task, and installation into C:\PCoin'
+    Write-Output ''
+    Write-Output '  To add them: right-click PowerShell > Run as administrator, then re-run'
+    Write-Output '  the same one-liner. It is safe to run twice.'
+    Write-Output ''
+}

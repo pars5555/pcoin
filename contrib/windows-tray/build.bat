@@ -28,7 +28,13 @@ if not exist "%FW%\WPF\PresentationFramework.dll" (
   exit /b 1
 )
 
+rem /win32icon puts pcoin.ico INSIDE the exe. Without it the taskbar, alt-tab,
+rem Explorer and every shortcut fall back to the default .NET icon -- and the
+rem shortcut cannot help, because install.ps1 only sets IconLocation when a
+rem separate pcoin.ico exists next to the exe, which the release zip does not
+rem ship. Embedding needs nothing shipped alongside it.
 "%CSC%" /nologo /target:winexe /optimize+ /out:PCoinTray.exe ^
+  /win32icon:pcoin.ico ^
   /win32manifest:PCoinTray.manifest ^
   /reference:System.dll ^
   /reference:System.Core.dll ^
