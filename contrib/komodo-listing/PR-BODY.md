@@ -27,11 +27,30 @@ What that means concretely:
   balance-sheet risk**. The risk transfers wholly to whoever takes the PCN side
   of a swap: a majority miner can reorg the PCN funding transaction after the
   other leg has settled irreversibly.
-- **`required_confirmations` does not fix this and I am not claiming it does.**
-  Confirmations set an attacker's waiting time, not their cost. I have set it to
-  `10`, which is the highest value in use anywhere in this repository across all
-  UTXO coins — so it is the ceiling of what the field can express, and it is
-  still not a defence at 70%.
+- **`required_confirmations` does not fix this, and on a 600-second chain it
+  cannot even try.** Confirmations set an attacker's waiting time, not their
+  cost. I first set it to `10` — the highest value in use anywhere in this
+  repository — and then tested it, and **every swap fails**:
+
+  > `MakerPaymentWaitConfirmFailed` — *"Waited too long … for transaction
+  > b03d58f9… to be confirmed 10 times"* (it reached 4)
+
+  KDF requires the maker payment to confirm within **40% of `PAYMENT_LOCKTIME`**,
+  which is `3600*2 + 300*2 = 7800 s`, so **3120 s**. At 600 s spacing that is
+  ~5.2 blocks expected, and block spacing under LWMA is noisy in both
+  directions. Ten is unreachable; even 5 would fail roughly a third of the time.
+  The 4× locktime extension is a hardcoded list — `BCH | BTG | SBTC` — that PCN
+  cannot join without a change to your codebase.
+
+  **So it is `2`**, which is what BLOZ (a 600 s Bitcoin fork merged this month)
+  uses, and one above BTC's own `1`. I would rather ship a value that works than
+  a value that signals caution and silently breaks every swap.
+
+  Read that as sharpening the disclosure, not softening it: **on a chain with
+  this block time, `required_confirmations` cannot express a defence against a
+  70% miner at all.** The number is a liveness parameter here, not a security
+  one. If you would rather PCN were not listed on those terms, that is a
+  reasonable call.
 - Supporting facts, all verifiable from the repo and the explorer:
   `nMinimumChainWork` is `0` and `PermittedDifficultyTransition()` returns true
   unconditionally above the LWMA activation height, so there is no work-based

@@ -13,7 +13,7 @@
     "segwit": true,
     "bech32_hrp": "pc",
     "mm2": 1,
-    "required_confirmations": 10,
+    "required_confirmations": 2,
     "mature_confirmations": 100,
     "avg_blocktime": 600,
     "protocol": {
@@ -44,7 +44,7 @@
     },
     "orderbook_ticker": "PCN",
     "mm2": 1,
-    "required_confirmations": 10,
+    "required_confirmations": 2,
     "mature_confirmations": 100,
     "avg_blocktime": 600,
     "protocol": {
