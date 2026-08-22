@@ -51,7 +51,7 @@ const cfg = {
   magic: 'cfa2d1b8',
   protocolVersion: 70016,
   userAgent: '/pcoin-dnsseed:0.1/',
-  seeds: ['35.239.156.16', '35.238.47.14', '178.105.3.51', '152.53.171.190'],
+  seeds: ['35.239.156.16', '178.105.3.51', '152.53.171.190'],
   state: '/var/lib/pcoin-dnsseed/nodes.json',
   maxAnswers: 16,
   ttl: 60,

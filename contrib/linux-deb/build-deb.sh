@@ -254,7 +254,7 @@ maxconnections=40
 fallbackfee=0.00001
 changetype=bech32
 addnode=35.239.156.16:9444
-addnode=35.238.47.14:9444
+addnode=152.53.171.190:9444
 addnode=178.105.3.51:9444
 CONF
     chown pcoin:pcoin /var/lib/pcoin/pcoin.conf

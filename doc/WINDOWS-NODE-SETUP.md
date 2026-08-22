@@ -74,7 +74,7 @@ Notes:
 - Change `rpcpassword`. For something better than a plaintext password, use
   `share/rpcauth/rpcauth.py` from the source tree and put the resulting
   `rpcauth=` line in the config instead of `rpcuser`/`rpcpassword`.
-- The node finds the network on its own: it resolves the DNS seed `seed.pc.am` and, if that yields nothing, falls back to compiled-in fixed seeds. `addnode=` lines pointing at the seeds (35.239.156.16:9444, 35.238.47.14:9444, 178.105.3.51:9444) or at each other are belt-and-braces, not a requirement.
+- The node finds the network on its own: it resolves the DNS seed `seed.pc.am` and, if that yields nothing, falls back to compiled-in fixed seeds. `addnode=` lines pointing at the seeds (35.239.156.16:9444, 178.105.3.51:9444, 152.53.171.190:9444) or at each other are belt-and-braces, not a requirement.
 
 ## 3. First run (foreground, to check it works)
 
