@@ -31,7 +31,9 @@ param(
     # All three seeds, not just one. The node also carries them compiled in as
     # of v1.2.1, so this is belt and braces rather than the only route in.
     [string[]]$AddNode = @('35.239.156.16:9444', '178.105.3.51:9444', '152.53.171.190:9444'),
-    [switch]$NoStart
+    [switch]$NoStart,
+    # Set by the elevated relaunch so it cannot ask again and loop.
+    [switch]$NoElevate
 )
 
 $ErrorActionPreference = 'Stop'
@@ -85,6 +87,37 @@ Start-Sleep -Seconds 4
 # --- download and verify -------------------------------------------------
 $zip = Join-Path $env:TEMP $name
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+$script:IsAdmin = ([Security.Principal.WindowsPrincipal] `
+    [Security.Principal.WindowsIdentity]::GetCurrent()
+  ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+# OFFER elevation, never demand it. A one-liner that refuses without admin is a
+# one-liner most people will not run, and everything essential works unelevated.
+# But three 'skipped (needs admin)' lines are only useful if there is a way to
+# act on them, and re-typing the command with a different shell is friction
+# enough that nobody does. -NoElevate keeps it non-interactive for scripts.
+if (-not $script:IsAdmin -and -not $NoElevate) {
+    Write-Output ''
+    Write-Output '  Not running as administrator. Without it this install skips:'
+    Write-Output '    - Defender exclusions (scans throttle the miner)'
+    Write-Output '    - the inbound firewall rule for port 9444 (fewer peers)'
+    Write-Output '    - the logon scheduled task, and installing into C:\PCoin'
+    $reply = Read-Host '  Relaunch as administrator to include them? [Y/n]'
+    if ($reply -notmatch '^[Nn]') {
+        $inner = "& ([scriptblock]::Create((irm https://pc.am/dl/install.ps1))) -Threads $Threads -NoElevate"
+        try {
+            Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-NoExit','-Command',$inner
+            Write-Output '  Continuing in the elevated window. You can close this one.'
+            return
+        } catch {
+            # UAC declined, or no interactive desktop. Carry on unelevated --
+            # refusing here would leave the machine with nothing installed.
+            Write-Output '  Elevation declined; continuing without it.'
+        }
+    }
+    Write-Output ''
+}
 Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
 $got = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
 if ($Sha256 -and $got -ne $Sha256.ToLower()) { throw "SHA256 mismatch: got $got" }
@@ -311,14 +344,19 @@ try {
     $who = (Get-CimInstance Win32_ComputerSystem).UserName
     if ($who) {
         $exePath = Join-Path $InstallDir 'PCoinTray.exe'
-        # 2>$null matters: without admin schtasks prints a bare
+        # Do not CALL schtasks without admin. It writes a bare
         #   ERROR: Access is denied.
-        # straight to stderr, which lands in the middle of a successful install
-        # and reads like the whole thing failed. It did not -- the Startup
-        # shortcut already covers autostart. Say that instead.
-        schtasks /create /tn PCoinMiner /tr $exePath /sc onlogon /ru $who /it /rl LIMITED /f 2>$null | Out-Null
-        if ($LASTEXITCODE -eq 0) { Write-Output "  autostart task created for $who" }
-        else { Write-Output '  autostart task needs admin -- skipped (the Startup shortcut already starts it at logon)' }
+        # to stderr, and redirecting that with 2>$null does not silence it -- in
+        # PowerShell 5.1 a native command's redirected stderr is wrapped in a
+        # NativeCommandError and THROWN, so the catch below printed the very same
+        # text. Asking first is the only way it stays quiet.
+        if (-not $script:IsAdmin) {
+            Write-Output '  autostart task needs admin -- skipped (the Startup shortcut already starts it at logon)'
+        } else {
+            schtasks /create /tn PCoinMiner /tr $exePath /sc onlogon /ru $who /it /rl LIMITED /f | Out-Null
+            if ($LASTEXITCODE -eq 0) { Write-Output "  autostart task created for $who" }
+            else { Write-Output '  autostart task could not be created (the Startup shortcut still applies)' }
+        }
     }
 } catch {
     Write-Output ('  autostart task skipped: ' + $_.Exception.Message)
