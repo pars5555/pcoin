@@ -1084,12 +1084,26 @@ namespace PCoinTray
             }
         }
 
+        //! Say what this setting will actually DO, including when more is not more.
+        //!
+        //! The old label read "100% - 24 of 24 cores", which promises a payoff
+        //! that does not exist: past the point where the RandomX scratchpads stop
+        //! fitting in L3, extra threads make the machine mine LESS (see Cpu). An
+        //! owner who dragged this to the end got a hot, unusable PC producing
+        //! about half the coin of the same PC at a third of the setting, with
+        //! nothing on screen hinting at it. Now the slider stops at the useful
+        //! number and the label explains the stop, because a control that
+        //! silently ignores its own top half is its own kind of lie.
         void UpdateSliderLabel(int percent, bool pending)
         {
-            int threads = Math.Max(1, Math.Min(Math.Max(1, _last.Cores),
-                (int)Math.Round(Math.Max(1, _last.Cores) * percent / 100.0, MidpointRounding.AwayFromZero)));
+            int cores = Math.Max(1, _last.Cores);
+            int threads = Cpu.ThreadsFor(percent, cores, _last.FastMode);
+            int ceiling = Cpu.CeilingFor(cores, _last.FastMode);
+            string note = "";
+            if (ceiling < cores && threads >= ceiling)
+                note = "  -  the most this CPU mines faster with in fast mode";
             _sliderLabel.Text = string.Format(CultureInfo.InvariantCulture,
-                "{0}%  -  {1} of {2} cores{3}", percent, threads, Math.Max(1, _last.Cores),
+                "{0}%  -  {1} of {2} cores{3}{4}", percent, threads, cores, note,
                 pending ? "  (release to apply)" : "");
         }
 

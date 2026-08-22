@@ -191,6 +191,133 @@ namespace PCoinTray
         }
     }
 
+    /**
+     * How many mining threads this CPU actually gets FASTER with, and the one
+     * place the percent -> threads mapping lives.
+     *
+     * THE CAP APPLIES TO FAST MODE ONLY, and that distinction is the whole
+     * point -- capping both would cost light-mode miners a fifth of their rate.
+     * Measured on an i9-10920X (12 physical cores, 24 logical, 19.25 MB L3),
+     * 40 s per point, same machine, same chain:
+     *
+     *     threads       4      8      9     12     16     20     24
+     *     fast  H/s  1456   2565   2720   2158   1330   1160   1183
+     *     light H/s   205    375    392    462    458    505    489
+     *
+     * Fast mode holds the whole 2080 MiB dataset in RAM and each thread grinds a
+     * 2 MiB scratchpad that is designed to sit in L3. 19.25 MB of L3 holds nine
+     * of them; past that the threads evict each other's scratchpads and the
+     * per-thread rate collapses faster than the extra threads add, so the TOTAL
+     * falls -- all twenty-four cores produce less than four do. Light mode has
+     * no dataset to stream and recomputes items instead, so it is ALU-bound
+     * rather than cache-bound: hyperthread siblings genuinely help, and it keeps
+     * climbing to about twenty threads.
+     *
+     * So the failure this prevents is specific: in FAST mode the top of the
+     * slider was strictly worse on every axis at once -- less PCN, more heat,
+     * more power, an unusable desktop. The owner who found it had tried 15% and
+     * 100% and could not tell them apart, which is exactly right: 100% was
+     * 1183 H/s and 15% was 1456. In LIGHT mode the same top of the slider is
+     * honest, so it is left alone.
+     *
+     * UNKNOWN IS NOT UNLIMITED. If the topology cannot be read we fall back to
+     * half the logical processors: right on every hyperthreaded machine, merely
+     * conservative on the rest. Guessing "all of them" is the one answer we know
+     * to be harmful in fast mode.
+     */
+    static class Cpu
+    {
+        const uint RELATION_PROCESSOR_CORE = 0;
+        const uint RELATION_CACHE = 2;
+        const long SCRATCHPAD_BYTES = 2L * 1024 * 1024;   // RANDOMX_SCRATCHPAD_L3
+
+        // SYSTEM_LOGICAL_PROCESSOR_INFORMATION. The trailing union is 16 bytes,
+        // so the whole record is 32 on x64 -- Size=32 is load-bearing: with an
+        // explicit layout Marshal.SizeOf would otherwise report 24 (the last
+        // field's extent) and every record after the first would be misread.
+        [StructLayout(LayoutKind.Explicit, Size = 32)]
+        struct SLPI
+        {
+            [FieldOffset(0)]  public ulong ProcessorMask;
+            [FieldOffset(8)]  public uint  Relationship;
+            [FieldOffset(16)] public byte  CacheLevel;
+            [FieldOffset(20)] public uint  CacheSize;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        static extern bool GetLogicalProcessorInformation(IntPtr buffer, ref uint returnLength);
+
+        static int _useful = -1;
+
+        public static int UsefulThreads(int logicalCores)
+        {
+            if (logicalCores < 1) logicalCores = 1;
+            if (_useful > 0) return Math.Min(_useful, logicalCores);
+
+            int answer = Math.Max(1, logicalCores / 2);   // see the note above
+            try
+            {
+                if (IntPtr.Size == 8)
+                {
+                    uint len = 0;
+                    GetLogicalProcessorInformation(IntPtr.Zero, ref len);   // sizing call
+                    if (len > 0)
+                    {
+                        IntPtr buf = Marshal.AllocHGlobal((int)len);
+                        try
+                        {
+                            if (GetLogicalProcessorInformation(buf, ref len))
+                            {
+                                int stride = Marshal.SizeOf(typeof(SLPI));
+                                int physical = 0;
+                                long l3 = 0;
+                                for (int i = 0; i + stride <= (int)len; i += stride)
+                                {
+                                    var e = (SLPI)Marshal.PtrToStructure(
+                                        (IntPtr)(buf.ToInt64() + i), typeof(SLPI));
+                                    if (e.Relationship == RELATION_PROCESSOR_CORE) physical++;
+                                    else if (e.Relationship == RELATION_CACHE && e.CacheLevel == 3) l3 += e.CacheSize;
+                                }
+                                int byCache = (int)(l3 / SCRATCHPAD_BYTES);
+                                if (physical > 0 && byCache > 0) answer = Math.Min(physical, byCache);
+                                else if (physical > 0) answer = physical;
+                            }
+                        }
+                        finally { Marshal.FreeHGlobal(buf); }
+                    }
+                }
+            }
+            catch { /* fall back; never let topology detection stop the miner */ }
+
+            _useful = Math.Max(1, Math.Min(answer, logicalCores));
+            return _useful;
+        }
+
+        //! percent -> thread count. Percent still means a share of the machine,
+        //! so an existing config keeps the thread count it already had; the only
+        //! change is that in FAST mode the top of the range can no longer ask for
+        //! a number that mines LESS. This lives here because the tray and the
+        //! window used to compute it separately, and two copies of a formula is
+        //! one bug waiting to drift.
+        public static int ThreadsFor(int percent, int logicalCores, bool fastMode)
+        {
+            if (percent <= 0) return 0;
+            if (logicalCores < 1) logicalCores = 1;
+            int t = (int)Math.Round(logicalCores * percent / 100.0, MidpointRounding.AwayFromZero);
+            t = Math.Max(1, Math.Min(logicalCores, t));
+            return fastMode ? Math.Min(t, UsefulThreads(logicalCores)) : t;
+        }
+
+        //! The ceiling actually in force, or logicalCores when there is none.
+        //! Callers use this to decide whether to explain the ceiling to the user.
+        public static int CeilingFor(int logicalCores, bool fastMode)
+        {
+            if (logicalCores < 1) logicalCores = 1;
+            return fastMode ? UsefulThreads(logicalCores) : logicalCores;
+        }
+    }
+
     class TrayApp : ApplicationContext
     {
         readonly NotifyIcon _icon = new NotifyIcon();
@@ -302,12 +429,7 @@ namespace PCoinTray
 
         //! Percentage of the machine -> worker threads. Always at least one
         //! thread, never more than the machine has.
-        int ThreadsFor(int percent)
-        {
-            if (percent <= 0) return 0;
-            int t = (int)Math.Round(_cores * percent / 100.0, MidpointRounding.AwayFromZero);
-            return Math.Max(1, Math.Min(_cores, t));
-        }
+        int ThreadsFor(int percent) { return Cpu.ThreadsFor(percent, _cores, _fastMode); }
 
         public TrayApp() : this(false) { }
 
