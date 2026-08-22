@@ -1158,7 +1158,12 @@ namespace PCoinTray
             border.SetBinding(Border.BackgroundProperty, new System.Windows.Data.Binding("Background") { RelativeSource = System.Windows.Data.RelativeSource.TemplatedParent });
             border.SetBinding(Border.BorderBrushProperty, new System.Windows.Data.Binding("BorderBrush") { RelativeSource = System.Windows.Data.RelativeSource.TemplatedParent });
             border.SetBinding(Border.BorderThicknessProperty, new System.Windows.Data.Binding("BorderThickness") { RelativeSource = System.Windows.Data.RelativeSource.TemplatedParent });
-            border.SetValue(Border.PaddingProperty, new Thickness(0));
+            // Bind Padding to the button, do NOT nail it to zero. This template
+            // replaces the entire visual tree, so a hardcoded 0 here silently
+            // discarded every Padding set by a caller -- which is why raising
+            // _toggle.Padding did nothing at all and Start mining kept rendering
+            // as a thin strip.
+            border.SetBinding(Border.PaddingProperty, new System.Windows.Data.Binding("Padding") { RelativeSource = System.Windows.Data.RelativeSource.TemplatedParent });
 
             var presenter = new FrameworkElementFactory(typeof(ContentPresenter));
             presenter.SetValue(ContentPresenter.HorizontalAlignmentProperty, HorizontalAlignment.Center);
