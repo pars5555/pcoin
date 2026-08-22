@@ -167,10 +167,23 @@ indexes nothing at all.
 * **systemd `EnvironmentFile` needs `KEY=value` with no spaces.** ElectrumX's own
   docs show `COIN = Bitcoin`, which is envdir syntax and produces variables that
   are never read.
-* **Port 80 must be reachable for HTTP-01.** On seed 3 Caddy owns it and a
-  `http://electrum1.pc.am` block serves the webroot — written as `http://` on
-  purpose so Caddy does not race certbot for the same authorisation. On seed 4
-  ufw allows 80 only from Cloudflare's ranges because `checker.pc.am` sits behind
-  Cloudflare, so `/usr/local/sbin/acme-port80` opens it for the seconds the
-  challenge needs and closes it again — wired in as certbot pre/post hooks so it
-  also works on unattended renewal.
+* **Certificates use DNS-01, not HTTP-01, and that is deliberate.**
+  `electrum2.pc.am` lives on a host where ufw allows 80/443 only from
+  Cloudflare's ranges, because `checker.pc.am` — somebody else's production
+  service — sits behind Cloudflare there. HTTP-01 validates from unpublished
+  vantage points, so it cannot be allowed by source address: the port must be
+  open to the world while the challenge is fetched.
+
+  The first implementation did exactly that, opening port 80 for the couple of
+  seconds needed and closing it again via certbot pre/post hooks. It worked, but
+  it briefly exposed an unrelated production origin six times a year — and when
+  a run failed before reaching the post-hook, the port stayed open until somebody
+  noticed. It happened twice during setup. `enable-tls.sh` now closes it from a
+  `trap` for that reason, but the real fix was to stop needing port 80 at all.
+
+  Both certificates are issued with `--dns-cloudflare` against a token scoped
+  `Zone:DNS:Edit` on `pc.am` only, at `/etc/letsencrypt/cloudflare.ini` (0600).
+  The token is recorded in `D:\pc.am\PCOIN-SECRETS.md` §17 and must never enter
+  this repository. `enable-tls.sh` still contains the HTTP-01 webroot path, which
+  is the right fallback for a host with no Cloudflare zone — a third server
+  somewhere else can still use it.
