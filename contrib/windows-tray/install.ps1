@@ -113,6 +113,18 @@ foreach ($attempt in 1..6) {
         # COPYING sits beside the bin\ directory, not inside it.
         Get-ChildItem -Path $tmp -Filter 'COPYING' -Recurse -File |
             ForEach-Object { Copy-Item $_.FullName $InstallDir -Force }
+        # PCoinTray.exe may sit ABOVE the node binaries rather than beside them:
+        # the zip is being restructured so only the miner is at the root and
+        # bitcoind/bitcoin-cli move into bin\, because four exes in one folder
+        # gave no clue which to run. Flattening from $srcDir alone would then
+        # leave the tray behind and trip the 'PCoinTray.exe is missing' check
+        # below. Sweep for it wherever it is, so BOTH the old flat archive and
+        # the new nested one install identically.
+        Get-ChildItem -Path $tmp -Filter 'PCoinTray.exe' -Recurse -File |
+            Select-Object -First 1 |
+            ForEach-Object { Copy-Item $_.FullName $InstallDir -Force }
+        Get-ChildItem -Path $tmp -Filter 'START HERE.txt' -Recurse -File |
+            ForEach-Object { Copy-Item $_.FullName $InstallDir -Force }
         break
     } catch {
         if ($attempt -eq 6) { throw }
