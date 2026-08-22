@@ -1727,7 +1727,22 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
     // to run a validating node because an optional mining accelerator is
     // unavailable would take a node off a live chain for a speed preference.
     if (args.GetBoolArg("-randomxfastmode", DEFAULT_RANDOMX_FAST_MODE)) {
-        const int build_threads{static_cast<int>(args.GetIntArg("-randomxfastmodethreads", 0))};
+        // The help text for -randomxfastmodethreads promises "half the cores, at
+        // least one". GetIntArg's fallback of 0 is not that, and 0 is not a
+        // harmless sentinel here: the dataset build gets zero threads, so
+        // datasetprogress sticks at 0, the state never reaches READY, and the
+        // supervisor waits for a transition that can never happen. The node then
+        // mines NOTHING while reporting mode=light, fastthreads=0 and an empty
+        // modereason -- no error, no fallback, no explanation.
+        //
+        // The Windows tray passes -randomxfastmode alone and never the thread
+        // count, so every fast-mode user hit exactly this. Resolve the documented
+        // default here rather than leaving each caller to remember it.
+        int build_threads{static_cast<int>(args.GetIntArg("-randomxfastmodethreads", 0))};
+        if (build_threads <= 0) {
+            const unsigned hw{std::thread::hardware_concurrency()};
+            build_threads = std::max(1, static_cast<int>(hw / 2));
+        }
         node::GetCpuMiner().SetFastModeIntent(/*enabled=*/true, build_threads);
         // Report the answer this machine would give TODAY, without allocating
         // anything, so an operator learns at startup that a box is ineligible
