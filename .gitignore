@@ -83,3 +83,7 @@ SYSTEM-README.md
 # collector token; state.json is runtime data. Only the example is tracked.
 contrib/ops-dashboard/config.json
 contrib/ops-dashboard/state.json
+
+# Built release artifacts -- produced by pack-win64.py, published to GitHub releases.
+contrib/windows-tray/pcoin-win64-miner.zip
+contrib/windows-tray/PCoinTray.exe
