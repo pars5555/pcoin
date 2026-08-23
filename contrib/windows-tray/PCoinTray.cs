@@ -495,6 +495,11 @@ namespace PCoinTray
         long _sharesAccepted;
         long _sharesRejected;
         string _poolStatus = "";       // empty means the pool connection is fine
+        // Share heartbeat: the clock time at which sharesAccepted last rose, so
+        // the window can show "last share N s ago" -- a live pulse a bare
+        // counter lacks. -1 until the first accepted share of this pool session.
+        readonly System.Diagnostics.Stopwatch _shareClock = System.Diagnostics.Stopwatch.StartNew();
+        long _lastShareMs = -1;
         long _height;
         int _cores = Environment.ProcessorCount;
 
@@ -2041,6 +2046,14 @@ namespace PCoinTray
             _hashrate = r.Hashrate;
             _blocksFound = r.BlocksFound;
             _poolMining = r.PoolMining;
+            // Stamp the heartbeat on a rise; clear it on a reset (a pool switch
+            // sends the count back to 0, which is not a new share) and when solo.
+            if (r.PoolMining)
+            {
+                if (r.SharesAccepted > _sharesAccepted) _lastShareMs = _shareClock.ElapsedMilliseconds;
+                else if (r.SharesAccepted < _sharesAccepted) _lastShareMs = -1;
+            }
+            else _lastShareMs = -1;
             _sharesAccepted = r.SharesAccepted;
             _sharesRejected = r.SharesRejected;
             _poolStatus = r.PoolStatus ?? "";
@@ -2368,6 +2381,11 @@ namespace PCoinTray
                     NetworkHashps = _networkHps,
                     PoolMining = _poolMining,
                     PoolUrl = _poolUrl,
+                    SharesAccepted = _sharesAccepted,
+                    SharesRejected = _sharesRejected,
+                    LastShareAgeSec = (_poolMining && _lastShareMs >= 0)
+                        ? (int)((_shareClock.ElapsedMilliseconds - _lastShareMs) / 1000)
+                        : -1,
                     Address = _address,
                     HasPhrase = _phrase != null,
                     PhraseBalance = _balPhraseText,

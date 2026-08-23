@@ -137,6 +137,9 @@ namespace PCoinTray
         public double NetworkHashps;    // whole-network H/s, for pool-vs-solo advice
         public bool PoolMining;         // is the node hashing for a pool right now
         public string PoolUrl = "";     // configured pool, empty = solo
+        public long SharesAccepted;     // pool: work units the pool has credited this PC
+        public long SharesRejected;
+        public int LastShareAgeSec = -1;// seconds since the accepted count last rose; -1 = none yet
         public string Address = "";
         public bool HasPhrase;
         public string PhraseBalance;    // null when there is no phrase wallet
@@ -192,6 +195,8 @@ namespace PCoinTray
         readonly TextBlock _rate = new TextBlock();
         readonly TextBlock _rateUnit = new TextBlock();
         readonly TextBlock _effortLine = new TextBlock();
+        readonly TextBlock _poolLine = new TextBlock();   // pool proof: shares + last-share heartbeat
+        readonly TextBlock _poolNote = new TextBlock();   // where pool rewards actually go
         readonly Polyline _spark = new Polyline();
         readonly Polygon _sparkFill = new Polygon();
         readonly Canvas _sparkCanvas = new Canvas { ClipToBounds = true, Height = 60 };
@@ -200,6 +205,7 @@ namespace PCoinTray
         readonly TextBlock _height = new TextBlock();
         readonly TextBlock _peers = new TextBlock();
         readonly TextBlock _found = new TextBlock();
+        readonly TextBlock _foundCaption = new TextBlock();  // "Blocks mined" (solo) / "Shares" (pool)
         readonly TextBlock _diff = new TextBlock();
 
         readonly Slider _slider = new Slider();
@@ -394,6 +400,22 @@ namespace PCoinTray
             _effortLine.Margin = new Thickness(0, 1, 0, 8);
             stack.Children.Add(_effortLine);
 
+            // Pool proof, right under the number the user stares at. Only shown
+            // while pool mining; solo leaves it collapsed.
+            _poolLine.FontSize = 12.5;
+            _poolLine.FontWeight = FontWeights.SemiBold;
+            _poolLine.Margin = new Thickness(0, 0, 0, 3);
+            _poolLine.TextWrapping = TextWrapping.Wrap;
+            _poolLine.Visibility = Visibility.Collapsed;
+            stack.Children.Add(_poolLine);
+
+            _poolNote.Foreground = Muted;
+            _poolNote.FontSize = 11;
+            _poolNote.Margin = new Thickness(0, 0, 0, 8);
+            _poolNote.TextWrapping = TextWrapping.Wrap;
+            _poolNote.Visibility = Visibility.Collapsed;
+            stack.Children.Add(_poolNote);
+
             _sparkFill.Fill = AccentDim;
             _sparkFill.StrokeThickness = 0;
             _spark.Stroke = Accent;
@@ -418,12 +440,12 @@ namespace PCoinTray
             for (int i = 0; i < 4; i++) grid.ColumnDefinitions.Add(new ColumnDefinition());
             AddStat(grid, 0, "Block height", _height);
             AddStat(grid, 1, "Peers", _peers);
-            AddStat(grid, 2, "Blocks mined", _found);
+            AddStat(grid, 2, "Blocks mined", _found, _foundCaption);
             AddStat(grid, 3, "Difficulty", _diff);
             return grid;
         }
 
-        void AddStat(Grid grid, int column, string caption, TextBlock value)
+        void AddStat(Grid grid, int column, string caption, TextBlock value, TextBlock captionBlock = null)
         {
             var stack = new StackPanel();
             value.Foreground = Text;
@@ -431,14 +453,13 @@ namespace PCoinTray
             value.Text = "--";
             value.TextTrimming = TextTrimming.CharacterEllipsis;
             stack.Children.Add(value);
-            stack.Children.Add(new TextBlock
-            {
-                Text = caption,
-                Foreground = Muted,
-                FontSize = 11,
-                Margin = new Thickness(0, 2, 0, 0),
-                TextTrimming = TextTrimming.CharacterEllipsis
-            });
+            var cap = captionBlock ?? new TextBlock();
+            cap.Text = caption;
+            cap.Foreground = Muted;
+            cap.FontSize = 11;
+            cap.Margin = new Thickness(0, 2, 0, 0);
+            cap.TextTrimming = TextTrimming.CharacterEllipsis;
+            stack.Children.Add(cap);
             var cell = Panel(stack);
             cell.Margin = new Thickness(column == 0 ? 0 : 4, 0, column == 3 ? 0 : 4, 0);
             cell.Padding = new Thickness(10, 8, 6, 8);
@@ -1018,13 +1039,55 @@ namespace PCoinTray
                 ? string.Format(CultureInfo.InvariantCulture, "{0} of {1} cores  ·  {2}% effort", s.Threads, s.Cores, s.Percent)
                 : string.Format(CultureInfo.InvariantCulture, "{0} cores available", s.Cores);
 
+            // Pool proof, right under the hash rate. A pool miner finds no blocks
+            // and its local balance stays 0, so a bare "720 H/s and 0 PCN" reads
+            // as broken. The accepted-share counter -- climbing, with a "last
+            // share N ago" pulse -- is the visible proof the pool is taking this
+            // PC's work and crediting it.
+            if (s.NodeUp && s.Hashing && s.PoolMining)
+            {
+                string host = string.IsNullOrEmpty(s.PoolUrl) ? "pool" : s.PoolUrl;
+                string body;
+                if (s.SharesAccepted <= 0)
+                    body = "connected · waiting for first share";
+                else if (s.LastShareAgeSec < 0)
+                    body = string.Format(CultureInfo.InvariantCulture, "{0:#,##0} shares accepted", s.SharesAccepted);
+                else
+                    body = string.Format(CultureInfo.InvariantCulture, "{0:#,##0} shares accepted · last {1}",
+                                         s.SharesAccepted, AgoWords(s.LastShareAgeSec));
+                if (s.SharesRejected > 0)
+                    body += string.Format(CultureInfo.InvariantCulture, " · {0:#,##0} rejected", s.SharesRejected);
+                _poolLine.Text = "● " + host + "  ·  " + body;
+                _poolLine.Foreground = Good;
+                _poolLine.Visibility = Visibility.Visible;
+                _poolNote.Text = "Pool rewards are paid to your address on the pool's schedule — they are not shown as a balance on this PC.";
+                _poolNote.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                _poolLine.Visibility = Visibility.Collapsed;
+                _poolNote.Visibility = Visibility.Collapsed;
+            }
+
             // Sampling happens in the tray app, so history keeps building while
             // this window is closed. Here it is only drawn.
             DrawSpark();
 
             _height.Text = s.NodeUp ? s.Height.ToString("#,##0", CultureInfo.InvariantCulture) : "--";
             _peers.Text = s.Peers >= 0 ? s.Peers.ToString(CultureInfo.InvariantCulture) : "--";
-            _found.Text = s.NodeUp ? s.BlocksFound.ToString("#,##0", CultureInfo.InvariantCulture) : "--";
+            // A pool miner finds no blocks -- the pool does -- so "Blocks mined: 0"
+            // reads as failure to someone earning steadily. Show the shares the
+            // pool is actually crediting instead, matching the tray menu.
+            if (s.NodeUp && s.PoolMining)
+            {
+                _foundCaption.Text = "Shares";
+                _found.Text = s.SharesAccepted.ToString("#,##0", CultureInfo.InvariantCulture);
+            }
+            else
+            {
+                _foundCaption.Text = "Blocks mined";
+                _found.Text = s.NodeUp ? s.BlocksFound.ToString("#,##0", CultureInfo.InvariantCulture) : "--";
+            }
             _diff.Text = s.NodeUp ? FormatDifficulty(s.Difficulty) : "--";
             _peers.Foreground = s.NodeUp && s.Peers == 0 ? Bad : Text;
 
@@ -1143,6 +1206,16 @@ namespace PCoinTray
             if (t.TotalDays >= 1) return string.Format(CultureInfo.InvariantCulture, "{0}d {1}h", (int)t.TotalDays, t.Hours);
             if (t.TotalHours >= 1) return string.Format(CultureInfo.InvariantCulture, "{0}h {1}m", (int)t.TotalHours, t.Minutes);
             return string.Format(CultureInfo.InvariantCulture, "{0}m", Math.Max(1, (int)t.TotalMinutes));
+        }
+
+        //! "8s ago" / "3m ago" / "1h ago" for the share heartbeat. Kept coarse
+        //! on purpose -- the point is a live pulse, not a stopwatch.
+        static string AgoWords(int sec)
+        {
+            if (sec < 5) return "just now";
+            if (sec < 90) return sec.ToString(CultureInfo.InvariantCulture) + "s ago";
+            if (sec < 5400) return Math.Max(1, (sec + 30) / 60).ToString(CultureInfo.InvariantCulture) + "m ago";
+            return Math.Max(1, (sec + 1800) / 3600).ToString(CultureInfo.InvariantCulture) + "h ago";
         }
 
         static string FormatDifficulty(double d)
