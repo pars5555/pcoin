@@ -249,13 +249,17 @@ namespace PCoinTray
         static extern bool GetLogicalProcessorInformation(IntPtr buffer, ref uint returnLength);
 
         static int _useful = -1;
+        static int _physical = -1;   // -1 = not read yet; 0 = unreadable
 
-        public static int UsefulThreads(int logicalCores)
+        //! Read the topology once. Failure leaves _physical at 0, which callers
+        //! must treat as "unknown", never as "no cores" -- unknown gives no
+        //! advice rather than wrong advice.
+        static void EnsureTopology(int logicalCores)
         {
-            if (logicalCores < 1) logicalCores = 1;
-            if (_useful > 0) return Math.Min(_useful, logicalCores);
+            if (_useful > 0) return;
 
             int answer = Math.Max(1, logicalCores / 2);   // see the note above
+            int physical = 0;
             try
             {
                 if (IntPtr.Size == 8)
@@ -270,7 +274,6 @@ namespace PCoinTray
                             if (GetLogicalProcessorInformation(buf, ref len))
                             {
                                 int stride = Marshal.SizeOf(typeof(SLPI));
-                                int physical = 0;
                                 long l3 = 0;
                                 for (int i = 0; i + stride <= (int)len; i += stride)
                                 {
@@ -290,8 +293,15 @@ namespace PCoinTray
             }
             catch { /* fall back; never let topology detection stop the miner */ }
 
+            _physical = physical;
             _useful = Math.Max(1, Math.Min(answer, logicalCores));
-            return _useful;
+        }
+
+        public static int UsefulThreads(int logicalCores)
+        {
+            if (logicalCores < 1) logicalCores = 1;
+            EnsureTopology(logicalCores);
+            return Math.Min(_useful, logicalCores);
         }
 
         //! percent -> thread count. NOTHING IS CLAMPED HERE.
@@ -316,10 +326,24 @@ namespace PCoinTray
         //!
         //! Only meaningful in fast mode: light mode is ALU-bound and keeps
         //! scaling with hyperthreads, so there is nothing to warn about.
+        //!
+        //! AND ONLY ON MACHINES WITH HYPERTHREADING. The first version applied
+        //! the L3 bound unconditionally and an i5-9600K (6 cores, no HT, 9 MB
+        //! L3) promptly disproved it: the label said "more than 4 usually mines
+        //! LESS" while the machine measured 3thr=1261, 4=1495, 5=1630, 6=1622
+        //! H/s -- it climbs to all six cores and plateaus, no cliff anywhere.
+        //! The collapse the advice describes needs sibling threads sharing one
+        //! core's L1/L2 and TLB; mere scratchpad overcommit against L3 (12 MiB
+        //! on 9) turned out to be nearly free. Every HT machine measured so far
+        //! agrees with min(physical, L3/2MiB): the 10920X (12P/24L, 19.25 MB)
+        //! peaks at 9-10, the 9900K (8P/16L, 16 MB) at 8, the 8700K (6P/12L,
+        //! 12 MB) at 6. So: advise only where the data supports it.
         public static int Recommend(int logicalCores, bool fastMode)
         {
             if (!fastMode) return 0;
             if (logicalCores < 1) logicalCores = 1;
+            EnsureTopology(logicalCores);
+            if (_physical <= 0 || _physical >= logicalCores) return 0;  // no HT visible: no advice
             int r = UsefulThreads(logicalCores);
             return r < logicalCores ? r : 0;
         }
