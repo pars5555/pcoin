@@ -26,8 +26,8 @@ param(
     # half-applied bump is impossible. The hash is of pcoin-win64-miner.zip
     # and the install aborts on a mismatch, so a forgotten bump here breaks
     # every new install rather than failing quietly.
-    [string]$Version = '1.3.8',
-    [string]$Sha256 = '94aaebb9be1ede2d22b6b64c3a14a60771165c32ddc8813bf7ab902ed51397f6',
+    [string]$Version = '1.3.9',
+    [string]$Sha256 = '7088fc66a15d09782f756637cb336d405b02ea88d412f249131a66c0cdca8605',
     # All three seeds, not just one. The node also carries them compiled in as
     # of v1.2.1, so this is belt and braces rather than the only route in.
     [string[]]$AddNode = @('35.239.156.16:9444', '178.105.3.51:9444', '152.53.171.190:9444'),
