@@ -141,7 +141,13 @@ foreach ($old in $oldDirs) {
     catch { Write-Output ('    could not fully remove ' + $old + ' (' + $_.Exception.Message + ') -- delete it by hand') }
 }
 # Tear down any stale autostart so the new one (created below) is the only one.
-if ($script:IsAdmin) { schtasks /delete /tn PCoinMiner /f 2>$null | Out-Null }
+# schtasks /delete on a task that does not exist writes to stderr, which
+# PowerShell 5.1 wraps in a NativeCommandError and THROWS under ErrorAction Stop
+# (2>$null does not stop it). Delete only when the task actually exists, and
+# swallow anything anyway.
+if ($script:IsAdmin -and (Get-ScheduledTask -TaskName PCoinMiner -ErrorAction SilentlyContinue)) {
+    try { cmd /c 'schtasks /delete /tn PCoinMiner /f >nul 2>nul' | Out-Null } catch { }
+}
 foreach ($sd in @([Environment]::GetFolderPath('Startup'), (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup'))) {
     if ($sd) { $stale = Join-Path $sd 'PCoinTray.lnk'; if (Test-Path $stale) { Remove-Item $stale -Force -ErrorAction SilentlyContinue } }
 }
@@ -420,7 +426,12 @@ function Grant-LockPagesRight([string]$account) {
     $sid = (New-Object System.Security.Principal.NTAccount($account)).Translate(
         [System.Security.Principal.SecurityIdentifier]).Value
     $inf = Join-Path $env:TEMP 'pcoin_lp.inf'; $sdb = Join-Path $env:TEMP 'pcoin_lp.sdb'
-    secedit /export /areas USER_RIGHTS /cfg $inf | Out-Null
+    Remove-Item $inf, $sdb -ErrorAction SilentlyContinue
+    # Run secedit via cmd so its stderr can never be wrapped into a thrown
+    # NativeCommandError under ErrorAction Stop (the PS 5.1 trap that aborts the
+    # whole install). Paths are quoted for cmd.
+    cmd /c "secedit /export /areas USER_RIGHTS /cfg `"$inf`" >nul 2>nul" | Out-Null
+    if (-not (Test-Path $inf)) { throw 'secedit could not read the current user-rights policy' }
     $lines = Get-Content $inf; $hit = $false
     for ($i = 0; $i -lt $lines.Count; $i++) {
         if ($lines[$i] -match '^SeLockMemoryPrivilege') {
@@ -433,8 +444,8 @@ function Grant-LockPagesRight([string]$account) {
         $lines = $o
     }
     Set-Content -Path $inf -Value $lines -Encoding Unicode
-    secedit /import /db $sdb /cfg $inf /areas USER_RIGHTS | Out-Null
-    secedit /configure /db $sdb /areas USER_RIGHTS | Out-Null
+    cmd /c "secedit /import /db `"$sdb`" /cfg `"$inf`" /areas USER_RIGHTS >nul 2>nul" | Out-Null
+    cmd /c "secedit /configure /db `"$sdb`" /areas USER_RIGHTS >nul 2>nul" | Out-Null
     Remove-Item $inf, $sdb -ErrorAction SilentlyContinue
 }
 
