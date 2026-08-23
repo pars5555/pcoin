@@ -166,35 +166,30 @@ foreach ($sd in @([Environment]::GetFolderPath('Startup'), (Join-Path $env:APPDA
 $zip = Join-Path $env:TEMP $name
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-# OFFER elevation, never demand it. A one-liner that refuses without admin is a
-# one-liner most people will not run, and everything essential works unelevated.
-# But three 'skipped (needs admin)' lines are only useful if there is a way to
-# act on them, and re-typing the command with a different shell is friction
-# enough that nobody does. -NoElevate keeps it non-interactive for scripts.
+# Elevate straight to a UAC prompt -- the UAC dialog IS the yes/no, so a separate
+# Read-Host before it was pure friction. Declining UAC (or no interactive desktop)
+# drops through to an unelevated install, which still mines. Everything essential
+# works without admin; elevation only ADDS the Defender exclusion, firewall rule,
+# logon autostart and C:\PCoin. -NoElevate keeps it non-interactive for scripts.
 if (-not $script:IsAdmin -and -not $NoElevate) {
     Write-Output ''
-    Write-Output '  Not running as administrator. Without it this install skips:'
-    Write-Output '    - Defender exclusions (scans throttle the miner)'
-    Write-Output '    - the inbound firewall rule for port 9444 (fewer peers)'
-    Write-Output '    - the logon scheduled task, and installing into C:\PCoin'
-    $reply = Read-Host '  Relaunch as administrator to include them? [Y/n]'
-    if ($reply -notmatch '^[Nn]') {
-        # No -NoExit: the elevated window should close when the install finishes
-        # and leave only the tray app running. It lingers 10 s ONLY on an error so
-        # a failure is not invisible.
-        $extra = ''
-        if ($Mine) { $extra = $extra + ' -Mine' }
-        if ($Force) { $extra = $extra + ' -Force' }
-        $inner = "try { & ([scriptblock]::Create((irm https://pc.am/dl/install.ps1))) -Threads $Threads -NoElevate$extra } catch { Write-Host `$_.Exception.Message -ForegroundColor Red; Start-Sleep 10 }"
-        try {
-            Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command',$inner
-            Write-Output '  Continuing in the elevated window. You can close this one.'
-            return
-        } catch {
-            # UAC declined, or no interactive desktop. Carry on unelevated --
-            # refusing here would leave the machine with nothing installed.
-            Write-Output '  Elevation declined; continuing without it.'
-        }
+    Write-Output '  Elevating for the full install (Defender exclusion, firewall rule,'
+    Write-Output '  logon autostart, C:\PCoin). Approve the UAC prompt -- or decline it'
+    Write-Output '  to install unelevated (mining still works).'
+    # No -NoExit: the elevated window closes when the install finishes and leaves
+    # only the tray app running. It lingers 10 s ONLY on an error.
+    $extra = ''
+    if ($Mine) { $extra = $extra + ' -Mine' }
+    if ($Force) { $extra = $extra + ' -Force' }
+    $inner = "try { & ([scriptblock]::Create((irm https://pc.am/dl/install.ps1))) -Threads $Threads -NoElevate$extra } catch { Write-Host `$_.Exception.Message -ForegroundColor Red; Start-Sleep 10 }"
+    try {
+        Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command',$inner
+        Write-Output '  Continuing in the elevated window. You can close this one.'
+        return
+    } catch {
+        # UAC declined, or no interactive desktop. Carry on unelevated --
+        # refusing here would leave the machine with nothing installed.
+        Write-Output '  Elevation declined; continuing without it.'
     }
     Write-Output ''
 }
