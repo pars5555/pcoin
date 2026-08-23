@@ -542,17 +542,31 @@ def main():
             # advance independently, so a bare balance-vs-balance check is a race
             # that this chain loses constantly -- see explorer_balance().
             got = ref = ref_h = our_h = None
-            for attempt in range(4):
+            aligned = False
+            for _attempt in range(4):
                 try:
-                    our_h = cli.call("blockchain.headers.subscribe")["height"]
+                    # BRACKET the balance read between two height reads. Reading
+                    # the height only BEFORE is not enough: if a block lands
+                    # between the two calls, the balance is from height N+1 while
+                    # we are about to compare it against the explorer at N -- and
+                    # the heights still LOOK equal, so it is reported as a
+                    # MISMATCH. That is exactly what happened at height 4830,
+                    # off by one 50 PCN coinbase, after the first fix.
+                    h_before = cli.call("blockchain.headers.subscribe")["height"]
                     bal = cli.call("blockchain.scripthash.get_balance", [sh])
+                    h_after = cli.call("blockchain.headers.subscribe")["height"]
                 except Exception as e:
                     fail(f"address:{addr}", f"{type(e).__name__}: {e}")
                     got = None
                     break
+                if h_before != h_after:
+                    time.sleep(3)          # a block landed mid-read; redo it
+                    continue
+                our_h = h_after
                 got = bal["confirmed"]
                 ref, ref_h = explorer_balance(addr)
                 if ref is None or ref_h == our_h:
+                    aligned = True
                     break
                 time.sleep(3)   # let the slower index catch up, then re-read BOTH
 
@@ -562,7 +576,7 @@ def main():
                 unverified(f"address:{addr}",
                            f"electrumx says {got} sat over {len(hist)} txs; "
                            f"explorer.pc.am was unreadable, so nothing was compared")
-            elif ref_h != our_h:
+            elif not aligned or ref_h != our_h:
                 unverified(f"address:{addr}",
                            f"could not align heights after 4 tries "
                            f"(electrumx at {our_h}, explorer at {ref_h}); "

@@ -24,7 +24,8 @@ itself: `KomodoPlatform/komodo-defi-framework` 301-redirects to
 | `electrums/PCN` | ✅ |
 | `explorers/PCN` | ✅ two independent explorers |
 | `icons_original/pcn.png` | ✅ 256×256 |
-| **One completed atomic swap** | ⛔ **the remaining gate** — see below |
+| **One completed atomic swap** | ✅ 100 PCN ⇄ DOGE, `swaps/PCN-DOGE.md` |
+| **PR filed** | ✅ [GLEECBTC/coins#1964](https://github.com/GLEECBTC/coins/pull/1964) — open, mergeable, awaiting review |
 
 ---
 
@@ -51,9 +52,18 @@ Four fields that are easy to get wrong and were each checked against source:
 | `txfee` | `10000` | flat, **not** `0`. Zero means "use `estimatesmartfee`", and PCoin has no fee history for it to work from |
 | `derivation_path` | `m/44'/9444'` / `m/84'/9444'` | `9444'` is unregistered in SLIP-44 and cannot be changed — see the PR body |
 
-`required_confirmations` is `10`: the highest value in use anywhere in that
-repository. It is not a mitigation for the hashrate concentration and the PR body
-says so outright. See [`PR-BODY.md`](PR-BODY.md).
+`required_confirmations` is **`2`**, and the number was arrived at the hard way.
+It was `10` first — the highest value in use anywhere in that repository — and
+**every swap failed**: KDF requires the maker payment confirmed within 40% of
+`PAYMENT_LOCKTIME` (`3600*2 + 300*2` = 7800 s), i.e. **3120 s**, which at 600 s
+spacing cannot reach 10. Shipping that would have listed PCN with every swap
+broken. `2` is what BLOZ (a 600 s Bitcoin fork merged this month) uses, one above
+BTC's own `1`.
+
+It is **not** a mitigation for the hashrate concentration, and on a chain with
+this block time the field cannot express one — anything high enough to matter
+breaks liveness. It is a liveness parameter here, not a security one. See
+[`PR-BODY.md`](PR-BODY.md), which says exactly that and quotes the failure.
 
 **Validated against a real KDF, not just eyeballed.** `kdf 3.0.0-beta` enabled
 both entries through `electrum1/2.pc.am` and derived
