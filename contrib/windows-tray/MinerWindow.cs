@@ -257,6 +257,17 @@ namespace PCoinTray
             _ackProbe = ackProbe;
 
             Title = "PCoin Miner";
+            // Arrow keys must reach the slider, not move focus.
+            //
+            // WPF's KeyboardNavigation claims Left/Right/Up/Down inside
+            // InputManager.PreProcessInput, which runs BEFORE any routed event
+            // -- so a PreviewKeyDown handler, even on the Window at the very top
+            // of the tunnel, never sees them. Measured: Home and End reached the
+            // handler and arrows did not, on the same keypress path. Turning
+            // directional navigation off on this window lets them through. Tab
+            // still moves focus normally; nothing on this page relies on arrows
+            // for navigation.
+            KeyboardNavigation.SetDirectionalNavigation(this, KeyboardNavigationMode.None);
             Width = 470;
             MinWidth = 420;
             Height = 760;
@@ -452,12 +463,23 @@ namespace PCoinTray
 
             _slider.Minimum = 10;
             _slider.Maximum = 100;
-            _slider.TickFrequency = 5;
+            // ONE STEP = ONE CORE.
+            //
+            // This used to move in 5% jumps, which on a 24-core machine is a
+            // step of 1.2 cores: two different slider positions could mean the
+            // same number of cores, and no position meant "ten". Percent is a
+            // unit the user has to translate; cores is the unit they actually
+            // choose. Minimum/Maximum are re-fitted to the real core count in
+            // ApplySnapshot as soon as the node reports it -- until then this is
+            // a placeholder range, not a promise.
+            _slider.Minimum = 1;
+            _slider.Maximum = 24;
+            _slider.TickFrequency = 1;
             _slider.IsSnapToTickEnabled = true;
-            _slider.SmallChange = 5;
-            _slider.LargeChange = 10;
+            _slider.SmallChange = 1;
+            _slider.LargeChange = 1;
             _slider.Foreground = Accent;
-            _slider.Value = 50;
+            _slider.Value = 4;
             // Click anywhere on the rail to set the value there. Without this,
             // WPF's default is to page by LargeChange via the track's repeat
             // buttons -- and with this custom template those buttons never fired
@@ -476,8 +498,51 @@ namespace PCoinTray
             _slider.ValueChanged += (s, e) =>
             {
                 if (_sliderEcho) return;
-                _pendingPercent = Snap((int)Math.Round(_slider.Value));
+                int cores = Math.Max(1, _last.Cores);
+                int want = Math.Max(1, Math.Min(cores, (int)Math.Round(_slider.Value)));
+                _pendingPercent = Cpu.PercentForThreads(want, cores);
                 UpdateSliderLabel(_pendingPercent, true);
+            };
+            // Handle the arrow keys OURSELVES.
+            //
+            // WPF's Slider is supposed to do this through class-level key
+            // gestures, and a comment above once claimed it worked. It does not.
+            // Verified on this machine: with the window in the foreground and
+            // UIAutomation reporting HasKeyboardFocus=true on the slider,
+            // three synthesized RIGHT presses left the value on 13, while a
+            // RangeValuePattern SetValue moved it to 14 immediately -- so the
+            // control is healthy and the key simply never arrives. Two separate
+            // input paths (SendKeys and the agent's key_combination) agreed.
+            //
+            // Rather than keep guessing why the built-in gesture does not fire
+            // under this custom template, step the value here, where one press
+            // is one core by construction.
+            // ...and attach it to the WINDOW, not the slider.
+            //
+            // Attaching to the slider got Home and End working but left the
+            // arrow keys dead, which is the tell: PreviewKeyDown tunnels from
+            // the root down, and WPF's directional KeyboardNavigation claims
+            // Left/Right/Up/Down on the way to move focus between controls. By
+            // the time the slider would see them they are gone. Handling them at
+            // the top of the tunnel is the only place that sees every key, and
+            // the IsKeyboardFocusWithin guard keeps this from hijacking arrows
+            // meant for anything else on the page.
+            PreviewKeyDown += (s, e) =>
+            {
+                if (!_slider.IsKeyboardFocusWithin) return;
+                double v = _slider.Value;
+                switch (e.Key)
+                {
+                    case Key.Left:  case Key.Down:  v -= 1; break;
+                    case Key.Right: case Key.Up:    v += 1; break;
+                    case Key.Home: v = _slider.Minimum; break;
+                    case Key.End:  v = _slider.Maximum; break;
+                    case Key.PageDown: v -= 4; break;
+                    case Key.PageUp:   v += 4; break;
+                    default: return;
+                }
+                _slider.Value = Math.Max(_slider.Minimum, Math.Min(_slider.Maximum, v));
+                e.Handled = true;   // stop the window scrolling instead
             };
             _slider.PreviewMouseUp += (s, e) => CommitSlider();
             _slider.LostMouseCapture += (s, e) => CommitSlider();
@@ -904,12 +969,27 @@ namespace PCoinTray
                 _syncCard.Visibility = Visibility.Collapsed;
             }
 
-            if (_pendingPercent < 0)
+            // Re-fit the rail to the machine we are actually on. The slider is
+            // built before any snapshot exists, so its range starts as a guess;
+            // once the node reports the real core count, one tick must equal one
+            // core or the label and the miner will disagree about what a step is.
+            int coreMax = Math.Max(1, s.Cores);
+            if (Math.Abs(_slider.Maximum - coreMax) > 0.5)
             {
                 _sliderEcho = true;
-                _slider.Value = Math.Max(10, Math.Min(100, s.Percent == 0 ? 50 : s.Percent));
+                _slider.Maximum = coreMax;
+                _slider.TickFrequency = coreMax > 32 ? 4 : 1;
                 _sliderEcho = false;
-                UpdateSliderLabel((int)Math.Round(_slider.Value), false);
+            }
+
+            if (_pendingPercent < 0)
+            {
+                int shown = Cpu.ThreadsFor(s.Percent, coreMax, s.FastMode);
+                if (shown < 1) shown = Math.Max(1, Math.Min(coreMax, Cpu.ThreadsFor(50, coreMax, s.FastMode)));
+                _sliderEcho = true;
+                _slider.Value = Math.Max(1, Math.Min(coreMax, shown));
+                _sliderEcho = false;
+                UpdateSliderLabel(Cpu.PercentForThreads(shown, coreMax), false);
             }
 
             _toggle.Content = s.WantMining ? "Stop mining" : "Start mining";
@@ -1094,16 +1174,27 @@ namespace PCoinTray
         //! nothing on screen hinting at it. Now the slider stops at the useful
         //! number and the label explains the stop, because a control that
         //! silently ignores its own top half is its own kind of lie.
+        //! Say how many cores, and say when more of them would earn LESS.
+        //!
+        //! The advice is never enforced -- the operator asked for this control
+        //! and is entitled to use all of it. But silence would be dishonest: on
+        //! a 24-thread/19.25 MB-L3 machine, all 24 cores measured 1308 H/s
+        //! against 2563 at nine, because each RandomX thread needs a private
+        //! 2 MiB scratchpad and only nine fit in L3. Someone dragging to the end
+        //! deserves to know that before their electricity bill tells them.
         void UpdateSliderLabel(int percent, bool pending)
         {
             int cores = Math.Max(1, _last.Cores);
             int threads = Cpu.ThreadsFor(percent, cores, _last.FastMode);
-            int ceiling = Cpu.CeilingFor(cores, _last.FastMode);
+            int best = Cpu.Recommend(cores, _last.FastMode);
             string note = "";
-            if (ceiling < cores && threads >= ceiling)
-                note = "  -  the most this CPU mines faster with in fast mode";
+            if (best > 0 && threads > best)
+                note = string.Format(CultureInfo.InvariantCulture,
+                    "  -  more than {0} usually mines LESS on this CPU", best);
+            else if (best > 0 && threads == best)
+                note = "  -  fastest measured on this CPU";
             _sliderLabel.Text = string.Format(CultureInfo.InvariantCulture,
-                "{0}%  -  {1} of {2} cores{3}{4}", percent, threads, cores, note,
+                "{0} of {1} cores{2}{3}", threads, cores, note,
                 pending ? "  (release to apply)" : "");
         }
 

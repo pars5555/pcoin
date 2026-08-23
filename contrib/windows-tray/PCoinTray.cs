@@ -294,27 +294,53 @@ namespace PCoinTray
             return _useful;
         }
 
-        //! percent -> thread count. Percent still means a share of the machine,
-        //! so an existing config keeps the thread count it already had; the only
-        //! change is that in FAST mode the top of the range can no longer ask for
-        //! a number that mines LESS. This lives here because the tray and the
-        //! window used to compute it separately, and two copies of a formula is
-        //! one bug waiting to drift.
+        //! percent -> thread count. NOTHING IS CLAMPED HERE.
+        //!
+        //! An earlier version capped this at UsefulThreads() in fast mode, and
+        //! that was the wrong call. The owner set the slider to its maximum,
+        //! got nine of twenty-four cores, and asked -- correctly -- why the
+        //! control was ignoring him. A slider that silently refuses the value
+        //! you gave it is a worse failure than a slider that lets you choose
+        //! badly: the first cannot be understood from the screen, the second
+        //! can be labelled. Recommend() exists to label it.
         public static int ThreadsFor(int percent, int logicalCores, bool fastMode)
         {
             if (percent <= 0) return 0;
             if (logicalCores < 1) logicalCores = 1;
             int t = (int)Math.Round(logicalCores * percent / 100.0, MidpointRounding.AwayFromZero);
-            t = Math.Max(1, Math.Min(logicalCores, t));
-            return fastMode ? Math.Min(t, UsefulThreads(logicalCores)) : t;
+            return Math.Max(1, Math.Min(logicalCores, t));
         }
 
-        //! The ceiling actually in force, or logicalCores when there is none.
-        //! Callers use this to decide whether to explain the ceiling to the user.
-        public static int CeilingFor(int logicalCores, bool fastMode)
+        //! The thread count measured to be fastest on this machine, or 0 when
+        //! there is no useful advice to give. ADVICE ONLY -- never enforced.
+        //!
+        //! Only meaningful in fast mode: light mode is ALU-bound and keeps
+        //! scaling with hyperthreads, so there is nothing to warn about.
+        public static int Recommend(int logicalCores, bool fastMode)
+        {
+            if (!fastMode) return 0;
+            if (logicalCores < 1) logicalCores = 1;
+            int r = UsefulThreads(logicalCores);
+            return r < logicalCores ? r : 0;
+        }
+
+        //! Thread count -> the percent that produces it, for a slider that steps
+        //! one CORE at a time. Percent stays the stored unit so that existing
+        //! configs, install.ps1 and the tray menu all keep working unchanged.
+        public static int PercentForThreads(int threads, int logicalCores)
         {
             if (logicalCores < 1) logicalCores = 1;
-            return fastMode ? UsefulThreads(logicalCores) : logicalCores;
+            if (threads <= 0) return 0;
+            if (threads >= logicalCores) return 100;
+            int p = (int)Math.Round(threads * 100.0 / logicalCores, MidpointRounding.AwayFromZero);
+            // Round-trip it: the label and the miner must never disagree about
+            // how many cores a step means.
+            for (int d = 0; d <= 6; d++)
+            {
+                if (ThreadsFor(p + d, logicalCores, true) == threads) return p + d;
+                if (ThreadsFor(p - d, logicalCores, true) == threads) return p - d;
+            }
+            return Math.Max(1, Math.Min(100, p));
         }
     }
 
