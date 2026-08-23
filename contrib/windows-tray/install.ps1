@@ -27,13 +27,21 @@ param(
     # and the install aborts on a mismatch, so a forgotten bump here breaks
     # every new install rather than failing quietly.
     [string]$Version = '1.3.8',
-    [string]$Sha256 = 'b32aea4513d7941dcab9378c582d11a15eb10fb44e3cfc13e7b2f8355fe7040b',
+    [string]$Sha256 = '94aaebb9be1ede2d22b6b64c3a14a60771165c32ddc8813bf7ab902ed51397f6',
     # All three seeds, not just one. The node also carries them compiled in as
     # of v1.2.1, so this is belt and braces rather than the only route in.
     [string[]]$AddNode = @('35.239.156.16:9444', '178.105.3.51:9444', '152.53.171.190:9444'),
     [switch]$NoStart,
     # Set by the elevated relaunch so it cannot ask again and loop.
-    [switch]$NoElevate
+    [switch]$NoElevate,
+    # Install from a local zip instead of downloading the release (offline /
+    # testing a build before it is published). Its SHA-256 is still verified
+    # against $Sha256, so a stale local file is caught exactly like a bad download.
+    [string]$ZipPath = '',
+    # Do NOT migrate-and-remove a previous install found in a different folder.
+    # The default (single install) is what you want in production; this is for
+    # testing a build side-by-side without disturbing an existing install.
+    [switch]$NoCleanup
 )
 
 $ErrorActionPreference = 'Stop'
@@ -65,6 +73,11 @@ $url = "https://github.com/pars5555/pcoin/releases/download/v$Version/$name"
 if (-not $DataDir) { $DataDir = Join-Path $InstallDir 'data' }
 
 Write-Output "PCoin $Version installer"
+
+$script:IsAdmin = ([Security.Principal.WindowsPrincipal] `
+    [Security.Principal.WindowsIdentity]::GetCurrent()
+  ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
 
 # Stop anything already running from this folder, otherwise the copy fails
@@ -84,13 +97,59 @@ if (Test-Path $cliPath) {
 Get-Process bitcoind -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 4
 
+# --- exactly one install, wherever it was -------------------------------
+# Every bitcoind / PCoinTray / bitcoin-cli was just stopped BY NAME above, so no
+# instance from any folder or session survives. Now make sure only ONE install
+# DIRECTORY remains: if a previous copy sits somewhere other than where we are
+# installing (admin C:\PCoin vs non-admin %LOCALAPPDATA%\PCoin, or a hand-picked
+# -InstallDir), migrate its recovery seed and its data directory so nothing is
+# lost or re-synced, then delete it. Its autostart is torn down below regardless,
+# so two tray icons can never come back at the next logon.
+$normNew = [IO.Path]::GetFullPath($InstallDir).TrimEnd('\')
+$oldDirs = New-Object System.Collections.Generic.HashSet[string]([StringComparer]::OrdinalIgnoreCase)
+if (-not $NoCleanup) {
+foreach ($cand in @('C:\PCoin', (Join-Path $env:LOCALAPPDATA 'PCoin'))) {
+    if (Test-Path (Join-Path $cand 'PCoinTray.exe')) {
+        $n = [IO.Path]::GetFullPath($cand).TrimEnd('\')
+        if ($n -ne $normNew) { [void]$oldDirs.Add($n) }
+    }
+}
+try {
+    $act = (Get-ScheduledTask -TaskName PCoinMiner -ErrorAction SilentlyContinue).Actions.Execute
+    if ($act) {
+        $d = Split-Path ($act.Trim('"')) -Parent
+        if ($d -and (Test-Path (Join-Path $d 'PCoinTray.exe'))) {
+            $n = [IO.Path]::GetFullPath($d).TrimEnd('\')
+            if ($n -ne $normNew) { [void]$oldDirs.Add($n) }
+        }
+    }
+} catch { }
+foreach ($old in $oldDirs) {
+    Write-Output "  previous install found at $old -- migrating and removing it"
+    $oldSeed = Join-Path $old 'pcoin-seed.dat'
+    $newSeed = Join-Path $InstallDir 'pcoin-seed.dat'
+    if ((Test-Path $oldSeed) -and -not (Test-Path $newSeed)) {
+        try { Copy-Item $oldSeed $newSeed -Force -ErrorAction Stop; Write-Output '    migrated your recovery seed' }
+        catch { Write-Output ('    WARNING could not migrate the seed: ' + $_.Exception.Message + ' -- keep ' + $oldSeed) }
+    }
+    $oldData = Join-Path $old 'data'
+    if ((Test-Path $oldData) -and -not (Test-Path $DataDir)) {
+        try { Move-Item $oldData $DataDir -Force -ErrorAction Stop; Write-Output '    moved the data directory (no re-sync)' }
+        catch { Write-Output ('    could not move the data dir (' + $_.Exception.Message + '); the node will re-sync') }
+    }
+    try { Remove-Item $old -Recurse -Force -ErrorAction Stop; Write-Output "    removed $old" }
+    catch { Write-Output ('    could not fully remove ' + $old + ' (' + $_.Exception.Message + ') -- delete it by hand') }
+}
+# Tear down any stale autostart so the new one (created below) is the only one.
+if ($script:IsAdmin) { schtasks /delete /tn PCoinMiner /f 2>$null | Out-Null }
+foreach ($sd in @([Environment]::GetFolderPath('Startup'), (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup'))) {
+    if ($sd) { $stale = Join-Path $sd 'PCoinTray.lnk'; if (Test-Path $stale) { Remove-Item $stale -Force -ErrorAction SilentlyContinue } }
+}
+} # end if (-not $NoCleanup)
+
 # --- download and verify -------------------------------------------------
 $zip = Join-Path $env:TEMP $name
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-
-$script:IsAdmin = ([Security.Principal.WindowsPrincipal] `
-    [Security.Principal.WindowsIdentity]::GetCurrent()
-  ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 # OFFER elevation, never demand it. A one-liner that refuses without admin is a
 # one-liner most people will not run, and everything essential works unelevated.
@@ -118,7 +177,13 @@ if (-not $script:IsAdmin -and -not $NoElevate) {
     }
     Write-Output ''
 }
-Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+if ($ZipPath) {
+    if (-not (Test-Path $ZipPath)) { throw "ZipPath not found: $ZipPath" }
+    Write-Output "  using local zip: $ZipPath"
+    Copy-Item -LiteralPath $ZipPath -Destination $zip -Force
+} else {
+    Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+}
 $got = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
 if ($Sha256 -and $got -ne $Sha256.ToLower()) { throw "SHA256 mismatch: got $got" }
 Write-Output "  sha256 ok"

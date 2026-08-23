@@ -19,6 +19,8 @@ using System.Globalization;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -130,8 +132,34 @@ namespace PCoinTray
             // mistake as the session-0 bug above, where the app was running fine
             // and simply could not be seen. So a second instance now hands the
             // request to the first one and leaves.
+            // GLOBAL, not session-local, and readable across integrity levels.
+            // A plain "PCoinTraySingleInstance" mutex lives in the caller's
+            // session (Local\), so the v1.3.8 elevated autostart task and a
+            // second copy the user double-clicks land in different namespaces and
+            // BOTH run. The Global\ name + a World-allow ACL make the first copy
+            // -- whatever session or elevation it is in -- the only one: every
+            // later copy sees the existing mutex, hands its request to the first,
+            // and leaves. (Two NODES were already impossible -- bitcoind holds a
+            // datadir lock -- but two tray icons fighting over the mining mode
+            // were not, which is what this closes.)
             bool created;
-            using (var mutex = new Mutex(true, "PCoinTraySingleInstance", out created))
+            Mutex mutex;
+            try
+            {
+                var sec = new MutexSecurity();
+                sec.AddAccessRule(new MutexAccessRule(
+                    new SecurityIdentifier(WellKnownSidType.WorldSid, null),
+                    MutexRights.FullControl, AccessControlType.Allow));
+                mutex = new Mutex(true, @"Global\PCoinTraySingleInstance", out created, sec);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // The mutex exists with an ACL we cannot open: another instance
+                // owns it. Treat exactly like "already running".
+                created = false;
+                mutex = null;
+            }
+            using (mutex)
             {
                 if (!created)
                 {
@@ -148,7 +176,7 @@ namespace PCoinTray
         //! the whole IPC mechanism: no sockets, no window messages, no second
         //! file to keep in sync, and it works across the two integrity levels an
         //! installer-launched copy can end up on.
-        internal const string SHOW_EVENT = "PCoinTrayShowWindow";
+        internal const string SHOW_EVENT = @"Global\PCoinTrayShowWindow";
 
         /**
          * Ask the already-running copy to show itself.
@@ -558,7 +586,15 @@ namespace PCoinTray
             {
                 // AutoReset: each request is consumed by exactly one wait, so two
                 // rapid double-clicks cannot leave the event permanently signalled.
-                ev = new EventWaitHandle(false, EventResetMode.AutoReset, Program.SHOW_EVENT);
+                // World-allow ACL so a copy at a different integrity level (a
+                // non-elevated double-click vs the elevated autostart) can still
+                // open it to hand over -- matching the Global\ mutex above.
+                var esec = new EventWaitHandleSecurity();
+                esec.AddAccessRule(new EventWaitHandleAccessRule(
+                    new SecurityIdentifier(WellKnownSidType.WorldSid, null),
+                    EventWaitHandleRights.FullControl, AccessControlType.Allow));
+                bool evCreated;
+                ev = new EventWaitHandle(false, EventResetMode.AutoReset, Program.SHOW_EVENT, out evCreated, esec);
             }
             catch (Exception ex)
             {
