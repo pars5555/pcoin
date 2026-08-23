@@ -89,8 +89,11 @@ android {
             // changes, so its version moves too -- a shared-code fix that bumps
             // only one flavour is how two different binaries end up claiming
             // one version, which is the failure this block already records.
-            versionCode = 5
-            versionName = "0.4.1"
+            // 0.4.2: new installs default to POOL mining (Prefs.poolUrl()), so a
+            // phone earns a steady share instead of showing 0 while it waits
+            // months for a solo block.
+            versionCode = 6
+            versionName = "0.4.2"
 
             buildConfigField("boolean", "MINING", "true")
             // The miner keeps 9443. This half of the change is a provable no-op
@@ -122,8 +125,8 @@ android {
             // as a downgrade. The three phones report 0.2.0; nothing in that era
             // went past versionCode 2, so 10 clears it with room and stays well
             // clear of the miner flavour's own numbering.
-            versionCode = 12
-            versionName = "0.4.1-legacy"
+            versionCode = 13
+            versionName = "0.4.2-legacy"
 
             buildConfigField("boolean", "MINING", "true")
             buildConfigField("int", "RPC_PORT", "9443")

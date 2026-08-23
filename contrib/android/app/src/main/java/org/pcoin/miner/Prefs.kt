@@ -109,7 +109,12 @@ class Prefs(context: Context) {
      * set one -- the getter defaults, the setter is only called by a user
      * action.
      */
-    fun poolUrl(): String = sp.getString(KEY_POOL_URL, "")?.trim().orEmpty()
+    // DEFAULTS TO POOL. A phone is a tiny fraction of the network, so solo it
+    // would wait months for a 50 PCN block and show 0 the whole time; the pool
+    // pays a steady share instead. This default only applies when the user has
+    // never set it -- an explicit choice (including "" for solo) is stored and
+    // read back verbatim, so switching to solo still sticks.
+    fun poolUrl(): String = sp.getString(KEY_POOL_URL, DEFAULT_POOL)?.trim().orEmpty()
 
     @Suppress("ApplySharedPref")
     fun setPoolUrl(value: String) {
@@ -423,6 +428,8 @@ class Prefs(context: Context) {
         private const val KEY_ON_BATTERY = "mine_on_battery"
         private const val KEY_PAYOUT_WALLET = "payout_wallet"
         private const val KEY_POOL_URL = "pool_url"
+        // New installs mine to the pool by default (see poolUrl()).
+        const val DEFAULT_POOL = "pool.pc.am:3333"
         private const val KEY_SEED_WALLET = "seed_wallet_name"
         private const val KEY_PHRASE_CONFIRMED = "phrase_confirmed"
         private const val KEY_PHRASE_DISMISSED = "phrase_prompt_dismissed"
