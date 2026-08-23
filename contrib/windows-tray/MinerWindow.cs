@@ -242,6 +242,10 @@ namespace PCoinTray
         //! ValueChanged handler can tell a refresh apart from a real choice.
         bool _sliderEcho;
         int _pendingPercent = -1;
+        // While STOPPED the rail is a pick-your-cores control the Start button
+        // reads, so once it has been primed we must not shove it back to a
+        // default -- that is what reset a user's pick to 12 (the 50% default).
+        bool _sliderPrimed;
         MinerSnapshot _last = new MinerSnapshot();
 
         public MinerWindow(RateHistory history, Action<int> setPercent, Action openPhrase, Action openFolder,
@@ -982,14 +986,25 @@ namespace PCoinTray
                 _sliderEcho = false;
             }
 
-            if (_pendingPercent < 0)
+            // Mirror the live thread count WHILE MINING. While stopped, only
+            // prime the rail once and then leave it where the user put it -- the
+            // Start button reads _slider.Value, so re-pushing a default here is
+            // exactly what discarded a pick made before mining.
+            if (_pendingPercent < 0 && (s.WantMining || !_sliderPrimed))
             {
                 int shown = Cpu.ThreadsFor(s.Percent, coreMax, s.FastMode);
-                if (shown < 1) shown = Math.Max(1, Math.Min(coreMax, Cpu.ThreadsFor(50, coreMax, s.FastMode)));
+                if (shown < 1)
+                {
+                    // Stopped and nothing chosen yet: default to the measured/
+                    // heuristic best for this CPU, not an arbitrary 50%.
+                    int rec = Cpu.Recommend(coreMax, s.FastMode);
+                    shown = rec > 0 ? rec : Math.Max(1, Math.Min(coreMax, Cpu.ThreadsFor(50, coreMax, s.FastMode)));
+                }
                 _sliderEcho = true;
                 _slider.Value = Math.Max(1, Math.Min(coreMax, shown));
                 _sliderEcho = false;
                 UpdateSliderLabel(Cpu.PercentForThreads(shown, coreMax), false);
+                _sliderPrimed = true;
             }
 
             _toggle.Content = s.WantMining ? "Stop mining" : "Start mining";

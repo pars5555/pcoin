@@ -26,8 +26,8 @@ param(
     # half-applied bump is impossible. The hash is of pcoin-win64-miner.zip
     # and the install aborts on a mismatch, so a forgotten bump here breaks
     # every new install rather than failing quietly.
-    [string]$Version = '1.3.9',
-    [string]$Sha256 = '7088fc66a15d09782f756637cb336d405b02ea88d412f249131a66c0cdca8605',
+    [string]$Version = '1.3.10',
+    [string]$Sha256 = '9422d7c5600b406af0b4e028a2e65800c3ab9880eae65b67340b645179cbe946',
     # All three seeds, not just one. The node also carries them compiled in as
     # of v1.2.1, so this is belt and braces rather than the only route in.
     [string[]]$AddNode = @('35.239.156.16:9444', '178.105.3.51:9444', '152.53.171.190:9444'),
@@ -41,7 +41,16 @@ param(
     # Do NOT migrate-and-remove a previous install found in a different folder.
     # The default (single install) is what you want in production; this is for
     # testing a build side-by-side without disturbing an existing install.
-    [switch]$NoCleanup
+    [switch]$NoCleanup,
+    # Start mining automatically after install, with the thread count left to the
+    # tray's auto-calibration (no need to pass -Threads). Opt-in, because a node
+    # that mines before it has synced can build a competing fork -- but on a
+    # machine whose node is already synced this is the "just earn" switch.
+    [switch]$Mine,
+    # Re-download and re-extract even when this exact version is already installed.
+    # Without it the install skips the 9 MB download when C:\PCoin already holds
+    # this $Version, and only re-applies config / restarts the tray.
+    [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
@@ -170,9 +179,15 @@ if (-not $script:IsAdmin -and -not $NoElevate) {
     Write-Output '    - the logon scheduled task, and installing into C:\PCoin'
     $reply = Read-Host '  Relaunch as administrator to include them? [Y/n]'
     if ($reply -notmatch '^[Nn]') {
-        $inner = "& ([scriptblock]::Create((irm https://pc.am/dl/install.ps1))) -Threads $Threads -NoElevate"
+        # No -NoExit: the elevated window should close when the install finishes
+        # and leave only the tray app running. It lingers 10 s ONLY on an error so
+        # a failure is not invisible.
+        $extra = ''
+        if ($Mine) { $extra = $extra + ' -Mine' }
+        if ($Force) { $extra = $extra + ' -Force' }
+        $inner = "try { & ([scriptblock]::Create((irm https://pc.am/dl/install.ps1))) -Threads $Threads -NoElevate$extra } catch { Write-Host `$_.Exception.Message -ForegroundColor Red; Start-Sleep 10 }"
         try {
-            Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-NoExit','-Command',$inner
+            Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command',$inner
             Write-Output '  Continuing in the elevated window. You can close this one.'
             return
         } catch {
@@ -183,6 +198,16 @@ if (-not $script:IsAdmin -and -not $NoElevate) {
     }
     Write-Output ''
 }
+# Same-version skip: don't re-download the 9 MB zip when this exact $Version is
+# already installed. -Force overrides; -ZipPath (local/testing) always installs.
+$verFile = Join-Path $InstallDir '.pcoin_version'
+$sameVer = (-not $ZipPath) -and (-not $Force) -and (Test-Path $verFile) -and `
+    ((Get-Content $verFile -ErrorAction SilentlyContinue) -eq $Version) -and `
+    (Test-Path (Join-Path $InstallDir 'bitcoind.exe')) -and `
+    (Test-Path (Join-Path $InstallDir 'PCoinTray.exe'))
+if ($sameVer) {
+    Write-Output "  already at v$Version -- skipping download (use -Force to reinstall)"
+} else {
 if ($ZipPath) {
     if (-not (Test-Path $ZipPath)) { throw "ZipPath not found: $ZipPath" }
     Write-Output "  using local zip: $ZipPath"
@@ -238,6 +263,8 @@ foreach ($attempt in 1..6) {
     }
 }
 Write-Output "  installed to $InstallDir"
+Set-Content -Path $verFile -Value $Version -Encoding ascii
+}
 
 # --- node configuration --------------------------------------------------
 New-Item -ItemType Directory -Force $DataDir | Out-Null
@@ -310,6 +337,16 @@ $threadsOut = $Threads
 if (-not $PSBoundParameters.ContainsKey('Threads') -and $keep.ContainsKey('threads')) {
   $threadsOut = $keep['threads']
   Write-Output "  keeping existing thread count ($threadsOut)"
+}
+
+# -Mine: ensure mining is ON. The exact count barely matters -- the tray's
+# auto-calibration re-tunes it on start -- but it must be > 0, and BOTH threads=
+# and percent= must agree, or the tray's percent line wins and cancels mining.
+if ($Mine) {
+  if ($threadsOut -le 0) { $threadsOut = [Math]::Max(1, [int]([Environment]::ProcessorCount / 2)) }
+  $percent = [int][Math]::Round($threadsOut * 100.0 / [Math]::Max(1, [Environment]::ProcessorCount))
+  if ($percent -lt 1) { $percent = 50 }
+  Write-Output "  -Mine: mining ON (auto-calibration will tune the thread count on start)"
 }
 
 @("address=$addr",
