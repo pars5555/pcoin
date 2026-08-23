@@ -53,6 +53,25 @@ bool RandomXPowInit(std::string& error);
  */
 uint256 RandomXPowHash(const CBlockHeader& header);
 
+/**
+ * True iff the shared RandomX VERIFICATION flags (g_flags) carry neither
+ * RANDOMX_FLAG_LARGE_PAGES nor RANDOMX_FLAG_FULL_MEM.
+ *
+ * That is the consensus firewall stated as a value a test can read. g_flags is
+ * the one variable both paths share: it builds the verification cache and every
+ * verification VM, and fast mode only ever ORs FULL_MEM in at a single
+ * mining-only call site. If either bit ever leaked into g_flags itself, block
+ * verification would try to allocate its 256 MiB cache (or a VM scratchpad) on
+ * large pages / as a full dataset and silently fall back to the portable
+ * interpreter on the constrained machines the light-mode contract exists to
+ * protect -- with the hash still bit-for-bit correct, so no hash test would
+ * notice. The node also asserts this at runtime (InitCache/CreateVM); this
+ * accessor lets the unit tests assert it without pulling randomx.h into a
+ * public header. Forces initialisation first, so the answer is never "not yet
+ * decided".
+ */
+bool RandomXVerificationIsLightModeOnly();
+
 /* -------------------------------------------------------------------------
  * OPT-IN RANDOMX FAST MODE -- MINING ONLY.
  *

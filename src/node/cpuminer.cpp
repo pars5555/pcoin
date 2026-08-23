@@ -7,6 +7,7 @@
 #include <chain.h>
 #include <consensus/merkle.h>
 #include <crypto/pow_randomx.h>
+#include <node/cpu_topology.h>
 #include <interfaces/mining.h>
 #include <logging.h>
 #include <node/blockstorage.h>
@@ -99,13 +100,10 @@ bool CpuMiner::Start(ChainstateManager& chainman, interfaces::Mining& mining,
         error = "No payout script: a valid address is required to mine.";
         return false;
     }
-    const int max_threads{std::max(1, static_cast<int>(std::thread::hardware_concurrency()))};
-    if (threads <= 0) threads = max_threads;
-    if (threads > max_threads) {
-        // Not an error: capping is friendlier than refusing, and the caller
-        // sees the real value through GetThreads().
-        threads = max_threads;
-    }
+    // Capping above the core count is friendlier than refusing, and a <= 0
+    // request becomes the fast-mode-aware default; the caller sees the real
+    // value through GetThreads().
+    threads = ResolveThreadCount(threads);
 
     threads = PrepareLocked(threads, ttl_seconds);
 
@@ -143,6 +141,29 @@ bool CpuMiner::Start(ChainstateManager& chainman, interfaces::Mining& mining,
         LogPrintf("PCoin CPU miner started with %d thread(s)\n", threads);
     }
     return true;
+}
+
+int CpuMiner::ResolveThreadCount(int requested) const
+{
+    const int max_threads{std::max(1, static_cast<int>(std::thread::hardware_concurrency()))};
+    if (requested > 0) return std::min(requested, max_threads);
+
+    // requested <= 0: "every core". In LIGHT mode that is correct -- it is
+    // ALU-bound and keeps scaling with hyperthreads. In FAST mode it is the
+    // documented cliff: the per-worker 2 MiB scratchpads stop fitting in L3 and
+    // hyperthread siblings start fighting over one core's L1/L2/TLB, so the
+    // TOTAL rate falls (all 24 threads on the dev i9 measured ~half of 9). So
+    // default to the topology-derived peak, but ONLY when fast mode is both
+    // asked for AND actually available here -- otherwise a machine that will
+    // fall back to light mode (too little RAM for the dataset) would be capped
+    // for no reason. Eligibility is a few small /proc reads or one
+    // GlobalMemoryStatusEx; the cache it may initialise is already up from node
+    // startup. An explicit count never reaches this branch.
+    std::string ignored;
+    if (m_fast_mode_requested.load() && RandomXFastModeEligible(ignored)) {
+        return std::min(FastModeThreadTarget(GetCpuTopology()), max_threads);
+    }
+    return max_threads;
 }
 
 int CpuMiner::PrepareLocked(int threads, int64_t ttl_seconds)
@@ -188,9 +209,7 @@ bool CpuMiner::StartPool(ChainstateManager& chainman, const std::string& host, u
         error = "No pool user: the payout address you want the pool to credit is required.";
         return false;
     }
-    const int max_threads{std::max(1, static_cast<int>(std::thread::hardware_concurrency()))};
-    if (threads <= 0) threads = max_threads;
-    if (threads > max_threads) threads = max_threads; // capped, not refused
+    threads = ResolveThreadCount(threads); // capped, not refused; fast-mode-aware default
 
     threads = PrepareLocked(threads, ttl_seconds);
 

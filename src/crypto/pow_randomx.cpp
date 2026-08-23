@@ -66,6 +66,16 @@ std::mutex g_fallback_mutex;
 //! only differ in speed. Returns nullptr if every attempt fails.
 randomx_vm* CreateVM()
 {
+    // CONSENSUS FIREWALL, enforced rather than merely commented. This is a
+    // VERIFICATION VM: it must be built from exactly the light-mode flags. If a
+    // future edit ever OR-ed LARGE_PAGES or FULL_MEM into g_flags "so the mining
+    // VM gets it", randomx_alloc_cache(g_flags) and this call would degrade the
+    // verification path (large-page cache failure -> portable interpreter; a
+    // full-memory VM with no dataset -> a library assert), on the very phones
+    // the light-mode contract protects -- and the hash would stay correct, so
+    // no differential test would catch it. Asserts are live in release here, so
+    // the mistake aborts on first run instead of shipping a silently slow node.
+    assert((g_flags & (RANDOMX_FLAG_LARGE_PAGES | RANDOMX_FLAG_FULL_MEM)) == 0);
     randomx_vm* vm{randomx_create_vm(g_flags, g_cache, nullptr)};
     if (vm == nullptr && (g_flags & RANDOMX_FLAG_JIT) == RANDOMX_FLAG_JIT) {
         vm = randomx_create_vm(g_flags | RANDOMX_FLAG_SECURE, g_cache, nullptr);
@@ -97,6 +107,11 @@ void InitCache()
     randomx_init_cache(cache, RANDOMX_KEY, RANDOMX_KEY_SIZE);
     g_cache = cache;
     g_flags = flags;
+
+    // The firewall invariant, asserted at the one place g_flags is written.
+    // randomx_get_flags() never sets LARGE_PAGES/FULL_MEM and neither does the
+    // RANDOMX_FLAG_DEFAULT fallback above; this refuses the hand-edit that would.
+    assert((g_flags & (RANDOMX_FLAG_LARGE_PAGES | RANDOMX_FLAG_FULL_MEM)) == 0);
 
     // Create the shared fallback VM up front so that, after successful
     // initialization, hashing can always proceed even if a thread later
@@ -173,6 +188,12 @@ uint256 RandomXPowHash(const CBlockHeader& header)
         randomx_calculate_hash(g_fallback_vm, ss.data(), ss.size(), hash.begin());
     }
     return hash;
+}
+
+bool RandomXVerificationIsLightModeOnly()
+{
+    std::call_once(g_cache_once, InitCache);
+    return (g_flags & (RANDOMX_FLAG_LARGE_PAGES | RANDOMX_FLAG_FULL_MEM)) == 0;
 }
 
 /* =========================================================================

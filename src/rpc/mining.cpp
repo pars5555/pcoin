@@ -22,6 +22,7 @@
 #include <key_io.h>
 #include <net.h>
 #include <node/context.h>
+#include <node/cpu_topology.h>
 #include <node/cpuminer.h>
 #include <node/miner.h>
 #include <node/warnings.h>
@@ -1143,7 +1144,7 @@ static RPCHelpMan startmining()
         "Rewards are paid to the given address.",
         {
             {"address", RPCArg::Type::STR, RPCArg::Optional::NO, "The address to pay block rewards to."},
-            {"threads", RPCArg::Type::NUM, RPCArg::Default{0}, "Worker threads to use. 0 means every core. Values above the core count are capped."},
+            {"threads", RPCArg::Type::NUM, RPCArg::Default{0}, "Worker threads to use. 0 (or less) means the sensible default for the current mode: every core in light mode, but in fast mode the topology-derived peak (min(physical cores, L3 / 2 MiB)) on a hyperthreaded machine, because past that point extra workers evict each other's scratchpads and the machine mines LESS. A positive value is used as given (capped to the core count); see getcpuminerinfo.recommendedthreads."},
             {"ttl", RPCArg::Type::NUM, RPCArg::Default{0}, "Dead-man's switch, in seconds. If set, mining stops automatically unless getcpuminerinfo or startmining is called at least this often. Use it when a supervising app enforces battery or thermal limits, so that mining cannot outlive the supervisor. 0 disables."},
         },
         RPCResult{
@@ -1313,6 +1314,8 @@ static RPCHelpMan getcpuminerinfo()
                 {RPCResult::Type::NUM, "hashespersec", "current hash rate across all threads"},
                 {RPCResult::Type::NUM, "blocksfound", "blocks mined since the miner was started"},
                 {RPCResult::Type::NUM, "cores", "logical cores detected on this machine"},
+                {RPCResult::Type::NUM, "physicalcores", "physical cores detected, or 0 if the topology could not be read"},
+                {RPCResult::Type::NUM, "recommendedthreads", "in FAST mode, the worker count measured to be fastest on this CPU -- min(physical cores, L3 / 2 MiB) -- past which extra workers evict each other's scratchpads and the machine mines LESS. 0 means there is no such advice (no hyperthreading, so more cores keep helping; or the topology is unreadable). This is what a <= 0 (\"all cores\") startmining request now defaults to in fast mode; an explicit thread count is always honoured. Light mode is unaffected -- it scales with hyperthreads."},
                 {RPCResult::Type::STR, "mode", "RandomX mode the workers are actually hashing in: \"light\", \"fast\", or \"mixed\". This is observed, not requested: a node that refused fast mode reports \"light\". Block verification always uses light mode regardless."},
                 {RPCResult::Type::NUM, "fastthreads", "worker threads currently hashing from the fast-mode dataset"},
                 {RPCResult::Type::STR, "modereason", "why the miner is not in fast mode, or the dataset build progress. Empty ONLY when every worker is in fast mode, or when fast mode was never requested -- a node that is in light mode for any other reason always says why here."},
@@ -1339,6 +1342,14 @@ static RPCHelpMan getcpuminerinfo()
     obj.pushKV("hashespersec", cpuminer.GetHashesPerSecond());
     obj.pushKV("blocksfound", cpuminer.GetBlocksFound());
     obj.pushKV("cores", static_cast<int>(std::max(1u, std::thread::hardware_concurrency())));
+
+    // Topology, so a UI (the tray, the Linux dashboard, a phone) does not have
+    // to reimplement the physical-core/L3 detection the fast-mode thread advice
+    // depends on -- and so every front-end shows the SAME number the node itself
+    // defaults to. recommendedthreads is 0 when there is nothing to advise.
+    const node::CpuTopology topo{node::GetCpuTopology()};
+    obj.pushKV("physicalcores", topo.physical);
+    obj.pushKV("recommendedthreads", node::FastModeThreadAdvice(topo));
 
     // Report the mode from what the workers are HOLDING, never from what
     // anyone asked for. A UI that renders its own saved intent will happily

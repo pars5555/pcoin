@@ -1156,6 +1156,53 @@ BOOST_AUTO_TEST_CASE(pcoin_randomx_mining_vm_light_passthrough)
 }
 
 /**
+ * THE GOLDEN VECTOR. The one place in the tree that pins the actual RandomX PoW
+ * hash bytes to constants.
+ *
+ * Every other RandomX check here compares fast mode against light mode INSIDE
+ * one process. That catches a fast/light divergence but is blind to the two
+ * drifting TOGETHER: a vendored-RandomX bump, a toolchain change to the JIT or
+ * Argon2, an accidental edit to the "PCoin/RandomX/v1" key or the 80-byte header
+ * serialisation would move BOTH hashes the same way and stay "equal" -- while
+ * every already-mined block silently became unverifiable. On a live chain that
+ * is a fork nobody can see coming. This test fixes the PoW hash of fixed headers
+ * to hex generated from the shipped consensus build, so any such drift fails
+ * here, loudly and locally, in the ordinary ctest run (light mode, no 2 GiB
+ * dataset, so it is cheap enough to be ungated).
+ *
+ * If it fails after a DELIBERATE, understood change (a RandomX version bump, a
+ * documented key rotation = PoW v2), regenerate these constants from a known-
+ * good build and update PCOIN.md. Never edit them to silence a surprise: a
+ * surprise here is a consensus change.
+ */
+BOOST_AUTO_TEST_CASE(pcoin_randomx_golden_vector)
+{
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(RandomXPowInit(error), error);
+
+    // The verification path is light-mode only, structurally. If this fails, a
+    // large-page/full-memory bit reached g_flags and the golden hashes below
+    // were produced by a different configuration than a plain node validates in.
+    BOOST_CHECK(RandomXVerificationIsLightModeOnly());
+
+    // ProbeHeader(nonce) is fully deterministic (see its definition), and
+    // RandomXPowHash() is the exact verification path. GetHex() is the same
+    // rendering the RPCs and block explorers use, so these constants are
+    // directly comparable to anything on the wire.
+    // Generated from the shipped consensus build (RandomX v1.2.1, key
+    // "PCoin/RandomX/v1", light mode) on 2026-08-23. See PCOIN.md.
+    const std::vector<std::pair<uint32_t, std::string>> golden{
+        {0x00000000U, "b3cac8550b7ad4f47f501a831c29c0fc55f636a6554ada3598afcb71851f73e8"},
+        {0x00000001U, "de814b31a4e160bb22834341288518c8a7a6c381a30bd0f4966c6e2cf3b4e8e0"},
+        {0x00000007U, "861bdcc12977976b7fecb89ff2d8a18cc01ca7cec87bdac87d6a9b0ab3502e0c"},
+        {0xffffffffU, "774de2ac567440b8367c0b4185370594186e627d345bb7da10fde4825d713974"},
+    };
+    for (const auto& [nonce, expected] : golden) {
+        BOOST_CHECK_EQUAL(RandomXPowHash(ProbeHeader(nonce)).GetHex(), expected);
+    }
+}
+
+/**
  * THE CONSENSUS CLAIM: RandomX fast mode and light mode produce IDENTICAL
  * hashes for the same header. If they ever did not, PCoin's miner would build
  * blocks every other node rejects -- or, far worse, accept a proof no

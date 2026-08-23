@@ -148,6 +148,17 @@ private:
     void Worker(ChainstateManager* chainman);
     void PoolWorker(ChainstateManager* chainman);
 
+    //! Resolve a requested worker count into the number to actually start.
+    //!
+    //! A positive request is honoured (capped to the logical core count): the
+    //! operator asked for it, exactly as the tray slider is never overridden.
+    //! A request of <= 0 means "all cores" -- which is the WRONG default in
+    //! fast mode, where extra workers past the L3/hyperthread limit make the
+    //! machine mine LESS. So <= 0 resolves to the topology-derived fast-mode
+    //! peak when fast mode is both requested and available on this machine, and
+    //! to every logical core otherwise (light mode scales with hyperthreads).
+    int ResolveThreadCount(int requested) const;
+
     //! Shared prologue of Start()/StartPool(). Requires m_lifecycle_mutex.
     //! Resets counters, stops anything running, and validates the thread count.
     int PrepareLocked(int threads, int64_t ttl_seconds);
