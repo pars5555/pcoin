@@ -50,7 +50,12 @@ param(
     # Re-download and re-extract even when this exact version is already installed.
     # Without it the install skips the 9 MB download when C:\PCoin already holds
     # this $Version, and only re-applies config / restarts the tray.
-    [switch]$Force
+    [switch]$Force,
+    # Mine SOLO instead of the default pool. Solo pays the whole 50 PCN block when
+    # THIS machine finds one -- rare unless you have a lot of hash rate, so most
+    # miners see long dry spells. The default (pool) pays a small steady share.
+    # You can switch either way later from the tray's Mining-mode panel.
+    [switch]$Solo
 )
 
 $ErrorActionPreference = 'Stop'
@@ -181,6 +186,7 @@ if (-not $script:IsAdmin -and -not $NoElevate) {
     $extra = ''
     if ($Mine) { $extra = $extra + ' -Mine' }
     if ($Force) { $extra = $extra + ' -Force' }
+    if ($Solo) { $extra = $extra + ' -Solo' }
     $inner = "try { & ([scriptblock]::Create((irm https://pc.am/dl/install.ps1))) -Threads $Threads -NoElevate$extra } catch { Write-Host `$_.Exception.Message -ForegroundColor Red; Start-Sleep 10 }"
     try {
         Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command',$inner
@@ -316,8 +322,12 @@ $seedPrompt = ''
 if ($keep.ContainsKey('seedprompt')) { $seedPrompt = $keep['seedprompt'] }
 $fastMode = '1'   # default ON for a NEW install; an upgrade keeps whatever is already set, just below
 if ($keep.ContainsKey('fastmode')) { $fastMode = $keep['fastmode'] }
-$poolUrl = ''
+# Default a NEW install to the pool: for a small miner, pool pays a steady share
+# instead of waiting days for a rare solo block. An existing install keeps its own
+# choice, and -Solo forces solo.
+$poolUrl = 'pool.pc.am:3333'
 if ($keep.ContainsKey('poolurl')) { $poolUrl = $keep['poolurl'] }
+if ($Solo) { $poolUrl = '' }
 $percent = ''
 if ($keep.ContainsKey('percent')) { $percent = $keep['percent'] }
 
