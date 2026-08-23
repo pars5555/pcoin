@@ -1,7 +1,7 @@
 # PCoin — Windows always-on full node setup
 
 Package: `pcoin-win64-miner.zip` from the release that built it —
-<https://github.com/pars5555/pcoin/releases/download/v1.2.6/pcoin-win64-miner.zip>
+<https://github.com/pars5555/pcoin/releases/download/v1.3.7/pcoin-win64-miner.zip>
 (PCoin Core v29.4.0, x86-64, statically linked). Components release separately, so
 `/releases/latest/` is **not** a safe way to reach a Windows build: a release that ships only
 the Android wallet has no Windows asset and the link 404s. Assets gained a role word in
