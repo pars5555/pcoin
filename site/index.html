@@ -334,6 +334,7 @@
       <a href="#calculator">Calculator</a>
       <a href="#pool">Pool</a>
       <a href="#spend">Spend it</a>
+      <a href="#trade">Trading</a>
       <a href="https://market.pc.am" rel="noopener">Buy PCN</a>
         <a href="#parameters">Parameters</a>
       <a href="#get-started">Get started</a>
@@ -847,6 +848,51 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
         This is also the honest answer to <em>&ldquo;where can I actually use PCN?&rdquo;</em> &mdash;
         one place, run by the same people who build PCoin, at a rate they set. It is a real use, not a
         market. Anything that calls it a price is overselling it.
+      </div>
+    </div>
+  </section>
+
+  <section id="trade">
+    <div class="wrap">
+      <span class="kicker">Trading</span>
+      <h2>PCoin can now be reached by wallets we did not write.</h2>
+      <p class="lede">
+        Until today, the only software that could talk to PCoin was software we built. That was the
+        real barrier to PCN ever being tradable &mdash; not paperwork, not permission.
+        <b>Two ElectrumX servers now serve the PCoin chain</b>, which is the standard interface every
+        Electrum-protocol wallet and most decentralised exchanges expect. On the strength of that,
+        PCN has completed <b>its first atomic swap</b> and has been <b>submitted</b> to the Komodo
+        DeFi Framework.
+      </p>
+
+      <div class="table-shell">
+        <table class="params">
+          <tbody>
+            <tr><th>ElectrumX</th><td><code>electrum1.pc.am</code> &middot; <code>electrum2.pc.am</code> &mdash; SSL on 50002, WSS on 50004, TCP on 50001</td></tr>
+            <tr><th>First atomic swap</th><td>100&nbsp;PCN traded for DOGE, non-custodially, settled on both chains &mdash; <a href="https://github.com/GLEECBTC/coins/blob/master/swaps/PCN-DOGE.md" rel="noopener">the five transactions</a></td></tr>
+            <tr><th>Komodo DeFi listing</th><td><b>Submitted, not accepted.</b> <a href="https://github.com/GLEECBTC/coins/pull/1964" rel="noopener">Pull request #1964</a> &mdash; its live status is on that page, not this one</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="honest-box" style="max-width:100%;margin-top:26px">
+        <b>What this does not mean.</b>
+        PCN is <b>still not listed anywhere</b>, and it is still not traded. A submission is a request,
+        and it can be refused.
+        <br><br>
+        The first atomic swap was between <b>two wallets we control</b>. It exists because Komodo
+        requires a completed swap before they will consider a coin, and for no other reason. It
+        proves the machinery works end to end; it is <b>not a price</b>, and any number derived from
+        it would be us quoting ourselves. Nothing on this site will ever cite it as one.
+        <br><br>
+        We are also not approaching custodial exchanges &mdash; the kind that hold your coins and
+        credit you a balance &mdash; and that is deliberate. <b>A single miner currently finds the
+        majority of PCoin blocks.</b> Against a custodial exchange that is an attack with a known
+        shape and a known victim, so the responsible venues right now are the non-custodial ones,
+        which hold nothing. That concentration is stated in full, with the measurement method and a
+        confidence interval, in <a href="https://github.com/GLEECBTC/coins/pull/1964" rel="noopener">the
+        listing request itself</a> &mdash; we would rather a reviewer read it from us than find it
+        on their own.
       </div>
     </div>
   </section>
