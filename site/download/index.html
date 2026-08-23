@@ -390,37 +390,41 @@
 
 <!-- ================= WINDOWS ================= -->
 <section class="panelx" id="p-win" role="tabpanel" aria-labelledby="t-win">
-  <div class="req"><span><b>Needs</b> Windows 10 or 11, 64-bit</span><span><b>RAM</b> ~512&nbsp;MB per mining thread</span><span><b>Download</b> 8&nbsp;MB</span></div>
+  <div class="req"><span><b>Needs</b> Windows 10 or 11, 64-bit</span><span><b>RAM</b> 4&nbsp;GB+ (works with less in light mode)</span><span><b>Download</b> ~10&nbsp;MB</span></div>
 
   <div class="step">
     <div class="step-n">1</div>
     <div>
-      <h3>Run one line in PowerShell</h3>
-      <p>Press <b>Win</b>, type <em>PowerShell</em>, open it, and paste this. It downloads
-         the archive, verifies the checksum, installs the node and miner, and puts a
-         shortcut on your desktop.</p>
-      <pre class="cmd"><button class="copy" type="button">copy</button><span class="c"># -Threads is how many CPU cores mine. Use 0 to install without mining.</span>
-&amp; ([scriptblock]::Create((irm https://pc.am/dl/install.ps1))) -Threads 4</pre>
-      <p>Leave a core or two free if you want the machine to stay responsive. You can
-         change this later from the tray icon.</p>
+      <h3>Paste one line into PowerShell</h3>
+      <p>Press <b>Win</b>, type <em>PowerShell</em>, press <b>Enter</b> to open it, then paste
+         this line and press <b>Enter</b> again:</p>
+      <pre class="cmd"><button class="copy" type="button">copy</button>&amp; ([scriptblock]::Create((irm https://pc.am/dl/install.ps1))) -Mine</pre>
+      <p>That single line does everything &mdash; it downloads the miner, checks the file is
+         genuine, installs the node and miner, and starts mining. When a blue
+         <b>User Account Control</b> box appears, click <b>Yes</b> so it can finish setting up.
+         (Click No if you prefer &mdash; it still installs and mines, just without a couple of
+         extras.)</p>
+      <div class="note">
+        <strong>You don&rsquo;t have to pick how many cores to use.</strong> The miner
+        benchmarks your CPU the first time and settles on the fastest core count by itself.
+        With this algorithm more cores is <em>not</em> always faster, so it measures instead
+        of guessing. You can still override it later from the tray window.
+      </div>
     </div>
   </div>
 
   <div class="step">
     <div class="step-n">2</div>
     <div>
-      <h3>If Windows shows a blue warning</h3>
-      <p>It will say <em>&ldquo;Windows protected your PC&rdquo;</em>. Click <b>More info</b>,
-         then <b>Run anyway</b>.</p>
+      <h3>If Windows shows a blue &ldquo;protected your PC&rdquo; box</h3>
+      <p>Click <b>More info</b>, then <b>Run anyway</b>.</p>
       <div class="note warn">
         <strong>That is SmartScreen, not a virus warning.</strong>
-        It appears because the binaries are not signed with a paid code-signing
-        certificate, and SmartScreen warns about anything it has not seen downloaded
-        widely &mdash; the content is irrelevant to it. Windows Defender, the antivirus,
-        does not flag PCoin: each release is checked on a real machine with real-time
-        protection on, current signatures, and a forced scan of the extracted files.
-        A code-signing certificate is on the roadmap; until then this warning is the
-        honest cost of shipping unsigned software.
+        It appears because the app is not signed with a paid certificate yet, and SmartScreen
+        warns about anything it has not seen downloaded widely &mdash; it says nothing about the
+        contents. Windows Defender, the actual antivirus, does not flag PCoin: every release is
+        scanned on a real machine, real-time protection on, before it ships. A signing
+        certificate is on the roadmap.
       </div>
     </div>
   </div>
@@ -428,16 +432,23 @@
   <div class="step">
     <div class="step-n">3</div>
     <div>
-      <h3>Watch it sync, then mine</h3>
-      <p>A PCoin icon appears in the system tray, near the clock. Click it for hashrate,
-         block height and the address your rewards go to. The chain is small &mdash;
-         syncing takes minutes.</p>
-      <div class="note">
-        <strong>Mining before the node has synced is wasted work.</strong>
-        The installer knows this and waits. If you installed with
-        <code>-Threads 0</code>, start mining from the tray once your height matches
-        <a href="https://explorer.pc.am" rel="noopener">the explorer</a>.
-      </div>
+      <h3>It is mining &mdash; open the tray to see it</h3>
+      <p>A small PCoin icon appears down by the clock (click the <b>&and;</b> arrow if you don&rsquo;t
+         see it). Click it and choose <b>Open</b> for your live hash rate, the block height, and
+         the address your rewards are paid to. Three things worth doing:</p>
+      <ul style="margin:10px 0 0 18px;line-height:1.65">
+        <li><b>Solo or pool?</b> The window has a <em>Mining mode</em> panel that tells you which
+            fits your machine: <b>Pool</b> pays a small, steady amount; <b>Solo</b> pays a whole
+            block when your PC finds one. Smaller miners usually want pool. Pick one and click
+            <b>Apply</b> &mdash; the app only suggests, it never switches on its own.</li>
+        <li><b>Back up your recovery phrase.</b> Click <em>Recovery phrase</em> and write the
+            twelve words on paper. If Windows is ever reinstalled, those words are the only way
+            to recover your coins.</li>
+        <li><b>Let it sync first.</b> Mining before the chain has finished downloading is wasted
+            work, so the miner waits. The chain is small &mdash; it takes only a few minutes;
+            watch your height reach <a href="https://explorer.pc.am" rel="noopener">the
+            explorer&rsquo;s</a>.</li>
+      </ul>
     </div>
   </div>
 
