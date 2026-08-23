@@ -332,7 +332,15 @@ namespace PCoinTray
         //! Fast mode is a per-PC choice, not a network one: it changes how this
         //! machine computes hashes, never what the chain accepts. Off by default
         //! because it costs ~2 GB and the owner should opt in knowingly.
-        bool _fastMode;
+        //! Fast mode is the default: it is ~6.7x light mode (measured 2690 vs
+        //! 400 H/s on a 24-thread i9), and the NODE already refuses it on
+        //! machines that cannot take it -- no RandomX JIT, too little RAM
+        //! installed, or too little available -- reporting why either way. The
+        //! checkbox stays so it can be turned off, because the node can measure
+        //! memory but cannot know intent: a laptop on battery, a shared box, or
+        //! someone playing a game on the same PC are all reasons to say no that
+        //! no amount of probing will discover.
+        bool _fastMode = true;
         const int DEFAULT_PERCENT = 50;
         static readonly int[] PERCENT_STEPS = { 10, 25, 50, 75, 100 };
 
@@ -653,6 +661,27 @@ namespace PCoinTray
         void Startup()
         {
             EnsureNode();
+
+            // Fast mode is ON by default, so startup has to carry the same
+            // safety net the checkbox has had since v1.2.4.
+            //
+            // -randomxfastmode is a node option, and Core exits on an option it
+            // does not recognise. A tray that is newer than the bitcoind.exe
+            // beside it -- someone who copied PCoinTray.exe over an older
+            // install -- would otherwise get a node that never starts, with the
+            // cause invisible and no way to reach the checkbox to undo it,
+            // because the window shows "the node is not answering" either way.
+            // Turning the default off and trying once more cannot leave the
+            // machine worse than it started, and it mines in light mode instead
+            // of not at all.
+            if (!_nodeUp && _fastMode)
+            {
+                Program.Note("startup: node did not start with fast mode, retrying without it");
+                _fastMode = false;
+                SaveConfig();
+                EnsureNode();
+            }
+
             EnsureWalletLoaded();
             EnsurePhraseWallet();
             if (string.IsNullOrEmpty(_address)) _address = EnsureAddress();

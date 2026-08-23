@@ -221,7 +221,7 @@ if ($addr) { Write-Output "  keeping existing payout address $addr" }
 # other setting belongs to the user and must survive.
 $seedPrompt = ''
 if ($keep.ContainsKey('seedprompt')) { $seedPrompt = $keep['seedprompt'] }
-$fastMode = '0'
+$fastMode = '1'   # default ON for a NEW install; an upgrade keeps whatever is already set, just below
 if ($keep.ContainsKey('fastmode')) { $fastMode = $keep['fastmode'] }
 $poolUrl = ''
 if ($keep.ContainsKey('poolurl')) { $poolUrl = $keep['poolurl'] }
