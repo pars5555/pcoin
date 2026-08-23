@@ -436,6 +436,16 @@ namespace PCoinTray
         string _datadir = "";          // empty = bitcoind's default location
         int _percent = DEFAULT_PERCENT;
         bool _mining;
+
+        // Auto-calibration. RandomX fast mode does not scale with cores past the
+        // point the 2 MiB scratchpads stop fitting in L3, so the best thread count
+        // is a property of THIS CPU. The miner measures it instead of trusting the
+        // slider. _optimalThreads is the last measured fastest count (0 = unknown);
+        // _calibStatus is non-null while a benchmark is running.
+        volatile bool _calibrating;
+        volatile bool _cancelCalibrate;
+        int _optimalThreads;
+        volatile string _calibStatus;
         bool _seedDeclined;            // the user was offered a phrase and said no
         int _threads;                  // derived from _percent, reported by the node
         bool _nodeUp;
@@ -498,6 +508,7 @@ namespace PCoinTray
         int _versionTick;
 
         readonly ToolStripMenuItem _miStatus = new ToolStripMenuItem("Starting...") { Enabled = false };
+        ToolStripMenuItem _miOptimal;   // shows the measured fastest thread count; click = use it
         readonly ToolStripMenuItem _miChain = new ToolStripMenuItem("") { Enabled = false };
         readonly ToolStripMenuItem _miEarned = new ToolStripMenuItem("") { Enabled = false };
         readonly ToolStripMenuItem _miBackedUp = new ToolStripMenuItem("") { Enabled = false, Visible = false };
@@ -638,6 +649,7 @@ namespace PCoinTray
                     else if (k == "seedprompt") _seedDeclined = v == "declined";
                     else if (k == "fastmode") _fastMode = v == "1";
                     else if (k == "datadir") _datadir = v;
+                    else if (k == "optimal") { int o; if (int.TryParse(v, out o)) _optimalThreads = o; }
                     else if (k == "percent")
                     {
                         int p;
@@ -670,6 +682,7 @@ namespace PCoinTray
                     "poolurl=" + _poolUrl + "\r\n" +
                     "datadir=" + _datadir + "\r\n" +
                     "percent=" + (_mining ? _percent : 0).ToString(CultureInfo.InvariantCulture) + "\r\n" +
+                    "optimal=" + _optimalThreads.ToString(CultureInfo.InvariantCulture) + "\r\n" +
                     "seedprompt=" + (_seedDeclined ? "declined" : "") + "\r\n" +
                     "fastmode=" + (_fastMode ? "1" : "0") + "\r\n");
             }
@@ -714,6 +727,8 @@ namespace PCoinTray
                 _miPercent[pct] = item;
                 menu.Items.Add(item);
             }
+            _miOptimal = new ToolStripMenuItem("", null, (s, e) => ResetToOptimal()) { Visible = false };
+            menu.Items.Add(_miOptimal);
 
             menu.Items.Add(new ToolStripSeparator());
             // No "copy the phrase" anywhere. Copying an address is fine - an
@@ -740,6 +755,20 @@ namespace PCoinTray
         {
             _miOff.Checked = !_mining;
             foreach (var kv in _miPercent) kv.Value.Checked = _mining && kv.Key == _percent;
+            if (_miOptimal != null)
+            {
+                if (_optimalThreads > 0)
+                {
+                    int cur = ThreadsFor(_percent);
+                    bool atBest = _mining && cur == _optimalThreads;
+                    _miOptimal.Visible = true;
+                    _miOptimal.Enabled = !atBest;
+                    _miOptimal.Text = atBest
+                        ? string.Format(CultureInfo.InvariantCulture, "✓ Fastest here: {0} cores (auto-tuned)", _optimalThreads)
+                        : string.Format(CultureInfo.InvariantCulture, "⚠ Fastest is {0} cores — click to use", _optimalThreads);
+                }
+                else { _miOptimal.Visible = false; }
+            }
         }
 
         // ---------- node control ----------
@@ -771,7 +800,7 @@ namespace PCoinTray
             EnsureWalletLoaded();
             EnsurePhraseWallet();
             if (string.IsNullOrEmpty(_address)) _address = EnsureAddress();
-            if (_mining) StartMining(ThreadsFor(_percent));
+            if (_mining) BeginCalibrationOrMine();
             SaveConfig();
             ForwardNodeReady();
             OfferPhraseSetup();
@@ -971,6 +1000,7 @@ namespace PCoinTray
 
         void SetMode(int percent)
         {
+            _cancelCalibrate = true;   // a deliberate choice wins over an in-flight auto-tune
             _mining = percent > 0;
             if (percent > 0) _percent = percent;
             SaveConfig();
@@ -1014,6 +1044,135 @@ namespace PCoinTray
                 return;
             }
             Cli("startmining \"" + _address + "\" " + t);
+        }
+
+        // ---------- auto-calibration ----------
+        //
+        // Every start, benchmark a handful of thread counts (mining the whole
+        // time) and settle on the fastest. RandomX fast mode collapses past the
+        // point the 2 MiB scratchpads stop fitting in L3 -- on a 12C/24T i9,
+        // 8 threads measured 2715 H/s and 24 threads 1125 -- so the best count is
+        // a cache property this machine has to measure, not a slider default the
+        // user will push to maximum. The measured optimum is remembered and shown
+        // in the menu; a manual pick still wins (SetMode cancels this) and the
+        // menu labels the optimum so the user can click back to it.
+
+        void BeginCalibrationOrMine()
+        {
+            // Only fast mode on a hyperthreaded CPU has a collapse to tune around;
+            // light mode and non-HT machines scale monotonically. Recommend()
+            // returns 0 in those cases, and then there is nothing to measure.
+            if (_fastMode && Cpu.Recommend(_cores, _fastMode) > 0)
+            {
+                var t = new Thread(Calibrate) { IsBackground = true };
+                t.Start();
+            }
+            else
+            {
+                StartMining(ThreadsFor(_percent));
+            }
+        }
+
+        static double TrimmedMean(List<double> xs)
+        {
+            if (xs == null || xs.Count == 0) return 0;
+            var s = new List<double>(xs); s.Sort();
+            int drop = s.Count >= 6 ? 2 : (s.Count >= 3 ? 1 : 0);   // shed warm-up lows
+            double sum = 0; int n = 0;
+            for (int i = drop; i < s.Count; i++) { sum += s[i]; n++; }
+            return n > 0 ? sum / n : 0;
+        }
+
+        void SetCalibStatus(string s)
+        {
+            // Just set the field; the 1 s status timer renders it. Calling Refresh
+            // from here would poll re-entrantly for no benefit on a ~15 s dwell.
+            _calibStatus = s;
+        }
+
+        void Calibrate()
+        {
+            try
+            {
+                _calibrating = true;
+                _cancelCalibrate = false;
+                if (string.IsNullOrEmpty(_address)) _address = EnsureAddress();
+                if (string.IsNullOrEmpty(_address)) { StartMining(ThreadsFor(_percent)); return; }
+
+                // Candidates: dense around the cache heuristic, with a low anchor
+                // and all-cores to bracket the peak from both sides.
+                int h = Cpu.Recommend(_cores, _fastMode);
+                if (h <= 0) h = _cores;
+                var set = new SortedSet<int>();
+                foreach (int d in new[] { -2, -1, 0, 1, 2, 4 })
+                {
+                    int n = h + d;
+                    if (n >= 1 && n <= _cores) set.Add(n);
+                }
+                set.Add(Math.Max(1, _cores / 4));
+                set.Add(_cores);
+                var candidates = new List<int>(set);
+
+                // Mine at the heuristic while the 2 GiB fast-mode dataset builds --
+                // measuring during the build would read slow light-mode rates.
+                StartMining(h);
+                SetCalibStatus("Auto-tuning: preparing...");
+                for (int i = 0; i < 120 && !_cancelCalibrate; i++)
+                {
+                    var r = Poll(false);
+                    if (r.NodeUp && (r.Mode == "fast" || r.Mode == "mixed") && r.DatasetProgress >= 100) break;
+                    if (i > 40 && r.NodeUp && r.Mode == "light" && r.DatasetProgress == 0) break; // fast mode not coming
+                    Thread.Sleep(1500);
+                }
+                if (_cancelCalibrate) return;
+
+                int bestN = h; double bestH = 0;
+                var log = new List<string>();
+                foreach (int n in candidates)
+                {
+                    if (_cancelCalibrate) return;
+                    StartMining(n);
+                    SetCalibStatus(string.Format(CultureInfo.InvariantCulture, "Auto-tuning: testing {0} cores...", n));
+                    Thread.Sleep(3000);   // let the new workers spin up before sampling
+                    var samples = new List<double>();
+                    for (int k = 0; k < 8 && !_cancelCalibrate; k++)
+                    {
+                        Thread.Sleep(1500);
+                        var r = Poll(false);
+                        if (r.Hashrate > 0) samples.Add(r.Hashrate);
+                    }
+                    if (_cancelCalibrate) return;
+                    double avg = TrimmedMean(samples);
+                    log.Add(n + ":" + (int)avg);
+                    // Candidates ascend, so a higher thread count must be
+                    // MEANINGFULLY faster (>2%) to displace a lower one. On the
+                    // flat top of the curve that biases toward fewer threads --
+                    // same hash rate, less power and heat -- and it keeps run-to-
+                    // run noise from flipping the pick between adjacent plateau
+                    // counts.
+                    if (avg > bestH * 1.02) { bestH = avg; bestN = n; }
+                }
+                if (_cancelCalibrate) return;
+
+                Program.Note("auto-tune: " + string.Join(" ", log.ToArray()) + " -> best " + bestN + " (" + (int)bestH + " H/s)");
+                _optimalThreads = bestN;
+                _percent = Cpu.PercentForThreads(bestN, _cores);
+                _mining = true;
+                SaveConfig();
+                StartMining(bestN);
+                SetCalibStatus(null);
+            }
+            catch (Exception ex)
+            {
+                try { Program.Note("auto-tune failed: " + ex.Message); StartMining(ThreadsFor(_percent)); } catch { }
+                SetCalibStatus(null);
+            }
+            finally { _calibrating = false; }
+        }
+
+        void ResetToOptimal()
+        {
+            if (_optimalThreads > 0) SetMode(Cpu.PercentForThreads(_optimalThreads, _cores));
         }
 
         // ---------- recovery phrase ----------
@@ -1552,6 +1711,8 @@ namespace PCoinTray
             public bool Hashing;
             public int Threads;
             public double Hashrate;
+            public string Mode;             // "fast" / "light" / "mixed"
+            public int DatasetProgress;     // RandomX fast-mode dataset build %, 0-100
             public long BlocksFound;
             public int Cores;
             //! Pool mining. PoolMining false means the three below are
@@ -1675,6 +1836,8 @@ namespace PCoinTray
                 r.Hashing = m.HasValue && m.Value;
                 r.Threads = (int)(Json.Number(mi.Result, "threads") ?? 0);
                 r.Hashrate = Json.Number(mi.Result, "hashespersec") ?? 0;
+                r.Mode = Json.Str(mi.Result, "mode");
+                r.DatasetProgress = (int)(Json.Number(mi.Result, "datasetprogress") ?? 0);
                 r.BlocksFound = (long)(Json.Number(mi.Result, "blocksfound") ?? 0);
                 r.Cores = (int)(Json.Number(mi.Result, "cores") ?? 0);
                 bool? p = Json.Bool(mi.Result, "pool");
@@ -1702,6 +1865,8 @@ namespace PCoinTray
                 r.Hashing = Num(info, "mining") > 0 || info.Contains("\"mining\": true");
                 r.Threads = (int)Num(info, "threads");
                 r.Hashrate = Num(info, "hashespersec");
+                r.DatasetProgress = (int)Num(info, "datasetprogress");
+                r.Mode = info.Contains("\"fast\"") ? "fast" : (info.Contains("\"mixed\"") ? "mixed" : "light");
                 r.BlocksFound = (long)Num(info, "blocksfound");
                 r.Cores = (int)Num(info, "cores");
             }
@@ -1830,7 +1995,17 @@ namespace PCoinTray
             // stayed off afterwards; this was observed on all three machines
             // after a binary upgrade. The observed value drives the display
             // only; intent changes solely through SetMode().
-            if (mining && _threads > 0)
+            if (_calibrating)
+            {
+                // Calibration owns the miner: it restarts workers between
+                // candidates, and in those brief gaps `mining` reads false. The
+                // recovery branch below must NOT fire here or it would start
+                // mining at the saved percent and fight the benchmark.
+                _icon.Icon = _iconMining;
+                _miStatus.Text = _calibStatus ?? "Auto-tuning threads...";
+                _icon.Text = Truncate("PCoin Miner - auto-tuning");
+            }
+            else if (mining && _threads > 0)
             {
                 _icon.Icon = _iconMining;
                 // A pool problem while the node is still hashing is the quiet
