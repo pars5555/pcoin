@@ -394,6 +394,43 @@ namespace PCoinTray
             }
             return Math.Max(1, Math.Min(100, p));
         }
+
+        //! Pool-vs-solo advice, computed from live chain data -- SUGGESTS only,
+        //! never switches. Solo pays the whole 50 PCN block but only when THIS
+        //! machine finds one; the average gap between your blocks is
+        //! network_hps / (your_hps x 144 blocks/day). Past a couple of days that
+        //! gap means long dry spells with nothing, so a pool's steady share is
+        //! the better path for a small miner. A big miner (a block every day or
+        //! less) keeps the full reward with tolerable variance, so solo wins.
+        public sealed class ModeAdvice
+        {
+            public bool Ready;        // false until both hash rates are known
+            public bool PreferPool;   // the recommended mode
+            public string Line = "";  // the human-readable recommendation
+        }
+
+        public static ModeAdvice AdviseMode(double myHps, double netHps)
+        {
+            var a = new ModeAdvice();
+            if (myHps <= 0 || netHps <= 0) { a.Line = "Measuring your hash rate against the network..."; return a; }
+            a.Ready = true;
+            double blocksPerDayYou = 144.0 * (myHps / netHps);   // 600 s target => 144 blocks/day
+            double daysPerBlock = blocksPerDayYou > 0 ? 1.0 / blocksPerDayYou : 1e9;
+            string when = daysPerBlock < 1.0
+                ? string.Format(CultureInfo.InvariantCulture, "about {0:0.0} blocks a day solo", blocksPerDayYou)
+                : string.Format(CultureInfo.InvariantCulture, "about {0:0} day(s) between blocks solo", daysPerBlock);
+            if (daysPerBlock > 2.0)
+            {
+                a.PreferPool = true;
+                a.Line = "Pool recommended — at your hash rate that is " + when + ", so long dry spells. A pool pays a steady share instead.";
+            }
+            else
+            {
+                a.PreferPool = false;
+                a.Line = "Solo is fine at your hash rate (" + when + ") — you keep the full block reward.";
+            }
+            return a;
+        }
     }
 
     class TrayApp : ApplicationContext
@@ -504,6 +541,7 @@ namespace PCoinTray
         double _progress = 1.0;
         bool _syncing;
         double _difficulty;
+        double _networkHps;   // whole-network H/s, for pool-vs-solo advice
         string _nodeVersion = "";
         int _versionTick;
 
@@ -1019,6 +1057,33 @@ namespace PCoinTray
             t.Start();
         }
 
+        //! Switch this PC between solo and pool. "" (or null) = solo; anything
+        //! else is the pool host:port. Persists to the config and, if mining,
+        //! restarts in the new mode -- StartMining branches on _poolUrl, so the
+        //! same thread count now goes to (or leaves) the pool. Suggest-only: the
+        //! app never calls this on its own, only when the user clicks Apply.
+        void SetPool(string url)
+        {
+            url = (url ?? "").Trim();
+            if (url == _poolUrl) return;              // no change
+            _cancelCalibrate = true;                  // a mode change ends any in-flight tune
+            _poolUrl = url;
+            SaveConfig();
+            if (_mining)
+            {
+                int threads = ThreadsFor(_percent);
+                var t = new Thread(() =>
+                {
+                    if (string.IsNullOrEmpty(_address)) _address = EnsureAddress();
+                    Cli("stopmining");                // drop the old session cleanly first
+                    Thread.Sleep(500);
+                    StartMining(threads);             // restarts solo or pool per _poolUrl
+                })
+                { IsBackground = true };
+                t.Start();
+            }
+        }
+
         //! Start mining -- solo, or for a pool when `poolurl` is set in the config.
         //!
         //! THE POOL BRANCH LIVES HERE, IN THE ONE FUNCTION EVERY CALLER GOES
@@ -1059,10 +1124,13 @@ namespace PCoinTray
 
         void BeginCalibrationOrMine()
         {
-            // Only fast mode on a hyperthreaded CPU has a collapse to tune around;
-            // light mode and non-HT machines scale monotonically. Recommend()
-            // returns 0 in those cases, and then there is nothing to measure.
-            if (_fastMode && Cpu.Recommend(_cores, _fastMode) > 0)
+            // Measure in fast mode on any multi-core CPU. On a hyperthreaded chip
+            // the curve collapses past the L3/scratchpad peak; on a non-HT chip it
+            // rises to a plateau. Either way BENCHMARKING beats a fixed default --
+            // the earlier "non-HT has nothing to tune" was wrong, it just under-
+            // provisioned those machines to 50%. Calibrate() centres its sweep on
+            // Recommend() when that is known (HT) and on all cores otherwise.
+            if (_fastMode && _cores > 1)
             {
                 var t = new Thread(Calibrate) { IsBackground = true };
                 t.Start();
@@ -1110,6 +1178,7 @@ namespace PCoinTray
                     if (n >= 1 && n <= _cores) set.Add(n);
                 }
                 set.Add(Math.Max(1, _cores / 4));
+                set.Add(Math.Max(1, _cores / 2));   // covers non-HT peaks below all-cores
                 set.Add(_cores);
                 var candidates = new List<int>(set);
 
@@ -1727,6 +1796,7 @@ namespace PCoinTray
             public double Progress = 1.0;
             public bool Syncing;
             public double Difficulty;
+            public double NetworkHashps;    // whole-network H/s, for the pool-vs-solo advice
             public int Peers = -1;
             public string Version;
 
@@ -1900,6 +1970,12 @@ namespace PCoinTray
             var pc = _rpc.Call("getconnectioncount", "[]");
             if (pc.Ok && pc.Result is double) r.Peers = (int)(double)pc.Result;
 
+            // Whole-network hash rate, for the pool-vs-solo advice. A failed call
+            // leaves it 0, which AdviseMode renders as "measuring" -- never a
+            // confident wrong recommendation from an unreadable network figure.
+            var gm = _rpc.Call("getmininginfo", "[]");
+            if (gm.Ok && gm.Result != null) r.NetworkHashps = Json.Number(gm.Result, "networkhashps") ?? 0;
+
             // Which wallets are open. Forwarding treats "the payout wallet is in
             // this set" as a precondition and, during reconciliation, THROWS
             // when it is not - a wallet that cannot be asked is not evidence
@@ -1979,6 +2055,7 @@ namespace PCoinTray
                 _progress = r.Progress;
                 _syncing = r.Syncing;
                 _difficulty = r.Difficulty;
+                _networkHps = r.NetworkHashps;
                 _peers = r.Peers;
                 if (!string.IsNullOrEmpty(r.Version)) _nodeVersion = r.Version;
             }
@@ -2251,7 +2328,8 @@ namespace PCoinTray
                         () => { try { Process.Start("explorer.exe", _dir); } catch { } },
                         () => OpenForwardSettings(),
                         () => OnAckProbe(),
-                        on => SetFastMode(on));
+                        on => SetFastMode(on),
+                        url => SetPool(url));
                 }
                 _window.Reveal();
                 PushToWindow(_nodeUp);
@@ -2287,6 +2365,9 @@ namespace PCoinTray
                     Progress = _progress,
                     Syncing = _syncing,
                     Difficulty = _difficulty,
+                    NetworkHashps = _networkHps,
+                    PoolMining = _poolMining,
+                    PoolUrl = _poolUrl,
                     Address = _address,
                     HasPhrase = _phrase != null,
                     PhraseBalance = _balPhraseText,

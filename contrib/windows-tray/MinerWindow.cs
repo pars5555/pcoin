@@ -134,6 +134,9 @@ namespace PCoinTray
         public double Progress = 1.0;   // verificationprogress, 0..1
         public bool Syncing;
         public double Difficulty;
+        public double NetworkHashps;    // whole-network H/s, for pool-vs-solo advice
+        public bool PoolMining;         // is the node hashing for a pool right now
+        public string PoolUrl = "";     // configured pool, empty = solo
         public string Address = "";
         public bool HasPhrase;
         public string PhraseBalance;    // null when there is no phrase wallet
@@ -211,6 +214,18 @@ namespace PCoinTray
         readonly TextBlock _sliderLabel = new TextBlock();
         readonly Button _toggle = new Button();
 
+        // ---- mining mode (solo vs pool) ----
+        readonly RadioButton _rbSolo = new RadioButton();
+        readonly RadioButton _rbPool = new RadioButton();
+        readonly TextBox _poolBox = new TextBox();
+        readonly TextBlock _modeAdvice = new TextBlock();
+        readonly Button _applyMode = new Button();
+        // Guards like _sliderEcho: true while the app pushes the current mode
+        // INTO the radios, so their Checked handlers do not fire back as a click.
+        bool _modeEcho;
+        string _lastShownPool;   // null so the first render echoes the mode in
+        const string DEFAULT_POOL = "pool.pc.am:3333";
+
         readonly TextBlock _syncLine = new TextBlock();
         readonly ProgressBar _syncBar = new ProgressBar();
         readonly Border _syncCard = new Border();
@@ -233,6 +248,7 @@ namespace PCoinTray
         readonly Button _fwdCopyTxid = new Button();
 
         readonly Action<int> _setPercent;   // 0 = stop
+        readonly Action<string> _setPool;   // "" = solo, else pool host:port
         readonly Action _openPhrase;
         readonly Action _openFolder;
         readonly Action _openForward;
@@ -250,11 +266,12 @@ namespace PCoinTray
 
         public MinerWindow(RateHistory history, Action<int> setPercent, Action openPhrase, Action openFolder,
                            Action openForward, Action ackProbe,
-                           Action<bool> setFastMode)
+                           Action<bool> setFastMode, Action<string> setPool)
         {
             _setFastMode = setFastMode;
             _history = history;
             _setPercent = setPercent;
+            _setPool = setPool;
             _openPhrase = openPhrase;
             _openFolder = openFolder;
             _openForward = openForward;
@@ -307,6 +324,7 @@ namespace PCoinTray
             col.Children.Add(StatsRow());
             col.Children.Add(SyncCard());
             col.Children.Add(ControlCard());
+            col.Children.Add(MiningModeCard());
             col.Children.Add(WalletCard());
             col.Children.Add(ForwardCard());
             col.Children.Add(ProcessFooter());
@@ -608,6 +626,59 @@ namespace PCoinTray
 
             stack.Children.Add(_fastPanel);
 
+
+            return Panel(stack);
+        }
+
+        //! Solo vs pool. SUGGEST-ONLY: the app shows which path is better for this
+        //! machine (from its hash rate vs the network) but never switches on its
+        //! own -- the user picks and clicks Apply. Render() fills the radios and
+        //! the advice line from the snapshot under _modeEcho so those pushes are
+        //! not mistaken for clicks.
+        UIElement MiningModeCard()
+        {
+            var stack = new StackPanel();
+            stack.Children.Add(Caption("Mining mode"));
+
+            _rbSolo.Content = "Solo — keep the whole block when this PC finds one";
+            _rbSolo.Foreground = Text; _rbSolo.FontSize = 12.5;
+            _rbSolo.Margin = new Thickness(0, 2, 0, 2); _rbSolo.Cursor = Cursors.Hand;
+            _rbPool.Content = "Pool — a steady share of the pool's blocks";
+            _rbPool.Foreground = Text; _rbPool.FontSize = 12.5;
+            _rbPool.Margin = new Thickness(0, 2, 0, 2); _rbPool.Cursor = Cursors.Hand;
+            _rbSolo.Checked += (s, e) => { if (!_modeEcho) _poolBox.IsEnabled = false; };
+            _rbPool.Checked += (s, e) =>
+            {
+                if (_modeEcho) return;
+                _poolBox.IsEnabled = true;
+                if (string.IsNullOrWhiteSpace(_poolBox.Text)) _poolBox.Text = DEFAULT_POOL;
+            };
+            stack.Children.Add(_rbSolo);
+            stack.Children.Add(_rbPool);
+
+            _poolBox.Margin = new Thickness(20, 2, 0, 6);
+            _poolBox.FontSize = 12;
+            _poolBox.FontFamily = new FontFamily("Consolas, Courier New");
+            _poolBox.Padding = new Thickness(6, 4, 6, 4);
+            stack.Children.Add(_poolBox);
+
+            _modeAdvice.Foreground = Muted; _modeAdvice.FontSize = 11.5;
+            _modeAdvice.TextWrapping = TextWrapping.Wrap;
+            _modeAdvice.Margin = new Thickness(0, 2, 0, 8);
+            stack.Children.Add(_modeAdvice);
+
+            _applyMode.Content = "Apply mining mode";
+            _applyMode.Padding = new Thickness(12, 8, 12, 8);
+            _applyMode.FontSize = 12.5;
+            _applyMode.HorizontalAlignment = HorizontalAlignment.Stretch;
+            _applyMode.Cursor = Cursors.Hand;
+            _applyMode.Click += (s, e) =>
+            {
+                string url = _rbPool.IsChecked == true ? (_poolBox.Text ?? "").Trim() : "";
+                _setPool(url);
+            };
+            StyleButton(_applyMode, false);
+            stack.Children.Add(_applyMode);
 
             return Panel(stack);
         }
@@ -1009,6 +1080,25 @@ namespace PCoinTray
 
             _toggle.Content = s.WantMining ? "Stop mining" : "Start mining";
             StyleButton(_toggle, !s.WantMining);
+
+            // ---- mining mode (solo vs pool) ----
+            // The advice line is always fresh. The radios re-echo ONLY when the
+            // actual configured mode changes, so a user mid-selection (picked but
+            // not yet Applied) is never stomped -- the same rule as the slider.
+            var adv = Cpu.AdviseMode(s.Hashrate, s.NetworkHashps);
+            _modeAdvice.Text = adv.Line;
+            string poolUrl = s.PoolUrl ?? "";
+            if (poolUrl != _lastShownPool)
+            {
+                _lastShownPool = poolUrl;
+                bool poolNow = poolUrl.Length > 0;
+                _modeEcho = true;
+                _rbPool.IsChecked = poolNow;
+                _rbSolo.IsChecked = !poolNow;
+                _poolBox.Text = poolNow ? poolUrl : DEFAULT_POOL;
+                _poolBox.IsEnabled = poolNow;
+                _modeEcho = false;
+            }
 
             _balPhrase.Visibility = s.PhraseBalance == null ? Visibility.Collapsed : Visibility.Visible;
             if (s.PhraseBalance != null) _balPhrase.Text = s.PhraseBalance;
