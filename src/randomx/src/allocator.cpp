@@ -64,7 +64,10 @@ namespace randomx {
 		// reached (a fast-mode dataset release after a build/cross-check failure).
 		// Round the length up to the 2 MiB huge-page granularity so the release
 		// actually happens. On Windows freePagedMemory ignores the size
-		// (VirtualFree MEM_RELEASE), so this is a no-op there.
+		// (VirtualFree MEM_RELEASE), so this is a no-op there. This assumes the
+		// 2 MiB default huge page; a box booted default_hugepagesz=1G would still
+		// leak on this (rare, mining-only, failure-only) path, but no PCoin fleet
+		// machine runs 1 GiB default huge pages.
 		constexpr size_t kHugePage{size_t{2} * 1024 * 1024};
 		const size_t aligned{(count + (kHugePage - 1)) & ~(kHugePage - 1)};
 		freePagedMemory(ptr, aligned);

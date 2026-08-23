@@ -1217,13 +1217,23 @@ void RandomXSetLargePagesIntent(bool enabled)
 
 bool RandomXLargePagesPreflight()
 {
-    // Already in use? Then large pages are unquestionably in play -- answer yes
-    // without re-reading the pool, which the running dataset has by now consumed
-    // (HugePages_Free drops to near zero once the 1040-page dataset is mapped, so
-    // a fresh preflight would wrongly say "no" while every worker is on large
-    // pages).
+    // Already on large pages? Unquestionably yes -- answer without re-reading the
+    // pool, which the running dataset has by now consumed (HugePages_Free drops
+    // to near zero once the 1040-page dataset is mapped, so a fresh preflight
+    // would wrongly say "no" while every worker is on large pages).
     if (g_dataset_large_pages.load(std::memory_order_relaxed)) return true;
     if (!g_large_pages_requested.load(std::memory_order_relaxed)) return false;
+    // A dataset is BUILT but NOT on large pages -- the large-page attempt failed
+    // (physical fragmentation on Windows, the pool taken on Linux). The honest
+    // answer is NO, whatever a fresh pool/token read says: the running dataset is
+    // on normal pages, so the thread default must CAP (min(physical, L3/2 MiB))
+    // rather than commit every core to a normal-page dataset and reproduce the
+    // exact L3/TLB collapse this whole change exists to avoid. Without this arm
+    // an optimistic preflight (Windows only checks the privilege is held, not
+    // that a 2 GiB contiguous allocation can succeed) would silently halve the
+    // rate on precisely the elevated miners large pages are meant to help.
+    if (g_dataset_ready.load(std::memory_order_acquire)) return false;
+    // No dataset yet (first startmining): predict from the cheap preflight.
     std::string why;
     return LargePagePreflight(FAST_MODE_DATASET_MIB * ONE_MIB, why);
 }

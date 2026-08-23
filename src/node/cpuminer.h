@@ -204,9 +204,12 @@ private:
     //! it acquires one and decremented when it returns; never inferred.
     std::atomic<int> m_fast_threads{0};
     //! Workers currently holding a LARGE-PAGE fast VM; a subset of
-    //! m_fast_threads. Maintained by the same worker latches, and zeroed in the
-    //! same four places (PrepareLocked, StopLocked, both dead-man's-switch break
-    //! paths) so it can never report a stale or negative value after a stop.
+    //! m_fast_threads. Maintained by the same worker latches and zeroed in
+    //! PrepareLocked and StopLocked. The dead-man's-switch break paths do NOT
+    //! zero it (they only set m_threads = 0); correct getcpuminerinfo output
+    //! after a TTL stop -- and during a fast->mixed drain -- depends on the
+    //! clamp min(max(0, GetLargePageThreads()), fast_threads) in rpc/mining.cpp,
+    //! which must not be removed.
     std::atomic<int> m_lp_threads{0};
 
     //! Operator intent from -randomxfastmode, not an observation of anything.

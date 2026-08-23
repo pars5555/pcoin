@@ -309,7 +309,19 @@ void CpuMiner::Supervisor(ChainstateManager* chainman, interfaces::Mining* minin
     // supervisors that re-issue startmining every few minutes cost nothing.
     if (m_fast_mode_requested.load()) {
         std::string reason;
-        if (RandomXFastModeStart(m_fast_build_threads.load(), reason)) {
+        bool started{false};
+        // Nothing may escape this thread: util::TraceThread rethrows, so a throw
+        // out of a supervisor's entry point is std::terminate on a node holding
+        // live chainstate. RandomXFastModeStart builds reason strings and (on
+        // Windows) queries token privileges; a std::bad_alloc at total memory
+        // exhaustion must degrade to light mode, not crash -- the same doctrine
+        // DatasetBuilder() already applies.
+        try {
+            started = RandomXFastModeStart(m_fast_build_threads.load(), reason);
+        } catch (...) {
+            reason = "fast-mode start failed with an exception; mining in light mode";
+        }
+        if (started) {
             LogPrintf("PCoin CPU miner: RandomX fast mode requested (%s)\n", reason);
         } else {
             LogPrintf("PCoin CPU miner: RandomX fast mode unavailable (%s); mining in light mode\n", reason);
@@ -420,7 +432,14 @@ void CpuMiner::PoolSupervisor(ChainstateManager* chainman)
     // thread holding no lock, only once this node is genuinely mining.
     if (m_fast_mode_requested.load()) {
         std::string reason;
-        if (RandomXFastModeStart(m_fast_build_threads.load(), reason)) {
+        bool started{false};
+        // See Supervisor(): nothing may escape this thread entry point.
+        try {
+            started = RandomXFastModeStart(m_fast_build_threads.load(), reason);
+        } catch (...) {
+            reason = "fast-mode start failed with an exception; mining in light mode";
+        }
+        if (started) {
             LogPrintf("PCoin pool miner: RandomX fast mode requested (%s)\n", reason);
         } else {
             LogPrintf("PCoin pool miner: RandomX fast mode unavailable (%s); mining in light mode\n", reason);
