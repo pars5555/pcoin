@@ -265,6 +265,15 @@ std::atomic<randomx_dataset*> g_dataset{nullptr};
 //! passed, so an acquiring reader sees a complete, verified dataset.
 std::atomic<bool> g_dataset_ready{false};
 
+//! -randomxlargepages intent, recorded from init.cpp BEFORE any allocation, and
+//! whether the dataset actually ended up on large pages. Both are MINING ONLY:
+//! neither ever touches g_flags, so the verification path is untouched (the
+//! firewall assert in InitCache()/CreateVM() enforces that). Large pages are an
+//! attempt, never a requirement -- every failure falls back to normal pages and
+//! mining proceeds. See AllocDataset()/CreateMiningVM().
+std::atomic<bool> g_large_pages_requested{false};
+std::atomic<bool> g_dataset_large_pages{false};
+
 //! Mutable fast-mode bookkeeping, allocated once and intentionally never
 //! destroyed -- the same doctrine as g_cache and g_fallback_vm, for a sharper
 //! reason: `builders` holds std::thread objects, and destroying a joinable
@@ -277,6 +286,10 @@ struct FastModeState {
     std::mutex mutex; //!< guards every field below
     RandomXFastModeState state{RandomXFastModeState::DISABLED};
     std::string reason;
+    //! Why the dataset is or is not on large pages: "not requested", the OS
+    //! refusal, or the actionable thing to grant. Empty until a dataset build
+    //! is attempted. Reported through getcpuminerinfo, never logged from here.
+    std::string large_pages_reason;
     std::vector<std::thread> builders;
 };
 
@@ -594,6 +607,120 @@ bool QueryHostMemory(HostMemory& mem, std::string& reason)
 #else
     (void)mem;
     reason = "cannot determine available memory on this platform";
+    return false;
+#endif
+}
+
+/* ---------------------- large-page preflight (opt-in) ------------------- */
+
+#ifdef __linux__
+//! The usable hugetlb pool in bytes: (HugePages_Free - HugePages_Rsvd) pages of
+//! Hugepagesize each. HugePages_Rsvd is a SUBSET of HugePages_Free -- pages
+//! another process has promised to fault in but not yet touched -- so it MUST be
+//! subtracted or the pool is overcounted and a large-page allocation is admitted
+//! that then fails. Returns false, leaving pool_bytes untouched, if ANY of the
+//! three lines is missing or unparseable: an unknown pool must read as no pool,
+//! never as a big one. Deliberately a NEW line-oriented parser -- ReadProcMemInfo's
+//! `f >> key >> value >> unit` loop desynchronises on the HugePages_* lines,
+//! which carry a bare count with no unit token.
+bool ReadProcHugePages(uint64_t& pool_bytes)
+{
+    std::ifstream f{"/proc/meminfo"};
+    if (!f.is_open()) return false;
+    uint64_t free_pages{0}, rsvd_pages{0}, page_kib{0};
+    bool have_free{false}, have_rsvd{false}, have_size{false};
+    std::string line;
+    auto after = [](const std::string& l, const char* key, uint64_t& out) -> bool {
+        const size_t n{std::char_traits<char>::length(key)};
+        if (l.compare(0, n, key) != 0) return false;
+        try {
+            size_t consumed{0};
+            out = static_cast<uint64_t>(std::stoull(l.substr(n), &consumed));
+            return consumed > 0;
+        } catch (const std::exception&) { return false; }
+    };
+    while (std::getline(f, line)) {
+        if (!have_free && after(line, "HugePages_Free:", free_pages)) have_free = true;
+        else if (!have_rsvd && after(line, "HugePages_Rsvd:", rsvd_pages)) have_rsvd = true;
+        else if (!have_size && after(line, "Hugepagesize:", page_kib)) have_size = true;
+        if (have_free && have_rsvd && have_size) break;
+    }
+    if (!(have_free && have_rsvd && have_size) || page_kib == 0) return false;
+    const uint64_t usable{free_pages > rsvd_pages ? free_pages - rsvd_pages : 0};
+    pool_bytes = usable * page_kib * 1024;
+    return true;
+}
+#endif // __linux__
+
+//! Could a large-page allocation of `bytes` even be attempted right now? A
+//! cheap, SIDE-EFFECT-FREE check run before the real allocation, so a machine
+//! that cannot use large pages pays nothing -- no AdjustTokenPrivileges on
+//! Windows, no MAP_POPULATE on Linux. Necessarily optimistic: physical-memory
+//! fragmentation can still fail the real allocation, and NOTHING gates mining on
+//! this -- the allocation itself is the final word and always falls back to
+//! normal pages. Fills `why` in both directions.
+bool LargePagePreflight(uint64_t bytes, std::string& why)
+{
+#if defined(WIN32)
+    // Large pages need the "Lock pages in memory" right present IN THIS TOKEN.
+    // UAC strips it from a filtered token, so the miner must run elevated; the
+    // token scan here means the real allocator's setPrivilege() -- which
+    // permanently enables the privilege -- is only ever reached on a machine
+    // that was deliberately granted it.
+    (void)bytes;
+    if (GetLargePageMinimum() == 0) {
+        why = "this Windows build does not support large pages";
+        return false;
+    }
+    HANDLE token{nullptr};
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        why = "could not read this process's privileges";
+        return false;
+    }
+    LUID luid{};
+    bool held{false};
+    if (LookupPrivilegeValueA(nullptr, "SeLockMemoryPrivilege", &luid)) {
+        DWORD len{0};
+        GetTokenInformation(token, TokenPrivileges, nullptr, 0, &len);
+        if (len > 0) {
+            std::vector<unsigned char> buf(len);
+            if (GetTokenInformation(token, TokenPrivileges, buf.data(), len, &len)) {
+                const auto* tp{reinterpret_cast<const TOKEN_PRIVILEGES*>(buf.data())};
+                for (DWORD i = 0; i < tp->PrivilegeCount; ++i) {
+                    if (tp->Privileges[i].Luid.LowPart == luid.LowPart &&
+                        tp->Privileges[i].Luid.HighPart == luid.HighPart) {
+                        held = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    CloseHandle(token);
+    if (!held) {
+        why = "grant the \"Lock pages in memory\" right to this account and run the miner "
+              "elevated; mining on normal pages";
+        return false;
+    }
+    why = "large pages available";
+    return true;
+#elif defined(__linux__)
+    uint64_t pool{0};
+    if (!ReadProcHugePages(pool)) {
+        why = "no hugetlb pool (reserve one with vm.nr_hugepages); mining on normal pages";
+        return false;
+    }
+    if (pool < bytes) {
+        why = "the hugetlb pool holds " + std::to_string(pool / ONE_MIB) + " MiB but " +
+              std::to_string((bytes + ONE_MIB - 1) / ONE_MIB) +
+              " MiB is needed (raise vm.nr_hugepages); mining on normal pages";
+        return false;
+    }
+    why = "large pages available";
+    return true;
+#else
+    (void)bytes;
+    why = "large pages are not implemented on this platform";
     return false;
 #endif
 }
