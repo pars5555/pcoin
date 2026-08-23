@@ -15,11 +15,15 @@ allocation — the genesis output is unspendable, as in Bitcoin.
 
 ## Please read this first: hashrate concentration
 
-**One unidentified solo miner currently finds about 70% of PCoin blocks
-(95% CI 65–75%, measured over the last 300 blocks).** I am stating this
-unprompted, before anyone asks, because it is the single most important fact
-about accepting PCN in a swap and a counterparty who discovers it later is
-entitled to assume it was hidden.
+**One unidentified solo miner currently finds about 72% of PCoin blocks
+(95% CI 67–77%, measured over the last 300 blocks, at height 4719).** I am
+stating this unprompted, before anyone asks, because it is the single most
+important fact about accepting PCN in a swap, and a counterparty who discovers
+it later is entitled to assume it was hidden.
+
+Measured repeatedly over the last day it read 70.0%, 70.3%, 70.7% and 71.7% —
+**it is drifting up, not down.** I would rather show you the trend than a single
+flattering reading.
 
 What that means concretely:
 
@@ -54,7 +58,7 @@ What that means concretely:
 - Supporting facts, all verifiable from the repo and the explorer:
   `nMinimumChainWork` is `0` and `PermittedDifficultyTransition()` returns true
   unconditionally above the LWMA activation height, so there is no work-based
-  brake on a deep reorg. The whole chain is ~232 950 PCN across 94 addresses
+  brake on a deep reorg. The whole chain is ~235 950 PCN across 99 addresses
   with a balance, so the economic disincentive that protects large chains does
   not exist here.
 - What is being done about it: the chain is RandomX and CPU-mined specifically so
