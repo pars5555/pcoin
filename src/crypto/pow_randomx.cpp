@@ -334,13 +334,41 @@ void SetFastState(RandomXFastModeState state, const std::string& reason)
  * hashes provably the same value -- there is exactly one place in this
  * process where RANDOMX_KEY is used, and it is InitCache().
  */
-randomx_vm* CreateMiningVM()
+randomx_vm* CreateMiningVM(bool* large_pages_out = nullptr)
 {
+    if (large_pages_out != nullptr) *large_pages_out = false;
     randomx_dataset* dataset{g_dataset.load(std::memory_order_acquire)};
     if (dataset == nullptr) return nullptr; // never call with FULL_MEM and no dataset
     const randomx_flags fast{g_flags | RANDOMX_FLAG_FULL_MEM};
+    const bool jit{(g_flags & RANDOMX_FLAG_JIT) == RANDOMX_FLAG_JIT};
+
+    // Rung 1, only when the operator opted in: a large-page 2 MiB scratchpad.
+    // RANDOMX_FLAG_LARGE_PAGES at randomx_create_vm() selects ONLY this VM's
+    // scratchpad allocator -- one TLB entry per worker instead of 512 -- and
+    // touches neither the dataset nor the cache. It is written as a BARE LITERAL
+    // and never derived from g_flags: the verification path must remain
+    // structurally incapable of seeing it (the InitCache/CreateVM firewall
+    // assert enforces that). A failure here -- no privilege, no pool, or
+    // physical fragmentation -- is common and expected; it returns nullptr and
+    // falls straight through to the normal-page rung, so one TryAcquire() still
+    // yields a working fast VM.
+    if (g_large_pages_requested.load(std::memory_order_relaxed)) {
+        const randomx_flags lp{fast | RANDOMX_FLAG_LARGE_PAGES};
+        randomx_vm* vm{randomx_create_vm(lp, g_cache, dataset)};
+        if (vm == nullptr && jit) vm = randomx_create_vm(lp | RANDOMX_FLAG_SECURE, g_cache, dataset);
+        if (vm != nullptr) {
+            if (large_pages_out != nullptr) *large_pages_out = true;
+            return vm;
+        }
+    }
+
+    // Rung 2: the ordinary normal-page fast VM -- today's exact behaviour.
+    // Deliberately NOT CreateVM(): that ladder's last resort is a LIGHT VM, so a
+    // fast VM that failed to allocate would come back light and look like
+    // success. This one never degrades; it returns nullptr and lets the caller
+    // make the fall-back-to-light decision explicitly and visibly.
     randomx_vm* vm{randomx_create_vm(fast, g_cache, dataset)};
-    if (vm == nullptr && (g_flags & RANDOMX_FLAG_JIT) == RANDOMX_FLAG_JIT) {
+    if (vm == nullptr && jit) {
         vm = randomx_create_vm(fast | RANDOMX_FLAG_SECURE, g_cache, dataset);
     }
     return vm;
@@ -846,9 +874,75 @@ void DatasetBuilder()
     }
 }
 
+/**
+ * Allocate the 2080 MiB dataset, on large pages when asked for and possible, and
+ * otherwise on ordinary pages -- but never an ordinary allocation the strict
+ * memory gate would refuse.
+ *
+ * `used_lp` is set true iff the dataset landed on large pages. `why` is filled in
+ * every case for getcpuminerinfo. Returns nullptr only when NO safe allocation is
+ * possible; the caller then goes UNAVAILABLE and mines light.
+ *
+ * The large-page flag is a BARE LITERAL (never derived from g_flags), so it
+ * cannot leak onto the verification path. A large-page failure -- the common
+ * case: no privilege, no pool, or physical fragmentation -- is not fatal; it
+ * falls through to the ordinary allocation.
+ */
+randomx_dataset* AllocDataset(bool large_pages, bool& used_lp, std::string& why)
+{
+    used_lp = false;
+    const uint64_t dataset_bytes{FAST_MODE_DATASET_MIB * ONE_MIB};
+
+    if (large_pages) {
+        std::string pf;
+        if (LargePagePreflight(dataset_bytes, pf)) {
+            // randomx_alloc_dataset() reads exactly one flag bit,
+            // RANDOMX_FLAG_LARGE_PAGES. Written as a bare literal so large pages
+            // can never leak in via g_flags even if g_flags changes.
+            if (randomx_dataset* d{randomx_alloc_dataset(RANDOMX_FLAG_LARGE_PAGES)}) {
+                used_lp = true;
+                why = "on large pages";
+                return d;
+            }
+            why = "the OS refused a large-page dataset (physical memory too fragmented, or the "
+                  "pool was taken); mining on normal pages -- ";
+        } else {
+            why = pf + " -- ";
+        }
+    } else {
+        why = "large pages not requested; ";
+    }
+
+    // NORMAL-PAGE FALLBACK. Re-check the STRICT, UNCREDITED memory gate right
+    // here. RandomXFastModeEligible() may have been credited by a hugetlb pool,
+    // admitting a machine that does NOT have 2080 MiB of ordinary memory; and
+    // minutes can pass between that eligibility preview and this call. Without
+    // this re-check a large-page failure would drop to a 2080 MiB ORDINARY
+    // allocation the gate would refuse -- and on a shared seed the OOM killer,
+    // not an exception, answers. The check mirrors RandomXFastModeEligible()'s
+    // uncredited arithmetic exactly.
+    HostMemory mem;
+    std::string mr;
+    if (!QueryHostMemory(mem, mr)) {
+        why += "and this machine's memory could not be re-checked (" + mr + ")";
+        return nullptr;
+    }
+    const uint64_t needed{(FAST_MODE_DATASET_MIB + FAST_MODE_HEADROOM_MIB) * ONE_MIB};
+    if (mem.total_bytes < FAST_MODE_MIN_TOTAL_MIB * ONE_MIB || mem.available_bytes < needed ||
+        (mem.free_bytes != UINT64_MAX && mem.free_bytes < dataset_bytes)) {
+        why += "and there is not enough ordinary memory for a " + std::to_string(FAST_MODE_DATASET_MIB) +
+               " MiB dataset (available " + std::to_string(mem.available_bytes / ONE_MIB) + " MiB, unused " +
+               (mem.free_bytes == UINT64_MAX ? std::string{"unknown"} : std::to_string(mem.free_bytes / ONE_MIB) + " MiB") + ")";
+        return nullptr;
+    }
+    randomx_dataset* d{randomx_alloc_dataset(RANDOMX_FLAG_DEFAULT)};
+    if (d == nullptr) why += "and the normal-page dataset allocation failed";
+    return d;
+}
+
 } // namespace
 
-bool RandomXFastModeEligible(std::string& reason)
+bool RandomXFastModeEligible(bool large_pages, std::string& reason)
 {
     // The cache must exist first: its flags decide whether the dataset build
     // is JIT-compiled or interpreted, and fast mode reuses the very same
@@ -886,7 +980,34 @@ bool RandomXFastModeEligible(std::string& reason)
         (mem.free_bytes == UINT64_MAX ? std::string{"unknown"}
                                       : std::to_string(mem.free_bytes / ONE_MIB) + " MiB")};
 
-    const uint64_t needed{(FAST_MODE_DATASET_MIB + FAST_MODE_HEADROOM_MIB) * ONE_MIB};
+    // Linux large-page CREDIT. When the operator has reserved a hugetlb pool
+    // that covers the dataset, the 2080 MiB dataset comes from THAT pool -- which
+    // is already reserved and already subtracted from MemFree/MemAvailable -- and
+    // not from ordinary memory. So the dataset does not have to be found in
+    // MemFree/MemAvailable a second time, and it evicts nobody's page cache;
+    // without this credit, reserving the pool would itself push MemFree below the
+    // threshold and REFUSE the very machine that configured the feature.
+    //
+    // The credit binds ONLY this "may we attempt fast mode" decision. The
+    // normal-page fallback inside AllocDataset() re-checks the UNCREDITED gate,
+    // so a machine that reserved a pool but has little ordinary memory can never
+    // fall back to a 2080 MiB ordinary allocation this credited gate would let
+    // through -- on a shared seed that would invite the OOM killer, not an
+    // exception. On Windows there is no pool concept (large pages come from
+    // ordinary physical memory, counted normally), so `large_pages` never
+    // credits anything there.
+    bool dataset_from_pool{false};
+#ifdef __linux__
+    if (large_pages) {
+        uint64_t pool{0};
+        if (ReadProcHugePages(pool) && pool >= FAST_MODE_DATASET_MIB * ONE_MIB) dataset_from_pool = true;
+    }
+#else
+    (void)large_pages;
+#endif
+
+    const uint64_t needed{(dataset_from_pool ? FAST_MODE_HEADROOM_MIB
+                                             : FAST_MODE_DATASET_MIB + FAST_MODE_HEADROOM_MIB) * ONE_MIB};
     if (mem.total_bytes < FAST_MODE_MIN_TOTAL_MIB * ONE_MIB) {
         reason = "fast mode needs at least " + std::to_string(FAST_MODE_MIN_TOTAL_MIB) +
                  " MiB of RAM installed; this machine has " +
@@ -894,26 +1015,27 @@ bool RandomXFastModeEligible(std::string& reason)
         return false;
     }
     if (mem.available_bytes < needed) {
-        reason = "fast mode needs " + std::to_string(needed / ONE_MIB) +
-                 " MiB free (a " + std::to_string(FAST_MODE_DATASET_MIB) +
-                 " MiB dataset plus " + std::to_string(FAST_MODE_HEADROOM_MIB) +
-                 " MiB of headroom); only " + std::to_string(mem.available_bytes / ONE_MIB) +
-                 " MiB is available (" + measured + ")";
+        reason = "fast mode needs " + std::to_string(needed / ONE_MIB) + " MiB free" +
+                 (dataset_from_pool ? " of headroom beyond the hugetlb pool"
+                                    : " (a " + std::to_string(FAST_MODE_DATASET_MIB) + " MiB dataset plus " +
+                                          std::to_string(FAST_MODE_HEADROOM_MIB) + " MiB of headroom)") +
+                 "; only " + std::to_string(mem.available_bytes / ONE_MIB) + " MiB is available (" + measured + ")";
         return false;
     }
     // The working-set test. `available` counts reclaimable page cache, and a
     // PERMANENT reservation satisfied out of cache is somebody else's hot data
     // evicted forever -- on a swapless box with a large resident database,
     // that is the difference between "fast mode" and "the database now reads
-    // from disk". The dataset must fit in memory that is genuinely unused.
-    if (mem.free_bytes != UINT64_MAX && mem.free_bytes < FAST_MODE_DATASET_MIB * ONE_MIB) {
+    // from disk". Skipped when the dataset comes from the hugetlb pool: those
+    // pages were reserved out of band and evict no cache.
+    if (!dataset_from_pool && mem.free_bytes != UINT64_MAX && mem.free_bytes < FAST_MODE_DATASET_MIB * ONE_MIB) {
         reason = "fast mode needs " + std::to_string(FAST_MODE_DATASET_MIB) +
                  " MiB of genuinely unused memory (its dataset is never released, so taking it "
                  "out of reclaimable cache would permanently evict whatever else is running here); "
                  "only " + std::to_string(mem.free_bytes / ONE_MIB) + " MiB is unused (" + measured + ")";
         return false;
     }
-    reason = "fast mode eligible: " + measured;
+    reason = "fast mode eligible: " + measured + (dataset_from_pool ? " (dataset from hugetlb pool)" : "");
     return true;
 }
 
@@ -957,7 +1079,11 @@ bool RandomXFastModeStart(int threads, std::string& reason)
             return false;
         }
 
-        if (!RandomXFastModeEligible(reason)) {
+        // Eligibility is credited by a hugetlb pool when large pages are
+        // requested, so a machine that reserved a pool is not refused for the
+        // very memory it set aside. AllocDataset() re-checks the uncredited gate
+        // before any ordinary-page fallback.
+        if (!RandomXFastModeEligible(g_large_pages_requested.load(std::memory_order_relaxed), reason)) {
             Fast().state = RandomXFastModeState::UNAVAILABLE;
             Fast().reason = reason;
             return false;
@@ -969,14 +1095,18 @@ bool RandomXFastModeStart(int threads, std::string& reason)
         Fast().reason = "building the RandomX dataset";
     }
 
-    randomx_dataset* dataset{randomx_alloc_dataset(RANDOMX_FLAG_DEFAULT)};
-    // RANDOMX_FLAG_DEFAULT, not g_flags: randomx_alloc_dataset() reads exactly
-    // one flag, RANDOMX_FLAG_LARGE_PAGES, and large pages must never be
-    // required. Masking here means it cannot leak in even if g_flags changes.
+    bool used_lp{false};
+    std::string lp_why;
+    randomx_dataset* dataset{AllocDataset(g_large_pages_requested.load(std::memory_order_relaxed), used_lp, lp_why)};
     if (dataset == nullptr) {
-        reason = "could not allocate the " + std::to_string(FAST_MODE_DATASET_MIB) + " MiB RandomX dataset";
+        reason = "could not allocate the " + std::to_string(FAST_MODE_DATASET_MIB) + " MiB RandomX dataset (" + lp_why + ")";
         SetFastState(RandomXFastModeState::UNAVAILABLE, reason);
         return false;
+    }
+    g_dataset_large_pages.store(used_lp, std::memory_order_relaxed);
+    {
+        std::lock_guard lock{Fast().mutex};
+        Fast().large_pages_reason = lp_why;
     }
 
     const int max_threads{std::max(1, static_cast<int>(std::thread::hardware_concurrency()))};
@@ -1068,7 +1198,9 @@ RandomXFastModeStatus RandomXFastModeGetStatus()
         std::lock_guard lock{Fast().mutex};
         out.state = Fast().state;
         out.reason = Fast().reason;
+        out.large_pages_reason = Fast().large_pages_reason;
     }
+    out.large_pages = g_dataset_large_pages.load(std::memory_order_relaxed);
     if (out.state == RandomXFastModeState::READY) {
         out.percent = 100;
     } else if (out.state == RandomXFastModeState::BUILDING && total > 0) {
@@ -1076,6 +1208,24 @@ RandomXFastModeStatus RandomXFastModeGetStatus()
         out.reason = "building the RandomX dataset, " + std::to_string(out.percent) + "% done";
     }
     return out;
+}
+
+void RandomXSetLargePagesIntent(bool enabled)
+{
+    g_large_pages_requested.store(enabled, std::memory_order_relaxed);
+}
+
+bool RandomXLargePagesPreflight()
+{
+    // Already in use? Then large pages are unquestionably in play -- answer yes
+    // without re-reading the pool, which the running dataset has by now consumed
+    // (HugePages_Free drops to near zero once the 1040-page dataset is mapped, so
+    // a fresh preflight would wrongly say "no" while every worker is on large
+    // pages).
+    if (g_dataset_large_pages.load(std::memory_order_relaxed)) return true;
+    if (!g_large_pages_requested.load(std::memory_order_relaxed)) return false;
+    std::string why;
+    return LargePagePreflight(FAST_MODE_DATASET_MIB * ONE_MIB, why);
 }
 
 void RandomXFastModeShutdown()
@@ -1115,7 +1265,7 @@ bool RandomXMiningVm::TryAcquire(bool* failed)
     // every worker converge on light mode within one nonce batch.
     if (!g_dataset_ready.load(std::memory_order_acquire)) return false;
     m_tried = true;
-    m_vm = CreateMiningVM();
+    m_vm = CreateMiningVM(&m_large_pages);
     if (m_vm == nullptr && failed != nullptr) *failed = true;
     return m_vm != nullptr;
 }

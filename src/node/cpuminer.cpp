@@ -149,18 +149,25 @@ int CpuMiner::ResolveThreadCount(int requested) const
     if (requested > 0) return std::min(requested, max_threads);
 
     // requested <= 0: "every core". In LIGHT mode that is correct -- it is
-    // ALU-bound and keeps scaling with hyperthreads. In FAST mode it is the
-    // documented cliff: the per-worker 2 MiB scratchpads stop fitting in L3 and
-    // hyperthread siblings start fighting over one core's L1/L2/TLB, so the
-    // TOTAL rate falls (all 24 threads on the dev i9 measured ~half of 9). So
-    // default to the topology-derived peak, but ONLY when fast mode is both
-    // asked for AND actually available here -- otherwise a machine that will
-    // fall back to light mode (too little RAM for the dataset) would be capped
-    // for no reason. Eligibility is a few small /proc reads or one
-    // GlobalMemoryStatusEx; the cache it may initialise is already up from node
-    // startup. An explicit count never reaches this branch.
+    // ALU-bound and keeps scaling with hyperthreads.
+    //
+    // In FAST mode WITHOUT large pages it is the documented cliff: the per-worker
+    // 2 MiB scratchpads stop fitting in L3 and hyperthread siblings fight over one
+    // core's L1/L2/TLB, so the TOTAL rate falls (all 24 threads on the dev i9
+    // measured ~half of 9). There the default is the topology-derived peak.
+    //
+    // In FAST mode WITH large pages the address-translation (TLB) cost that drives
+    // that collapse is gone, so every core keeps adding hash rate and the right
+    // default is ALL of them. RandomXLargePagesPreflight() is the same cheap check
+    // the allocator will use, so this default matches what actually happens.
+    //
+    // Only capped when fast mode is both asked for AND available here -- a machine
+    // that will fall back to light mode (too little RAM) must not be capped. An
+    // explicit count never reaches this branch.
+    const bool large_pages{RandomXLargePagesPreflight()};
     std::string ignored;
-    if (m_fast_mode_requested.load() && RandomXFastModeEligible(ignored)) {
+    if (m_fast_mode_requested.load() && RandomXFastModeEligible(large_pages, ignored)) {
+        if (large_pages) return max_threads;
         return std::min(FastModeThreadTarget(GetCpuTopology()), max_threads);
     }
     return max_threads;
@@ -181,6 +188,7 @@ int CpuMiner::PrepareLocked(int threads, int64_t ttl_seconds)
     m_next_nonce = 0;
     m_threads = threads;
     m_fast_threads = 0;
+    m_lp_threads = 0;
     m_ttl_seconds = std::max<int64_t>(0, ttl_seconds);
     m_last_keepalive_ms = SteadyNowMs();
     m_stop = false;
@@ -259,6 +267,7 @@ void CpuMiner::StopLocked()
     m_workers.clear();
     m_threads = 0;
     m_fast_threads = 0;
+    m_lp_threads = 0;
     m_hashrate = 0.0;
     m_ttl_seconds = 0;
 
@@ -488,21 +497,27 @@ void CpuMiner::PoolWorker(ChainstateManager* chainman)
     RandomXMiningVm rx_vm;
 
     struct FastThreadCount {
-        std::atomic<int>& counter;
-        bool counted{false};
-        void Observe(bool fast)
+        std::atomic<int>& fast_ctr;
+        std::atomic<int>& lp_ctr;
+        bool counted_fast{false};
+        bool counted_lp{false};
+        void Observe(bool fast, bool lp)
         {
-            if (fast && !counted) { counter.fetch_add(1, std::memory_order_relaxed); counted = true; }
+            if (fast && !counted_fast) { fast_ctr.fetch_add(1, std::memory_order_relaxed); counted_fast = true; }
+            if (fast && lp && !counted_lp) { lp_ctr.fetch_add(1, std::memory_order_relaxed); counted_lp = true; }
         }
         void Drop()
         {
-            if (counted) { counter.fetch_sub(1, std::memory_order_relaxed); counted = false; }
+            if (counted_fast) { fast_ctr.fetch_sub(1, std::memory_order_relaxed); counted_fast = false; }
+            if (counted_lp) { lp_ctr.fetch_sub(1, std::memory_order_relaxed); counted_lp = false; }
         }
         ~FastThreadCount() { Drop(); }
-    } fast_count{m_fast_threads};
+    } fast_count{m_fast_threads, m_lp_threads};
 
     while (!m_stop && !chainman->m_interrupt) {
-        fast_count.Observe(rx_vm.TryAcquire());
+        // Sequence explicitly; see the note in Worker().
+        const bool got_fast{rx_vm.TryAcquire()};
+        fast_count.Observe(got_fast, got_fast && rx_vm.IsLargePages());
 
         const uint64_t gen{m_generation.load(std::memory_order_acquire)};
         if (gen == 0) {
@@ -577,27 +592,29 @@ void CpuMiner::Worker(ChainstateManager* chainman)
     RandomXMiningVm rx_vm;
 
     // Report what this worker actually holds, and unreport it on every exit
-    // path (the inner loop returns).
+    // path (the inner loop returns). Two INDEPENDENT latches: fast (holds a
+    // fast VM) and lp (that VM's scratchpad is on large pages). They are counted
+    // and dropped separately so that on the machines where large pages are
+    // refused -- most of them -- the lp counter is never incremented and so can
+    // never be decremented below zero.
     struct FastThreadCount {
-        std::atomic<int>& counter;
-        bool counted{false};
-        void Observe(bool fast)
+        std::atomic<int>& fast_ctr;
+        std::atomic<int>& lp_ctr;
+        bool counted_fast{false};
+        bool counted_lp{false};
+        void Observe(bool fast, bool lp)
         {
-            if (fast && !counted) {
-                counter.fetch_add(1, std::memory_order_relaxed);
-                counted = true;
-            }
+            if (fast && !counted_fast) { fast_ctr.fetch_add(1, std::memory_order_relaxed); counted_fast = true; }
+            if (fast && lp && !counted_lp) { lp_ctr.fetch_add(1, std::memory_order_relaxed); counted_lp = true; }
         }
         //! This worker is no longer in fast mode. Idempotent.
         void Drop()
         {
-            if (counted) {
-                counter.fetch_sub(1, std::memory_order_relaxed);
-                counted = false;
-            }
+            if (counted_fast) { fast_ctr.fetch_sub(1, std::memory_order_relaxed); counted_fast = false; }
+            if (counted_lp) { lp_ctr.fetch_sub(1, std::memory_order_relaxed); counted_lp = false; }
         }
         ~FastThreadCount() { Drop(); }
-    } fast_count{m_fast_threads};
+    } fast_count{m_fast_threads, m_lp_threads};
 
     bool rx_acquire_failed{false};
 
@@ -606,8 +623,16 @@ void CpuMiner::Worker(ChainstateManager* chainman)
         // once the VM is held, and one acquire load before that. Checking
         // here rather than once at thread start is what lets a worker that
         // began before the dataset was ready pick it up when it lands.
+        //
+        // Sequence the two reads EXPLICITLY: C++17 leaves the argument
+        // evaluation order of Observe(TryAcquire(), IsLargePages()) unspecified,
+        // and IsLargePages() read before the VM is acquired would always be
+        // false -- so the lp count would silently stay zero on a machine where
+        // every worker got large pages, and the compilers that build the three
+        // shipped binaries could disagree.
         bool failed{false};
-        fast_count.Observe(rx_vm.TryAcquire(&failed));
+        const bool got_fast{rx_vm.TryAcquire(&failed)};
+        fast_count.Observe(got_fast, got_fast && rx_vm.IsLargePages());
         if (failed && !rx_acquire_failed) {
             // Said once, not never and not 80 times a second. Without this the
             // node holds 2080 MiB, reports a 100%-built dataset, and mines in

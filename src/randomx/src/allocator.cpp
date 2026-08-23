@@ -57,7 +57,17 @@ namespace randomx {
 	}
 
 	void LargePageAllocator::freeMemory(void* ptr, size_t count) {
-		freePagedMemory(ptr, count);
+		// PCoin fix: the large-page mmap (virtual_memory.c, MAP_HUGETLB) rounds
+		// the mapping UP to a whole number of huge pages, but the dataset size is
+		// 64 bytes short of 1040 x 2 MiB, so munmap of the RAW count fails EINVAL
+		// on Linux and unmaps NOTHING -- leaking 2 GiB on the one path this is
+		// reached (a fast-mode dataset release after a build/cross-check failure).
+		// Round the length up to the 2 MiB huge-page granularity so the release
+		// actually happens. On Windows freePagedMemory ignores the size
+		// (VirtualFree MEM_RELEASE), so this is a no-op there.
+		constexpr size_t kHugePage{size_t{2} * 1024 * 1024};
+		const size_t aligned{(count + (kHugePage - 1)) & ~(kHugePage - 1)};
+		freePagedMemory(ptr, aligned);
 	};
 
 }

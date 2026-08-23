@@ -1320,6 +1320,9 @@ static RPCHelpMan getcpuminerinfo()
                 {RPCResult::Type::NUM, "fastthreads", "worker threads currently hashing from the fast-mode dataset"},
                 {RPCResult::Type::STR, "modereason", "why the miner is not in fast mode, or the dataset build progress. Empty ONLY when every worker is in fast mode, or when fast mode was never requested -- a node that is in light mode for any other reason always says why here."},
                 {RPCResult::Type::NUM, "datasetprogress", "RandomX fast-mode dataset build progress, 0-100. 0 when fast mode was never requested."},
+                {RPCResult::Type::BOOL, "largepages", "whether the fast-mode dataset is on large (2 MiB) pages -- a memory-only speed-up that lets all cores keep adding hash rate. A large-page and a normal-page dataset produce identical hashes."},
+                {RPCResult::Type::NUM, "lpthreads", "worker threads whose fast VM scratchpad is also on large pages (a subset of fastthreads)."},
+                {RPCResult::Type::STR, "largepagesreason", "why large pages are or are not in use -- empty when the dataset is on large pages; otherwise the OS refusal and the actionable thing to grant (Windows: the \"Lock pages in memory\" right + run elevated) or reserve (Linux: vm.nr_hugepages)."},
                 {RPCResult::Type::BOOL, "pool", "true when mining for a pool rather than solo. The fields below are present only then."},
                 {RPCResult::Type::STR, "poolurl", /*optional=*/true, "the pool being mined for"},
                 {RPCResult::Type::STR, "poolstate", /*optional=*/true, "connection state: disconnected, connecting, loggingin, mining, or refused"},
@@ -1349,7 +1352,10 @@ static RPCHelpMan getcpuminerinfo()
     // defaults to. recommendedthreads is 0 when there is nothing to advise.
     const node::CpuTopology topo{node::GetCpuTopology()};
     obj.pushKV("physicalcores", topo.physical);
-    obj.pushKV("recommendedthreads", node::FastModeThreadAdvice(topo));
+    // With large pages the L3/hyperthread cliff is gone and all cores keep
+    // adding hash rate, so there is no ceiling to advise -- report 0 ("more
+    // cores keep helping"), matching the default the node itself now picks.
+    obj.pushKV("recommendedthreads", RandomXLargePagesPreflight() ? 0 : node::FastModeThreadAdvice(topo));
 
     // Report the mode from what the workers are HOLDING, never from what
     // anyone asked for. A UI that renders its own saved intent will happily
@@ -1385,6 +1391,15 @@ static RPCHelpMan getcpuminerinfo()
     obj.pushKV("fastthreads", fast_threads);
     obj.pushKV("modereason", mode == "fast" ? std::string{} : reason);
     obj.pushKV("datasetprogress", rx.percent);
+
+    // Large pages: a memory-only accelerator within fast mode. lpthreads is a
+    // subset of fastthreads (clamped so it can never exceed it, which also
+    // covers a dead-man's-switch stop where the counter drains behind the RPC).
+    // largepagesreason is empty exactly when the dataset is on large pages.
+    const int lp_threads{std::min(std::max(0, cpuminer.GetLargePageThreads()), fast_threads)};
+    obj.pushKV("largepages", rx.large_pages);
+    obj.pushKV("lpthreads", lp_threads);
+    obj.pushKV("largepagesreason", rx.large_pages ? std::string{} : rx.large_pages_reason);
 
     // Pool mode. `blocksfound` above is a SOLO figure and stays 0 here forever,
     // because a pool miner does not submit blocks -- the pool does. Reporting

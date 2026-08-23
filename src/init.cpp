@@ -673,6 +673,12 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
     argsman.AddArg("-randomxfastmodethreads=<n>", "PCoin: threads used to build the RandomX fast-mode dataset (default: half the cores, at least one). "
         "Only meaningful with -randomxfastmode. Separate from the mining thread count on purpose: building on every core saturates the memory subsystem of a small box for the length of the build.",
         ArgsManager::ALLOW_ANY, OptionsCategory::BLOCK_CREATION);
+    argsman.AddArg("-randomxlargepages", strprintf("PCoin: put the RandomX fast-mode dataset and each mining VM's scratchpad on large (2 MiB) pages (default: %u). "
+        "This is a MEMORY-ONLY speed-up: it cuts the CPU's address-translation (TLB) cost for the 2080 MiB dataset, so on a hyperthreaded machine every core keeps adding hash rate instead of the cores evicting each other past a point. It produces identical hashes and changes nothing about consensus. "
+        "It is an ATTEMPT, never a requirement, and only does anything with -randomxfastmode: it falls back silently to normal pages when the OS refuses. "
+        "On WINDOWS the account needs the \"Lock pages in memory\" right (grant it, then run the miner elevated) -- and enabling this permanently turns on that privilege on the process token when the account holds it. "
+        "On LINUX it needs a preallocated hugetlb pool (vm.nr_hugepages) large enough for the dataset; transparent huge pages do not satisfy it.",
+        DEFAULT_RANDOMX_LARGE_PAGES), ArgsManager::ALLOW_ANY, OptionsCategory::BLOCK_CREATION);
 
     argsman.AddArg("-rest", strprintf("Accept public REST requests (default: %u)", DEFAULT_REST_ENABLE), ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
     argsman.AddArg("-rpcallowip=<ip>", "Allow JSON-RPC connections from specified source. Valid values for <ip> are a single IP (e.g. 1.2.3.4), a network/netmask (e.g. 1.2.3.4/255.255.255.0), a network/CIDR (e.g. 1.2.3.4/24), all ipv4 (0.0.0.0/0), or all ipv6 (::/0). This option can be specified multiple times", ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
@@ -1744,13 +1750,19 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
             build_threads = std::max(1, static_cast<int>(hw / 2));
         }
         node::GetCpuMiner().SetFastModeIntent(/*enabled=*/true, build_threads);
+        // Large pages are an attempt within fast mode, on by default (see
+        // DEFAULT_RANDOMX_LARGE_PAGES). Record the intent BEFORE the eligibility
+        // preview below, because eligibility credits a reserved hugetlb pool only
+        // when large pages are requested.
+        const bool large_pages{args.GetBoolArg("-randomxlargepages", DEFAULT_RANDOMX_LARGE_PAGES)};
+        RandomXSetLargePagesIntent(large_pages);
         // Report the answer this machine would give TODAY, without allocating
         // anything, so an operator learns at startup that a box is ineligible
         // instead of discovering it the first time they mine. It is a preview,
         // not the decision: the decision is re-taken, on live figures, when
         // mining starts.
         std::string fast_reason;
-        if (RandomXFastModeEligible(fast_reason)) {
+        if (RandomXFastModeEligible(large_pages, fast_reason)) {
             LogInfo("RandomX fast mode requested; the 2080 MiB mining dataset will be built when mining starts (%s)", fast_reason);
         } else {
             InitWarning(strprintf(_("RandomX fast mode was requested but this machine does not qualify: %s. Mining will use light mode; block verification is unaffected."), fast_reason));

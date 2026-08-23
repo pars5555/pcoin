@@ -96,6 +96,15 @@ bool RandomXVerificationIsLightModeOnly();
 //! -randomxfastmode default. Never change this to true.
 static constexpr bool DEFAULT_RANDOMX_FAST_MODE{false};
 
+//! -randomxlargepages default: ON, but only ever acts WITHIN fast mode, which is
+//! itself off by default -- so no node that has not opted into a 2080 MiB dataset
+//! is affected. On by default because the preflight makes the attempt free on a
+//! machine that cannot satisfy it (it falls back to normal pages), and where it
+//! CAN it is the difference between all cores mining more and the cores fighting
+//! over the TLB. The Windows tray passes -randomxfastmode alone, so a default of
+//! off would deliver the gain to nobody on the fleet until the tray shipped too.
+static constexpr bool DEFAULT_RANDOMX_LARGE_PAGES{true};
+
 enum class RandomXFastModeState {
     DISABLED,    //!< never requested
     BUILDING,    //!< dataset allocated, initialisation in progress
@@ -110,6 +119,12 @@ struct RandomXFastModeStatus {
     //! Human-readable explanation. Empty in READY; a refusal or failure
     //! reason in UNAVAILABLE; a progress note in BUILDING.
     std::string reason;
+    //! Whether the dataset landed on large pages (a memory-only speed-up, no
+    //! consensus content). Only meaningful once a build has been attempted.
+    bool large_pages{false};
+    //! Why large pages are or are not in use -- the OS refusal, or the actionable
+    //! thing to grant/reserve. For getcpuminerinfo; empty until a build runs.
+    std::string large_pages_reason;
 };
 
 /**
@@ -119,7 +134,28 @@ struct RandomXFastModeStatus {
  *
  * "Cannot tell how much memory is available" is a refusal, not a maybe.
  */
-bool RandomXFastModeEligible(std::string& reason);
+bool RandomXFastModeEligible(bool large_pages, std::string& reason);
+
+/**
+ * Record the operator's -randomxlargepages intent, MINING ONLY. Defaults false;
+ * init.cpp sets it before the first eligibility preview. When true, the mining
+ * dataset and every mining VM's scratchpad are ATTEMPTED on large pages, falling
+ * back silently to normal pages when the OS refuses (no privilege on Windows, no
+ * hugetlb pool on Linux, or physical fragmentation). Large pages are never
+ * required and never touch the verification path or g_flags.
+ */
+void RandomXSetLargePagesIntent(bool enabled);
+
+/**
+ * Would a large-page dataset allocation even be possible on this machine right
+ * now -- i.e. is it both requested AND does the cheap, side-effect-free preflight
+ * pass (the "Lock pages in memory" right on Windows, a big-enough hugetlb pool on
+ * Linux)? Used to decide the default fast-mode thread count: with large pages the
+ * per-worker scratchpads stop evicting each other, so all cores stay productive
+ * and the L3/hyperthread cap does not apply. Optimistic -- fragmentation can
+ * still fail the real allocation -- so it only steers a DEFAULT, never a promise.
+ */
+bool RandomXLargePagesPreflight();
 
 /**
  * Request fast mode. Allocates the ~2080 MiB dataset and starts initialising
@@ -243,6 +279,12 @@ public:
     //! True if this handle holds a fast-mode VM.
     bool IsFast() const { return m_vm != nullptr; }
 
+    //! True if this handle's fast VM got a LARGE-PAGE scratchpad. Only
+    //! meaningful when IsFast(); a normal-page fast VM and a large-page fast VM
+    //! compute the identical hash -- this is a performance observation for
+    //! getcpuminerinfo, nothing more.
+    bool IsLargePages() const { return m_large_pages; }
+
     /**
      * The PCoin v1 RandomX PoW hash of `header`: bit-for-bit the same value
      * RandomXPowHash() returns, computed on this handle's fast VM when it has
@@ -254,6 +296,8 @@ private:
     randomx_vm* m_vm{nullptr};
     //! One attempt per handle; see TryAcquire().
     bool m_tried{false};
+    //! Whether m_vm's scratchpad is on large pages. Set by TryAcquire().
+    bool m_large_pages{false};
 };
 
 #endif // BITCOIN_CRYPTO_POW_RANDOMX_H

@@ -136,6 +136,12 @@ public:
     //! otherwise be displayed as running it.
     int GetFastThreads() const { return m_fast_threads; }
 
+    //! How many workers currently hold a LARGE-PAGE fast VM (a subset of
+    //! GetFastThreads()). Observed, like the fast count; a large-page and a
+    //! normal-page fast VM compute the identical hash -- this is a performance
+    //! readout, not a mode.
+    int GetLargePageThreads() const { return m_lp_threads; }
+
     //! Rolling average hashes per second across all workers.
     double GetHashesPerSecond() const;
 
@@ -197,6 +203,11 @@ private:
     //! Workers currently holding a fast-mode VM. Incremented by a worker when
     //! it acquires one and decremented when it returns; never inferred.
     std::atomic<int> m_fast_threads{0};
+    //! Workers currently holding a LARGE-PAGE fast VM; a subset of
+    //! m_fast_threads. Maintained by the same worker latches, and zeroed in the
+    //! same four places (PrepareLocked, StopLocked, both dead-man's-switch break
+    //! paths) so it can never report a stale or negative value after a stop.
+    std::atomic<int> m_lp_threads{0};
 
     //! Operator intent from -randomxfastmode, not an observation of anything.
     //! Never render a UI from these; render from GetFastThreads().
