@@ -526,9 +526,15 @@ if (-not $NoStart) {
     # the machine is mining or to stop it with. The app now refuses to start
     # there at all, so without this the install would simply end with nothing
     # running.
-    $target = (Get-Process explorer -ErrorAction SilentlyContinue | Select-Object -First 1).SessionId
-    $mine = (Get-Process -Id $PID).SessionId
-    if ($null -ne $target -and $mine -ne $target) {
+    # The local MUST NOT be called $mine: PowerShell variables are
+    # case-insensitive, so $mine would BE the installer's -Mine switch, and
+    # assigning a session id (1) to a [switch] throws
+    # "Cannot convert 1 to SwitchParameter" -- aborting the install right before
+    # the tray launches (which is why -NoStart, skipping this, never saw it).
+    $target = $null
+    try { $target = (Get-Process explorer -ErrorAction SilentlyContinue | Select-Object -First 1).SessionId } catch { }
+    $mySession = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+    if ($null -ne $target -and $mySession -ne $target) {
         try {
             $who = (Get-CimInstance Win32_ComputerSystem).UserName
             schtasks /create /tn PCoinTrayLaunch /tr $exe /sc once /st 23:59 /ru $who /it /f | Out-Null
