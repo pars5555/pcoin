@@ -339,7 +339,40 @@ try {
 # mutex, so whichever arrives second exits immediately.
 #
 # /IT puts it in the interactive desktop session, the only place a tray icon can
-# exist. /RL LIMITED keeps it unelevated so it never raises a UAC prompt.
+# exist. The run level depends on admin:
+#   - Elevated: grant this account the "Lock pages in memory" right and create the
+#     task at /RL HIGHEST, so the miner runs with that right and can use LARGE
+#     PAGES (a big speed-up -- every core keeps adding hash rate instead of the
+#     cores fighting over the TLB; see -randomxlargepages). A HIGHEST task runs
+#     elevated at logon with NO UAC prompt. The right takes effect at the next
+#     sign-in, so large pages activate then.
+#   - Not elevated: /RL LIMITED, no large pages (fast mode still works, just capped
+#     to the L3/hyperthread peak as in v1.3.7).
+
+# Grant SeLockMemoryPrivilege ("Lock pages in memory") to $account via secedit --
+# built-in, works on every Windows edition (secpol.msc is Pro-only). Idempotent.
+function Grant-LockPagesRight([string]$account) {
+    $sid = (New-Object System.Security.Principal.NTAccount($account)).Translate(
+        [System.Security.Principal.SecurityIdentifier]).Value
+    $inf = Join-Path $env:TEMP 'pcoin_lp.inf'; $sdb = Join-Path $env:TEMP 'pcoin_lp.sdb'
+    secedit /export /areas USER_RIGHTS /cfg $inf | Out-Null
+    $lines = Get-Content $inf; $hit = $false
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match '^SeLockMemoryPrivilege') {
+            if ($lines[$i] -notmatch [regex]::Escape($sid)) { $lines[$i] = $lines[$i].TrimEnd() + ',*' + $sid }
+            $hit = $true
+        }
+    }
+    if (-not $hit) {
+        $o = @(); foreach ($x in $lines) { $o += $x; if ($x -match '\[Privilege Rights\]') { $o += "SeLockMemoryPrivilege = *$sid" } }
+        $lines = $o
+    }
+    Set-Content -Path $inf -Value $lines -Encoding Unicode
+    secedit /import /db $sdb /cfg $inf /areas USER_RIGHTS | Out-Null
+    secedit /configure /db $sdb /areas USER_RIGHTS | Out-Null
+    Remove-Item $inf, $sdb -ErrorAction SilentlyContinue
+}
+
 try {
     $who = (Get-CimInstance Win32_ComputerSystem).UserName
     if ($who) {
@@ -353,8 +386,16 @@ try {
         if (-not $script:IsAdmin) {
             Write-Output '  autostart task needs admin -- skipped (the Startup shortcut already starts it at logon)'
         } else {
-            schtasks /create /tn PCoinMiner /tr $exePath /sc onlogon /ru $who /it /rl LIMITED /f | Out-Null
-            if ($LASTEXITCODE -eq 0) { Write-Output "  autostart task created for $who" }
+            $rl = 'LIMITED'
+            try {
+                Grant-LockPagesRight $who
+                $rl = 'HIGHEST'
+                Write-Output "  granted 'Lock pages in memory' to $who -- large pages activate at next sign-in"
+            } catch {
+                Write-Output ('  (could not grant Lock-pages-in-memory; mining without large pages: ' + $_.Exception.Message + ')')
+            }
+            schtasks /create /tn PCoinMiner /tr $exePath /sc onlogon /ru $who /it /rl $rl /f | Out-Null
+            if ($LASTEXITCODE -eq 0) { Write-Output "  autostart task created for $who ($rl)" }
             else { Write-Output '  autostart task could not be created (the Startup shortcut still applies)' }
         }
     }
