@@ -172,3 +172,56 @@ with no established range.
 | `test_wpcn.py` | 47 checks on a real EVM, including ABI-absence assertions |
 | `deploy.py` | staged deployment, refuses to repeat irreversible steps |
 | `wpcn.conf` | **not in git.** Holds the private key |
+
+---
+
+## After launch: feeding the pool price into price.pc.am
+
+**Agreed, with the safety design fixed up front rather than after an incident.**
+
+On PancakeSwap the price is automatic and needs no oracle — an AMM's price *is*
+its pool ratio, so every trade moves it. The question is only what, if anything,
+downstream should follow it.
+
+**The thing not to do: wire the pool price straight into `serviceRate`.**
+`serviceRate` is what six live products credit real customers at. The pool is
+~$385 deep, so a ~$40 buy moves it ~10%. Wiring them together buys an attacker a
+rate they control for a few hundred dollars: pump wPCN, spend PCN across
+checker / webbuilderbot / aicontrol / 3dmodels / portrait2video at the inflated
+rate, sell back. That is oracle manipulation, a thin pool is the textbook
+vulnerable oracle, and the rails would be funding the attack.
+
+`price.pc.am` already knows this. From its own source:
+
+> `serviceRate` TRACKS the market price but is damped and capped: every mined
+> coin is a claim on those services, so letting an unbounded curve set that
+> number would let a price spike multiply a liability nobody paid for. Damping
+> is the seatbelt.
+
+and, written after it actually broke:
+
+> This service had NO alerting of any kind, which is how `serviceRate` walked
+> +10% a minute against a stuck retune clock until a human happened to read the
+> number. It sets the rate four payment products credit real money at, so a
+> wrong value here is a wrong price everywhere at once.
+
+So the pool is **a new input to a system that already distrusts its inputs**,
+not new plumbing. The design:
+
+1. **Publish the live pool price as its own field**, unfiltered and real-time.
+   Honest, and it is not what credits anybody.
+2. **Feed it to `serviceRate` only through the existing damping and step cap** —
+   the same seatbelt the market.pc.am ladder goes through.
+3. **Use a time-weighted average over 30–60 minutes, never the spot price.**
+   Moving a spot price costs one transaction. Holding an hour-long average away
+   from true price means paying arbitrageurs for an hour. This is the standard
+   defence and it is the single highest-value item here.
+4. **Cap daily movement and alert on every step.** Both already exist.
+5. **Cross-check against the ladder price.** If PancakeSwap and market.pc.am
+   disagree beyond a margin, that is a signal something is wrong — hold, do not
+   credit. Same doctrine as everywhere else in this project: an implausible
+   reading resolves nothing.
+
+**Sequencing: after the pool has traded for a few days.** There is real value in
+watching it behave before anything that moves money depends on it, and none in
+rushing. Until then `serviceRate` keeps working exactly as it does today.
