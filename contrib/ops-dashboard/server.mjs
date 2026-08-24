@@ -276,7 +276,7 @@ h2{font-size:15px;margin:0 0 12px;color:var(--dim);text-transform:uppercase;lett
 .card .s{color:var(--dim);font-size:12px;margin-top:3px}
 .panel{background:var(--panel);border:1px solid var(--edge);border-radius:12px;padding:16px 18px;margin-bottom:22px}
 .panel .more{float:right;font-size:12px}
-table{width:100%;border-collapse:collapse;font-size:13.5px}
+table{width:100%;border-collapse:collapse;font-size:13.5px;display:block;overflow-x:auto}
 th{text-align:left;color:var(--dim);font-weight:600;font-size:11px;text-transform:uppercase;
    letter-spacing:.06em;padding:7px 9px;border-bottom:1px solid var(--edge)}
 td{padding:7px 9px;border-bottom:1px solid rgba(255,255,255,.045)}

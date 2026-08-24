@@ -457,10 +457,12 @@
     The archive is a plain zip &mdash; no installer, nothing written to the registry.
     Unzip it anywhere and run <code>PCoinTray.exe</code>.
   </p>
+  <div class="table-shell">
   <table class="files">
     <tr><th>File</th><th>What it contains</th></tr>
     <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.3.12/pcoin-win64-miner.zip">pcoin-win64-miner.zip</a></td><td>Node, CLI and the tray miner</td></tr>
   </table>
+  </div>
   <pre class="cmd"><button class="copy" type="button">copy</button><span class="c"># check it before you run it</span>
 Get-FileHash .\pcoin-win64-miner.zip -Algorithm SHA256</pre>
   <p style="color:var(--muted);line-height:1.7;max-width:72ch">
@@ -523,11 +525,13 @@ journalctl -u pcoin-miner -n 40      <span class="c"># why it is or is not minin
   </div>
 
   <h2 style="font-size:20px;margin:38px 0 12px">Packages, if you would rather not pipe to a shell</h2>
+  <div class="table-shell">
   <table class="files">
     <tr><th>File</th><th>What it is</th></tr>
     <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.3.2/pcoin-linux-amd64-miner.deb">pcoin-linux-amd64-miner.deb</a></td><td>Debian/Ubuntu package &mdash; same contents the one-liner installs</td></tr>
     <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.3.0/pcoin-linux-x86_64-miner.tar.gz">pcoin-linux-x86_64-miner.tar.gz</a></td><td>Plain binaries, any distribution</td></tr>
   </table>
+  </div>
   <pre class="cmd"><button class="copy" type="button">copy</button>curl -fsSLO https://github.com/pars5555/pcoin/releases/download/v1.3.2/pcoin-linux-amd64-miner.deb
 curl -fsSL https://pc.am/dl/SHA256SUMS.txt -o SHA256SUMS.txt
 sha256sum --ignore-missing -c SHA256SUMS.txt
@@ -547,11 +551,13 @@ sudo apt install ./pcoin-linux-amd64-miner.deb</pre>
     Two apps from one codebase. Both carry a full PCoin node and a wallet; the
     difference is whether mining is compiled in at all.
   </p>
+  <div class="table-shell">
   <table class="files">
     <tr><th>File</th><th>What it is</th></tr>
     <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.3.1/pcoin-android-miner.apk">pcoin-android-miner.apk</a></td><td>Node, wallet and mining</td></tr>
     <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.2.8/pcoin-android-wallet.apk">pcoin-android-wallet.apk</a></td><td>Node and wallet, no mining</td></tr>
   </table>
+  </div>
 
   <div class="step">
     <div class="step-n">1</div>
