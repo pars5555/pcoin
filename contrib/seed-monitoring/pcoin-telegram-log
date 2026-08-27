@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""Durable log of every Telegram message this host has sent or attempted,
+across both the private alert channel (pcoin-notify) and the public
+announce channel (pcoin-announce).
+
+WHY THIS EXISTS. Before this, the only record of what had been sent was a
+few days of systemd journal -- pcoin-notify logs via `logger`, which rotates
+off this box in under three days -- plus, for announcements only, a directory
+of per-key stamp files that hold a timestamp and a title but no body. Asking
+"did the telegram reports look OK recently" had no real answer beyond that
+window, and the Bot API has no method to read a channel's own history back,
+so this was not a convenience gap, it was a real hole: past that window the
+question became unanswerable, not just slow to answer. This makes it
+answerable from disk, on whichever host actually sent the message: every
+attempt -- delivered, suppressed as a duplicate, refused, or failed -- lands
+in one small queryable table.
+
+Usage (called by pcoin-notify / pcoin-announce, one row per attempt):
+    pcoin-telegram-log record --channel alert|announce --chat ID
+        --status sent|suppressed|failed|refused --subject S [--body B]
+        [--message-id N] [--error TEXT]
+
+Usage (for a human, or an agent checking in without touching Telegram):
+    pcoin-telegram-log show [--channel alert|announce] [--hours N] [--limit N]
+
+A broken log must never look like a broken alert, and must never crash the
+caller mid-send -- record() swallows its own errors and always exits 0,
+same rule pcoin-notify already applies to a missing /etc/pcoin/alert.conf.
+"""
+import argparse
+import os
+import socket
+import sqlite3
+import sys
+import time
+
+DB_PATH = "/var/lib/pcoin-monitor/telegram-log.db"
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS telegram_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sent_at INTEGER NOT NULL,
+    sent_at_iso TEXT NOT NULL,
+    host TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    subject TEXT,
+    body TEXT,
+    message_id TEXT,
+    error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_telegram_log_time ON telegram_log(sent_at);
+"""
+
+
+def connect():
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    con = sqlite3.connect(DB_PATH, timeout=10)
+    con.executescript(SCHEMA)
+    return con
+
+
+def cmd_record(a):
+    now = time.time()
+    iso = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(now))
+    con = connect()
+    con.execute(
+        "INSERT INTO telegram_log "
+        "(sent_at, sent_at_iso, host, channel, chat_id, status, subject, body, message_id, error) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (int(now), iso, socket.gethostname(), a.channel, a.chat, a.status,
+         a.subject, a.body, a.message_id, a.error),
+    )
+    con.commit()
+    con.close()
+
+
+def cmd_show(a):
+    con = connect()
+    q = "SELECT sent_at_iso, host, channel, status, subject, message_id, error FROM telegram_log WHERE 1=1"
+    params = []
+    if a.channel:
+        q += " AND channel = ?"
+        params.append(a.channel)
+    if a.hours:
+        q += " AND sent_at >= ?"
+        params.append(time.time() - a.hours * 3600)
+    q += " ORDER BY sent_at DESC LIMIT ?"
+    params.append(a.limit)
+    rows = list(con.execute(q, params))
+    con.close()
+    if not rows:
+        print("(no telegram_log rows matching that filter on this host)")
+        return
+    for sent_at_iso, host, channel, status, subject, message_id, error in rows:
+        extra = (" mid=%s" % message_id) if message_id else ((" err=%s" % error) if error else "")
+        print("%s  %-16s %-9s %-10s %s%s" % (sent_at_iso, host, channel, status, subject or "", extra))
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    r = sub.add_parser("record", help="append one send-attempt row")
+    r.add_argument("--channel", required=True, choices=["alert", "announce"])
+    r.add_argument("--chat", required=True)
+    r.add_argument("--status", required=True, choices=["sent", "suppressed", "failed", "refused"])
+    r.add_argument("--subject", default="")
+    r.add_argument("--body", default="")
+    r.add_argument("--message-id", dest="message_id", default=None)
+    r.add_argument("--error", default=None)
+
+    s = sub.add_parser("show", help="print recent rows from this host's log")
+    s.add_argument("--channel", choices=["alert", "announce"], default=None)
+    s.add_argument("--hours", type=float, default=None)
+    s.add_argument("--limit", type=int, default=40)
+
+    a = ap.parse_args()
+    try:
+        if a.cmd == "record":
+            cmd_record(a)
+        else:
+            cmd_show(a)
+    except Exception as e:
+        print("pcoin-telegram-log: %s" % e, file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

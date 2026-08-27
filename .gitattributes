@@ -26,9 +26,18 @@ contrib/android/app/src/test/resources/qr_vectors.txt -text
 contrib/linux-deb/pcoin-setup             text eol=lf
 contrib/linux-deb/pcoin-mine              text eol=lf
 contrib/linux-deb/pcoin-miner-supervisor  text eol=lf
-contrib/seed-monitoring/pcoin-seed-watch    text eol=lf
-contrib/seed-monitoring/pcoin-fork-watch    text eol=lf
-contrib/seed-monitoring/pcoin-notify        text eol=lf
+contrib/seed-monitoring/pcoin-seed-watch         text eol=lf
+contrib/seed-monitoring/pcoin-fork-watch         text eol=lf
+contrib/seed-monitoring/pcoin-notify             text eol=lf
+contrib/seed-monitoring/pcoin-announce           text eol=lf
+contrib/seed-monitoring/pcoin-telegram-log       text eol=lf
+# These four were added to the directory after the rule above and each missed
+# it -- the same gap, growing one script at a time. Closed together rather than
+# left for the next addition to rediscover.
+contrib/seed-monitoring/pcoin-bootstrap-watch     text eol=lf
+contrib/seed-monitoring/pcoin-fork-day            text eol=lf
+contrib/seed-monitoring/pcoin-concentration-watch text eol=lf
+contrib/seed-monitoring/pcoin-chain-heartbeat     text eol=lf
 # systemd tolerates CRLF, but there is no reason to ship it to a Linux box.
 *.service  text eol=lf
 *.timer    text eol=lf

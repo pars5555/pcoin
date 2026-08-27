@@ -30,14 +30,21 @@ set -u
 CONF=/etc/pcoin/alert.conf
 SEEN_DIR=/var/lib/pcoin-monitor/sent
 REPEAT_HOURS="${REPEAT_HOURS:-6}"
+TGLOG=/usr/local/bin/pcoin-telegram-log
 
 SUBJECT="${1:-PCoin alert}"
 BODY="${2:-}"
 
 log() { logger -t pcoin-notify -- "$*" 2>/dev/null || printf '%s\n' "$*"; }
+# The journal rotates off this box in days; this survives. Same rule as the
+# alert itself: a logging failure must never look like anything else going
+# wrong, so this is silent-on-error by construction (pcoin-telegram-log
+# swallows its own exceptions) and never affects this script's exit code.
+tglog() { [ -x "$TGLOG" ] && "$TGLOG" record --channel alert --chat "${ALERT_CHAT:-unknown}" "$@" >/dev/null 2>&1 || true; }
 
 if [ ! -r "$CONF" ]; then
     log "no $CONF -- alert not delivered: $SUBJECT"
+    tglog --status failed --subject "$SUBJECT" --body "$BODY" --error "no $CONF on this host"
     exit 0
 fi
 # shellcheck disable=SC1090
@@ -45,6 +52,7 @@ fi
 
 if [ -z "${TELEGRAM_TOKEN:-}" ] || [ -z "${ALERT_CHAT:-}" ]; then
     log "$CONF has no TELEGRAM_TOKEN/ALERT_CHAT -- alert not delivered: $SUBJECT"
+    tglog --status failed --subject "$SUBJECT" --body "$BODY" --error "$CONF missing TELEGRAM_TOKEN/ALERT_CHAT"
     exit 0
 fi
 
@@ -56,6 +64,7 @@ if [ -f "$STAMP" ]; then
     LAST=$(cat "$STAMP" 2>/dev/null || echo 0)
     if [ $((NOW - LAST)) -lt $((REPEAT_HOURS * 3600)) ]; then
         log "suppressed (sent $(( (NOW-LAST)/60 )) min ago): $SUBJECT"
+        tglog --status suppressed --subject "$SUBJECT" --body "$BODY"
         exit 0
     fi
 fi
@@ -76,11 +85,14 @@ case "$RESP" in
     *'"ok":true'*)
         printf '%s' "$NOW" > "$STAMP"
         log "sent: $SUBJECT"
+        MID=$(printf '%s' "$RESP" | grep -oE '"message_id":[0-9]+' | head -1 | cut -d: -f2)
+        tglog --status sent --subject "$SUBJECT" --body "$BODY" --message-id "${MID:-unknown}"
         ;;
     *)
         # Deliberately do NOT write the stamp: an undelivered message must be
         # retried on the next run, not suppressed as though it had arrived.
         log "delivery FAILED: $(printf '%s' "$RESP" | head -c 200)"
+        tglog --status failed --subject "$SUBJECT" --body "$BODY" --error "$(printf '%s' "$RESP" | head -c 200)"
         exit 1
         ;;
 esac
