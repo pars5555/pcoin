@@ -23,15 +23,20 @@ the failure is silent in exactly the way this table exists to prevent.
 | rail | evidence lives on | watched from | how |
 |---|---|---|---|
 | `checker` | 152.53.171.190 | 152.53.171.190 | MySQL `settings.last_poll_at` |
+| `portrait2video` | 167.233.206.186 | 152.53.171.190 | read-only HTTP status endpoint |
 | `webbuilderbot` | 116.203.221.42 | 116.203.221.42 | MySQL `settings.last_poll_at` |
 | `aicontrol` | 116.203.221.42 | 116.203.221.42 | MySQL `pcoin_watcher_heartbeat` |
-| `3dmodels.pc.am` | *(unassigned)* | — | log mtime + deposits file |
-| `3dmodel.oonak.ai` | 202.61.252.202 | *(unassigned)* | log mtime + `deposits.json` |
-| `portrait2video` | 167.233.206.186 | any host with the token | read-only HTTP status endpoint |
+| `3dmodels.pc.am` | 116.203.221.42 | 116.203.221.42 | log mtime + docker db |
+| `3dmodel.oonak.ai` | 202.61.252.202 | 202.61.252.202 | log mtime + `deposits.json` |
 
-Rows marked *unassigned* are genuinely unwatched right now. The script says so
-on every host whose `RAILS_EXPECTED` names them, which is the point: an
-unassigned rail is loud, not invisible.
+All six are assigned as of 2026-08-29. Before that date only `checker` was
+actually being checked, on the one host that ran the script; the rest lived on
+machines it could not read and vanished silently.
+
+If a rail appears in no host's list it is watched by nobody and nothing will
+say so -- the coverage report can only speak about rails it was told to expect.
+That is the one hole this design does not close by itself, and the reason this
+table has to be edited in the same change that adds a rail.
 
 ### Why a rail that cannot be checked ALERTS
 
@@ -64,13 +69,26 @@ count and reorg count, and nothing else. No money, no addresses, no user data.
 
 ```sh
 # /etc/pcoin-deposit-watch.conf   (mode 600 -- it holds a token)
-P2V_MONITOR_URL=https://<host>/internal/pcn-status
+RAILS_EXPECTED="checker portrait2video"
+P2V_MONITOR_URL=https://portrait2video.pc.am/pcn/monitor
 P2V_MONITOR_TOKEN=...
 ```
 
-An **empty token disables the endpoint** rather than opening it, and an unset
-URL is not a pass -- a rail nobody configured is a rail nobody is watching, and
-the coverage report says so.
+The token is a **path segment**, not a header: the watcher requests
+`$P2V_MONITOR_URL/$P2V_MONITOR_TOKEN`. A wrong token answers **404**, the same
+as a route that does not exist, so a leaked URL cannot be probed to learn
+whether the token half is close.
+
+An unset URL is not a pass -- a rail nobody configured is a rail nobody is
+watching, and the coverage report says so. `enabled:false` in the payload is
+handled separately: a rail that has switched its own watcher off is neither
+healthy nor crashed, and gets its own message rather than passing because the
+endpoint answered.
+
+Note the conf is **sourced**, so it wins over the environment. To test with
+different values, point `CONF` somewhere else rather than exporting the
+variables -- exporting them and watching nothing change is a confusing ten
+minutes.
 
 ### Testing it
 
