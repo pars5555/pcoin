@@ -424,7 +424,10 @@ P2V_URL=${P2V_MONITOR_URL:-}
 P2V_TOKEN=${P2V_MONITOR_TOKEN:-}
 if [ -n "$P2V_URL" ] && [ -n "$P2V_TOKEN" ]; then
     seen_rail portrait2video
-    p2v_out=$(curl -fsS --max-time 20 -H "Authorization: Bearer $P2V_TOKEN" "$P2V_URL" 2>/dev/null || true)
+    # The token is a PATH segment, not a header, and a wrong one answers 404 --
+    # deliberately indistinguishable from "no such route", so a leaked URL
+    # cannot be probed for whether the token half is close.
+    p2v_out=$(curl -fsS --max-time 20 "${P2V_URL%/}/$P2V_TOKEN" 2>/dev/null || true)
     if [ -z "$p2v_out" ]; then
         check_heartbeat "portrait2video" ""             "Status endpoint $P2V_URL did not answer. The rail may be fine and the endpoint down; nothing here can tell."
     else
@@ -433,9 +436,21 @@ try:
     d = json.load(sys.stdin)
 except Exception:
     raise SystemExit
-a = d.get('heartbeat_age_seconds', d.get('age_seconds'))
+a = d.get('heartbeat_age_s', d.get('heartbeat_age_seconds', d.get('age_seconds')))
 print(int(a) if isinstance(a, (int, float)) else '')" 2>/dev/null)
-        check_heartbeat "portrait2video" "$p2v_age"             "Cron on the portrait2video host runs its PCN watcher; restart it there."
+        # enabled:false means the rail turned its own watcher off. That is not a
+        # fault and not health -- it is a deliberate state somebody chose, and it
+        # must not read as "fine" just because the endpoint answered.
+        p2v_en=$(printf '%s' "$p2v_out" | python3 -c "import json,sys
+try:
+    print('1' if json.load(sys.stdin).get('enabled', True) else '0')
+except Exception:
+    pass" 2>/dev/null)
+        if [ "$p2v_en" = "0" ]; then
+            alert "PCN watcher DISABLED: portrait2video"                   "The rail reports its own deposit watcher as disabled. Deposits are not being credited. This is a chosen state, not a crash -- re-enable it there, or take the rail out of RAILS_EXPECTED."
+        else
+            check_heartbeat "portrait2video" "$p2v_age"                 "systemd timer portrait2video-pcn-watch on that host runs the watcher."
+        fi
         p2v_stuck=$(printf '%s' "$p2v_out" | python3 -c "import json,sys
 try:
     print(int(json.load(sys.stdin).get('stuck', 0)))
