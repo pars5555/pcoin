@@ -63,6 +63,26 @@ alert() {   # alert <subject> <body>
     [ -x "$NOTIFY" ] && "$NOTIFY" "$1" "$2" >/dev/null 2>&1
 }
 
+# ---------------------------------------------------- coverage manifest ----
+#
+# EVERY RAIL THAT TAKES PCN IS NAMED HERE, and the run is not complete until
+# each one has been positively checked.
+#
+# Why this exists: every rail below is guarded by `if [ -r <its config> ]` with
+# no else. That is fine on the host where the rail lives and silently fatal
+# anywhere else -- the check does not fail, it VANISHES, and the script exits 0
+# having examined nothing. Measured 2026-08-29 on this host: four of the five
+# then-declared rails had no readable config here, so the run produced no output
+# at all. Silence from a monitor is indistinguishable from health, and this one
+# had been reporting nothing for weeks while reading as "all healthy".
+#
+# The rule this enforces is the one the estate already learned twice: a check
+# that only prints is not a check, and a rail nobody checked is not a rail that
+# is fine. An unreachable rail now ALERTS as unmonitored rather than disappearing.
+RAILS_EXPECTED="checker webbuilderbot aicontrol 3dmodels.pc.am 3dmodel.oonak.ai portrait2video"
+RAILS_SEEN=""
+seen_rail() { RAILS_SEEN="$RAILS_SEEN $1"; }
+
 now=$(date +%s)
 
 # mysql_q <user> <pass> <db> <sql>  -- one scalar, empty on any failure.
@@ -150,6 +170,7 @@ check_deposits() {
 # ------------------------------------------------------------- checker ------
 CHK=/var/www/checker_pc_am/config/config.json
 if [ -r "$CHK" ]; then
+    seen_rail checker
     eval "$(python3 -c "
 import json;d=json.load(open('$CHK'))
 print('u=%r;p=%r;db=%r' % (d['db_user'],d['db_pass'],d['db_name']))
@@ -167,6 +188,7 @@ fi
 # -------------------------------------------------------- webbuilderbot -----
 WBB=/var/www/ai-bots/bots/webbuilderbot/config.json
 if [ -r "$WBB" ]; then
+    seen_rail webbuilderbot
     eval "$(python3 -c "
 import json;d=json.load(open('$WBB'))
 print('u=%r;p=%r;db=%r' % (d['db_user'],d['db_pass'],d['db_name']))
@@ -186,6 +208,7 @@ fi
 # ------------------------------------------------------------ aicontrol -----
 AIC=/var/www/ai-control-server/.env
 if [ -r "$AIC" ]; then
+    seen_rail aicontrol
     u=$(grep -E '^DB_USER=' "$AIC" | head -1 | cut -d= -f2-)
     p=$(grep -E '^DB_PASS=' "$AIC" | head -1 | cut -d= -f2-)
     db=$(grep -E '^DB_NAME=' "$AIC" | head -1 | cut -d= -f2-)
@@ -213,6 +236,7 @@ fi
 M3D_LOG=/var/www/3dmodels.pc.am/logs/pcn.log
 M3D_DIR=/var/www/3dmodels.pc.am/code
 if [ -d "$M3D_DIR" ]; then
+    seen_rail 3dmodels.pc.am
     if [ -r "$M3D_LOG" ]; then
         mtime=$(stat -c %Y "$M3D_LOG" 2>/dev/null)
         age=""; [ -n "$mtime" ] && age=$((now - mtime))
@@ -286,6 +310,7 @@ fi
 OON_LOG=${OON_LOG:-/var/log/3dmodel-pcn.log}
 OON_DIR=${OON_DIR:-/var/www/3dmodel/data/pcn}
 if [ -d "$OON_DIR" ]; then
+    seen_rail 3dmodel.oonak.ai
     if [ -r "$OON_LOG" ]; then
         mtime=$(stat -c %Y "$OON_LOG" 2>/dev/null)
         age=""; [ -n "$mtime" ] && age=$((now - mtime))
@@ -372,7 +397,91 @@ PYEOF
     fi
 fi
 
-if [ "$PROBLEMS" -eq 0 ]; then
-    log "all PCN deposit watchers healthy"
+# ------------------------------------------------------- portrait2video ----
+#
+# The first rail that is NOT on a watcher host: SQLite on its own box, with no
+# config here to read and no database to query. Granting this host SSH to the
+# machine that takes payments, to answer three integers, is a worse trade than
+# asking over HTTP -- so it exposes a read-only status endpoint carrying
+# heartbeat age, stuck count and reorg count, and nothing else. No money, no
+# addresses, no user data.
+#
+# An unset URL is NOT a pass. A rail nobody configured is a rail nobody is
+# watching, and it says so.
+P2V_URL=${P2V_MONITOR_URL:-}
+P2V_TOKEN=${P2V_MONITOR_TOKEN:-}
+if [ -n "$P2V_URL" ] && [ -n "$P2V_TOKEN" ]; then
+    seen_rail portrait2video
+    p2v_out=$(curl -fsS --max-time 20 -H "Authorization: Bearer $P2V_TOKEN" "$P2V_URL" 2>/dev/null || true)
+    if [ -z "$p2v_out" ]; then
+        check_heartbeat "portrait2video" ""             "Status endpoint $P2V_URL did not answer. The rail may be fine and the endpoint down; nothing here can tell."
+    else
+        p2v_age=$(printf '%s' "$p2v_out" | python3 -c "import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    raise SystemExit
+a = d.get('heartbeat_age_seconds', d.get('age_seconds'))
+print(int(a) if isinstance(a, (int, float)) else '')" 2>/dev/null)
+        check_heartbeat "portrait2video" "$p2v_age"             "Cron on the portrait2video host runs its PCN watcher; restart it there."
+        p2v_stuck=$(printf '%s' "$p2v_out" | python3 -c "import json,sys
+try:
+    print(int(json.load(sys.stdin).get('stuck', 0)))
+except Exception:
+    pass" 2>/dev/null)
+        if [ -n "$p2v_stuck" ] && [ "$p2v_stuck" -gt 0 ]; then
+            alert "PCN deposits HELD: portrait2video"                   "$p2v_stuck deposit(s) seen but not credited for over $STUCK_HOURS h. Somebody paid and is holding nothing."
+        fi
+        p2v_reorg=$(printf '%s' "$p2v_out" | python3 -c "import json,sys
+try:
+    print(int(json.load(sys.stdin).get('reorged', 0)))
+except Exception:
+    pass" 2>/dev/null)
+        if [ -n "$p2v_reorg" ] && [ "$p2v_reorg" -gt 0 ]; then
+            alert "PCN REORG on credited deposit: portrait2video"                   "$p2v_reorg credited deposit(s) flagged as reorged. Credit was NOT reversed automatically -- a human decides."
+        fi
+    fi
+fi
+
+
+# ------------------------------------------------------ coverage report ----
+#
+# A rail that was never examined is not a healthy rail. Anything declared in
+# RAILS_EXPECTED that no check reached gets said out loud here.
+#
+# Change-gated, not time-gated: the concentration watcher taught this estate
+# that repeating an identical alert every few minutes is how people learn to
+# ignore it. The state file holds the last set reported, so a steady state is
+# silent -- but the set is re-asserted once a day, because a gap that scrolled
+# past weeks ago is exactly the one nobody remembers.
+RAILS_MISSING=""
+for r in $RAILS_EXPECTED; do
+    case " $RAILS_SEEN " in
+        *" $r "*) : ;;
+        *) RAILS_MISSING="$RAILS_MISSING $r" ;;
+    esac
+done
+RAILS_MISSING="${RAILS_MISSING# }"
+
+if [ -n "$RAILS_MISSING" ]; then
+    STATE_DIR=${STATE_DIR:-/var/lib/pcoin-deposit-watch}
+    mkdir -p "$STATE_DIR" 2>/dev/null || true
+    STATE_FILE="$STATE_DIR/unmonitored"
+    stamp="$(date -u +%Y-%m-%d) $RAILS_MISSING"
+    prev=$(cat "$STATE_FILE" 2>/dev/null || true)
+    if [ "$stamp" != "$prev" ]; then
+        printf '%s
+' "$stamp" > "$STATE_FILE" 2>/dev/null || true
+        n=$(printf '%s' "$RAILS_MISSING" | wc -w)
+        alert "PCN rails NOT MONITORED: $n of $(printf '%s' "$RAILS_EXPECTED" | wc -w)"               "No check ran for:$(printf '%s' " $RAILS_MISSING") -- their evidence is not readable from $(hostname 2>/dev/null || echo "this host"). This is NOT a report that those rails are broken, and NOT a report that they are fine: nothing looked. Deposits there could be stuck or uncredited and this watcher would still have said nothing."
+    fi
+else
+    rm -f "${STATE_DIR:-/var/lib/pcoin-deposit-watch}/unmonitored" 2>/dev/null || true
+fi
+
+if [ "$PROBLEMS" -eq 0 ] && [ -z "$RAILS_MISSING" ]; then
+    log "all PCN deposit watchers healthy ($(printf '%s' "$RAILS_EXPECTED" | wc -w) rails checked)"
+elif [ "$PROBLEMS" -eq 0 ]; then
+    log "no faults found, but coverage is incomplete -- unchecked:$RAILS_MISSING"
 fi
 exit 0
