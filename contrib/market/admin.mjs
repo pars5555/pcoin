@@ -113,6 +113,32 @@ export function makeAdmin({ pool, cfg, settings, ladder, delivery, backing, noti
   const esc = s => String(s ?? '').replace(/[&<>"']/g,
     c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+  // Safe INSIDE a JS string literal that itself sits inside an HTML attribute.
+  //
+  // esc() is not enough on its own. It leaves real newlines intact, and a raw
+  // newline inside a JS string literal is a SyntaxError: the onsubmit handler
+  // then fails to parse, the browser treats the form as having NO handler, and
+  // it submits with no confirmation at all.
+  //
+  // Not theoretical. The needs_review confirm below embedded delivery_error
+  // followed by a literal newline from its template literal, so the
+  // 'Send (reviewed)' dialog silently never appeared -- on exactly the orders
+  // flagged as needing a human to look at them. Observed 2026-08-29 on a
+  // partial payment: the operator pressed Send and was never asked to confirm.
+  //
+  // esc() has also already turned ' into &#39;, which the browser decodes back
+  // to a quote BEFORE the JS is parsed, so that has to be escaped for JS too.
+  const escAttrJs = (s) => {
+    const CH = String.fromCharCode;
+    const LF = CH(10), CR = CH(13), BS = CH(92), Q = CH(39);
+    return String(s == null ? '' : s)
+      .split(LF).join(' ')
+      .split(CR).join(' ')
+      .split(BS).join(BS + BS)
+      .split('&#39;').join(Q)
+      .split(Q).join(BS + Q);
+  };
+
   // See settings.mjs: the app user has no DDL rights on purpose. A privilege
   // error here is only fatal if the tables are actually absent.
   async function ensureTable() {
@@ -1014,7 +1040,7 @@ ${left !== undefined ? `<p class="s" style="color:var(--dim)">${left} attempt(s)
           <td>${['awaiting_delivery', 'needs_review'].includes(o.status) ? `
             <form class="inline" method="POST" action="/admin/order/send"
                   onsubmit="return confirm(${o.status === 'needs_review'
-                    ? `'FLAGGED: ${esc(String(o.delivery_error || 'no reason recorded')).replace(/'/g, '')}\n\nSend ${money(o.quoted_pcn)} PCN anyway?'`
+                    ? `'FLAGGED: ${escAttrJs(esc(String(o.delivery_error || 'no reason recorded')))} — send ${money(o.quoted_pcn)} PCN anyway?'`
                     : `'Send ${money(o.quoted_pcn)} PCN from the hot wallet?'`})">
               ${csrf}<input type="hidden" name="order_id" value="${esc(o.order_id)}">
               ${o.status === 'needs_review' ? '<input type="hidden" name="reviewed" value="1">' : ''}

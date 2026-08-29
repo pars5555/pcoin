@@ -204,8 +204,11 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
           `$${usd.toFixed(2)} → <b>${pcn.toFixed(8)} PCN</b>\n` +
           `to <code>${order.address}</code>\n\n` +
           `Above the $${S.autoMaxUsd()} auto limit, so nothing was sent.\n` +
-          `Send it, then record it:\n` +
-          `<code>market-deliver ${orderId} &lt;txid&gt;</code>`);
+          `Open <b>market.pc.am/admin → Orders</b> and press <b>Send</b>.
+` +
+          `It pays from the hot wallet and records it in one step, and it asks the
+` +
+          `wallet first — so it refuses rather than paying twice.`);
         return { ok: true, mode: 'manual' };
       }
 
@@ -225,7 +228,7 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
           `Hot wallet holds ${bal.toFixed(2)} PCN; this needs ${pcn.toFixed(2)} plus a ` +
           `${S.stop()} reserve.\n\n` +
           `Top up <code>${await receiveAddress()}</code> to ${S.target()} PCN, ` +
-          `or send this one by hand:\n<code>market-deliver ${orderId} &lt;txid&gt;</code>`);
+          `then press <b>Send</b> on this order in <b>market.pc.am/admin → Orders</b>.`);
         return { ok: true, mode: 'manual', why: 'float too low' };
       }
 

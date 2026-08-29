@@ -116,7 +116,7 @@ try {
       `to <code>${o.address}</code>\n\n` +
       `Paid ${waited} min ago, status <code>${o.status}</code>` +
       (o.delivery_mode ? ` (${o.delivery_mode})` : '') + `.\n` +
-      `Send it, then record it:\n<code>market-deliver ${o.order_id} &lt;txid&gt;</code>`);
+      `Open <b>market.pc.am/admin → Orders</b> and press <b>Send</b> — it pays from the hot wallet and records it in one step.`);
   }
 
   // Forget orders that are no longer waiting, so the state file cannot grow

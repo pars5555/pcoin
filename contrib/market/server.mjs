@@ -849,6 +849,110 @@ createServer(async (req, res) => {
         reportSaleEconomics(d).catch(e => console.error('[ipn] fee report:', e.message));
 
         if (!underpaid) await D.deliver(d.order_id);
+      } else if (d.payment_status === 'partially_paid') {
+        // FIRST: has this order already been paid out?
+        //
+        // The NOWPayments dashboard lets an operator re-send an IPN or force a
+        // status, so this callback can arrive for an order that was delivered
+        // minutes ago. Nothing below would send coins twice -- deliver() claims on
+        // `status='awaiting_delivery' AND delivered_txid IS NULL` and this branch's
+        // own UPDATE is guarded the same way -- but without this check it would
+        // still rewrite the row's note and fire a Telegram alert saying money is
+        // waiting, for an order that is finished. An alert that cries for action on
+        // a settled order is how a real one gets ignored.
+        const [done] = await q(
+          'SELECT delivered_txid FROM orders WHERE order_id=?', [d.order_id ?? null]);
+        if (done && done.delivered_txid) {
+          console.log(`[ipn] partially_paid for ${d.order_id}: already delivered; ignoring`);
+          return json(res, 200, { ok: true, note: 'already delivered' });
+        }
+
+        // A SHORT PAYMENT IS STILL A PAYMENT, AND IT MATCHED NO BRANCH AT ALL.
+        //
+        // 'partially_paid' is the status NOWPayments actually uses when someone
+        // sends less than the invoice asked for. It is not in the success list and
+        // not in the failure list, so the callback fell straight through: the order
+        // stayed 'pending', the sweeper expired it two hours later, and nobody was
+        // told. The customer had paid and held nothing, and the order was in a
+        // terminal state with paid_amount NULL -- no record that money had arrived.
+        // Happened on 2026-08-29 to order Mmte1xvake1040f: $33.46 of $35.00 paid,
+        // repaired by hand.
+        //
+        // The underpaid check that already existed lives INSIDE the success branch,
+        // so it could only ever catch 'finished but short'. It could never fire for
+        // the status that actually means short.
+        //
+        // Policy, set by the owner: deliver exactly what was paid for. The price is
+        // locked on the order row at quote time, so the deliverable amount is simply
+        // what that money buys at that price. This is also the right shape for an
+        // OVERpayment, which arrives as 'finished' with actually_paid above
+        // pay_amount and is handled by the same recompute below.
+        const paid = Number(d.actually_paid);
+        const want = Number(d.pay_amount);
+        const [ord] = await q(
+          'SELECT quoted_price, quoted_pcn, usd, status, delivered_txid FROM orders WHERE order_id=?',
+          [d.order_id ?? null]);
+
+        // Anything we cannot read resolves NOTHING. Record the payment, hold for a
+        // human, and say why -- never guess an amount to send.
+        if (!ord || ord.delivered_txid || !isFinite(paid) || !isFinite(want) || want <= 0 ||
+            !(Number(ord.quoted_price) > 0)) {
+          await q("UPDATE orders SET status='needs_review', paid_amount=?, pay_currency=?, paid_at=NOW()," +
+                  ' delivery_error=? WHERE order_id=? AND delivered_txid IS NULL',
+                  [isFinite(paid) ? paid : null, d.pay_currency || null,
+                   'PARTIAL PAYMENT: could not compute a deliverable amount. Held for review.',
+                   d.order_id ?? null]);
+          await notify('\u26a0\ufe0f <b>Partial payment, amount unreadable</b>' +
+            '\n<code>' + String(d.order_id) + '</code>' +
+            '\nHeld for review. Nothing was sent.');
+          return json(res, 200, { ok: true, note: 'partial, unreadable' });
+        }
+
+        // What that money actually buys, at the price locked on the order.
+        // WHAT THE MONEY WAS WORTH.
+        //
+        // Prefer the gateway's own fiat figure when it sends one: it converted at
+        // the rate it actually used, and the ratio below is only an approximation
+        // of that. On the 2026-08-29 incident the two differed by $0.008 -- 0.19 PCN
+        // -- which is small but is the customer's money, not ours to round.
+        // Fall back to the ratio when the field is absent, which is common.
+        const outcome_fiat = Number(d.actually_paid_at_fiat ?? d.actually_paid_fiat ?? NaN);
+        const paidUsd = isFinite(outcome_fiat) && outcome_fiat > 0
+          ? outcome_fiat
+          : Number(ord.usd) * (paid / want);
+        // Within 1% of the invoice is EXACT for our purposes -- gateways round, and
+        // quoted_pcn came from walking the ladder rather than from usd/price, so
+        // recomputing it would shift the number the customer was actually promised
+        // by a fraction of a PCN. Same 1% band the existing underpaid check uses.
+        const effectivelyExact = Math.abs(1 - paid / want) <= 0.01;
+        const givePcn = effectivelyExact
+          ? Number(ord.quoted_pcn)
+          : Number((paidUsd / Number(ord.quoted_price)).toFixed(8));
+        const shortPct = (1 - paid / want) * 100;
+
+        // ALWAYS needs_review, never auto -- regardless of size. A short payment can
+        // mean a split or still-arriving transaction, and auto-delivering on the
+        // first fragment then again on the second is how the same order pays twice.
+        // The operator releases it with one click once they can see the whole thing.
+        await q("UPDATE orders SET status='needs_review', usd=?, quoted_pcn=?," +
+                ' paid_amount=?, pay_currency=?, paid_at=NOW(), delivery_error=?' +
+                ' WHERE order_id=? AND delivered_txid IS NULL',
+                [Number(paidUsd.toFixed(2)), givePcn, paid, d.pay_currency || null,
+                 'PARTIAL PAYMENT: ' + paid + ' of ' + want + ' ' + (d.pay_currency || '') +
+                 ' (' + shortPct.toFixed(1) + '% short). Amount set to what was paid, at the' +
+                 ' locked quote ' + ord.quoted_price + '. Press Send (reviewed) to release it.',
+                 d.order_id ?? null]);
+
+        await notify('\ud83d\udfe0 <b>Partial payment \u2014 review and send</b>' +
+          '\n<code>' + String(d.order_id) + '</code>' +
+          '\nPaid <b>' + paid + '</b> of ' + want + ' ' + (d.pay_currency || '') +
+          ' (' + shortPct.toFixed(1) + '% short)' +
+          '\nThat buys <b>' + givePcn.toFixed(8) + ' PCN</b> at the locked $' + ord.quoted_price +
+          '\nwas ' + Number(ord.quoted_pcn).toFixed(8) + ' PCN for $' + Number(ord.usd).toFixed(2) +
+          '\n\nNothing was sent. Open <b>market.pc.am/admin \u2192 Orders</b> and press' +
+          ' <b>Send (reviewed)</b> to release exactly what was paid for.').catch(() => {});
+        return json(res, 200, { ok: true, note: 'partial, held for review' });
+
       } else if (['failed', 'expired', 'refunded'].includes(d.payment_status)) {
         // Guarded on 'pending', exactly like the success branch is. Unguarded,
         // a late 'expired' callback for an earlier attempt overwrote an order
