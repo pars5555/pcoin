@@ -385,9 +385,40 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
     }
   }
 
+  // The address the operator funds the hot wallet through. It must be the SAME
+  // one every time.
+  //
+  // This used to call getnewaddress, so every status read minted another one.
+  // Twenty-two accumulated under the 'float' label, and the one printed by
+  // `market-admin float` was never the one the owner had saved in their wallet
+  // as the market's address. Being handed an address you have never seen, for a
+  // transfer you are about to make by hand, is exactly the moment to stop and
+  // ask -- which is what happened on 2026-08-29, and it cost a round trip to
+  // confirm the funds would land somewhere this wallet controls.
+  //
+  // So: return the address under FLOAT_TOPUP_LABEL, which is a real address in
+  // this wallet (verified ismine, and it has received 4407 PCN across several
+  // top-ups). Minting is the fallback for a wallet that has no such address yet,
+  // and it labels what it mints so the next call is stable.
+  const FLOAT_TOPUP_LABEL = 'float top-up';
   async function receiveAddress() {
-    try { return await node.wallet('getnewaddress', ['float', 'bech32']); }
-    catch { return '(could not reach the node)'; }
+    try {
+      const byLabel = await node.wallet('getaddressesbylabel', [FLOAT_TOPUP_LABEL]);
+      // Sorted so that a wallet holding more than one is still deterministic --
+      // an address that changes between two reads is the bug being fixed here.
+      const existing = Object.keys(byLabel || {}).sort();
+      if (existing.length) return existing[0];
+    } catch {
+      // Label lookup failed. That resolves NOTHING -- it is not evidence the
+      // address is absent, so do not mint a replacement for one that may well
+      // exist. Minting here would hand back a different address every time the
+      // node was briefly unreachable, which is the original bug wearing a
+      // disguise.
+      return '(could not read the top-up address)';
+    }
+    try {
+      return await node.wallet('getnewaddress', [FLOAT_TOPUP_LABEL, 'bech32']);
+    } catch { return '(could not reach the node)'; }
   }
 
   // ── the operator's side ──────────────────────────────────────────────────
