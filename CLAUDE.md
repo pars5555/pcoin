@@ -956,7 +956,7 @@ therefore one nobody was monitoring.
 
 The sixth, `portrait2video`, went live on 2026-08-21 and is registered in both
 places before it has taken a single satoshi, which is the order that incident
-argues for. It has issued one address and credited nothing yet.
+argues for. It has since credited its first deposit: 5.0 PCN, read off the box.
 **Deposit addresses are per-user and REUSED**, which is the whole reason the
 ledger key below is not negotiable.
 
@@ -967,7 +967,7 @@ ledger key below is not negotiable.
 | **aicontrol.pc.am** | USD credit | `pc1q8ghcjcxxuv6wg4sp7zhs6udv3vfpm6y8l9kfm5` | `oonak-ai/aicontrol-server` |
 | **3dmodels.pc.am** | credits | `pc1qtadn46mj4p6w9gwgykz8j7h8yh89k90rsqxgsv` | own repo, **no remote** — one disk |
 | **3dmodel.oonak.ai** | credits | `pc1qpj707j3m5uqchj6j2vswvgnsfsags9lp0stffl` | `d:\xampp\htdocs\3dmodel` — **LIVE** — credited 100 PCN on 2026-08-13, verified 2026-08-21 |
-| **portrait2video** | USD balance | `pc1q6lvqmgu086e8cmvsk84jj93jl6ymhqp0h0xsh3` | `pars5555/portrait2video`, on 167.233.206.186 — live 2026-08-21, **no deposit credited yet** |
+| **portrait2video** | USD balance | `pc1q6lvqmgu086e8cmvsk84jj93jl6ymhqp0h0xsh3` | `pars5555/portrait2video`, on 167.233.206.186 — live 2026-08-21, 5.0 PCN credited |
 
 `3dmodel.oonak.ai` and `3dmodels.pc.am` are **different products with different
 wallets**. Nothing may be shared between them, and a reviewer who reads the
@@ -996,7 +996,7 @@ integration and cost money to find. The full guide is `site/docs/index.html`
 4. **Gate on the deposit's own block height, 6 confirmations** (100 for
    coinbase), and **detect reorgs but never auto-reverse a credit.**
 
-Monitoring: `pcoin-deposit-watch` (every 5 min, both hosts) watches the
+Monitoring: `pcoin-deposit-watch` (every 5 min, **three** hosts) watches the
 watchers, and `pcoin-payment-report` (every 2 min) posts each credit to the
 private ops channel with who/where/PCN/USD/rate-used/rate-now. Both live only
 on the servers — see §9.
@@ -1006,13 +1006,25 @@ its own box, with no local config to read credentials from and no database to
 query. Granting the ops server SSH to the machine that takes payments, in order
 to answer four integers, is a worse trade than asking over HTTP — so it exposes
 a read-only status endpoint (heartbeat age, stuck count, reorg count; no money,
-no addresses, no user data) and the bearer token lives in
-`/etc/pcoin-deposit-watch.conf`, mode 600, on the watcher host. An empty token
+no addresses, no user data) and the token lives in
+`/etc/pcoin-deposit-watch.conf`, mode 600, on the watcher host — which the
+script did not read at all until 2026-08-29. It is a **path segment**, not a
+bearer header: the watcher fetches `$P2V_MONITOR_URL/$P2V_MONITOR_TOKEN`, and a
+wrong token answers 404, the same as a route that does not exist. An empty token
 disables the endpoint rather than opening it, and an unset `P2V_MONITOR_URL`
 raises `PCN monitor NOT CONFIGURED` rather than passing silently. All four
 paths — healthy, stale, unreachable, unconfigured — were exercised on
 2026-08-21, because a monitor only ever observed saying "healthy" has not been
 tested.
+
+**Which host watches which rail is now a per-host setting, and the union is the
+only thing that covers the estate.** Until 2026-08-29 every rail was checked by
+`if [ -r <its config> ]` with no else, so on any host where that rail did not
+live the check did not fail — it vanished. One instance was running, it could
+read one of the five rails declared, and it logged *"all PCN deposit watchers
+healthy"* every five minutes for weeks. The assignment table is
+`contrib/seed-monitoring/README.md`; a rail in no host's `RAILS_EXPECTED` is
+watched by nobody and nothing will say so.
 
 ### The rule that keeps it honest
 
