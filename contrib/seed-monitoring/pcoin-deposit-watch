@@ -50,6 +50,14 @@ set -u
 # exact mistake this script exists to catch, and it applies to the script too.
 #   STALE_SECONDS=0 ./pcoin-deposit-watch          -> every heartbeat reads stale
 #   NOTIFY=/tmp/echo-notify ./pcoin-deposit-watch  -> alerts go nowhere real
+# Optional per-host settings. Holds the portrait2video bearer token (mode 600)
+# and, on a host that is only responsible for some rails, a narrowed
+# RAILS_EXPECTED. Sourced rather than parsed so a host can override any
+# threshold in here too.
+CONF=${CONF:-/etc/pcoin-deposit-watch.conf}
+# shellcheck disable=SC1090
+[ -r "$CONF" ] && . "$CONF"
+
 NOTIFY="${NOTIFY:-/usr/local/bin/pcoin-notify}"
 STALE_SECONDS="${STALE_SECONDS:-900}"      # 15 min; watchers tick every 60 s
 STUCK_HOURS="${STUCK_HOURS:-6}"            # 6 conf is ~1 h, so 6 h is well past
@@ -79,7 +87,11 @@ alert() {   # alert <subject> <body>
 # The rule this enforces is the one the estate already learned twice: a check
 # that only prints is not a check, and a rail nobody checked is not a rail that
 # is fine. An unreachable rail now ALERTS as unmonitored rather than disappearing.
-RAILS_EXPECTED="checker webbuilderbot aicontrol 3dmodels.pc.am 3dmodel.oonak.ai portrait2video"
+# Overridable per host: no single machine can read every rail's evidence, so
+# each one declares the rails it is RESPONSIBLE for and the union is what
+# covers the estate. That union is written down in this directory's README --
+# a per-host list nobody adds up is how a rail ends up owned by nobody.
+RAILS_EXPECTED="${RAILS_EXPECTED:-checker webbuilderbot aicontrol 3dmodels.pc.am 3dmodel.oonak.ai portrait2video}"
 RAILS_SEEN=""
 seen_rail() { RAILS_SEEN="$RAILS_SEEN $1"; }
 
