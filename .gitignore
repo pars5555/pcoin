@@ -90,3 +90,9 @@ contrib/windows-tray/PCoinTray.exe
 contrib/wpcn/wpcn.conf
 contrib/wpcn/build/
 contrib/wpcn/.venv/
+
+# JVM crash dumps. A Gradle run that runs out of heap drops these in the repo
+# root; the replay file alone was 856 KB. They are diagnostics for a crash that
+# has already been read, never something to keep.
+hs_err_pid*.log
+replay_pid*.log

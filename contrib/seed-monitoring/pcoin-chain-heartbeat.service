@@ -1,0 +1,15 @@
+[Unit]
+Description=PCoin chain health heartbeat (unconditional, private channel)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# --hours 48 walks back ~250-300 blocks of getblock (verbosity 2) to compute
+# the actual-miners count; measured at ~45-90s on seed 3, comfortably inside
+# the hourly timer interval (was 10 minutes; still fine either way). --window
+# 100 reuses that same fetch for the cheap "who's winning right now" snapshot
+# -- see the script's docstring.
+ExecStart=/usr/local/bin/pcoin-chain-heartbeat --window 100 --hours 48
+Nice=10
+IOSchedulingClass=idle
