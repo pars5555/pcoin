@@ -862,7 +862,9 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
         <b>Two ElectrumX servers now serve the PCoin chain</b>, which is the standard interface every
         Electrum-protocol wallet and most decentralised exchanges expect. On the strength of that,
         PCN has completed <b>its first atomic swap</b> and has been <b>submitted</b> to the Komodo
-        DeFi Framework.
+        DeFi Framework. Separately, <b>wPCN</b> &mdash; a wrapped claim on PCN &mdash; now trades on
+        PancakeSwap, so a stranger with a wallet and USDT can buy exposure without needing a
+        counterparty. Read what that is, and is not, below.
       </p>
 
       <div class="table-shell">
@@ -870,6 +872,7 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
           <tbody>
             <tr><th>ElectrumX</th><td><code>electrum1.pc.am</code> &middot; <code>electrum2.pc.am</code> &mdash; SSL on 50002, WSS on 50004, TCP on 50001</td></tr>
             <tr><th>First atomic swap</th><td>100&nbsp;PCN traded for DOGE, non-custodially, settled on both chains &mdash; <a href="https://github.com/GLEECBTC/coins/blob/master/swaps/PCN-DOGE.md" rel="noopener">the five transactions</a></td></tr>
+            <tr><th>wPCN on PancakeSwap</th><td>BEP-20 on BNB Smart Chain, <a href="https://bscscan.com/address/0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1#code" rel="noopener">source verified</a> &mdash; <code>0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1</code> &middot; <a href="https://pancakeswap.finance/swap?outputCurrency=0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1" rel="noopener">trade</a>. Backed 1:1 by PCN at <code>pc1q7hhzmdkkx0zjtzj6qkwmuvhlgwfqjrc6j2dk52</code></td></tr>
             <tr><th>Komodo DeFi listing</th><td><b>Submitted, not accepted.</b> <a href="https://github.com/GLEECBTC/coins/pull/1964" rel="noopener">Pull request #1964</a> &mdash; its live status is on that page, not this one</td></tr>
           </tbody>
         </table>
@@ -877,8 +880,17 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
 
       <div class="honest-box" style="max-width:100%;margin-top:26px">
         <b>What this does not mean.</b>
-        PCN is <b>still not listed anywhere</b>, and it is still not traded. A submission is a request,
-        and it can be refused.
+        PCN itself is <b>still not listed on any exchange</b>. A submission is a request, and it can
+        be refused.
+        <br><br>
+        <b>wPCN is not PCN.</b> It is an IOU on another chain, backed 1:1 by PCN held in a reserve
+        address printed above &mdash; check the balance against the token's fixed 50,000 supply yourself;
+        that is why both are published. The contract has <b>no owner and no mint function</b>, so nobody,
+        including us, can create more. Four things to know before buying: the pool is <b>small</b>
+        (a few hundred dollars &mdash; a $40 trade moves the price about 10%, which is arithmetic, not a
+        flaw); the <b>liquidity is not locked</b> and the project holds the LP tokens; there is
+        <b>no automatic way to turn PCN into wPCN or back</b> yet, so the two prices can drift apart;
+        and buying wPCN gets you a claim, not coins you can spend on the services above.
         <br><br>
         The first atomic swap was between <b>two wallets we control</b>. It exists because Komodo
         requires a completed swap before they will consider a coin, and for no other reason. It

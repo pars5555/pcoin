@@ -113,6 +113,14 @@ def send(w3, acct, tx, label):
     tx.setdefault("from", acct.address)
     tx.setdefault("nonce", w3.eth.get_transaction_count(acct.address))
     tx.setdefault("chainId", 56)
+    # Pick ONE fee model. web3 >= 6 adds EIP-1559 fields in build_transaction()
+    # whenever the chain advertises them, and BSC rejects a transaction carrying
+    # both those and a legacy gasPrice:
+    #   "both gasPrice and (maxFeePerGas or maxPriorityFeePerGas) specified"
+    # Legacy gasPrice is what BSC validators actually price on, so drop the 1559
+    # pair rather than the other way round.
+    tx.pop("maxFeePerGas", None)
+    tx.pop("maxPriorityFeePerGas", None)
     tx.setdefault("gasPrice", w3.eth.gas_price)
     if "gas" not in tx:
         tx["gas"] = int(w3.eth.estimate_gas(tx) * 1.25)
