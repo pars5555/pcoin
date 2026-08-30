@@ -97,7 +97,9 @@ Nothing in Komodo's requirement names KMD; it asks for "a successful Atomic Swap
 using Komodo DeFi Framework", and 16 of the existing files use other counterparties.
 
 Two KDF instances are set up on seed 3 under `/opt/kdf` (`maker/` and `taker/`),
-each with its own BIP39 passphrase in `/opt/kdf/secrets/wallets.json`, mode 0600.
+each with its own passphrase in `/opt/kdf/secrets/wallets.json`, mode 0600. Those
+strings are **not BIP39 mnemonics** despite being twelve words -- KDF takes any
+string as a seed -- so they cannot be restored into an ordinary PCoin wallet.
 Both are on netid **6133**.
 
 > **netid 8762 is deprecated and KDF refuses to start on it**, as is 7777 before
