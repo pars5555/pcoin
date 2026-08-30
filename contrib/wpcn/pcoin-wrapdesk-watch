@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+"""Tell the operator what to DO about the wrap desk, hourly, until it is done.
+
+This is not a health check. It is a task list that nags. Every wrap has manual
+steps spread over hours -- wait for confirmations, send wPCN, sell the PCN, buy
+wPCN back -- and a step forgotten halfway is how a desk ends up with a customer
+paid nothing or a pool left un-rebalanced.
+
+WHAT "DONE" MEANS HERE, AND WHY THERE IS NO BUTTON.
+
+Nothing is marked complete by a human saying so. Each step is derived from what
+is observable on a chain:
+
+    PCN arrived at the reserve        -> explorer.pc.am / the node
+    it has 100 confirmations          -> same
+    wPCN was sent to the requester    -> their BSC balance rose
+    wPCN was bought back              -> the pool's wPCN reserve fell
+
+A button would let the operator mark a step done that did not happen. Reading
+the chain cannot. This is the same doctrine the rest of the project uses: an
+unreadable answer is UNKNOWN, and unknown never becomes done.
+
+That cuts both ways, deliberately. If a read FAILS, the task stays open and gets
+nagged again. Better to be told twice about something finished than to have a
+half-finished wrap go quiet.
+
+Alerts go to the PRIVATE ops channel via pcoin-notify. Never the public one.
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.request
+
+STATE = os.environ.get("WRAPDESK_STATE", "/var/lib/pcoin-wrapdesk/state.json")
+NOTIFY = os.environ.get("PCOIN_NOTIFY", "/usr/local/bin/pcoin-notify")
+NAG_SECONDS = int(os.environ.get("NAG_SECONDS", 3600))      # hourly, per the owner
+CONFIRMATIONS = int(os.environ.get("WRAP_CONFIRMATIONS", 100))
+PER_PERSON = float(os.environ.get("WRAP_PER_PERSON", 250))
+TOTAL_ALLOC = float(os.environ.get("WRAP_TOTAL_ALLOC", 1500))
+
+EXPLORER = "https://explorer.pc.am"
+RESERVE = os.environ.get("WRAP_RESERVE", "pc1q7hhzmdkkx0zjtzj6qkwmuvhlgwfqjrc6j2dk52")
+
+# Deposits at or below this height are NOT wrap requests. The reserve was funded
+# with 50,000 PCN before the desk existed, and without this the watcher reads that
+# as a customer owed 50,000 wPCN -- which is exactly what the first dry run did.
+# Set it to the chain height at the moment the desk opens.
+OPENED_AT_HEIGHT = int(os.environ.get("WRAP_OPENED_AT_HEIGHT", "0"))
+
+
+def get(url, timeout=25):
+    """JSON GET, or None. None is UNKNOWN and must never be treated as a value."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return json.load(r)
+    except Exception:
+        return None
+
+
+def load_state():
+    try:
+        with open(STATE) as f:
+            return json.load(f)
+    except Exception:
+        return {"seen": {}, "nagged": {}}
+
+
+def save_state(s):
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    tmp = STATE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(s, f, indent=1)
+    os.replace(tmp, STATE)          # atomic; a torn state file loses the queue
+
+
+def notify(subject, body):
+    if not os.path.exists(NOTIFY):
+        print(f"[no notifier] {subject}\n{body}")
+        return
+    subprocess.run([NOTIFY, subject, body], timeout=60)
+
+
+def pool_price():
+    """{'price': float} from the pair contract, or None if unreadable.
+
+    Read from getReserves() rather than any API: it is the source of truth and
+    cannot be stale. None means UNKNOWN and the caller must not assume a side.
+    """
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from web3 import Web3
+        from deploy import load, connect
+        cfg = load()
+        w3, _ = connect(cfg)
+        abi = [{"constant": True, "inputs": [], "name": "getReserves",
+                "outputs": [{"name": "_r0", "type": "uint112"},
+                            {"name": "_r1", "type": "uint112"},
+                            {"name": "_t", "type": "uint32"}], "type": "function"},
+               {"constant": True, "inputs": [], "name": "token0",
+                "outputs": [{"name": "", "type": "address"}], "type": "function"}]
+        pair = w3.eth.contract(address=Web3.to_checksum_address(cfg["PAIR"]), abi=abi)
+        r0, r1, _ = pair.functions.getReserves().call()
+        t0 = pair.functions.token0().call()
+        tok = Web3.to_checksum_address(cfg["TOKEN"])
+        wp, us = (r0 / 1e8, r1 / 1e18) if t0 == tok else (r1 / 1e8, r0 / 1e18)
+        return {"price": us / wp, "wpcn": wp, "usdt": us}
+    except Exception:
+        return None
+
+
+def main() -> int:
+    st = load_state()
+    now = int(time.time())
+    tasks = []          # (key, urgency, text)
+
+    # ---- 1. incoming wraps, and how far along they are --------------------
+    addr = get(f"{EXPLORER}/api/address/{RESERVE}")
+    if addr is None:
+        # Cannot read the reserve. That is not "no wraps pending" -- say so and
+        # keep every existing task open.
+        tasks.append(("reserve_unreadable", "warn",
+                      "Could not read the reserve address on explorer.pc.am. "
+                      "Wrap requests cannot be checked right now. This is UNKNOWN, "
+                      "not 'nothing pending'."))
+    else:
+        conf_items = (addr.get("history") or {}).get("items") or []
+        pend_items = (addr.get("unconfirmed_history") or {}).get("items") or []
+
+        for it in pend_items:
+            txid = it.get("txid", "?")
+            amt = it.get("received_pcn", "?")
+            tasks.append((f"pending:{txid}", "info",
+                          f"WRAP REQUEST arriving: {amt} PCN, tx {txid[:16]}...\n"
+                          f"Unconfirmed. Nothing to do yet -- needs {CONFIRMATIONS} "
+                          f"confirmations before any wPCN is released."))
+
+        for it in conf_items:
+            txid = it.get("txid", "?")
+            confs = it.get("confirmations", 0)
+            amt = float(it.get("received_pcn") or 0)
+            if amt <= 0:
+                continue
+            h = it.get("height")
+            if not isinstance(h, int) or h <= OPENED_AT_HEIGHT:
+                continue          # pre-dates the desk: reserve funding, not a wrap
+            key = f"wrap:{txid}"
+            if st["seen"].get(key, {}).get("released"):
+                continue
+            if confs < CONFIRMATIONS:
+                tasks.append((key, "info",
+                              f"WRAP {amt:.2f} PCN, tx {txid[:16]}...\n"
+                              f"{confs}/{CONFIRMATIONS} confirmations. "
+                              f"Do NOT release wPCN yet -- the depth is the whole "
+                              f"defence against a reorg."))
+            else:
+                over = ""
+                if amt > PER_PERSON:
+                    over = (f"\n*** {amt:.0f} PCN EXCEEDS the {PER_PERSON:.0f} per-person "
+                            f"limit. Release only {PER_PERSON:.0f} and return the rest, "
+                            f"or decide deliberately to exceed it. ***")
+                tasks.append((key, "action",
+                              f"ACTION: send {min(amt, PER_PERSON):.2f} wPCN\n"
+                              f"{amt:.2f} PCN confirmed ({confs} confs), tx {txid[:16]}...\n"
+                              f"Send wPCN from the inventory wallet to the requester's "
+                              f"BSC address.{over}\n"
+                              f"Then: sell the {amt:.2f} PCN on market.pc.am, and use the "
+                              f"proceeds to buy wPCN back from the pool -- but ONLY while "
+                              f"the pool trades BELOW price.pc.am."))
+
+    # ---- 2. is the cycle worth running right now? -------------------------
+    price = get("https://price.pc.am")
+    pool = pool_price()
+    rate = (price or {}).get("serviceRate")
+    if rate is None:
+        tasks.append(("rate_unreadable", "warn",
+                      "Could not read price.pc.am. Cannot tell whether the buy-back "
+                      "cycle should be running. Do not guess -- check by hand before "
+                      "buying wPCN."))
+    elif pool and pool.get("price") is not None:
+        pp = float(pool["price"])
+        if pp < float(rate):
+            tasks.append(("cycle_open", "info",
+                          f"Cycle is OPEN: pool ${pp:.6f} is below price.pc.am "
+                          f"${float(rate):.6f}. Buying wPCN back is profitable and "
+                          f"pushes the peg the right way."))
+        else:
+            tasks.append(("cycle_shut", "info",
+                          f"Cycle is SHUT: pool ${pp:.6f} is at or above price.pc.am "
+                          f"${float(rate):.6f}. Do NOT buy wPCN back -- it would cost "
+                          f"more than the PCN you sold."))
+
+    # ---- 3. report, nagging only what is actionable -----------------------
+    actions = [t for t in tasks if t[1] == "action"]
+    warns = [t for t in tasks if t[1] == "warn"]
+
+    for key, urgency, text in tasks:
+        print(f"[{urgency}] {text}\n")
+
+    due = []
+    for key, urgency, text in actions + warns:
+        last = st["nagged"].get(key, 0)
+        if now - last >= NAG_SECONDS:
+            due.append((key, text))
+
+    if due:
+        body = "\n\n".join(t for _, t in due)
+        body += (f"\n\n---\nThis repeats every {NAG_SECONDS//60} minutes until the "
+                 f"chain shows it done. Nothing here is marked complete by hand.")
+        notify(f"wrap desk: {len(due)} thing(s) need you", body)
+        for key, _ in due:
+            st["nagged"][key] = now
+
+    save_state(st)
+
+    if actions:
+        print(f"UNHEALTHY: {len(actions)} wrap action(s) outstanding")
+        return 1
+    if warns:
+        print(f"UNVERIFIED: {len(warns)} thing(s) could not be checked")
+        return 2
+    print("wrap desk: nothing outstanding")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

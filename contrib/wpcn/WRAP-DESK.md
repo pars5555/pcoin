@@ -72,15 +72,63 @@ change the arithmetic, and the confirmation depth is sized for the general case.
 about **$350 of miner PCN**. There is ~162,600 PCN in other hands (~$3,000), so
 demand could exceed supply by an order of magnitude on day one.
 
+### Size the limit on PRICE IMPACT, not on inventory
+
+The first version of this section sized limits against the 19,026 inventory.
+That is the wrong constraint. The binding one is **what happens if everyone wraps
+and immediately dumps into the pool** — the realistic failure, and the one the
+owner asked about.
+
+Measured against the live pool (30,974 wPCN / 411.97 USDT):
+
+| wPCN dumped | seller receives | avg price | pool price after |
+|---|---|---|---|
+| 500 | $6.53 | $0.01306 | −3% |
+| 1,000 | $12.85 | $0.01285 | −6% |
+| 1,676 | $21.10 | $0.01259 | **−10%** |
+| 3,656 | $36+ | $0.01210 | **−20%** |
+| 5,000 | $57.14 | $0.01143 | −26% |
+| 19,026 (all) | **$156.52** | $0.00823 | **−62%** |
+
+**Two things fall out of that table.**
+
+*Dumping is a bad deal for the dumper.* Selling all 19,026 yields $156 — an
+average of $0.0082 against a $0.0133 spot and a $0.0183 service rate. The
+constant product stops the pool being emptied; a seller into a thin pool mostly
+punishes themselves.
+
+*The real cost is the chart, not the money.* A −62% day-one candle is what kills
+a token. $156 is not.
+
+So the allocation is whatever caps the worst case at an acceptable drop:
+
+| max acceptable drop | total desk allocation |
+|---|---|
+| 5% | 805 wPCN |
+| **10%** | **1,675 wPCN** |
+| 15% | 2,622 wPCN |
+| 20% | 3,656 wPCN |
+
 | limit | value | why |
 |---|---|---|
-| per person, per week | **500 wPCN** | 38 people can be served before inventory is touched to the bottom |
-| per request | 500 wPCN | keeps any single reorg target small |
-| total desk allocation | **start at 5,000**, not 19,026 | learn demand with a quarter of the inventory at risk |
-| confirmations | **100** | the reorg window |
+| **total desk allocation** | **1,500 wPCN** | worst case, every recipient dumping at once, is about −9% |
+| **per person** | **250 wPCN** | six people in the first round; no individual moves the pool more than ~1.6% |
+| confirmations | **100** | the reorg window (§3) |
 
-**Start with a pilot: 5–10 miners, 500 wPCN each.** If demand is 10× supply, far
-better to discover that at 5,000 wPCN than at 19,026.
+**Deliberately much tighter than inventory allows.** 19,026 stays in reserve.
+Raise the allocation only after watching what the first recipients actually do —
+and that is observable: their wPCN either sits in their wallet or turns up in the
+pool's `Swap` events.
+
+### The cycle mostly cancels a dump
+
+If someone wraps 1,000 PCN and dumps the wPCN, the operator now holds 1,000 real
+PCN. Selling it (§5) and buying wPCN back pushes the price up by roughly what
+their sell pushed it down — **and buys back cheaper than they sold.**
+
+Run promptly, the net price impact of a wrap-and-dump is near zero. The limit is
+the backstop for when the cycle *cannot* keep up — several people wrapping at
+once, or the PCN not selling quickly — not the primary defence.
 
 Announce limits *before* opening. A desk that runs out mid-queue without having
 said it could is worse than one that never opened.

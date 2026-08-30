@@ -1,0 +1,17 @@
+[Unit]
+Description=PCoin wrap desk — what the operator still has to do
+Documentation=https://github.com/pars5555/pcoin/blob/main/contrib/wpcn/WRAP-DESK.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pcoin-wrapdesk-watch
+Environment=NAG_SECONDS=3600
+
+# Exit 1 = an action is outstanding. That is the NORMAL state while a wrap is in
+# flight, so this unit is expected to "fail" routinely and must NOT be wired to
+# OnFailure=pcoin-alert@ — the script does its own notifying, hourly, and an
+# alert on top of that would double every message.
+Nice=10
+MemoryMax=64M
+TimeoutStartSec=120
+SuccessExitStatus=1 2

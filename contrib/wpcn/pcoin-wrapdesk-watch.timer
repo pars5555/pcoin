@@ -1,0 +1,15 @@
+[Unit]
+Description=Check the wrap desk every 15 minutes (nagging is hourly)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+# The CHECK runs every 15 minutes so a confirmation milestone is noticed
+# promptly; the NAG is rate-limited to hourly inside the script. Those are
+# deliberately different: the operator asked to be reminded hourly, not to be
+# told four times an hour that nothing has changed.
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target
