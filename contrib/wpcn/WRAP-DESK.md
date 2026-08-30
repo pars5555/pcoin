@@ -197,3 +197,123 @@ is a permanent record the operator cannot alter or deny.
 * The desk can **run out**, and what happens then.
 * Backing is **verifiable**: reserve `pc1q7hhzmdkkx0zjtzj6qkwmuvhlgwfqjrc6j2dk52`
   against a fixed 50,000 supply, both checkable by anyone.
+
+---
+
+# 9. Target architecture: connecting market.pc.am and the pool
+
+Added after reading `market.pc.am`'s actual pricing code. **It changes the
+recommendation**, so the finding comes first.
+
+## 9.1 The ladder already does what the pool was wanted for
+
+`market.pc.am` prices PCN from a **ladder**: 100 rungs, exactly 100,000 PCN,
+geometric from **$0.015 to $10.00** at +6.79% a rung. Each purchase consumes
+rungs and the marginal price rises. It is a bonding curve, and it already has the
+property "if someone buys PCN, the price grows" — all the way to $10.
+
+State on 31 Aug 2026: rungs 0-2 exhausted (2,940 PCN sold), marginal price at
+rung 3, ~$0.0183 — which is what `serviceRate` is tracking.
+
+**Compare the two instruments honestly:**
+
+| | ladder | wPCN pool |
+|---|---|---|
+| depth | 100,000 PCN (~$1,800 at current rungs, far more higher up) | **$412** |
+| price path | designed, geometric, to $10 | emergent |
+| cost to move 26% | hundreds of dollars of real purchases | **~$50** |
+| direction | sell-side only (buyback closed) | both ways |
+| who can trade | buyers, via the site | anyone, permissionlessly |
+
+**So replacing the ladder with the pool price today would be a downgrade.** The
+pool is thinner by orders of magnitude and correspondingly easier to move. The
+pool's advantage is that it is two-sided and permissionless; the ladder's is that
+it is deep and cannot be pushed around for $50. Those are different virtues and
+the pool has not earned the anchor role yet.
+
+**Therefore: the ladder anchors, the pool follows — until the pool is deep enough
+and third-party-driven enough to invert that.** The switch is gated in §6.
+
+## 9.2 Making a PCN purchase move the wPCN price
+
+The connection already exists in one direction and is simply not automated:
+
+```
+buyer purchases PCN on market.pc.am
+   -> ladder rungs consumed, marginal price rises
+   -> serviceRate tracks the ladder (damped, capped, alerted)
+   -> the cycle buys wPCN while pool < serviceRate
+   -> pool price rises
+```
+
+Automating step 3 is the whole change. On a successful delivery, buy wPCN from
+the pool with a share of the proceeds — **only while the pool trades below
+`serviceRate`**, per the rule in §5.
+
+### Where it hooks
+
+`/opt/pcoin-market/delivery.mjs`, in `deliver()`, **after** the PCN send has
+succeeded and `delivered_txid` is recorded. Never before: a pool buy that
+happened while the delivery then failed would be an unfunded position, and the
+order is the thing that must be right.
+
+### How it must behave
+
+* **Read the pool price first, from the pair contract's `getReserves()`** — not
+  from an API. It is the source of truth and cannot be stale or spoofed.
+* **If the pool read fails, skip the buy.** Do not guess, do not retry into a
+  loop, do not treat "unreadable" as "below the rate". Log it and move on. The
+  delivery has already succeeded and must not be affected.
+* **If pool price >= serviceRate, skip the buy.** This is the §5 rule and it is
+  what stops the cycle running away.
+* **Cap the per-order spend** and cap the price impact — refuse if the buy would
+  move the pool more than a few percent. A large order must not be allowed to
+  spike a thin pool.
+* **Idempotency.** A retried delivery must not buy twice. Key the buy on
+  `order_id` in its own table, the same shape as `delivered_txid`.
+* **Never let it block or fail a delivery.** Wrap the whole thing; a pool problem
+  must never strand a paying customer. This is the §7.13 lesson from CLAUDE.md:
+  an ordered list of steps sharing one process is a chain, and a chain fails
+  whole.
+
+### Disclosure — not optional
+
+Every one of these buys is signed by an address the project controls. On-chain,
+routing customer demand and wash trading look identical; **only the disclosure
+separates them.**
+
+So publish, on pc.am and wherever the pool is linked:
+
+> market.pc.am routes a share of PCN purchase proceeds into the wPCN pool.
+> The routing address is `0x…`. These buys are funded by customer purchases,
+> not by trading against ourselves.
+
+An undisclosed version of exactly the same transactions is indefensible. A
+disclosed one is ordinary market making.
+
+## 9.3 The other direction: sell wPCN to BSC buyers directly
+
+Cleaner still, and worth building second. Offer BSC-paying customers **wPCN**
+rather than PCN, bought live from the pool with their own payment:
+
+```
+customer pays USDT -> market.pc.am buys wPCN FROM THE POOL -> delivers wPCN
+```
+
+Now the buy is the customer's economic decision reaching the pool directly. It
+produces genuine third-party volume, which is the gate in §6 — and it is the only
+mechanism here that produces volume nobody has to take on trust.
+
+Keep the PCN option alongside it: real PCN is what the six services accept, and
+wPCN is not a substitute for that.
+
+## 9.4 Build order — not negotiable
+
+1. **Wrap desk, both directions** (§1-§4). The anchor. Without arbitrage against
+   real PCN, everything below is self-referential.
+2. **Routing** (§9.2, then §9.3). Purchases move one price.
+3. **Oracle last** (§6). Only once third-party volume dominates.
+
+Doing 3 before 1 gives a self-referential price on six live payment rails, with
+nothing external holding it down. That is the failure this document exists to
+prevent.
