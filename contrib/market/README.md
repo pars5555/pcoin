@@ -239,9 +239,15 @@ business. Everything else in the PCoin estate is watch-only; this is the one
 exception, and it is kept small on purpose.
 
 **The float** lives in a Core descriptor wallet called `market-hot`, created on
-the host and never anywhere else. Levels: top up to `floatTargetPcn` (30,000),
-Telegram nags below `floatWarnPcn` (24,000), and auto-send **stops** below
-`floatStopPcn` (1,000) so the wallet can never half-empty itself mid-order.
+the host and never anywhere else. Levels: top up to `floatTargetPcn`, Telegram
+nags below `floatWarnPcn`, and auto-send **stops** below `floatStopPcn` so the
+wallet can never half-empty itself mid-order.
+
+> Those three are **defaults in `delivery.mjs` (30,000 / 24,000 / 1,000) that the
+> `settings` table overrides at runtime**, and it does: the live values are
+> **8,000 / 5,000 / 1,000**. Read them with `market-admin float`, never from this
+> file or from the constants -- a number quoted in prose is a number that rots,
+> and this one already had.
 Balance is read as `trusted` only — spending against unconfirmed coins is how a
 wallet talks itself into an overdraft.
 
@@ -249,6 +255,30 @@ wallet talks itself into an overdraft.
 > is a fresh random seed used only here so nothing collides, but a restore into
 > a tool that assumes 9444' will produce different addresses. Back it up with
 > `backupwallet`, not with twelve words — it does not have any.
+
+**Do not confuse it with the market's OTHER wallet.** There are two, created the
+same day, and mistaking one for the other is the kind of error that ends with
+somebody believing a phrase protects money it cannot touch:
+
+| | derivation | phrase | what it holds |
+|---|---|---|---|
+| `market-hot` | `m/84'/0'/0'`, fingerprint `763419df` | **none, by design** | the float the server spends |
+| the deposit wallet | `m/84'/9444'/0'` | yes, sealed as `market-seed.enc.json` | `sellDepositAddress`, where sellers send |
+
+The float's funding address is the one labelled **`float top-up`** in
+`market-hot`. `receiveAddress()` returns exactly that, and must keep returning
+exactly that -- it used to call `getnewaddress`, which minted a fresh address on
+every status read and accumulated 22 of them. Being handed an address you have
+never seen, for a transfer you are about to make by hand, is the moment a
+careful operator stops and asks, and that is what happened.
+
+**Backup posture.** Because there is no phrase, the only recovery artifacts are
+the `wallet.dat` file and the four `xprv` descriptors from
+`listdescriptors true`. The descriptors are the better backup: they are text,
+and a descriptor wallet derives every address it will ever hold from them, so a
+copy taken once never goes stale. Keep a sealed copy in `contrib/vault` beside
+the other systems' blobs -- a backup that lives on the same filesystem as the
+wallet it protects is not a backup, it is a second copy of one disk.
 
 ### Never send twice
 

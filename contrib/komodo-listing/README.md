@@ -126,6 +126,31 @@ Pull the five txids from the finished swap's events — `TakerFeeSent`,
 here are ours, so the resulting number means nothing about what PCN is worth, and
 nothing on pc.am may ever quote it. The first real price comes from a stranger.
 
+### The two wallets still hold money
+
+The swap is done and its five txids are recorded, but both wallets were funded
+and only part of it moved. Read live rather than trusting this paragraph:
+
+```sh
+/opt/kdf/rpc maker '{"method":"my_balance","coin":"PCN"}'
+/opt/kdf/rpc taker '{"method":"my_balance","coin":"PCN"}'
+```
+
+At 2026-08-29 that was **399.99989940 PCN** on the maker
+(`PNX1j3p4R8ZUvzVaaak5CnjzYspyPf13tx`) and **99.99995040 PCN** on the taker
+(`PRGuUXFzgbwymLjm2u5o9xJXisUStwy6q6`) -- about 500 PCN, idle since 23 August.
+
+Two things follow. First, **those are legacy `P...` addresses**: the `PCN` coin
+entry is `m/44'/9444'`, so KDF derives P2PKH there, and the `pc1q...` twin that
+the validation also produced is empty. An address search that assumes bech32
+will conclude, wrongly, that this money does not exist.
+
+Second, **the passphrases live in exactly one place** --
+`/opt/kdf/secrets/wallets.json` on seed 3, mode 0600 -- and that host has no
+vault-pull timer. Nothing in `contrib/vault` covers them. Either seal them there
+like every other system's seed, or move the coins out; leaving real money behind
+a single file on a single box is the one option that is not a decision.
+
 ---
 
 ## Opening the PR
