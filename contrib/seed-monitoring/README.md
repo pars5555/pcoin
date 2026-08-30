@@ -23,13 +23,14 @@ the failure is silent in exactly the way this table exists to prevent.
 | rail | evidence lives on | watched from | how |
 |---|---|---|---|
 | `checker` | 152.53.171.190 | 152.53.171.190 | MySQL `settings.last_poll_at` |
-| `portrait2video` | 167.233.206.186 | 152.53.171.190 | read-only HTTP status endpoint |
 | `webbuilderbot` | 116.203.221.42 | 116.203.221.42 | MySQL `settings.last_poll_at` |
 | `aicontrol` | 116.203.221.42 | 116.203.221.42 | MySQL `pcoin_watcher_heartbeat` |
 | `3dmodels.pc.am` | 116.203.221.42 | 116.203.221.42 | log mtime + docker db |
 | `3dmodel.oonak.ai` | 202.61.252.202 | 202.61.252.202 | log mtime + `deposits.json` |
 
-All six are assigned as of 2026-08-29. Before that date only `checker` was
+Five rails, all assigned as of 2026-08-29. (`portrait2video` was assigned and then
+removed the same day: private, never used in earnest, and being deleted. A watcher
+pointed at a service that is about to vanish is a scheduled false alarm.) Before that date only `checker` was
 actually being checked, on the one host that ran the script; the rest lived on
 machines it could not read and vanished silently.
 
