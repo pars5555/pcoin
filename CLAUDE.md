@@ -619,6 +619,20 @@ allocating change).
   logged, never put in a notification, never written anywhere else (`Redact.kt`
   exists to keep it that way).
 * *Node*: ordinary descriptor `wallet.dat` in the datadir.
+* *The two wallets a SERVER can spend from.* Everything else in the estate is
+  watch-only; these two are the exceptions, and neither is covered by
+  `contrib/vault`:
+  * **`market-hot`** on 178.105.178.27 — the market float. A Core-generated
+    descriptor wallet at `m/84'/0'/0'` (fingerprint `763419df`), so it has **no
+    twelve words and never did** — Core does not implement BIP39. That is
+    deliberate (`contrib/market/README.md`): it is a till, kept small on purpose,
+    and orders above `autoMaxUsd` are sent by hand from a wallet that has never
+    been online. Back it up with `backupwallet` or the four `xprv` descriptors.
+    **Do not confuse it with the market deposit wallet**, which is at
+    `m/84'/9444'/0'`, does have a phrase, and is sealed as `market-seed.enc.json`.
+  * **KDF maker and taker** on 178.105.3.51 — the Komodo atomic-swap pair, about
+    500 PCN, at **legacy `P…` addresses** because the `PCN` coin entry is
+    `m/44'/9444'`. Passphrases exist once, in `/opt/kdf/secrets/wallets.json`.
 
 **What destroys them.**
 * Uninstalling the Android app. Android refuses to upgrade across signing keys,
