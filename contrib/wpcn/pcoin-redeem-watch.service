@@ -1,0 +1,29 @@
+[Unit]
+Description=PCoin redeem desk — who is still owed PCN for burned wPCN
+Documentation=https://github.com/pars5555/pcoin/blob/main/contrib/wpcn/WRAP-DESK.md
+
+[Service]
+Type=oneshot
+# Run under the wPCN virtualenv, NOT bare python3. The system python has no
+# web3, and every web3 import in these scripts sits inside a try/except that
+# degrades to None -- so a bare python3 does not crash, it silently loses the
+# on-chain reads and reports a healthy-looking nothing. That happened.
+ExecStart=/opt/wpcn/.venv/bin/python /usr/local/bin/pcoin-redeem-watch
+Environment=NAG_SECONDS=3600
+
+# Scan floor. Justified, not guessed: at the moment this was set, the
+# contract reported issuedSupply == totalSupply == 50000, which PROVES zero
+# wPCN had ever been redeemed (redeem() burns, so any redemption would have
+# lowered totalSupply). There is therefore nothing before this block to find.
+# The supply invariant re-checks that claim on every single run, so if this
+# floor were ever wrong the watcher says so instead of quietly missing people.
+Environment=REDEEM_FROM_BLOCK=119056321
+
+# Exit 1 = somebody is owed PCN. That is the NORMAL state while a redemption is
+# in flight, so this unit is expected to "fail" routinely and must NOT be wired
+# to OnFailure=pcoin-alert@ — the script notifies hourly by itself and an alert
+# on top of that would double every message.
+Nice=10
+MemoryMax=128M
+TimeoutStartSec=180
+SuccessExitStatus=1 2

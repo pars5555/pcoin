@@ -1,0 +1,396 @@
+#!/usr/bin/env python3
+"""Tell the operator which wPCN redemptions still owe someone PCN.
+
+REDEMPTION IS THE MIRROR OF WRAPPING, AND THE RISK SITS ON THE OTHER SIDE.
+
+Wrapping:   PCN arrives -> we wait 100 confirmations -> we release wPCN.
+            The danger is a PCoin reorg taking back a deposit we already paid for.
+
+Redeeming:  wPCN is BURNED on BSC -> we send PCN from the reserve.
+            The burn happens FIRST, inside redeem(), before the event is even
+            emitted (WrappedPCoin.sol: totalSupply -= value, then emit Redeem).
+            So by the time this script can see an event, the wPCN is already
+            gone and the customer is owed PCN. There is no "cancel" -- the only
+            question left is whether we have paid them yet.
+
+That asymmetry is why this script NAGS and never sends. A missed wrap leaves a
+customer waiting. A missed redemption leaves a customer robbed: their tokens are
+destroyed and they hold nothing. So it must keep shouting until it is settled.
+
+WHAT MAKES A REDEMPTION SAFE TO PAY
+
+  1. The burn is FINALIZED on BSC, not merely mined. We use BSC's finalized
+     block tag rather than a confirmation count, because finality is the actual
+     property we need and a magic number only approximates it. A reorg that
+     unwound the burn would hand the customer back their wPCN AND our PCN.
+  2. The destination is a real PCoin address. Users paste anything -- Bitcoin
+     addresses, exchange memos, truncated strings. The contract only enforces
+     "non-empty and <= 90 chars"; it cannot know what a PCoin address looks like.
+  3. The reserve can actually cover it.
+
+Any of those unreadable means HOLD. An unreadable answer is UNKNOWN -- it is
+never a pass, and it is never a rejection either.
+
+KEYED ON (txhash, logIndex), NOT txhash.
+
+The same rule the deposit rails learned the hard way (CLAUDE.md 8c #1). One BSC
+transaction can emit several Redeem events -- a contract or a multicall can
+batch them. Keying on txhash alone would silently pay the first and DROP the
+rest, with no error raised anywhere.
+
+THE SUPPLY INVARIANT IS THE AUDITOR, AND IT DOES NOT DEPEND ON LOGS.
+
+redeem() burns before it logs, so the contract's own arithmetic already records
+every redemption that has ever happened:
+
+    issuedSupply - totalSupply  ==  total wPCN ever redeemed
+
+That is a single state read. It cannot be rate-limited away, cannot fall in a
+scan gap, and cannot be missed because an endpoint changed. So every run
+compares it against the redemptions this script has actually SEEN. If the
+contract says more has been burned than we have on file, we have missed one and
+somebody is owed PCN we do not know about -- which is the worst state this
+system can be in, and it now alerts instead of staying quiet.
+
+This matters because log access here is genuinely unreliable: the deploy RPC
+(bsc-dataseed) refuses eth_getLogs outright, and the public endpoints that do
+serve it only index recent history. Logs tell us WHO to pay; the invariant tells
+us WHETHER we have seen everyone.
+
+Alerts go to the PRIVATE ops channel. Never the public one.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.request
+
+STATE = os.environ.get("REDEEM_STATE", "/var/lib/pcoin-wrapdesk/redeem.json")
+NOTIFY = os.environ.get("PCOIN_NOTIFY", "/usr/local/bin/pcoin-notify")
+NAG_SECONDS = int(os.environ.get("NAG_SECONDS", 3600))
+
+# eth_getLogs is range-capped on most public BSC endpoints. Scanning in chunks
+# keeps us inside that cap; the floor stops us rescanning from block 0 forever.
+CHUNK = int(os.environ.get("REDEEM_CHUNK", 4000))
+FROM_BLOCK = int(os.environ.get("REDEEM_FROM_BLOCK", "0"))
+
+# The deploy RPC CANNOT be used for logs. bsc-dataseed.bnbchain.org rejects
+# eth_getLogs at every range, including a 100-block span -- measured, not
+# assumed. So logs get their own endpoints, tried in order. Both were verified
+# to serve getLogs; both are free tiers and rate-limit aggressively, which is
+# why the scan paces itself and why the supply invariant exists as a backstop.
+LOGS_RPCS = [u for u in os.environ.get(
+    "REDEEM_LOGS_RPC",
+    "https://bsc.drpc.org,https://bsc-rpc.publicnode.com").split(",") if u]
+PACE = float(os.environ.get("REDEEM_PACE", 1.2))    # seconds between chunks
+
+REDEEM_ABI = [{
+    "anonymous": False,
+    "inputs": [{"indexed": True, "name": "from", "type": "address"},
+               {"indexed": False, "name": "value", "type": "uint256"},
+               {"indexed": False, "name": "pcoinAddress", "type": "string"}],
+    "name": "Redeem", "type": "event"}]
+
+SUPPLY_ABI = [
+    {"constant": True, "inputs": [], "name": "totalSupply",
+     "outputs": [{"name": "", "type": "uint256"}], "type": "function"},
+    {"constant": True, "inputs": [], "name": "issuedSupply",
+     "outputs": [{"name": "", "type": "uint256"}], "type": "function"}]
+
+# Structural sanity only -- deliberately NOT called validation. bech32 "pc1..."
+# and base58 P2PKH/P2SH. This catches an obvious paste error; it does NOT prove
+# the address is spendable-to. Only the node's validateaddress does that, and
+# where no node is configured the operator is told to run it by hand.
+BECH32 = re.compile(r"^pc1[02-9ac-hj-np-z]{6,87}$")
+BASE58 = re.compile(r"^[PQ][1-9A-HJ-NP-Za-km-z]{25,39}$")
+
+
+def load_state():
+    try:
+        with open(STATE) as f:
+            return json.load(f)
+    except Exception:
+        return {"paid": {}, "nagged": {}, "scanned_to": 0}
+
+
+def save_state(s):
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    tmp = STATE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(s, f, indent=1)
+    os.replace(tmp, STATE)      # atomic: a torn file would lose who we owe
+
+
+def notify(subject, body):
+    if not os.path.exists(NOTIFY):
+        print(f"[no notifier] {subject}\n{body}")
+        return
+    subprocess.run([NOTIFY, subject, body], timeout=60)
+
+
+def check_address(addr):
+    """('ok'|'bad'|'unknown', detail). 'unknown' must never be treated as ok."""
+    cli = os.environ.get("PCOIN_CLI")
+    if cli:
+        try:
+            out = subprocess.check_output(
+                cli.split() + ["validateaddress", addr],
+                stderr=subprocess.DEVNULL, timeout=30)
+            valid = json.loads(out).get("isvalid")
+            if valid is True:
+                return "ok", "node says valid"
+            if valid is False:
+                return "bad", "node says INVALID"
+            return "unknown", "node returned no isvalid field"
+        except Exception as e:
+            # A failed call resolves NOTHING. Report unknown -- never silently
+            # fall back to the regex and present that as an answer.
+            return "unknown", f"validateaddress failed: {type(e).__name__}"
+    if BECH32.match(addr) or BASE58.match(addr):
+        return "unknown", "structurally plausible, but NOT node-validated"
+    return "bad", "does not look like a PCoin address at all"
+
+
+def reserve_balance(reserve):
+    """Confirmed spendable PCN at the reserve, or None for UNKNOWN."""
+    try:
+        with urllib.request.urlopen(
+                f"https://explorer.pc.am/api/address/{reserve}", timeout=25) as r:
+            d = json.load(r)
+        bal = ((d.get("balance") or {}).get("confirmed") or {})
+        sat = bal.get("onchain_unspent_sat")
+        return None if sat is None else sat / 1e8
+    except Exception:
+        return None
+
+
+def main() -> int:
+    sys.path.insert(0, os.environ.get("WPCN_DIR", "/opt/wpcn"))
+    sys.path.insert(1, os.path.dirname(os.path.abspath(__file__)))
+    st = load_state()
+    now = int(time.time())
+    tasks = []
+
+    try:
+        from web3 import Web3
+        from web3.middleware import ExtraDataToPOAMiddleware
+        from deploy import load, connect
+        cfg = load()
+        w3, _ = connect(cfg)
+        tok_addr = Web3.to_checksum_address(cfg["TOKEN"])
+        token = w3.eth.contract(address=tok_addr, abi=REDEEM_ABI)
+
+        # The invariant, read from state on the deploy RPC. State reads work
+        # there; only log reads do not.
+        sup = w3.eth.contract(address=tok_addr, abi=SUPPLY_ABI)
+        issued = sup.functions.issuedSupply().call() / 1e8
+        outstanding = sup.functions.totalSupply().call() / 1e8
+        burned_ever = issued - outstanding
+
+        # Separate connections for logs. ALL of them, not just the first that
+        # answers: these are free tiers that return 429 under any sustained
+        # scan, so the loop rotates between them and backs off rather than
+        # giving up on a rate limit and reporting a gap it could have filled.
+        logs_conns = []
+        for url in LOGS_RPCS:
+            try:
+                c = Web3(Web3.HTTPProvider(url, request_kwargs={"timeout": 40}))
+                c.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+                if c.eth.chain_id == 56:
+                    logs_conns.append((url, c))
+            except Exception:
+                continue
+    except Exception as e:
+        # Cannot reach BSC. That is NOT "no redemptions pending".
+        notify("redeem watch: CANNOT READ BSC",
+               f"Could not connect to BSC or load the token contract: {e}\n\n"
+               f"This is UNKNOWN, not 'nothing outstanding'. Any redemption "
+               f"burned in this window is invisible right now, and that "
+               f"customer is already without their wPCN.")
+        print(f"UNVERIFIED: {e}")
+        return 2
+
+    # Finality, not a confirmation count. If the endpoint will not serve the
+    # finalized tag we HOLD rather than inventing a depth.
+    try:
+        final = w3.eth.get_block("finalized")["number"]
+    except Exception as e:
+        notify("redeem watch: no finality from BSC endpoint",
+               f"eth_getBlockByNumber(finalized) failed: {e}\n"
+               f"Refusing to pay against an unfinalized burn. Holding.")
+        print(f"UNVERIFIED: finalized tag unavailable: {e}")
+        return 2
+
+    start = max(FROM_BLOCK, st.get("scanned_to", 0))
+    events = []
+    if not logs_conns:
+        tasks.append(("no_logs_rpc", "warn",
+                      "No BSC endpoint would serve eth_getLogs, so WHO redeemed "
+                      "cannot be read right now. The supply invariant below still "
+                      "says whether anyone is owed."))
+        final = start - 1
+    else:
+        scanners = [(u, c.eth.contract(address=tok_addr, abi=REDEEM_ABI))
+                    for u, c in logs_conns]
+        lo, turn = start, 0
+        while lo <= final:
+            hi = min(lo + CHUNK - 1, final)
+            got, err = None, None
+            # Try every endpoint, then back off and try again. A 429 is a
+            # "come back later", not an answer, so it must not become a gap
+            # while an untried endpoint would have served it.
+            for attempt in range(6):
+                url, sc = scanners[turn % len(scanners)]
+                turn += 1
+                try:
+                    got = sc.events.Redeem().get_logs(from_block=lo, to_block=hi)
+                    break
+                except Exception as e:
+                    err = f"{url}: {e}"
+                    time.sleep(2.0 * (attempt + 1)
+                               if ("429" in str(e) or "Too Many" in str(e))
+                               else 1.0)
+            if got is None:
+                # Stop at the last block actually scanned. Never advance the
+                # pointer past a range we failed to read, or the redemptions
+                # inside it become permanently invisible.
+                tasks.append(("scan_gap", "warn",
+                              f"Log scan FAILED at blocks {lo}-{hi} after "
+                              f"6 attempts across {len(scanners)} endpoint(s).\n"
+                              f"Last error -- {err}\n"
+                              f"Redemptions in that range have NOT been seen. "
+                              f"Not advancing the scan pointer past {lo - 1}."))
+                final = lo - 1
+                break
+            events += got
+            lo = hi + 1
+            if lo <= final:
+                time.sleep(PACE)    # free tiers rate-limit hard; pace the scan
+
+    reserve = cfg.get("RESERVE", "")
+    rbal = reserve_balance(reserve) if reserve else None
+    owed = 0.0
+
+    st.setdefault("seen", {})
+    for ev in events:
+        key = f"{ev['transactionHash'].hex()}:{ev['logIndex']}"
+        # Record EVERY observed redemption, paid or not. This is what the
+        # supply invariant is checked against, so it must not be filtered by
+        # payment status -- a paid redemption is still a redemption that
+        # happened, and dropping it here would make the audit read short.
+        st["seen"][key] = ev["args"]["value"] / 1e8
+        if st["paid"].get(key):
+            continue
+        amt = ev["args"]["value"] / 1e8
+        dest = ev["args"]["pcoinAddress"]
+        who = ev["args"]["from"]
+        owed += amt
+
+        verdict, detail = check_address(dest)
+        if verdict == "bad":
+            tasks.append((key, "action",
+                          f"REDEEM {amt:.8f} PCN -- BAD DESTINATION\n"
+                          f"  burn tx  : {key}\n"
+                          f"  from     : {who}\n"
+                          f"  they gave: {dest!r}\n"
+                          f"  {detail}\n"
+                          f"Their wPCN is ALREADY BURNED. Do not send to that "
+                          f"string. Contact them for a correct PCoin address."))
+            continue
+
+        warn = "" if verdict == "ok" else (
+            f"\n  ** {detail} -- run validateaddress before sending **")
+        if rbal is None:
+            short = "\n  ** reserve balance UNREADABLE -- check it before sending **"
+        elif rbal < amt:
+            short = (f"\n  ** RESERVE MAY BE SHORT: {rbal:.8f} PCN confirmed "
+                     f"vs {amt:.8f} owed **")
+        else:
+            short = ""
+
+        tasks.append((key, "action",
+                      f"ACTION: send {amt:.8f} PCN\n"
+                      f"  to      : {dest}\n"
+                      f"  burn tx : {key}\n"
+                      f"  from    : {who}{warn}{short}\n"
+                      f"Their wPCN is already burned -- they are owed this now.\n"
+                      f"When sent: pcoin-redeem-watch --paid {key} <pcoin_txid>"))
+
+    # Only advance the pointer across ranges genuinely read.
+    if final >= start:
+        st["scanned_to"] = final + 1
+
+    # ---- THE AUDIT -------------------------------------------------------
+    # The contract knows exactly how much has ever been redeemed. Compare that
+    # against what we have actually observed. A shortfall means a Redeem event
+    # exists that this script has never seen -- somebody is owed PCN and is not
+    # on any list. That is the worst state possible here, so it is loud.
+    #
+    # Tolerance is one satoshi, for float representation only. Anything larger
+    # is a real discrepancy and must not be rounded away.
+    accounted = sum(st["seen"].values())
+    if burned_ever - accounted > 1e-8:
+        tasks.append(("INVARIANT", "action",
+                      f"*** MISSED REDEMPTION(S) ***\n"
+                      f"  contract says redeemed ever : {burned_ever:.8f} wPCN\n"
+                      f"  redemptions this watcher saw: {accounted:.8f} wPCN\n"
+                      f"  UNACCOUNTED                 : {burned_ever - accounted:.8f} wPCN\n"
+                      f"Someone burned wPCN and is owed PCN, and their request is "
+                      f"not on any list here. The logs for it were never read -- "
+                      f"widen REDEEM_FROM_BLOCK or scan the missing range with a "
+                      f"log-capable endpoint. Do NOT assume it is nothing."))
+    elif accounted - burned_ever > 1e-8:
+        tasks.append(("INVARIANT_HIGH", "warn",
+                      f"Watcher has recorded MORE redemptions ({accounted:.8f}) "
+                      f"than the contract says were ever burned "
+                      f"({burned_ever:.8f}). State file may be corrupt or from a "
+                      f"different contract. Do not pay anything until resolved."))
+
+    actions = [t for t in tasks if t[1] == "action"]
+    warns = [t for t in tasks if t[1] == "warn"]
+    for _, urgency, text in tasks:
+        print(f"[{urgency}] {text}\n")
+
+    due = [(k, t) for k, u, t in actions + warns
+           if now - st["nagged"].get(k, 0) >= NAG_SECONDS]
+    if due:
+        body = "\n\n".join(t for _, t in due)
+        body += (f"\n\n---\nTotal outstanding: {owed:.8f} PCN across "
+                 f"{len(actions)} redemption(s).\n"
+                 f"Repeats every {NAG_SECONDS // 60} min until marked paid.")
+        notify(f"redeem desk: {len(due)} customer(s) owed PCN", body)
+        for k, _ in due:
+            st["nagged"][k] = now
+
+    save_state(st)
+    if actions:
+        print(f"UNHEALTHY: {len(actions)} redemption(s) owed, {owed:.8f} PCN")
+        return 1
+    if warns:
+        return 2
+    print(f"redeem desk: nothing outstanding | issued {issued:.8f} "
+          f"outstanding {outstanding:.8f} redeemed-ever {burned_ever:.8f} "
+          f"| scanned to BSC block {st['scanned_to'] - 1}")
+    return 0
+
+
+if __name__ == "__main__":
+    # --paid is the ONE manual override, and it is deliberately explicit. The
+    # payment goes out on PCoin, which this script cannot attribute back to a
+    # BSC burn: unlike the wrap side there is no chain read that proves "this
+    # particular redemption was settled". So a human records it -- with the
+    # txid, so the claim is at least checkable afterwards.
+    if len(sys.argv) >= 3 and sys.argv[1] == "--paid":
+        s = load_state()
+        s["paid"][sys.argv[2]] = {
+            "at": int(time.time()),
+            "pcoin_txid": sys.argv[3] if len(sys.argv) > 3 else None}
+        save_state(s)
+        print(f"marked paid: {sys.argv[2]}")
+        if len(sys.argv) <= 3:
+            print("NOTE: no PCoin txid recorded. Re-run with the txid so the "
+                  "payment can be verified later.")
+        sys.exit(0)
+    sys.exit(main())

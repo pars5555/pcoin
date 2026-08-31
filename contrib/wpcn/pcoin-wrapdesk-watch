@@ -89,7 +89,10 @@ def pool_price():
     cannot be stale. None means UNKNOWN and the caller must not assume a side.
     """
     try:
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        # Installed to /usr/local/bin, but deploy.py lives with the deployment
+        # in /opt/wpcn. Inserting the script's own directory finds nothing.
+        sys.path.insert(0, os.environ.get("WPCN_DIR", "/opt/wpcn"))
+        sys.path.insert(1, os.path.dirname(os.path.abspath(__file__)))
         from web3 import Web3
         from deploy import load, connect
         cfg = load()
@@ -190,6 +193,17 @@ def main() -> int:
                           f"Cycle is SHUT: pool ${pp:.6f} is at or above price.pc.am "
                           f"${float(rate):.6f}. Do NOT buy wPCN back -- it would cost "
                           f"more than the PCN you sold."))
+    else:
+        # THIS BRANCH IS LOAD-BEARING. Without it, a readable rate plus an
+        # unreadable pool appended NOTHING -- the script printed only "nothing
+        # outstanding" and looked perfectly healthy while it was blind. That is
+        # exactly the failure this project has a rule against: unknown must be
+        # its own state, never silence that reads as fine.
+        tasks.append(("pool_unreadable", "warn",
+                      "Could not read the PancakeSwap pair reserves, so the pool "
+                      "price is UNKNOWN. Cannot say whether the buy-back cycle "
+                      "should be running -- do not assume either direction. "
+                      "Check the pair by hand before buying or selling wPCN."))
 
     # ---- 3. report, nagging only what is actionable -----------------------
     actions = [t for t in tasks if t[1] == "action"]

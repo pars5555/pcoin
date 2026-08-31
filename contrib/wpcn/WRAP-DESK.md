@@ -365,3 +365,108 @@ wPCN is not a substitute for that.
 Doing 3 before 1 gives a self-referential price on six live payment rails, with
 nothing external holding it down. That is the failure this document exists to
 prevent.
+
+---
+
+## 10. Redemption — wPCN back to PCN
+
+The mirror of wrapping, and the risk sits on the **other side**. Wrapping waits
+because a PCoin reorg could take back a deposit we already paid for. Redemption
+cannot wait for the same reason, because by the time we can see it the customer
+has already lost their tokens.
+
+### 10.1 What the contract does
+
+`redeem(uint256 value, string pcoinAddress)` — `WrappedPCoin.sol:145`:
+
+1. checks the caller's balance,
+2. **burns** — `balanceOf` down, `totalSupply` down,
+3. *then* emits `Redeem(from, value, pcoinAddress)`.
+
+The burn happens **before** the log exists. So there is no such thing as a
+pending redemption to cancel: the moment we can observe one, the wPCN is already
+destroyed and that person is owed PCN. A missed wrap leaves a customer waiting.
+A missed redemption leaves a customer **robbed**.
+
+The address is a free-text string. The contract enforces only "non-empty and
+<= 90 characters" (`:146-150`) — it cannot know what a PCoin address looks like.
+Validation is ours to do.
+
+### 10.2 What makes one safe to pay
+
+| gate | why |
+|---|---|
+| burn is **finalized** on BSC | not a confirmation count — finality is the actual property. A reorg that unwound the burn would hand them back their wPCN *and* our PCN |
+| destination valid **on PCoin** | people paste Bitcoin addresses, memos, truncated strings |
+| reserve can cover it | |
+
+Any of those unreadable means **hold**. Unreadable is UNKNOWN — never a pass,
+and never a rejection either.
+
+### 10.3 ⭐ The supply invariant is the auditor
+
+This is the load-bearing idea, and it does not depend on logs at all:
+
+```
+issuedSupply - totalSupply  ==  total wPCN ever redeemed
+```
+
+`issuedSupply` is immutable, set once in the constructor. `totalSupply` only
+falls, and only in `redeem()`. So the contract already knows the answer, in **one
+state read** that cannot be rate-limited away, cannot fall into a scan gap, and
+cannot be missed because an endpoint changed its indexing policy.
+
+The watcher compares that figure against the redemptions it has actually seen,
+every run. **Logs tell us WHO to pay; the invariant tells us WHETHER we have
+seen everyone.** A shortfall means somebody burned wPCN and is on no list — the
+worst state this system can reach — and it alerts loudly rather than staying
+quiet.
+
+That backstop is not theoretical. Log access here is genuinely unreliable:
+
+* the deploy RPC (`bsc-dataseed.bnbchain.org`) **refuses `eth_getLogs` at every
+  range**, including a 100-block span — measured, not assumed;
+* the public endpoints that do serve logs only index **recent** history, so a
+  historical backfill is not available at any price on a free tier;
+* both rate-limit hard enough to 429 mid-scan.
+
+Which is why the scan rotates endpoints with backoff, paces itself, and — when
+it still cannot read a range — **refuses to advance its scan pointer** rather
+than turning an unread range into a silent gap.
+
+### 10.4 Why the scan floor is where it is
+
+`REDEEM_FROM_BLOCK` is set in the unit file, and it is justified rather than
+guessed. At the moment it was set the contract reported
+`issuedSupply == totalSupply == 50000`, which **proves** zero wPCN had ever been
+redeemed. There is nothing before that block to find. The invariant re-checks
+that claim on every run, so if the floor were ever wrong the watcher says so
+instead of quietly missing people.
+
+### 10.5 Per request
+
+1. `pcoin-redeem-watch` reports the burn once finalized, with amount and address.
+2. **Run `validateaddress` on the destination.** The watcher's regex is
+   structural sanity only and is deliberately not called validation.
+3. Send the PCN from the reserve.
+4. Record it: `pcoin-redeem-watch --paid <txhash:logIndex> <pcoin_txid>`.
+
+Step 4 is the one manual override in the system, and it exists because the
+payment goes out on PCoin, which the script cannot attribute back to a BSC burn.
+Unlike the wrap side there is no chain read that proves *this particular*
+redemption was settled — so a human records it, **with the txid**, so the claim
+is at least checkable afterwards.
+
+### 10.6 What is deliberately NOT built
+
+**Nothing sends automatically.** The watcher nags; a person pays. An automatic
+sender holding a key to the reserve, driven by a free-text address supplied by
+whoever called `redeem()`, is a much larger target than this desk's volume
+justifies.
+
+### 10.7 Keyed on (txhash, logIndex)
+
+Not on txhash. One BSC transaction can emit several `Redeem` events — a contract
+or a multicall can batch them — and keying on the hash alone would pay the first
+and **silently drop** the rest. Exactly the mistake all four deposit rails
+shipped first (CLAUDE.md §8c #1), in a new place.

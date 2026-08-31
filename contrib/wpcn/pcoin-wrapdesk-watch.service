@@ -4,7 +4,11 @@ Documentation=https://github.com/pars5555/pcoin/blob/main/contrib/wpcn/WRAP-DESK
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/pcoin-wrapdesk-watch
+# Run under the wPCN virtualenv, NOT bare python3. The system python has no
+# web3, and every web3 import in these scripts sits inside a try/except that
+# degrades to None -- so a bare python3 does not crash, it silently loses the
+# on-chain reads and reports a healthy-looking nothing. That happened.
+ExecStart=/opt/wpcn/.venv/bin/python /usr/local/bin/pcoin-wrapdesk-watch
 Environment=NAG_SECONDS=3600
 
 # Exit 1 = an action is outstanding. That is the NORMAL state while a wrap is in

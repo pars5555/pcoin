@@ -1,0 +1,14 @@
+[Unit]
+Description=Check for wPCN redemptions every 5 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+# Tighter than the wrap timer (15 min) deliberately. A pending wrap has a
+# customer waiting for tokens. A pending redemption has a customer whose tokens
+# are ALREADY DESTROYED. The second deserves to be noticed sooner.
+RandomizedDelaySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target
