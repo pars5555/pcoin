@@ -1,0 +1,31 @@
+[Unit]
+Description=wrapdesk.pc.am — public PCN→wPCN wrap request desk
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node /opt/wrapdesk/server.mjs
+Restart=always
+RestartSec=5
+Environment=WRAPDESK_PORT=8791
+Environment=WRAP_FEE_PCT=5
+Environment=WRAP_PER_PERSON=250
+Environment=WRAP_TOTAL_ALLOC=1500
+Environment=WRAP_CONFIRMATIONS=100
+
+# Its own unprivileged user. This process holds NO key material — the address
+# pool is public-derived — but it is the one thing here exposed to the internet,
+# so it gets the smallest surface that still works.
+User=wrapdesk
+Group=wrapdesk
+StateDirectory=wrapdesk
+Environment=WRAPDESK_STATE=/var/lib/wrapdesk/requests.json
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+CapabilityBoundingSet=
+MemoryMax=192M
+
+[Install]
+WantedBy=multi-user.target
