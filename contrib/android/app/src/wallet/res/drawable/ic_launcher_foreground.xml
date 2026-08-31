@@ -2,7 +2,7 @@
 <!--
   PCoin wallet launcher foreground: a struck coin.
 
-  GENERATED. Do not hand-edit. Regenerate from scratchpad/make_icons.ps1,
+  GENERATED. Do not hand-edit. Regenerate from contrib/branding/make-icons.ps1,
   which emits this file, the SVG the website uses, every PNG and the Windows
   .ico from one set of constants. Editing here silently desyncs the platforms.
 

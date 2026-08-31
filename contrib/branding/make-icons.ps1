@@ -25,7 +25,9 @@ $REPO    = Split-Path -Parent (Split-Path -Parent $HERE)
 $SCRATCH = $HERE
 $ANDROID = Join-Path $REPO 'contrib\android\app\src'
 $OUT     = Join-Path $HERE 'out'
-if (-not (Test-Path $OUT)) { New-Item -ItemType Directory -Force $OUT | Out-Null }
+$BRAND   = Join-Path $REPO 'site\brand'
+if (-not (Test-Path $OUT))   { New-Item -ItemType Directory -Force $OUT   | Out-Null }
+if (-not (Test-Path $BRAND)) { New-Item -ItemType Directory -Force $BRAND | Out-Null }
 
 # --- constants ---------------------------------------------------------------
 $GRAPHITE = '#262B33'
@@ -38,6 +40,25 @@ $TEETH    = 16
 $FACE_R   = 21.0
 $STAR_O   = 15.5
 $STAR_I   = 5.5
+
+# miner layout
+# The miner is a bare coin -- no plate -- so it is centred in the 108 viewport.
+# Scale is NOT 1.0: at 1.0 the milled edge spans 85% of the 72dp a launcher
+# shows and reads as edge-to-edge, which is what the owner asked to change.
+# 0.78 gives the coin the same visual inset the wallet's coin has without
+# shrinking it to the wallet's 0.70 -- the wallet can afford a smaller coin
+# because the WALLET plate fills the bottom third of its frame and the miner
+# has nothing to share the frame with.
+$M_SCALE  = 0.78
+$M_CY     = 54.0     # dead centre; the miner has no plate to balance against
+
+# public brand mark (site/brand/pcoin-round-*.png)
+# DELIBERATELY NOT $M_SCALE. A launcher icon sits in a grid of other launcher
+# icons behind an OEM mask and needs inset to read as a coin; a token logo sits
+# alone in a listing and wants to fill its circle. These URLs are linked from
+# Komodo PR #1964, so the round mark is pinned at 1.0 and does not move when the
+# launcher's crop is tuned. Change this only to change the PUBLIC logo.
+$BRAND_SCALE = 1.00
 
 # wallet layout
 $W_SCALE  = 0.70
@@ -161,7 +182,8 @@ function New-WordGeometry {
 
 # --- rasteriser --------------------------------------------------------------
 function Render-Icon {
-    param([string]$Flavour, [int]$Size, [string]$Path, [string]$Shape = 'squircle')
+    param([string]$Flavour, [int]$Size, [string]$Path, [string]$Shape = 'squircle',
+          [double]$Scale = 0.0)   # 0 = use the flavour's own constant
 
     $bmp = New-Object System.Drawing.Bitmap($Size, $Size,
         [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
@@ -195,8 +217,9 @@ function Render-Icon {
     $g.FillRectangle($fb, 0, 0, 108, 108)
 
     if ($Flavour -eq 'miner') {
-        $t = New-TeethGeometry 54.0 1.0;      $g.FillPath($wb, $t.Path); $t.Path.Dispose()
-        $f = New-FaceGeometry  54.0 1.0;      $g.FillPath($wb, $f.Path); $f.Path.Dispose()
+        $ms = if ($Scale -gt 0) { $Scale } else { $M_SCALE }
+        $t = New-TeethGeometry $M_CY $ms;           $g.FillPath($wb, $t.Path); $t.Path.Dispose()
+        $f = New-FaceGeometry  $M_CY $ms;           $g.FillPath($wb, $f.Path); $f.Path.Dispose()
     } else {
         $t = New-TeethGeometry $W_CY $W_SCALE; $g.FillPath($wb, $t.Path); $t.Path.Dispose()
         $f = New-FaceGeometry  $W_CY $W_SCALE; $g.FillPath($wb, $f.Path); $f.Path.Dispose()
@@ -211,8 +234,8 @@ function Render-Icon {
 # --- emit Android VectorDrawable --------------------------------------------
 function Write-AndroidForeground([string]$Flavour, [string]$File) {
     if ($Flavour -eq 'miner') {
-        $t = New-TeethGeometry 54.0 1.0
-        $f = New-FaceGeometry  54.0 1.0
+        $t = New-TeethGeometry $M_CY $M_SCALE
+        $f = New-FaceGeometry  $M_CY $M_SCALE
         $paths = @(
             @{ d = $t.Data; rule = 'nonZero'; c = '  <!-- milled edge: 16 struck teeth -->' },
             @{ d = $f.Data; rule = 'evenOdd'; c = '  <!-- face, with the star cut out of it -->' }
@@ -233,7 +256,7 @@ function Write-AndroidForeground([string]$Flavour, [string]$File) {
     [void]$sb.AppendLine('<!--')
     [void]$sb.AppendLine('  PCoin ' + $Flavour + ' launcher foreground: a struck coin.')
     [void]$sb.AppendLine('')
-    [void]$sb.AppendLine('  GENERATED. Do not hand-edit. Regenerate from scratchpad/make_icons.ps1,')
+    [void]$sb.AppendLine('  GENERATED. Do not hand-edit. Regenerate from contrib/branding/make-icons.ps1,')
     [void]$sb.AppendLine('  which emits this file, the SVG the website uses, every PNG and the Windows')
     [void]$sb.AppendLine('  .ico from one set of constants. Editing here silently desyncs the platforms.')
     [void]$sb.AppendLine('')
@@ -277,7 +300,7 @@ function Write-AndroidLegacy([string]$Flavour, [string]$File) {
     # API 24-25 predate adaptive icons and have no mask, so this draws its own
     # rounded background. minSdk is 24, so it is not optional.
     if ($Flavour -eq 'miner') {
-        $t = New-TeethGeometry 54.0 1.0; $f = New-FaceGeometry 54.0 1.0
+        $t = New-TeethGeometry $M_CY $M_SCALE; $f = New-FaceGeometry $M_CY $M_SCALE
         $paths = @(@{ d = $t.Data; rule = 'nonZero' }, @{ d = $f.Data; rule = 'evenOdd' })
     } else {
         $t = New-TeethGeometry $W_CY $W_SCALE; $f = New-FaceGeometry $W_CY $W_SCALE; $w = New-WordGeometry
@@ -288,7 +311,7 @@ function Write-AndroidLegacy([string]$Flavour, [string]$File) {
     [void]$sb.AppendLine('<?xml version="1.0" encoding="utf-8"?>')
     [void]$sb.AppendLine('<!--')
     [void]$sb.AppendLine('  Legacy launcher icon for API 24-25, which predate adaptive icons.')
-    [void]$sb.AppendLine('  GENERATED by scratchpad/make_icons.ps1. Do not hand-edit.')
+    [void]$sb.AppendLine('  GENERATED by contrib/branding/make-icons.ps1. Do not hand-edit.')
     [void]$sb.AppendLine('')
     [void]$sb.AppendLine('  Same geometry as the adaptive foreground, on its own rounded background')
     [void]$sb.AppendLine('  because there is no mask to supply one. Without this file')
@@ -322,7 +345,7 @@ function Write-AndroidLegacy([string]$Flavour, [string]$File) {
 
 function Write-Svg([string]$Flavour, [string]$File) {
     if ($Flavour -eq 'miner') {
-        $t = New-TeethGeometry 54.0 1.0; $f = New-FaceGeometry 54.0 1.0
+        $t = New-TeethGeometry $M_CY $M_SCALE; $f = New-FaceGeometry $M_CY $M_SCALE
         $body = '  <path fill="#FFF" d="' + $t.Data + '"/>' + "`n" +
                 '  <path fill="#FFF" fill-rule="evenodd" d="' + $f.Data + '"/>'
     } else {
@@ -359,7 +382,23 @@ foreach ($fl in 'miner', 'wallet') {
     }
     Render-Icon -Flavour $fl -Size 512 -Path (Join-Path $OUT "pcoin-$fl-512-square.png") -Shape 'square'
     Render-Icon -Flavour $fl -Size 512 -Path (Join-Path $OUT "pcoin-$fl-512-round.png")  -Shape 'round'
-    Write-Output ("  $fl : 7 launcher sizes + square (Play) + round")
+    Write-Output ("  $fl : 9 launcher sizes + square (Play) + round")
+}
+
+# --- public round brand mark -------------------------------------------------
+# site/brand/pcoin-round-<size>.png is linked from Komodo PR #1964:
+#   https://raw.githubusercontent.com/pars5555/pcoin/main/site/brand/pcoin-round-<size>.png
+# Every size is RENDERED AT ITS OWN RESOLUTION here, not downscaled from the
+# 512 by hand -- a hand-made downscale is exactly the drift this file exists to
+# prevent, and it also softens the milled teeth at 64px. Rendering each size
+# lets the rasteriser antialias the real geometry at that size.
+# Filenames are load-bearing: those URLs are public. Do not rename.
+Write-Output ''
+Write-Output 'Public round brand mark (site/brand):'
+foreach ($sz in 512, 256, 128, 64) {
+    $p = Join-Path $BRAND "pcoin-round-$sz.png"
+    Render-Icon -Flavour 'miner' -Size $sz -Path $p -Shape 'round' -Scale $BRAND_SCALE
+    Write-Output ("  {0,-62} {1,6:N0} B" -f $p.Replace($REPO + '\', ''), (Get-Item $p).Length)
 }
 
 Write-Output ''
