@@ -57,6 +57,11 @@ FEE_PCT = float(os.environ.get("WRAP_FEE_PCT", 5.0))
 EXPLORER = "https://explorer.pc.am"
 RESERVE = os.environ.get("WRAP_RESERVE", "pc1q7hhzmdkkx0zjtzj6qkwmuvhlgwfqjrc6j2dk52")
 
+# wrapdesk.pc.am writes every allocated deposit address here, with the BSC
+# address that asked for it. Without this the watcher can see that PCN arrived
+# but not who is owed the wPCN, which makes an alert unactionable.
+REQUESTS = os.environ.get("WRAPDESK_REQUESTS", "/var/lib/wrapdesk/requests.json")
+
 # Deposits at or below this height are NOT wrap requests. The reserve was funded
 # with 50,000 PCN before the desk existed, and without this the watcher reads that
 # as a customer owed 50,000 wPCN -- which is exactly what the first dry run did.
@@ -133,15 +138,50 @@ def main() -> int:
     tasks = []          # (key, urgency, text)
 
     # ---- 1. incoming wraps, and how far along they are --------------------
-    addr = get(f"{EXPLORER}/api/address/{RESERVE}")
-    if addr is None:
-        # Cannot read the reserve. That is not "no wraps pending" -- say so and
-        # keep every existing task open.
-        tasks.append(("reserve_unreadable", "warn",
-                      "Could not read the reserve address on explorer.pc.am. "
-                      "Wrap requests cannot be checked right now. This is UNKNOWN, "
-                      "not 'nothing pending'."))
-    else:
+    #
+    # WATCH THE ALLOCATED ADDRESSES, NOT JUST THE RESERVE.
+    #
+    # wrapdesk.pc.am hands every requester their own deposit address derived
+    # from the reserve xpub. Those deposits land in the reserve WALLET, so the
+    # backing is never at risk -- but they do NOT land on the reserve's index-0
+    # address. A watcher looking only at index 0 sees nothing, and a customer
+    # who paid is never paid back. The money is safe and the person is not.
+    #
+    # So: read the desk's own request file and check every address it has
+    # handed out, plus index 0 for anyone who sent there directly.
+    watch = {RESERVE: None}                 # address -> requester BSC address
+    try:
+        with open(REQUESTS) as f:
+            for r in (json.load(f).get("requests") or {}).values():
+                if r.get("address"):
+                    watch[r["address"]] = r.get("bsc")
+    except FileNotFoundError:
+        pass                                # desk not deployed here; reserve only
+    except Exception as e:
+        # The file exists and could not be read. That is NOT "no requests" --
+        # every allocated address becomes invisible, which is the exact failure
+        # this block exists to prevent.
+        tasks.append(("requests_unreadable", "warn",
+                      f"Could not read the wrap desk request file ({REQUESTS}): {e}\n"
+                      f"Deposits to allocated addresses cannot be seen right now. "
+                      f"This is UNKNOWN, not 'nothing pending'."))
+
+    used_total = 0.0        # allocation consumed, summed across ALL addresses
+    # Rebuilt from the chain every run, never accumulated -- it is what
+    # --released resolves an abbreviated txid against.
+    st["outstanding"] = {}
+    for watch_addr, requester in watch.items():
+        addr = get(f"{EXPLORER}/api/address/{watch_addr}")
+        who = (f"\nRequester BSC address: {requester}" if requester
+               else "\n(sent to the main reserve address directly)")
+        if addr is None:
+            # Cannot read this address. That is not "no wraps pending" -- say so
+            # and keep every existing task open.
+            tasks.append((f"unreadable:{watch_addr}", "warn",
+                          f"Could not read {watch_addr} on explorer.pc.am. "
+                          f"Wrap deposits there cannot be checked right now. "
+                          f"This is UNKNOWN, not 'nothing pending'.{who}"))
+            continue
         conf_items = (addr.get("history") or {}).get("items") or []
         pend_items = (addr.get("unconfirmed_history") or {}).get("items") or []
 
@@ -184,36 +224,42 @@ def main() -> int:
                 # backing moves ABOVE 1:1 -- the only direction it may ever move.
                 fee = eligible * FEE_PCT / 100.0
                 net = eligible - fee
+                # Computed outside the f-string: nesting quotes inside an
+                # f-string expression is a syntax error before Python 3.12.
+                pay_to = requester or ("(NO REQUEST ON FILE -- sent straight to "
+                                       "the reserve. Find out who before paying.)")
+                st["outstanding"][txid] = {"pcn": amt, "send_wpcn": net,
+                                           "to": requester, "address": watch_addr}
                 tasks.append((key, "action",
                               f"ACTION: send {net:.2f} wPCN\n"
                               f"{amt:.2f} PCN confirmed ({confs} confs), tx {txid[:16]}...\n"
                               f"  eligible : {eligible:.2f} PCN\n"
                               f"  fee {FEE_PCT:g}%  : {fee:.2f} wPCN (kept, not sent)\n"
-                              f"  SEND     : {net:.2f} wPCN to the requester's BSC address\n"
+                              f"  SEND     : {net:.2f} wPCN\n"
+                              f"  TO       : {pay_to}\n"
                               f"Send from the inventory wallet.{over}\n"
                               f"Then: sell the {amt:.2f} PCN on market.pc.am, and use the "
                               f"proceeds to buy wPCN back from the pool -- but ONLY while "
-                              f"the pool trades BELOW price.pc.am."))
+                              f"the pool trades BELOW price.pc.am.\n"
+                              f"WHEN SENT, close it out or this repeats hourly forever:\n"
+                              f"  pcoin-wrapdesk-watch --released {txid} <bsc_txhash>"))
 
-        # ---- how much of the allocation is gone? ---------------------------
-        # Derived from the chain, not from a counter someone remembers to
-        # increment: every confirmed deposit since the desk opened is wPCN that
-        # has been, or is about to be, issued against it.
-        used = 0.0
+        # accumulate this address's share of the allocation; reported once,
+        # after every address has been read, or the figure would be partial.
         for it in conf_items:
             h = it.get("height")
             a = float(it.get("received_pcn") or 0)
             if isinstance(h, int) and h > OPENED_AT_HEIGHT and a > 0:
-                used += min(a, PER_PERSON) * (1 - FEE_PCT / 100.0)
-        if used > 0:
-            left = TOTAL_ALLOC - used
-            urgency = "action" if left <= 0 else "info"
-            tasks.append(("allocation", urgency,
-                          f"Allocation: {used:.2f} of {TOTAL_ALLOC:.0f} wPCN used, "
-                          f"{left:.2f} left."
-                          + ("\n*** THE ALLOCATION IS EXHAUSTED. Do not wrap more "
-                             "without deciding deliberately to raise it. ***"
-                             if left <= 0 else "")))
+                used_total += min(a, PER_PERSON) * (1 - FEE_PCT / 100.0)
+
+    if used_total > 0:
+        left = TOTAL_ALLOC - used_total
+        tasks.append(("allocation", "action" if left <= 0 else "info",
+                      f"Allocation: {used_total:.2f} of {TOTAL_ALLOC:.0f} wPCN used, "
+                      f"{left:.2f} left."
+                      + ("\n*** THE ALLOCATION IS EXHAUSTED. Do not wrap more "
+                         "without deciding deliberately to raise it. ***"
+                         if left <= 0 else "")))
 
     # ---- 2. is the cycle worth running right now? -------------------------
     price = get("https://price.pc.am")
@@ -282,4 +328,58 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # --released is the ONE manual override, and it has to exist.
+    #
+    # The docstring above says nothing is marked done by a human saying so, and
+    # for every step that a chain can answer, that holds. This step it cannot:
+    # the wPCN goes out on BNB Smart Chain from a wallet this script has no
+    # view of, and even seeing that balance fall would not prove WHICH wrap it
+    # settled. So a person records it -- with the BSC transaction hash, so the
+    # claim stays checkable afterwards.
+    #
+    # Without this the loop never closes: a confirmed wrap is re-reported every
+    # hour forever, including after it is paid. That is how pcoin-concentration
+    # -watch taught everyone to ignore the channel, and an alert nobody reads is
+    # worse than no alert, because it looks like coverage.
+    if len(sys.argv) >= 3 and sys.argv[1] == "--released":
+        s = load_state()
+        txid = sys.argv[2]
+        if txid.startswith("wrap:"):
+            txid = txid[5:]
+
+        # RESOLVE A PREFIX, AND REFUSE WHAT DOES NOT MATCH.
+        #
+        # The alert header abbreviates the txid ("tx 9727cf9b4ecdf5e8..."), so
+        # an operator copying from the wrong line records a key that matches no
+        # wrap at all. That writes cleanly, prints success, and changes nothing
+        # -- the wrap keeps being reported hourly and the operator believes it
+        # is closed. A silent no-op that looks like success is the worst of the
+        # available failures, so this resolves prefixes and refuses the rest.
+        outstanding = list((s.get("outstanding") or {}).keys())
+        hits = [t for t in outstanding if t.startswith(txid)]
+        if len(hits) == 1:
+            txid = hits[0]
+        elif len(hits) > 1:
+            print(f"AMBIGUOUS: {txid!r} matches {len(hits)} outstanding wraps.")
+            for t in hits:
+                print(f"  {t}")
+            sys.exit(2)
+        elif outstanding and txid not in outstanding:
+            print(f"NO MATCH: {txid!r} is not an outstanding wrap. Nothing changed.")
+            print("Outstanding right now:")
+            for t in outstanding:
+                print(f"  {t}")
+            sys.exit(2)
+
+        key = f"wrap:{txid}"
+        s.setdefault("seen", {}).setdefault(key, {})
+        s["seen"][key]["released"] = True
+        s["seen"][key]["at"] = int(time.time())
+        s["seen"][key]["bsc_txhash"] = sys.argv[3] if len(sys.argv) > 3 else None
+        save_state(s)
+        print(f"marked released: {key}")
+        if len(sys.argv) <= 3:
+            print("NOTE: no BSC txhash recorded. Re-run with it so the payment "
+                  "can be verified later.")
+        sys.exit(0)
     sys.exit(main())
