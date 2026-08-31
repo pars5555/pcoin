@@ -96,3 +96,13 @@ contrib/wpcn/.venv/
 # has already been read, never something to keep.
 hs_err_pid*.log
 replay_pid*.log
+
+
+# CLAUDE.md is the project's orientation document and it names infrastructure:
+# non-seed host IPs, which service runs where, deposit addresses and operational
+# detail. That is fine on a private disk and wrong in a public repository, so it
+# now lives at D:\pc.am\PCOIN-CLAUDE-MD.md and on both vault hosts.
+#
+# It stays on disk here on purpose -- Claude Code loads it from the project root,
+# so ignoring it keeps every session's context while keeping it out of git.
+CLAUDE.md
