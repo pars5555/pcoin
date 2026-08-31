@@ -335,7 +335,8 @@ const NAV = [
                 ['./pool', 'pool', 'Pool miners']]],
   ['Network',  [['./peers', 'peers', 'Peers on the seed']]],
   ['Money',    [['./fleet', 'fleet', 'Fleet balances'],
-                ['./payments', 'payments', 'Payment rails']]],
+                ['./payments', 'payments', 'Payment rails'],
+                ['./wrap', 'wrap', 'Wrap desk']]],
 ];
 
 function shell(active, title, sub, inner) {
@@ -820,6 +821,104 @@ createServer(async (req, res) => {
 
   try {
     // Collector endpoint: the seed posts peer/tip data here. Bearer-only, no session.
+
+/* -- wrap desk ---------------------------------------------------------------
+ * Every PCN -> wPCN request and exactly what is owed on each.
+ *
+ * READ-ONLY ON PURPOSE. This page sends no wPCN and marks nothing paid. The
+ * release happens by hand from the inventory wallet and is recorded with
+ *   pcoin-wrapdesk-watch --released <txid> <bsc_txhash>
+ * so the record carries a transaction that can be checked afterwards. A "mark
+ * as sent" button here would let an operator record a payment that never left,
+ * which is the one failure this whole desk is built to avoid.
+ *
+ * An address that cannot be read renders as UNKNOWN, never as "no deposit".
+ * A failed read shown as zero is how a paying customer is recorded as unpaid.
+ */
+const WRAP_REQUESTS      = '/var/lib/wrapdesk/requests.json';
+const WRAP_STATE         = '/var/lib/pcoin-wrapdesk/state.json';
+const WRAP_FEE_PCT       = 5;
+const WRAP_PER_PERSON    = 250;
+const WRAP_CONFIRMATIONS = 100;
+
+function wrapRead(f) {
+  try { return JSON.parse(readFileSync(f, 'utf8')); } catch { return null; }
+}
+
+async function wrapPage() {
+  const reqs  = wrapRead(WRAP_REQUESTS);
+  const state = wrapRead(WRAP_STATE) || {};
+  const seen  = state.seen || {};
+
+  if (reqs === null) {
+    return shell('wrap', 'Wrap desk', '',
+      '<div class="card"><p>Could not read <code>' + esc(WRAP_REQUESTS) + '</code>. ' +
+      'That is <b>UNKNOWN</b>, not "no requests" &mdash; deposits may exist that this ' +
+      'page cannot see.</p></div>');
+  }
+
+  const rows = [];
+  let owed = 0, unknown = 0, pending = 0;
+
+  for (const r of Object.values(reqs.requests || {})) {
+    let info = null;
+    try { info = await j(EXPLORER + '/address/' + encodeURIComponent(r.address), 15e3); }
+    catch { info = null; }
+
+    if (info === null) {
+      unknown++;
+      rows.push('<tr><td><code>' + esc(r.bsc) + '</code></td><td><code>' +
+        esc(r.address) + '</code></td><td colspan="4"><b>UNKNOWN</b> &mdash; ' +
+        'explorer unreadable, this is not "no deposit"</td></tr>');
+      continue;
+    }
+
+    const items = ((info.history && info.history.items) || [])
+      .filter(function (i) { return Number(i.received_pcn) > 0; });
+
+    if (!items.length) {
+      rows.push('<tr><td><code>' + esc(r.bsc) + '</code></td><td><code>' +
+        esc(r.address) + '</code></td><td colspan="4" class="muted">no deposit yet</td></tr>');
+      continue;
+    }
+
+    for (const i of items) {
+      const rec   = seen['wrap:' + i.txid];
+      const done  = !!(rec && rec.released);
+      const confs = Number(i.confirmations == null ? 0 : i.confirmations);
+      const pcn   = Number(i.received_pcn);
+      const net   = Math.min(pcn, WRAP_PER_PERSON) * (1 - WRAP_FEE_PCT / 100);
+      const ready = confs >= WRAP_CONFIRMATIONS;
+      if (!done && ready) owed += net;
+      if (!done && !ready) pending++;
+      const status = done ? 'released'
+        : ready ? '<b>SEND ' + net.toFixed(2) + ' wPCN</b>'
+        : confs + '/' + WRAP_CONFIRMATIONS + ' confs';
+      const over = pcn > WRAP_PER_PERSON
+        ? '<br><small>over the ' + WRAP_PER_PERSON + ' cap &mdash; return ' +
+          (pcn - WRAP_PER_PERSON).toFixed(2) + ' PCN</small>' : '';
+      rows.push('<tr><td><code>' + esc(r.bsc) + '</code></td><td><code>' +
+        esc(r.address) + '</code></td><td>' + pcn.toFixed(2) + ' PCN' + over +
+        '</td><td>' + net.toFixed(2) + ' wPCN</td><td>' + status +
+        '</td><td><code style="font-size:.8em">' + esc(String(i.txid).slice(0, 16)) +
+        '&hellip;</code></td></tr>');
+    }
+  }
+
+  const head = '<div class="card"><p><b>' + owed.toFixed(2) + ' wPCN</b> owed and ready ' +
+    'to send now. ' + pending + ' still confirming.' +
+    (unknown ? ' <b>' + unknown + ' address(es) could not be read &mdash; UNKNOWN.</b>' : '') +
+    '</p><p class="muted">Release by hand from the inventory wallet, then record it so it ' +
+    'stops being reported:<br><code>pcoin-wrapdesk-watch --released &lt;txid&gt; ' +
+    '&lt;bsc_txhash&gt;</code></p></div>';
+
+  return shell('wrap', 'Wrap desk', 'PCN &rarr; wPCN requests, read live from the chain',
+    head + '<div class="card"><table><tr><th>Requester (BSC)</th><th>Deposit address</th>' +
+    '<th>Received</th><th>Owed</th><th>Status</th><th>Tx</th></tr>' +
+    (rows.join('') || '<tr><td colspan="6" class="muted">No requests yet.</td></tr>') +
+    '</table></div>');
+}
+
     if (path === '/collect' && req.method === 'POST') {
       const auth = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
       const want = Buffer.from(cfg.collectorToken), got = Buffer.from(auth);
@@ -865,6 +964,7 @@ createServer(async (req, res) => {
     if (path === '/peers')    return send(200, 'text/html', await peersPage(url));
     if (path === '/fleet')    return send(200, 'text/html', await moneyPage(url, false));
     if (path === '/payments') return send(200, 'text/html', await moneyPage(url, true));
+    if (path === '/wrap')     return send(200, 'text/html', await wrapPage());
     if (path === '/blocks')   return send(200, 'text/html', await blocksPage(url));
     if (path === '/address')  return send(200, 'text/html', await addressPage(url));
 
