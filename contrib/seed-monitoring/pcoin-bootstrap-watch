@@ -31,7 +31,7 @@ set -u
 NOTIFY="${NOTIFY:-/usr/local/bin/pcoin-notify}"
 NAME="${NAME:-seed.pc.am}"
 PORT="${PORT:-9444}"
-# 35.238.47.14 removed 2026-08-22: that box was destroyed on purpose. Leaving
+# A fourth seed was removed 2026-08-22: that box was destroyed on purpose. Leaving
 # it here made the check alert on every run, which is how a real alert gets
 # tuned out before the next seed actually fails.
 EXPECTED="${EXPECTED:-35.239.156.16 178.105.3.51 152.53.171.190}"
