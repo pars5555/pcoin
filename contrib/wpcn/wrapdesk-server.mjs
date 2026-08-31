@@ -295,6 +295,9 @@ word for it — both numbers below are things you can check yourself.</p>
 <div><div class="muted">wPCN issued</div><div class="big">${n2(ISSUED)}</div></div>
 <div><div class="muted">Backing</div><div class="big">${
   ratio === null ? '—' : (ratio * 100).toFixed(1) + '%'}</div></div>
+<div><div class="muted">Surplus</div><div class="big">${
+  known ? n2(Math.max(0, bal - ISSUED)) : '—'}</div>
+  <div class="muted" style="font-size:.8rem">PCN above 1:1</div></div>
 </div>
 <div class="bar"><i style="width:${bar}%"></i></div>
 ${known
@@ -305,6 +308,14 @@ ${known
     <b>unknown</b>, not zero and not a problem — the explorer may simply be
     unreachable. Check the address directly.</p>`}
 </div>
+
+<div class="card"><p class="muted"><b>What the surplus is.</b> wPCN is never
+minted — a wrap moves existing tokens from the desk's inventory, so every deposit
+raises the reserve without raising the supply it has to cover. The surplus is that
+excess: PCN in the reserve over and above the 1:1 requirement. It exists because
+the desk charges ${FEE_PCT}% and because wrapping adds backing faster than it adds
+circulating tokens. It is not customer money and holding it makes the token
+<i>more</i> covered, not less.</p></div>
 
 <h2>Check it yourself</h2><div class="card"><table>
 <tr><th>Reserve address</th><td><a href="https://explorer.pc.am/address/${RESERVE}"><code>${RESERVE}</code></a></td></tr>
@@ -476,7 +487,14 @@ sent it, it can take a few minutes to appear.</p>
         const left = Math.max(0, CONFIRMATIONS - (i.pending ? 0 : i.confirmations));
         const eta = ready ? 'ready now'
           : `about ${Math.max(1, Math.round(left * 10 / 60))} h left`;
-        const state = i.pending ? 'In the mempool — not yet in a block'
+        // A customer watching "in the mempool" for half an hour will assume
+        // something is broken. Block finding is a Poisson process: at a ~9 min
+        // mean, gaps over 25 min happen roughly one block in eighteen. Saying so
+        // costs a sentence and prevents a support message.
+        const state = i.pending
+          ? 'In the mempool — waiting to be included in a block. Blocks average '
+            + 'about ten minutes but are random: a gap of half an hour is '
+            + 'uncommon and not a problem.'
           : ready ? '<b>Confirmed — waiting for a person to release it</b>'
           : `${i.confirmations} of ${CONFIRMATIONS} confirmations`;
         return `<div class="card">
