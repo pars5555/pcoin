@@ -94,12 +94,12 @@ class NodeController(context: Context) {
             // pc1p... address to pay; without this, change allocation looks for
             // a tr() descriptor, finds none, and the whole transaction fails.
             appendLine("changetype=bech32")
-            // Both entries are the same machine today (seed.pc.am resolves to
-            // 35.239.156.16); the literal address is a fallback for when DNS is
-            // unavailable, not a second peer. A peer count of 1 on this network
-            // is therefore expected, not a symptom of over-restrictive config:
-            // listen=0 only stops us ADVERTISING, outbound peer discovery still
-            // works and will find more peers as the network grows.
+            // SEED_NODES names several distinct machines, not one host twice.
+            // It used to be the latter, and the peer count that produced -- 1,
+            // or 0 once that host filled up -- was documented here as expected.
+            // It is not expected: it is a single point of failure that reads as
+            // normal. listen=0 only stops us ADVERTISING; outbound discovery
+            // still works and gossip finds more peers as the network grows.
             SEED_NODES.forEach { appendLine("addnode=$it") }
         }
         File(dataDir, CONF_FILE).writeText(conf)
@@ -973,7 +973,37 @@ class NodeController(context: Context) {
         /** RPC_WALLET_ALREADY_LOADED in rpc/protocol.h. */
         private const val RPC_WALLET_ALREADY_LOADED = -35
 
-        private val SEED_NODES = listOf("seed.pc.am:9444", "35.239.156.16:9444")
+        /**
+         * Bootstrap peers, written into pcoin.conf on every node start.
+         *
+         * MORE THAN ONE MACHINE, deliberately. This was
+         * listOf("seed.pc.am:9444", "35.239.156.16:9444") -- two entries that
+         * resolve to the SAME host, so every Android miner in existence
+         * depended on one node. On 2026-08-31 that node hit Core's default
+         * inbound cap (114 of 114 in use) and began accepting a phone, letting
+         * it finish the version handshake, then evicting it seconds later.
+         * Eviction always takes the newest peer, so a phone joining a full node
+         * can never establish: one handset sat at 0 peers for hours, and
+         * because isSyncing() treats 0 peers as "not synced" -- correctly -- it
+         * never mined at all while every screen said it was waiting to sync.
+         *
+         * The DNS name stays FIRST: it is the one entry that can be repointed
+         * without shipping an APK. The literals behind it are the fallback for
+         * when DNS is blocked or the name is down, which is the whole reason
+         * chainparamsseeds.h exists too.
+         *
+         * Keep this list longer than one host. A single bootstrap point is a
+         * single point of failure for every new install at once, and the
+         * failure is silent -- a phone with no peers looks like a phone that is
+         * merely still syncing.
+         */
+        private val SEED_NODES = listOf(
+            "seed.pc.am:9444",
+            "35.239.156.16:9444",
+            "178.105.3.51:9444",
+            "178.105.178.27:9444",
+            "152.53.171.190:9444",
+        )
 
         /** As it appears in /proc/<pid>/cmdline; used to identify our child. */
         private const val BITCOIND_SO_NAME = "libbitcoind.so"
