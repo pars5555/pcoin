@@ -23,7 +23,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync } from 'node:fs';
 import { connect } from 'node:net';
-import { resolve4 } from 'node:dns/promises';
+import { resolve4, resolve6 } from 'node:dns/promises';
 
 const CLI       = '/opt/pcoin/bin/bitcoin-cli';
 const DATADIR   = '/var/lib/pcoin';
@@ -78,18 +78,50 @@ async function fetchText(url, ms = 15000) {
   } finally { clearTimeout(t); }
 }
 
+// basename, for either separator, so a path in a checksum file cannot smuggle
+// a different filename past the comparison.
+const base = s => s.replace(/^.*[\\\/]/, '');
+
+// `<hash>  <name>` as sha256sum writes it, or `<hash> *<name>` in binary mode,
+// which is what the release SHA256SUMS for the Android builds use.
+function parseSums(text) {
+  const m = new Map();
+  for (const line of text.split('\n')) {
+    const g = line.trim().match(/^([0-9a-f]{64})\s+\*?(\S+?)(?:\s+#.*)?$/i);
+    if (g) m.set(base(g[2]), g[1].toLowerCase());
+  }
+  return m;
+}
+
 let state = { blocks: [], lastHeight: null, lastHeightAt: null };
 try { state = { ...state, ...JSON.parse(readFileSync(STATE, 'utf8')) }; } catch {}
 
 // ── 1. seed.pc.am — the only bootstrap point ─────────────────────────────
 try {
-  const ips = await resolve4(SEED_NAME);
-  const reachable = [];
-  for (const ip of ips) if (await tcpProbe(ip, SEED_PORT)) reachable.push(ip);
+  // Probe EVERY published address, v4 and v6.
+  //
+  // This used to report ok when ANY single address answered. With one seed that
+  // was the same statement; with four it is not. Three of the four could be
+  // refusing connections and this check would still say "ok", so the entire
+  // point of having four — bootstrap redundancy — could erode to nothing
+  // without a single alert. A partial outage is now its own ALERT, naming the
+  // addresses that are down.
+  //
+  // v6 is included because seed.pc.am publishes an AAAA record: a dual-stack
+  // node may reach for that address FIRST, so a broken v6 seed is a real
+  // bootstrap failure that a v4-only probe cannot see.
+  const v4 = await resolve4(SEED_NAME).catch(() => []);
+  const v6 = await resolve6(SEED_NAME).catch(() => []);
+  const ips = [...v4, ...v6];
+  if (!ips.length) throw new Error('no A or AAAA records for ' + SEED_NAME);
+  const reachable = [], dead = [];
+  for (const ip of ips) ((await tcpProbe(ip, SEED_PORT)) ? reachable : dead).push(ip);
   if (!reachable.length) {
     alert('seed-bootstrap', `${SEED_NAME} (${ips.join(', ')}) refuses P2P ${SEED_PORT} — no new node can join the network`);
+  } else if (dead.length) {
+    alert('seed-bootstrap', `${dead.join(', ')} refusing P2P ${SEED_PORT} — ${reachable.length}/${ips.length} still accepting, so bootstrap still works but redundancy is degraded`);
   } else {
-    ok('seed-bootstrap', `${reachable.join(', ')}:${SEED_PORT} accepting`);
+    ok('seed-bootstrap', `all ${ips.length} accepting on ${SEED_PORT}: ${reachable.join(', ')}`);
   }
 } catch (e) {
   // DNS failure here is genuinely bad, but it may also be our resolver.
@@ -148,35 +180,87 @@ if (info) {
 // pc.am shares a host with ~215 unrelated vhosts on end-of-life PHP. If that box
 // is compromised, install.sh AND the checksums it is verified against can be
 // rewritten together. GitHub is the independent second channel — so compare.
+//
+// EVERY pc.am LINE IS COMPARED AGAINST THE RELEASE IT NAMES, never against
+// /releases/latest/. Two distinct failures made that necessary, both seen on
+// 2026-08-31:
+//
+//   COVERAGE. `latest` is whatever shipped most recently and releases are
+//   per-component, so the two files overlap only on the filenames that
+//   component happens to publish. After the Android-only v1.3.13 the overlap
+//   was exactly one name: the Windows and Linux checksums on pc.am were
+//   compared against nothing at all, and this check still said "ok". What was
+//   actually verified silently tracked whichever component shipped last —
+//   the same shape of blind spot as the `shared`-is-empty bug below it.
+//
+//   FALSE POSITIVES. GitHub resolves `latest` the instant a release exists,
+//   while pc.am's checksum file is updated by hand minutes later. That gap is
+//   a release in progress, not tampering, and it fired "treat pc.am as
+//   compromised" twice in one release before clearing itself. An alarm that
+//   cries wolf on every release is an alarm people learn to ignore.
+//
+// pc.am already writes the tag on every line (`<hash>  <name>    # v1.3.13`),
+// so the correct reference was in the data the whole time. Comparing per-tag
+// fixes both at once: every line is checked, and a line still naming the old
+// release keeps matching that release until pc.am is updated to name the new
+// one. CLAUDE.md 4 repealed /releases/latest/download/ for the site links for
+// this exact reason; this check had kept it.
 try {
-  const [site, gh] = await Promise.all([
-    fetchText('https://pc.am/dl/SHA256SUMS.txt'),
-    fetchText('https://github.com/pars5555/pcoin/releases/latest/download/SHA256SUMS'),
-  ]);
-  const parse = t => {
-    const m = new Map();
-    for (const line of t.split('\n')) {
-      // The trailing `# v1.3.0` on pc.am's lines is why this check reported
-      // "unknown" 178 times out of 178 and never once compared anything.
-      // GitHub writes `<hash>  <name>`; pc.am appends the release tag so a
-      // reader can see which version each line belongs to. Anchoring the
-      // filename to end-of-line matched every GitHub line and no pc.am line,
-      // so `shared` was always empty and the comparison silently became a
-      // no-op. A monitor stuck on "cannot tell" forever is indistinguishable
-      // from one that is working -- the exact collapse this file guards
-      // against everywhere else.
-      const g = line.trim().match(/^([0-9a-f]{64})\s+\*?(\S+?)(?:\s+#.*)?$/i);
-      if (g) m.set(g[2].replace(/^.*[\\/]/, ''), g[1].toLowerCase());
-    }
-    return m;
-  };
-  const a = parse(site), b = parse(gh);
-  const shared = [...a.keys()].filter(k => b.has(k));
-  const bad = shared.filter(k => a.get(k) !== b.get(k));
+  const site = await fetchText('https://pc.am/dl/SHA256SUMS.txt');
 
-  if (!shared.length) unknown('download-integrity', 'no overlapping filenames between pc.am and GitHub — cannot compare');
-  else if (bad.length) alert('download-integrity', `pc.am checksums DISAGREE with GitHub for: ${bad.join(', ')} — treat pc.am as compromised until proven otherwise`);
-  else ok('download-integrity', `${shared.length} file(s) match GitHub`);
+  // `<hash>  <name>    # <tag>`. The trailing tag is CAPTURED, not stripped:
+  // it is the whole point. Trailing prose after the tag is tolerated so a
+  // human note on a line can never make it silently unparseable.
+  const rows = [];
+  for (const line of site.split('\n')) {
+    const g = line.trim().match(/^([0-9a-f]{64})\s+\*?(\S+?)(?:\s+#\s*(\S+).*)?\s*$/i);
+    if (g) rows.push({ hash: g[1].toLowerCase(), file: base(g[2]), tag: g[3] || null });
+  }
+  if (!rows.length) throw new Error('no checksum lines parsed from pc.am');
+
+  const untagged = rows.filter(r => !r.tag).map(r => r.file);
+  const tags = [...new Set(rows.filter(r => r.tag).map(r => r.tag))];
+
+  // One fetch per distinct release, not one per line.
+  const releases = new Map();
+  const unreachable = [];
+  await Promise.all(tags.map(async tag => {
+    const url = `https://github.com/pars5555/pcoin/releases/download/${encodeURIComponent(tag)}/SHA256SUMS`;
+    try { releases.set(tag, parseSums(await fetchText(url))); }
+    catch (e) { unreachable.push(`${tag} (${e.message})`); }
+  }));
+
+  const bad = [], missing = [], checked = [];
+  for (const r of rows) {
+    if (!r.tag) continue;
+    const rel = releases.get(r.tag);
+    if (!rel) continue;                       // already counted in `unreachable`
+    if (!rel.has(r.file))              missing.push(`${r.file} @ ${r.tag}`);
+    else if (rel.get(r.file) !== r.hash)   bad.push(`${r.file} @ ${r.tag}`);
+    else                               checked.push(r.file);
+  }
+
+  if (bad.length) {
+    alert('download-integrity', `pc.am checksums DISAGREE with GitHub for: ${bad.join(', ')} — treat pc.am as compromised until proven otherwise`);
+  } else if (missing.length) {
+    // Not a hash mismatch, and not a fetch failure either: pc.am is publishing
+    // a checksum for a file the release it names never shipped. Distinct fault,
+    // distinct wording, so nobody reads it as tampering or as noise.
+    alert('download-integrity', `pc.am lists ${missing.join(', ')} but that release does not publish the file — pc.am is advertising a download GitHub never shipped`);
+  } else if (!checked.length) {
+    unknown('download-integrity', `nothing could be compared: ${rows.length} line(s), ${untagged.length} untagged, ${unreachable.length} release(s) unreachable${unreachable.length ? ' — ' + unreachable.join(', ') : ''}`);
+  } else {
+    // Anything NOT compared is named in the result. A partial check that reads
+    // as a clean one is precisely how the previous version hid its blind spot,
+    // so a caveat downgrades this to `unknown` rather than being appended to an
+    // "ok" nobody reads to the end of.
+    const detail = `${checked.length}/${rows.length} file(s) match their own release across ${releases.size} tag(s)`;
+    const caveats = [];
+    if (untagged.length)    caveats.push(`${untagged.length} line(s) carry no tag and cannot be aimed at a release: ${untagged.join(', ')}`);
+    if (unreachable.length) caveats.push(`${unreachable.length} release(s) unreachable: ${unreachable.join(', ')}`);
+    if (caveats.length) unknown('download-integrity', `${detail}; NOT checked: ${caveats.join('; ')}`);
+    else ok('download-integrity', detail);
+  }
 } catch (e) {
   // Could not fetch != tampered. This is exactly the collapse the doctrine forbids.
   unknown('download-integrity', `could not compare: ${e.message}`);
