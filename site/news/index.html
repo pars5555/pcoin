@@ -60,6 +60,7 @@
   }
   .tag.chain{border-color:rgba(45,212,191,.45);color:var(--teal)}
   .tag.rel{border-color:rgba(139,92,246,.45);color:#c4b5fd}
+  .tag.infra{border-color:rgba(56,189,248,.45);color:#7dd3fc}
   h2{font-size:1.16rem;font-weight:700;letter-spacing:-.01em;margin-bottom:6px}
   .entry p{color:var(--muted);font-size:.97rem}
   .entry p + p{margin-top:9px}
@@ -104,6 +105,104 @@
   </section>
 
   <main>
+
+    <article class="entry">
+      <div class="meta"><time>2026-08-31</time><span class="tag infra">wPCN</span></div>
+      <h2>PCN can now be traded, wrapped and redeemed</h2>
+      <p><b>wPCN</b> is PCoin wrapped as a BEP-20 on BNB Smart Chain, trading against USDT on
+      PancakeSwap. It exists so someone with a wallet and USDT can get PCN exposure without
+      mining first or finding a counterparty. 50,000 supply, fixed forever &mdash; the contract
+      has no owner and no mint function.</p>
+      <p>Both directions work. <a href="https://wrapdesk.pc.am">wrapdesk.pc.am</a> turns PCN
+      into wPCN: you are given a deposit address that is yours alone, and after 100
+      confirmations a person sends your wPCN. Going back is handled by the contract itself
+      &mdash; <code>redeem()</code> burns your wPCN and the PCN is sent to the PCoin address
+      you name.</p>
+      <p>Read the limits before using it: <b>250 PCN per person</b>, 1,500 wPCN in total while
+      the desk is new, a <b>5% fee</b>, and roughly 18 hours of confirmations. Both directions
+      are <b>manual</b> &mdash; a person releases the funds, so allow hours rather than minutes.
+      The pool is small (about $824), a ~$20 trade moves its price about 10%, the liquidity is
+      <b>not locked</b>, and we trade that pool ourselves to hold it near the rate posted at
+      price.pc.am. Backing is 1:1 and you can check it yourself on the
+      <a href="https://wrapdesk.pc.am/proof">proof page</a>.</p>
+    </article>
+
+    <article class="entry">
+      <div class="meta"><time>2026-08-31</time><span class="tag rel">Release v1.3.13</span></div>
+      <h2>Android: the miner's icon gets room to breathe</h2>
+      <p>The miner's launcher icon filled its circle edge to edge, so at the size a launcher
+      actually draws it the milled rim ran into the mask. It now carries the same inset the
+      wallet's coin has. Cosmetic, but it is the thing most people see most often.</p>
+    </article>
+
+    <article class="entry">
+      <div class="meta"><time>2026-08-30</time><span class="tag infra">Infrastructure</span></div>
+      <h2>Two ElectrumX servers, and a Komodo listing filed</h2>
+      <p>PCoin now runs <b>two ElectrumX servers</b> &mdash; <code>electrum1.pc.am</code> and
+      <code>electrum2.pc.am</code>, SSL on 50002, WSS on 50004, TCP on 50001. They sit with
+      separate providers in separate countries, each backed by its own full node with a real
+      certificate, and are checked from outside every ten minutes. This is the wallet
+      infrastructure light clients need in order to exist at all.</p>
+      <p>Worth noting for anyone integrating a Bitcoin fork: <b>no ElectrumX patch was
+      required</b>. PCoin replaced only the proof-of-work <i>check</i> with RandomX, so block
+      IDs are still double-SHA256 and headers are still a fixed 80 bytes &mdash; and ElectrumX
+      never validates proof-of-work. A stock Bitcoin-derived coin class works unmodified.</p>
+      <p>On the back of that, PCN has been submitted to the <b>Komodo DeFi Framework</b> for
+      non-custodial atomic swaps, with a completed swap behind it: 100 PCN traded for DOGE,
+      settled on both chains. <b>Submitted is not accepted</b> &mdash; it is a request and it
+      can be refused. The status lives on
+      <a href="https://github.com/GLEECBTC/coins/pull/1964" rel="noopener">that pull request</a>,
+      not on this page.</p>
+    </article>
+
+    <article class="entry">
+      <div class="meta"><time>2026-08-23</time><span class="tag rel">Releases v1.3.7 &ndash; v1.3.12</span></div>
+      <h2>The Windows miner tunes itself</h2>
+      <p><b>&ldquo;All cores&rdquo; was a trap.</b> RandomX fast mode does not scale with core
+      count: once the 2&nbsp;MiB per-worker scratchpads stop fitting in L3, extra threads evict
+      each other and the <i>total</i> hash rate falls. Measured on a 12-core i9-10920X, eight
+      threads beat twenty-four. The miner now measures instead of guessing, and picks its own
+      thread count.</p>
+      <p>Also in this run: optional large pages, a single-instance installer, an auto-miner you
+      can start with one command, a clearer choice between pool and solo mining with advice on
+      which suits your machine, and a fix for fast mode over-threading on hyperthreaded CPUs.</p>
+      <p>And a display fix that answered the most common question we got: pool miners kept
+      asking <i>&ldquo;it says 720 H/s but 0 PCN &mdash; is it working?&rdquo;</i> It was. A pool
+      miner finds no blocks and its local balance stays zero <b>by design</b>; the pool finds the
+      blocks and pays your address on its own schedule. The window now shows your shares and the
+      pool connection, so working looks like working.</p>
+    </article>
+
+    <article class="entry">
+      <div class="meta"><time>2026-08-22</time><span class="tag rel">Releases v1.3.3 &ndash; v1.3.6</span></div>
+      <h2>Windows: the app looks and behaves like an app</h2>
+      <p>An app icon, one obvious executable to run rather than a folder of candidates, and a
+      Start&nbsp;mining control that actually reads as a button. Two follow-up releases fixed a
+      button change that had not taken effect and a fast-mode setting that stopped the miner
+      instead of speeding it up.</p>
+    </article>
+
+    <article class="entry">
+      <div class="meta"><time>2026-08-21</time><span class="tag rel">Release v1.3.2</span></div>
+      <h2>Linux packaging declares the libraries it actually links</h2>
+      <p>The <code>.deb</code> declared almost none of its real dependencies, so it installed
+      cleanly and then failed to start &mdash; on Debian&nbsp;13 the postinst died because
+      <code>adduser</code> no longer ships, and on Ubuntu&nbsp;24.04 it reported success and
+      then could not find <code>libsqlite3</code>. Both are invisible on a machine that already
+      has the software's dependencies, which is every developer's machine.</p>
+      <p>The build now maps every linked library to a package and <b>fails the build</b> when
+      one is not declared, rather than printing a list nobody compares. Same binaries as v1.3.0,
+      metadata only, so the fix could not smuggle a behaviour change in with it.</p>
+    </article>
+
+    <article class="entry">
+      <div class="meta"><time>2026-08-19</time><span class="tag rel">Release v1.3.1</span></div>
+      <h2>Android: refuse to mine with no peers</h2>
+      <p>A node with no peers cannot know the current tip, so anything it mines is built on a
+      chain nobody else is extending &mdash; work that is thrown away the moment it reconnects.
+      The app now declines to start rather than burning your battery on blocks that cannot
+      count.</p>
+    </article>
 
     <article class="entry">
       <div class="meta"><time>2026-08-13</time><span class="tag rel">Release v1.3.0</span></div>
