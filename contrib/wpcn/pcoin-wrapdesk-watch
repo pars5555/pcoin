@@ -40,6 +40,20 @@ CONFIRMATIONS = int(os.environ.get("WRAP_CONFIRMATIONS", 100))
 PER_PERSON = float(os.environ.get("WRAP_PER_PERSON", 250))
 TOTAL_ALLOC = float(os.environ.get("WRAP_TOTAL_ALLOC", 1500))
 
+# The wrap fee, taken in wPCN withheld rather than PCN returned.
+#
+# It is FRICTION, not revenue. At the current limits 5% of the entire 1,500 wPCN
+# allocation is about $1.37, which pays for nothing -- its actual job is to slow
+# a rush of miners wrapping in order to dump on PancakeSwap, which is the risk
+# the per-person limit also exists for.
+#
+# Know the cost before changing it: a fee of F% means arbitrage only closes gaps
+# WIDER than F%, so the PCN and wPCN prices can sit that far apart before anyone
+# is paid to fix it. Since connecting the two prices is the whole point of the
+# desk, a large fee works against its own purpose. 5% is a deliberate trade of
+# peg tightness for a brake on dumping, not a considered revenue decision.
+FEE_PCT = float(os.environ.get("WRAP_FEE_PCT", 5.0))
+
 EXPLORER = "https://explorer.pc.am"
 RESERVE = os.environ.get("WRAP_RESERVE", "pc1q7hhzmdkkx0zjtzj6qkwmuvhlgwfqjrc6j2dk52")
 
@@ -159,18 +173,47 @@ def main() -> int:
                               f"defence against a reorg."))
             else:
                 over = ""
+                eligible = amt
                 if amt > PER_PERSON:
+                    eligible = PER_PERSON
                     over = (f"\n*** {amt:.0f} PCN EXCEEDS the {PER_PERSON:.0f} per-person "
-                            f"limit. Release only {PER_PERSON:.0f} and return the rest, "
+                            f"limit. Wrap only {PER_PERSON:.0f} and return the rest, "
                             f"or decide deliberately to exceed it. ***")
+                # The fee is taken in wPCN NOT SENT, never in PCN returned. The
+                # reserve keeps the full deposit while fewer wPCN go out, so
+                # backing moves ABOVE 1:1 -- the only direction it may ever move.
+                fee = eligible * FEE_PCT / 100.0
+                net = eligible - fee
                 tasks.append((key, "action",
-                              f"ACTION: send {min(amt, PER_PERSON):.2f} wPCN\n"
+                              f"ACTION: send {net:.2f} wPCN\n"
                               f"{amt:.2f} PCN confirmed ({confs} confs), tx {txid[:16]}...\n"
-                              f"Send wPCN from the inventory wallet to the requester's "
-                              f"BSC address.{over}\n"
+                              f"  eligible : {eligible:.2f} PCN\n"
+                              f"  fee {FEE_PCT:g}%  : {fee:.2f} wPCN (kept, not sent)\n"
+                              f"  SEND     : {net:.2f} wPCN to the requester's BSC address\n"
+                              f"Send from the inventory wallet.{over}\n"
                               f"Then: sell the {amt:.2f} PCN on market.pc.am, and use the "
                               f"proceeds to buy wPCN back from the pool -- but ONLY while "
                               f"the pool trades BELOW price.pc.am."))
+
+        # ---- how much of the allocation is gone? ---------------------------
+        # Derived from the chain, not from a counter someone remembers to
+        # increment: every confirmed deposit since the desk opened is wPCN that
+        # has been, or is about to be, issued against it.
+        used = 0.0
+        for it in conf_items:
+            h = it.get("height")
+            a = float(it.get("received_pcn") or 0)
+            if isinstance(h, int) and h > OPENED_AT_HEIGHT and a > 0:
+                used += min(a, PER_PERSON) * (1 - FEE_PCT / 100.0)
+        if used > 0:
+            left = TOTAL_ALLOC - used
+            urgency = "action" if left <= 0 else "info"
+            tasks.append(("allocation", urgency,
+                          f"Allocation: {used:.2f} of {TOTAL_ALLOC:.0f} wPCN used, "
+                          f"{left:.2f} left."
+                          + ("\n*** THE ALLOCATION IS EXHAUSTED. Do not wrap more "
+                             "without deciding deliberately to raise it. ***"
+                             if left <= 0 else "")))
 
     # ---- 2. is the cycle worth running right now? -------------------------
     price = get("https://price.pc.am")

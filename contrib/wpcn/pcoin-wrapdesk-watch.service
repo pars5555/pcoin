@@ -11,6 +11,13 @@ Type=oneshot
 ExecStart=/opt/wpcn/.venv/bin/python /usr/local/bin/pcoin-wrapdesk-watch
 Environment=NAG_SECONDS=3600
 
+# The desk opened at this height. Deposits at or below it are NOT wrap
+# requests -- the reserve was funded with 50,000 PCN before the desk
+# existed, and without this floor the watcher reads that as a customer
+# owed 50,000 wPCN. That is exactly what the first dry run did.
+Environment=WRAP_OPENED_AT_HEIGHT=5868
+Environment=WRAP_FEE_PCT=5
+
 # Exit 1 = an action is outstanding. That is the NORMAL state while a wrap is in
 # flight, so this unit is expected to "fail" routinely and must NOT be wired to
 # OnFailure=pcoin-alert@ — the script does its own notifying, hourly, and an
