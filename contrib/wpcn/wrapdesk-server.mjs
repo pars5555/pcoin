@@ -187,7 +187,8 @@ It is not instant and it is not automated.</p>
 <p class="err"><b>wPCN is not PCN.</b> It is a claim on PCN held in a public reserve,
 on a different chain. The PancakeSwap pool is small, so its price moves a lot on small
 trades, and <b>we trade that pool ourselves</b> to keep it near the rate posted at
-price.pc.am. Only send what you can afford to lose.</p>
+price.pc.am. The <b>liquidity is not locked</b> and the project holds the LP tokens.
+Only send what you can afford to lose.</p>
 </div>
 
 <h2>Already sent? Check your status</h2>
