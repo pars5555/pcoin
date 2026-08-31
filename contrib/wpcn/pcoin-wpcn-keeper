@@ -89,6 +89,9 @@ MIN_USDT_FLOOR = float(os.environ.get("KEEPER_MIN_USDT", 5.0))
 MIN_WPCN_FLOOR = float(os.environ.get("KEEPER_MIN_WPCN", 200.0))
 
 SLIPPAGE = float(os.environ.get("KEEPER_SLIPPAGE", 0.01))       # 1%
+# A persistent condition is not new information every 10 minutes. Only its
+# onset and its clearing are, so repeat alerts are throttled to this.
+NAG_SECONDS = int(os.environ.get("KEEPER_NAG_SECONDS", 21600))  # 6 hours
 FEE_NUM, FEE_DEN = 9975, 10000                                  # PancakeSwap 0.25%
 
 
@@ -99,12 +102,32 @@ def notify(subject, body):
     subprocess.run([NOTIFY, subject, body], timeout=60)
 
 
+def notify_throttled(key, subject, body, seconds=NAG_SECONDS):
+    """Alert at most once per `seconds` for this condition.
+
+    The timer runs every 10 minutes, so an unfunded float or a stuck price feed
+    would otherwise page 144 times a day and teach everyone to ignore the
+    channel -- which is exactly what happened to pcoin-concentration-watch when
+    it sent the same figure twenty-four times in eight hours. A condition that
+    persists is not new information; only its onset and its clearing are.
+    """
+    st = load_state()
+    last = (st.get("nagged") or {}).get(key, 0)
+    if time.time() - last < seconds:
+        print(f"[throttled, already alerted] {subject}")
+        return
+    notify(subject, body)
+    st.setdefault("nagged", {})[key] = int(time.time())
+    save_state(st)
+
+
 def load_state():
     try:
         with open(STATE) as f:
             return json.load(f)
     except Exception:
-        return {"day": "", "usdt_spent": 0.0, "wpcn_spent": 0.0, "trades": []}
+        return {"day": "", "usdt_spent": 0.0, "wpcn_spent": 0.0,
+                "trades": [], "nagged": {}}
 
 
 def save_state(s):
@@ -192,7 +215,8 @@ def main() -> int:
     # ---- read both prices; either unreadable means DO NOTHING --------------
     posted = posted_rate()
     if posted is None:
-        notify("keeper: price.pc.am unreadable",
+        notify_throttled("posted_unreadable",
+               "keeper: price.pc.am unreadable",
                "Could not read the posted rate, so the target price is UNKNOWN. "
                "Not trading. This is a hold, not a decision that the pool is fine.")
         print("UNVERIFIED: posted rate unreadable -- holding")
@@ -216,7 +240,8 @@ def main() -> int:
         else:
             w_res, u_res = r1 / 1e8, r0 / 10 ** USDT_DECIMALS
     except Exception as e:
-        notify("keeper: pool unreadable",
+        notify_throttled("pool_unreadable",
+               "keeper: pool unreadable",
                f"getReserves() failed: {e}\nNot trading. UNKNOWN, not 'no gap'.")
         print(f"UNVERIFIED: pool unreadable: {e}")
         return 2
@@ -230,7 +255,8 @@ def main() -> int:
     # ---- refuse implausible gaps ------------------------------------------
     ratio = max(pool, posted) / min(pool, posted)
     if ratio > SANITY_RATIO:
-        notify("keeper: IMPLAUSIBLE GAP -- holding",
+        notify_throttled("implausible_gap",
+               "keeper: IMPLAUSIBLE GAP -- holding",
                f"pool ${pool:.8f} vs posted ${posted:.8f} ({ratio:.1f}x apart).\n"
                f"That is more likely a broken price feed than a real market, so "
                f"nothing was traded. Check price.pc.am and the pair by hand.")
@@ -246,7 +272,10 @@ def main() -> int:
     today = time.strftime("%Y-%m-%d")
     if st.get("day") != today:
         st = {"day": today, "usdt_spent": 0.0, "wpcn_spent": 0.0,
-              "trades": st.get("trades", [])[-50:]}
+              "trades": st.get("trades", [])[-50:],
+              # carried across the day boundary on purpose: a condition that
+              # has persisted since yesterday is still not news at midnight.
+              "nagged": st.get("nagged", {})}
 
     erc20 = [{"constant": True, "inputs": [{"name": "o", "type": "address"}],
               "name": "balanceOf", "outputs": [{"name": "", "type": "uint256"}],
@@ -286,7 +315,8 @@ def main() -> int:
     if budget <= 0:
         why = ("daily cap reached" if (st["usdt_spent"] if buying else st["wpcn_spent"]) > 0
                else f"{need_label} float at or below floor")
-        notify(f"keeper: cannot close the gap -- {why}",
+        notify_throttled("blocked",
+               f"keeper: cannot close the gap -- {why}",
                f"pool ${pool:.8f} vs posted ${posted:.8f} ({gap*100:+.2f}%).\n"
                f"Needs {want:,.4f} {unit} but none is available: {why}.\n"
                f"float {have_usdt:,.4f} USDT / {have_wpcn:,.2f} wPCN.\n"

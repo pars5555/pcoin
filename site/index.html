@@ -886,11 +886,15 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
         <b>wPCN is not PCN.</b> It is an IOU on another chain, backed 1:1 by PCN held in a reserve
         address printed above &mdash; check the balance against the token's fixed 50,000 supply yourself;
         that is why both are published. The contract has <b>no owner and no mint function</b>, so nobody,
-        including us, can create more. Four things to know before buying: the pool is <b>small</b>
+        including us, can create more. Five things to know before buying: the pool is <b>small</b>
         (a few hundred dollars &mdash; a $40 trade moves the price about 10%, which is arithmetic, not a
-        flaw); the <b>liquidity is not locked</b> and the project holds the LP tokens; there is
-        <b>no automatic way to turn PCN into wPCN or back</b> yet, so the two prices can drift apart;
-        and buying wPCN gets you a claim, not coins you can spend on the services above.
+        flaw); the <b>liquidity is not locked</b> and the project holds the LP tokens;
+        <b>you can redeem wPCN back into PCN</b> &mdash; the contract burns your tokens and we send
+        the PCN by hand, so it is not instant &mdash; but <b>turning PCN into wPCN is not open yet</b>;
+        <b>we trade this pool ourselves</b>, running a bot that buys or sells wPCN to hold the pool
+        near the rate we post at price.pc.am, so the price you see is one we influence and not one
+        strangers set on their own; and buying wPCN gets you a claim, not coins you can spend on
+        the services above.
         <br><br>
         The first atomic swap was between <b>two wallets we control</b>. It exists because Komodo
         requires a completed swap before they will consider a coin, and for no other reason. It
