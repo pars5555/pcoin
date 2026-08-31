@@ -33,6 +33,9 @@ constexpr int MAX_BACKOFF_SECONDS{30};
 //! An allowlist refusal is a decision, not a hiccup. Retrying it every second
 //! achieves nothing except filling somebody's log.
 constexpr int REFUSED_BACKOFF_SECONDS{120};
+//! Consecutive rejected shares, with none accepted in between, that mean the
+//! job we are grinding is one the pool has forgotten -- see HandleLine.
+constexpr int STALE_RECONNECT_THRESHOLD{12};
 } // namespace
 
 PoolClient::PoolClient(std::string host, uint16_t port, std::string user)
@@ -57,6 +60,7 @@ void PoolClient::Close()
     m_sock.reset();
     m_rx.clear();
     m_session.clear();
+    m_consecutive_rejects = 0;
     {
         std::lock_guard<std::mutex> lock(m_inflight_mutex);
         m_inflight.clear();
@@ -280,8 +284,35 @@ void PoolClient::HandleLine(const std::string& line)
             const UniValue& m{err.isObject() ? err.find_value("message") : err};
             LogPrintf("PCoin pool miner: share rejected (%s)\n",
                       m.isStr() ? m.get_str() : "no reason given");
+            // A STUCK JOB LOOKS EXACTLY LIKE MINING.
+            //
+            // An occasional stale share is normal: a block lands while a nonce
+            // batch is in flight and the pool has moved on. A RUN of them with
+            // nothing accepted in between is not. It means we are grinding a
+            // job the pool has forgotten and will never pay for, while the
+            // connection stays up, keepalives keep answering, poolstate still
+            // reads "mining" and the hashrate looks perfect.
+            //
+            // Observed on a VS996 on 2026-08-31: accepted froze at 360 while
+            // rejected climbed past 150, every one of them "job not found or
+            // stale", for over an hour. Nothing noticed, because every signal
+            // this client exposes still said healthy. Restarting the miner
+            // cleared it instantly, which is exactly what this does now.
+            //
+            // Reconnecting is the cheap and correct repair: login re-issues a
+            // job, and Fail() already carries the backoff so a pool that is
+            // genuinely unhappy is not hammered. Counting only CONSECUTIVE
+            // rejects is what keeps ordinary staleness from tripping it -- a
+            // single acceptance proves the job is live and resets the run.
+            if (++m_consecutive_rejects >= STALE_RECONNECT_THRESHOLD) {
+                Fail(strprintf("%d shares in a row rejected by %s -- the job we are "
+                               "grinding is stale, reconnecting for a fresh one",
+                               m_consecutive_rejects, Describe()),
+                     /*refused=*/false);
+            }
         } else {
             m_accepted++;
+            m_consecutive_rejects = 0;
         }
         return;
     }

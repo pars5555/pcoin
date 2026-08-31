@@ -153,6 +153,9 @@ private:
     std::atomic<uint64_t> m_accepted{0};
     std::atomic<uint64_t> m_rejected{0};
     std::atomic<uint64_t> m_submitted{0};
+    //! Consecutive rejected submits with no acceptance in between.
+    //! Pool-thread only (HandleLine/Close), so it needs no atomicity.
+    int m_consecutive_rejects{0};
     std::atomic<int> m_job_height{0};
 
     mutable std::mutex m_status_mutex;
