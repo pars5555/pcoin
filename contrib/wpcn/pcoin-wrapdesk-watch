@@ -323,7 +323,15 @@ def main() -> int:
     if warns:
         print(f"UNVERIFIED: {len(warns)} thing(s) could not be checked")
         return 2
-    print("wrap desk: nothing outstanding")
+    # "Nothing outstanding" means no ACTION is due -- but a wrap still
+    # confirming is very much something happening, and a summary line that
+    # reads as "all quiet" while a customer is mid-wrap invites an operator to
+    # skim past it. Say what is in flight.
+    inflight = [t for t in tasks if t[1] == "info" and t[0].startswith(("wrap:", "pending:"))]
+    if inflight:
+        print(f"wrap desk: no action due, {len(inflight)} wrap(s) still confirming")
+    else:
+        print("wrap desk: nothing outstanding")
     return 0
 
 
