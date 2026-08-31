@@ -1,0 +1,392 @@
+#!/usr/bin/env python3
+"""Keep the PancakeSwap wPCN price in step with price.pc.am.
+
+WHAT THIS IS FOR
+
+Before this existed, PCN and wPCN were two unrelated numbers. price.pc.am said
+$0.0183; the pool said $0.0133; nothing connected them, and the gap simply sat
+there because no two-way door existed for anyone to arbitrage it away.
+
+This closes the gap mechanically. It compares the pool price to the posted rate
+and trades the difference, using inventory we already hold:
+
+    pool BELOW posted  ->  buy wPCN from the pool   (pushes the price UP)
+    pool ABOVE posted  ->  sell wPCN into the pool  (pushes the price DOWN)
+
+The result is one price instead of two.
+
+WHICH WAY THE ANCHOR POINTS, AND WHY IT MATTERS
+
+price.pc.am is the anchor. The pool follows it. NOT the other way round.
+
+That is deliberate and it is the whole safety story. At the time of writing the
+pool holds about $824 of total value, and at that depth roughly TWENTY DOLLARS
+moves the price ten percent. Six live payment rails price off price.pc.am. If
+the posted rate followed the pool, $200 of trading would let anyone reprice
+every one of those rails and drain them -- deposit PCN bought cheaply elsewhere,
+collect credit at twice its worth.
+
+Worse, if the pool follows posted AND posted follows the pool, they chase each
+other with no external anchor at all: a nudge in either direction amplifies
+forever. That is not price discovery, it is a manipulated spiral.
+
+So: this bot may move the POOL. It must never move price.pc.am. Flipping the
+anchor is a separate, later decision gated on real third-party volume -- see
+WRAP-DESK.md sections 6 and 9.
+
+WHAT IT WILL NOT DO
+
+  * It will not trade on a price it could not read. An unreadable rate is
+    UNKNOWN, never zero and never "no change needed".
+  * It will not trade inside the dead band, because PancakeSwap's 0.25% fee
+    plus gas would eat the edge and it would churn the float for nothing.
+  * It will not trade past the target. Trade size is solved for exactly: enough
+    to reach the posted price and not one satoshi further. Overshooting would
+    just hand the difference to the next arbitrageur.
+  * It will not exceed the daily budget, so a bug or a manipulated read cannot
+    drain the float in one run.
+  * It will not act on an implausible gap. A 5x discrepancy is far more likely
+    to be a broken oracle than a real market, so it alerts and holds.
+
+THE ECONOMICS, STATED HONESTLY
+
+Buying wPCN spends USDT and accumulates wPCN. If the pool sits below posted for
+a long time the float drains in one direction. That is not a bug -- it is the
+desk buying its own token cheaply -- but it is finite, so the bot alerts when
+either side runs low rather than silently stopping.
+
+And this is market-making our own token. That is ordinary and legitimate, but
+it must be disclosed on pc.am exactly as plainly as "the liquidity is not
+locked" already is. A price we moved ourselves carries less information than one
+strangers set, which is precisely why the anchor points the way it does.
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.request
+
+CONF = os.environ.get("KEEPER_CONF", "/etc/pcoin/keeper.conf")
+STATE = os.environ.get("KEEPER_STATE", "/var/lib/pcoin-wrapdesk/keeper.json")
+NOTIFY = os.environ.get("PCOIN_NOTIFY", "/usr/local/bin/pcoin-notify")
+
+# Do not trade inside this band. PancakeSwap takes 0.25% per swap and gas is a
+# few cents, so chasing a 1% gap loses money on the round trip.
+DEAD_BAND = float(os.environ.get("KEEPER_DEAD_BAND", 0.02))     # 2%
+
+# Refuse to act beyond this ratio. A gap this large is far more likely to be a
+# broken price feed than a real market, and acting on a bad read is exactly how
+# a float gets emptied into a manipulated pool.
+SANITY_RATIO = float(os.environ.get("KEEPER_SANITY_RATIO", 5.0))
+
+DAILY_USDT_CAP = float(os.environ.get("KEEPER_DAILY_USDT_CAP", 25.0))
+DAILY_WPCN_CAP = float(os.environ.get("KEEPER_DAILY_WPCN_CAP", 2000.0))
+
+# Never spend the float to zero -- leave enough to keep operating and to make
+# the "running low" alert actionable rather than a post-mortem.
+MIN_USDT_FLOOR = float(os.environ.get("KEEPER_MIN_USDT", 5.0))
+MIN_WPCN_FLOOR = float(os.environ.get("KEEPER_MIN_WPCN", 200.0))
+
+SLIPPAGE = float(os.environ.get("KEEPER_SLIPPAGE", 0.01))       # 1%
+FEE_NUM, FEE_DEN = 9975, 10000                                  # PancakeSwap 0.25%
+
+
+def notify(subject, body):
+    if not os.path.exists(NOTIFY):
+        print(f"[no notifier] {subject}\n{body}")
+        return
+    subprocess.run([NOTIFY, subject, body], timeout=60)
+
+
+def load_state():
+    try:
+        with open(STATE) as f:
+            return json.load(f)
+    except Exception:
+        return {"day": "", "usdt_spent": 0.0, "wpcn_spent": 0.0, "trades": []}
+
+
+def save_state(s):
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    tmp = STATE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(s, f, indent=1)
+    os.replace(tmp, STATE)
+
+
+def load_conf():
+    cfg = {}
+    if os.path.exists(CONF):
+        for line in open(CONF):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                cfg[k.strip()] = v.strip()
+    return cfg
+
+
+def posted_rate():
+    """price.pc.am serviceRate, or None for UNKNOWN. None must never trade."""
+    try:
+        with urllib.request.urlopen("https://price.pc.am", timeout=25) as r:
+            d = json.load(r)
+        v = d.get("serviceRate")
+        return None if v is None else float(v)
+    except Exception:
+        return None
+
+
+def amount_out(amount_in, reserve_in, reserve_out):
+    """Constant product with PancakeSwap's fee. The exact router formula."""
+    ain = amount_in * FEE_NUM
+    return (ain * reserve_out) / (reserve_in * FEE_DEN + ain)
+
+
+def solve_trade(reserve_in, reserve_out, target_price, buying_out):
+    """Input size that moves the pool to target_price, and no further.
+
+    Solved by bisection on the exact swap formula rather than the closed form.
+    The closed form has to be re-derived whenever the fee changes and is easy to
+    get subtly wrong; bisection over a monotonic function cannot be.
+
+    buying_out=True  -> paying USDT, receiving wPCN (price rises)
+    buying_out=False -> paying wPCN, receiving USDT (price falls)
+    """
+    def price_after(x):
+        out = amount_out(x, reserve_in, reserve_out)
+        ri, ro = reserve_in + x, reserve_out - out
+        return (ri / ro) if buying_out else (ro / ri)
+
+    lo, hi = 0.0, reserve_in * 10
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        if mid <= 0:
+            break
+        p = price_after(mid)
+        if (p < target_price) if buying_out else (p > target_price):
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+def main() -> int:
+    live = "--live" in sys.argv
+    sys.path.insert(0, os.environ.get("WPCN_DIR", "/opt/wpcn"))
+    sys.path.insert(1, os.path.dirname(os.path.abspath(__file__)))
+
+    from web3 import Web3
+    from deploy import load, connect, send, ROUTER, USDT, USDT_DECIMALS
+
+    cfg = load()
+    conf = load_conf()
+    w3, _ = connect(cfg)
+
+    key = conf.get("KEEPER_PRIVATE_KEY")
+    if not key:
+        print(f"No KEEPER_PRIVATE_KEY in {CONF}. Run: pcoin-wpcn-keeper --init")
+        return 2
+    acct = w3.eth.account.from_key(key)
+
+    # ---- read both prices; either unreadable means DO NOTHING --------------
+    posted = posted_rate()
+    if posted is None:
+        notify("keeper: price.pc.am unreadable",
+               "Could not read the posted rate, so the target price is UNKNOWN. "
+               "Not trading. This is a hold, not a decision that the pool is fine.")
+        print("UNVERIFIED: posted rate unreadable -- holding")
+        return 2
+
+    pair_abi = [
+        {"constant": True, "inputs": [], "name": "getReserves",
+         "outputs": [{"name": "_r0", "type": "uint112"},
+                     {"name": "_r1", "type": "uint112"},
+                     {"name": "_t", "type": "uint32"}], "type": "function"},
+        {"constant": True, "inputs": [], "name": "token0",
+         "outputs": [{"name": "", "type": "address"}], "type": "function"}]
+    try:
+        pair = w3.eth.contract(
+            address=Web3.to_checksum_address(cfg["PAIR"]), abi=pair_abi)
+        r0, r1, _ = pair.functions.getReserves().call()
+        t0 = pair.functions.token0().call()
+        token = Web3.to_checksum_address(cfg["TOKEN"])
+        if t0 == token:
+            w_res, u_res = r0 / 1e8, r1 / 10 ** USDT_DECIMALS
+        else:
+            w_res, u_res = r1 / 1e8, r0 / 10 ** USDT_DECIMALS
+    except Exception as e:
+        notify("keeper: pool unreadable",
+               f"getReserves() failed: {e}\nNot trading. UNKNOWN, not 'no gap'.")
+        print(f"UNVERIFIED: pool unreadable: {e}")
+        return 2
+
+    pool = u_res / w_res
+    gap = pool / posted - 1.0
+    print(f"posted (price.pc.am) : ${posted:.8f}")
+    print(f"pool   (pancakeswap) : ${pool:.8f}   ({gap*100:+.2f}%)")
+    print(f"reserves             : {w_res:,.2f} wPCN / {u_res:,.2f} USDT")
+
+    # ---- refuse implausible gaps ------------------------------------------
+    ratio = max(pool, posted) / min(pool, posted)
+    if ratio > SANITY_RATIO:
+        notify("keeper: IMPLAUSIBLE GAP -- holding",
+               f"pool ${pool:.8f} vs posted ${posted:.8f} ({ratio:.1f}x apart).\n"
+               f"That is more likely a broken price feed than a real market, so "
+               f"nothing was traded. Check price.pc.am and the pair by hand.")
+        print(f"HOLD: gap {ratio:.1f}x exceeds sanity ratio {SANITY_RATIO}")
+        return 1
+
+    if abs(gap) < DEAD_BAND:
+        print(f"within dead band (+/-{DEAD_BAND*100:.1f}%) -- nothing to do")
+        return 0
+
+    # ---- daily budget ------------------------------------------------------
+    st = load_state()
+    today = time.strftime("%Y-%m-%d")
+    if st.get("day") != today:
+        st = {"day": today, "usdt_spent": 0.0, "wpcn_spent": 0.0,
+              "trades": st.get("trades", [])[-50:]}
+
+    erc20 = [{"constant": True, "inputs": [{"name": "o", "type": "address"}],
+              "name": "balanceOf", "outputs": [{"name": "", "type": "uint256"}],
+              "type": "function"},
+             {"constant": False, "inputs": [{"name": "s", "type": "address"},
+                                            {"name": "v", "type": "uint256"}],
+              "name": "approve", "outputs": [{"name": "", "type": "bool"}],
+              "type": "function"},
+             {"constant": True, "inputs": [{"name": "o", "type": "address"},
+                                           {"name": "s", "type": "address"}],
+              "name": "allowance", "outputs": [{"name": "", "type": "uint256"}],
+              "type": "function"}]
+    usdt_c = w3.eth.contract(address=Web3.to_checksum_address(USDT), abi=erc20)
+    wpcn_c = w3.eth.contract(address=token, abi=erc20)
+    have_usdt = usdt_c.functions.balanceOf(acct.address).call() / 10 ** USDT_DECIMALS
+    have_wpcn = wpcn_c.functions.balanceOf(acct.address).call() / 1e8
+    print(f"keeper wallet        : {acct.address}")
+    print(f"float                : {have_usdt:,.4f} USDT / {have_wpcn:,.2f} wPCN")
+
+    buying = gap < 0                    # pool cheap -> buy wPCN -> price rises
+    if buying:
+        want = solve_trade(u_res, w_res, posted, True)
+        budget = min(want,
+                     DAILY_USDT_CAP - st["usdt_spent"],
+                     max(0.0, have_usdt - MIN_USDT_FLOOR))
+        unit, need_label = "USDT", "USDT"
+    else:
+        want = solve_trade(w_res, u_res, posted, False)
+        budget = min(want,
+                     DAILY_WPCN_CAP - st["wpcn_spent"],
+                     max(0.0, have_wpcn - MIN_WPCN_FLOOR))
+        unit, need_label = "wPCN", "wPCN"
+
+    print(f"to reach parity      : trade {want:,.6f} {unit}")
+    print(f"allowed this run     : {budget:,.6f} {unit}")
+
+    if budget <= 0:
+        why = ("daily cap reached" if (st["usdt_spent"] if buying else st["wpcn_spent"]) > 0
+               else f"{need_label} float at or below floor")
+        notify(f"keeper: cannot close the gap -- {why}",
+               f"pool ${pool:.8f} vs posted ${posted:.8f} ({gap*100:+.2f}%).\n"
+               f"Needs {want:,.4f} {unit} but none is available: {why}.\n"
+               f"float {have_usdt:,.4f} USDT / {have_wpcn:,.2f} wPCN.\n"
+               f"Top the float up, or the gap stays open.")
+        print(f"BLOCKED: {why}")
+        return 1
+
+    if not live:
+        print("\nDRY RUN -- nothing sent. Re-run with --live to trade.")
+        return 0
+
+    # ---- execute -----------------------------------------------------------
+    router_abi = [{"name": "swapExactTokensForTokens", "type": "function",
+                   "inputs": [{"name": "amountIn", "type": "uint256"},
+                              {"name": "amountOutMin", "type": "uint256"},
+                              {"name": "path", "type": "address[]"},
+                              {"name": "to", "type": "address"},
+                              {"name": "deadline", "type": "uint256"}],
+                   "outputs": [{"name": "amounts", "type": "uint256[]"}]}]
+    router = w3.eth.contract(address=Web3.to_checksum_address(ROUTER), abi=router_abi)
+
+    if buying:
+        amt_in = int(budget * 10 ** USDT_DECIMALS)
+        expect = amount_out(budget, u_res, w_res)
+        min_out = int(expect * (1 - SLIPPAGE) * 1e8)
+        path = [Web3.to_checksum_address(USDT), token]
+        spend_c, decimals = usdt_c, 10 ** USDT_DECIMALS
+    else:
+        amt_in = int(budget * 1e8)
+        expect = amount_out(budget, w_res, u_res)
+        min_out = int(expect * (1 - SLIPPAGE) * 10 ** USDT_DECIMALS)
+        path = [token, Web3.to_checksum_address(USDT)]
+        spend_c, decimals = wpcn_c, 1e8
+
+    allowance = spend_c.functions.allowance(
+        acct.address, Web3.to_checksum_address(ROUTER)).call()
+    if allowance < amt_in:
+        send(w3, acct, spend_c.functions.approve(
+            Web3.to_checksum_address(ROUTER), 2 ** 255).build_transaction(
+                {"from": acct.address}), "approve")
+
+    r = send(w3, acct, router.functions.swapExactTokensForTokens(
+        amt_in, min_out, path, acct.address, int(time.time()) + 600
+    ).build_transaction({"from": acct.address}),
+        f"swap {budget:,.6f} {unit}")
+
+    if buying:
+        st["usdt_spent"] += budget
+    else:
+        st["wpcn_spent"] += budget
+    st["trades"].append({"at": int(time.time()), "dir": "buy" if buying else "sell",
+                         "amount": budget, "unit": unit,
+                         "pool_before": pool, "posted": posted,
+                         "block": r.blockNumber})
+    save_state(st)
+
+    r0, r1, _ = pair.functions.getReserves().call()
+    if t0 == token:
+        w2, u2 = r0 / 1e8, r1 / 10 ** USDT_DECIMALS
+    else:
+        w2, u2 = r1 / 1e8, r0 / 10 ** USDT_DECIMALS
+    after = u2 / w2
+    print(f"\npool ${pool:.8f} -> ${after:.8f}  (target ${posted:.8f})")
+    notify("keeper: traded",
+           f"{'Bought' if buying else 'Sold'} {budget:,.6f} {unit}.\n"
+           f"pool ${pool:.8f} -> ${after:.8f}, posted ${posted:.8f}\n"
+           f"float now {have_usdt:,.4f} USDT / {have_wpcn:,.2f} wPCN (pre-trade).")
+    return 0
+
+
+def cmd_init():
+    """Create the keeper key ON THIS MACHINE and never print it.
+
+    The deployer key was generated on a server and delivered through a chat
+    transcript, which is why it had to be treated as burned and swept. This one
+    is written straight to a 0600 file and only its ADDRESS is ever shown.
+    """
+    sys.path.insert(0, os.environ.get("WPCN_DIR", "/opt/wpcn"))
+    from web3 import Web3
+    if os.path.exists(CONF) and "KEEPER_PRIVATE_KEY" in open(CONF).read():
+        cfg = load_conf()
+        acct = Web3().eth.account.from_key(cfg["KEEPER_PRIVATE_KEY"])
+        print(f"already initialised. keeper address: {acct.address}")
+        return 0
+    acct = Web3().eth.account.create()
+    os.makedirs(os.path.dirname(CONF), exist_ok=True)
+    fd = os.open(CONF, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write("# wPCN keeper key. MODE 0600. NEVER in git, never printed.\n")
+        f.write(f"KEEPER_PRIVATE_KEY={acct.key.hex()}\n")
+    print(f"keeper address: {acct.address}")
+    print(f"key written to {CONF} (0600). It was NOT printed and must not be.")
+    print("\nFund this address with:")
+    print("  * a little BNB for gas")
+    print("  * USDT   -- so it can buy wPCN when the pool is cheap")
+    print("  * wPCN   -- so it can sell when the pool is expensive")
+    return 0
+
+
+if __name__ == "__main__":
+    if "--init" in sys.argv:
+        sys.exit(cmd_init())
+    sys.exit(main())

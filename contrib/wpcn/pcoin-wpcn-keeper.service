@@ -1,0 +1,19 @@
+[Unit]
+Description=wPCN keeper — hold the pool price in step with price.pc.am
+Documentation=https://github.com/pars5555/pcoin/blob/main/contrib/wpcn/WRAP-DESK.md
+
+[Service]
+Type=oneshot
+# Run under the wPCN virtualenv, NOT bare python3. The system python has no
+# web3, and the imports degrade to None rather than crashing — so a bare
+# python3 does not fail, it silently stops reading the chain.
+ExecStart=/opt/wpcn/.venv/bin/python /usr/local/bin/pcoin-wpcn-keeper --live
+
+# Exit 1 = a gap exists that could not be closed (budget, floor, or an
+# implausible reading). That is a real condition worth surfacing, and the
+# script notifies on its own, so do NOT also wire OnFailure=pcoin-alert@.
+# Exit 2 = a price could not be read at all, and nothing was traded.
+Nice=10
+MemoryMax=192M
+TimeoutStartSec=600
+SuccessExitStatus=1 2

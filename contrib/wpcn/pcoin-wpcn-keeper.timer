@@ -1,0 +1,14 @@
+[Unit]
+Description=Check the wPCN/USDT pool against price.pc.am every 10 minutes
+
+[Timer]
+OnBootSec=8min
+OnUnitActiveSec=10min
+# Deliberately not faster. Each run that trades pays PancakeSwap 0.25% plus
+# gas, and the dead band already stops churn — a tighter interval would only
+# add cost without closing a gap any sooner than the next arbitrageur would.
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target

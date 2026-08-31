@@ -470,3 +470,65 @@ Not on txhash. One BSC transaction can emit several `Redeem` events — a contra
 or a multicall can batch them — and keying on the hash alone would pay the first
 and **silently drop** the rest. Exactly the mistake all four deposit rails
 shipped first (CLAUDE.md §8c #1), in a new place.
+
+---
+
+## 11. The keeper — connecting the two prices automatically
+
+`contrib/wpcn/pcoin-wpcn-keeper`, every 10 minutes.
+
+Before it existed PCN and wPCN were two unrelated numbers with nothing between
+them. The keeper closes that gap mechanically, trading from our own inventory:
+
+| condition | action | effect |
+|---|---|---|
+| pool **below** posted | buy wPCN from the pool | price **up** |
+| pool **above** posted | sell wPCN into the pool | price **down** |
+
+### 11.1 The anchor points at price.pc.am, and that is the safety story
+
+The pool follows the posted rate. **Never the reverse.** At the time of writing
+the pool holds ~$824 of total value, and at that depth **~$20 moves the price
+10%**. Six live payment rails price off `price.pc.am`. If the posted rate
+followed the pool, a few hundred dollars would reprice every rail — deposit PCN
+bought cheaply elsewhere, collect credit at twice its worth.
+
+Wire it both ways and there is no external anchor at all; see §6.
+
+### 11.2 What it refuses to do
+
+* **Trade on a price it could not read.** Unreadable is UNKNOWN, never zero and
+  never "no change needed".
+* **Trade inside the dead band** (2%). PancakeSwap takes 0.25% per swap plus
+  gas, so chasing a 1% gap loses money on the round trip.
+* **Overshoot.** Trade size is solved by bisection on the exact swap formula for
+  the amount that reaches parity *and no further*; overshooting just hands the
+  difference to the next arbitrageur. Verified to land within 0.000026% of
+  target in both directions.
+* **Exceed the daily budget** — so a bug or a manipulated read cannot empty the
+  float in one run.
+* **Act on an implausible gap** (>5x). That is far more likely a broken feed
+  than a real market, so it alerts and holds.
+* **Spend the float to zero.** Floors on both sides, with an alert when either
+  runs low, so the operator finds out before it stops working rather than after.
+
+### 11.3 Its key was generated on the server and never printed
+
+`pcoin-wpcn-keeper --init` writes the key straight to `/etc/pcoin/keeper.conf`
+at mode 0600 and prints only the **address**. This is a direct response to the
+deployer key, which was generated on a server and delivered through a chat
+transcript — and therefore had to be treated as burned and swept. Never repeat
+that shape.
+
+### 11.4 The economics, stated honestly
+
+Buying wPCN spends USDT and accumulates wPCN. A pool that sits below posted for
+a long time drains the float in one direction. That is not a bug — it is the
+desk buying its own token cheaply — but it is finite, which is why the low-float
+alert exists.
+
+And this **is** market-making our own token. Ordinary and legitimate, but it
+must be disclosed on pc.am as plainly as "the liquidity is not locked" already
+is. A price we moved ourselves carries less information than one strangers set,
+which is exactly why the anchor points the way it does, and why §6's gate on
+third-party volume is what governs ever reversing it.
