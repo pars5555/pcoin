@@ -589,8 +589,9 @@ class MinerService : Service() {
                 // looks fine: the node cannot be asked which address it is
                 // paying, so a running miner is NOT evidence that it is paying
                 // the right one.
-                // Empty means solo, which is the default and what every existing
-                // install keeps.
+                // Blank means solo, but blank is NOT the default: poolUrl()
+                // falls back to Prefs.DEFAULT_POOL when the key is absent, so
+                // an install never told otherwise is POOLED, not solo.
                 val poolUrl = prefs.poolUrl()
                 // A MINER THAT IS RUNNING IS NOT EVIDENCE IT IS MINING FOR THE
                 // RIGHT PLACE, for exactly the reason the address comment above

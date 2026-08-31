@@ -99,8 +99,21 @@ class Prefs(context: Context) {
         }
 
     /**
-     * The pool to mine for, as `host:port`. BLANK MEANS SOLO, which is the
-     * default and what every existing install keeps until someone changes it.
+     * The pool to mine for, as `host:port`. Blank means SOLO, but blank is NOT
+     * the default: [poolUrl] falls back to [DEFAULT_POOL] when the key is
+     * absent, so a fresh install mines to the POOL. Only a value explicitly
+     * written as empty means solo.
+     *
+     * This said blank was the default. That was true before DEFAULT_POOL
+     * existed and wrong after, and the difference is where a phone's work
+     * goes: at ~614 kH/s network a phone doing ~38 H/s averages MONTHS per
+     * solo block and earns nothing in between, while the pool pays it a
+     * proportional slice of every block the pool finds. Nothing in the app
+     * can currently write blank -- setPoolUrl has no callers and there is no
+     * solo/pool UI -- so every install is pooled in practice. Keep the setter
+     * anyway: the pool is ~90% of network hashrate, and removing the only
+     * escape hatch from it is not a decision to make by deleting an unused
+     * function.
      *
      * This is authoritative INTENT, not a derived display value, so it is
      * written with commit() like the payout address: it decides where a phone's
