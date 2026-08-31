@@ -578,7 +578,17 @@ function ipnValid(rawBody, sigHeader) {
  *  breakdown. Never throws into the IPN path — a reporting bug must not cost a
  *  delivery. */
 const saleReported = new Set();
-async function reportSaleEconomics(d) {
+async function reportSaleEconomics(d, opts = {}) {
+  // `opts.basisUsd` is what the customer ACTUALLY paid in fiat, when that differs
+  // from what the invoice asked for. It matters because the fee percentage below
+  // divides by it.
+  //
+  // On a partial payment `price_amount` is the INVOICE, not the payment, so
+  // dividing by it charges the shortfall to "fees". Order Mmte1xvake1040f was
+  // $35.00 invoiced and $33.46 paid: 4.4% of that gap is a customer underpaying,
+  // not the gateway taking a cut, and on its own that is nearly the >5% warning
+  // threshold. A warning that cries about the wrong thing is how the real one
+  // gets ignored.
   // Once per payment. The branch that calls this accepts BOTH 'confirmed' and
   // 'finished', and the gateway retries callbacks — so without this the same
   // sale is announced two or more times, and an operator who sees two "Sale
@@ -588,7 +598,11 @@ async function reportSaleEconomics(d) {
   if (saleReported.size > 5000) saleReported.clear();   // bounded; worst case is a repeat
   saleReported.add(key);
 
-  const usd = Number(d.price_amount);
+  const invoiced   = Number(d.price_amount);
+  const givenBasis = Number(opts.basisUsd);
+  const partial    = !!opts.partial;
+  // No explicit basis means a full payment, where the two are the same number.
+  const usd = isFinite(givenBasis) && givenBasis > 0 ? givenBasis : invoiced;
   const out = Number(d.outcome_amount);
   const f = d.fee || {};
 
@@ -628,9 +642,14 @@ async function reportSaleEconomics(d) {
     verdict = `✅ No per-order withdrawal fee. This is what Custody was turned on for.`;
   }
 
+  // Say the shortfall out loud. Without it a PARTIAL line reads as a smaller sale
+  // rather than an underpaid one, which is the fact the operator actually needs.
+  const shortNote = partial && isFinite(invoiced) && invoiced > usd
+    ? ` (invoice $${invoiced.toFixed(2)} — ${(((invoiced - usd) / invoiced) * 100).toFixed(1)}% short)`
+    : '';
   await notify(
-    `💵 <b>Sale settled</b>  <code>${esc(String(d.order_id ?? '?'))}</code>\n` +
-    `customer paid <b>$${usd.toFixed(2)}</b> in ${esc(String(d.pay_currency ?? '?'))}\n` +
+    `💵 <b>Sale settled${partial ? ' — PARTIAL' : ''}</b>  <code>${esc(String(d.order_id ?? '?'))}</code>\n` +
+    `customer paid <b>$${usd.toFixed(2)}</b> in ${esc(String(d.pay_currency ?? '?'))}${shortNote}\n` +
     (netKnown ? `you received <b>${out} ${esc(String(d.outcome_currency ?? ''))}</b>` +
                 (lostPct !== null ? ` — ${lostPct.toFixed(1)}% to fees\n` : `\n`) : '') +
     `deposit ${money(dep)} · service ${money(svc)} · withdrawal <b>${money(wd)}</b>\n` +
@@ -951,6 +970,17 @@ createServer(async (req, res) => {
           '\nwas ' + Number(ord.quoted_pcn).toFixed(8) + ' PCN for $' + Number(ord.usd).toFixed(2) +
           '\n\nNothing was sent. Open <b>market.pc.am/admin \u2192 Orders</b> and press' +
           ' <b>Send (reviewed)</b> to release exactly what was paid for.').catch(() => {});
+        // Report the economics for this one too. It used to be called only from the
+        // confirmed/finished branch, so a partial payment settled with NO fee report at
+        // all -- and the only real sale this market has taken was a partial, which is
+        // why there was no observed fee data to reason from when the question came up.
+        //
+        // basisUsd is what actually arrived, not what was invoiced: the percentage is
+        // meant to measure the gateway's cut, and billing the customer's shortfall to
+        // the gateway would have fired the >5% warning on a clean sale.
+        reportSaleEconomics(d, { basisUsd: paidUsd, partial: true })
+          .catch(e => console.error('[ipn] fee report (partial):', e.message));
+
         return json(res, 200, { ok: true, note: 'partial, held for review' });
 
       } else if (['failed', 'expired', 'refunded'].includes(d.payment_status)) {
