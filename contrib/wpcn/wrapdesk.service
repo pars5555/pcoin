@@ -21,6 +21,12 @@ Group=wrapdesk
 StateDirectory=wrapdesk
 Environment=WRAPDESK_STATE=/var/lib/wrapdesk/requests.json
 NoNewPrivileges=true
+# The request file is rewritten on every new request, and TWO other things
+# must be able to read it: pcoin-wrapdesk-watch, which would otherwise stop
+# seeing customer deposits, and the operator dashboard. Pinning the umask
+# stops a stricter default ever producing a 0600 file and silently making
+# every allocated address invisible again.
+UMask=0022
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
