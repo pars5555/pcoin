@@ -104,10 +104,29 @@ async function deposits(addr) {
 }
 
 async function reserveBalance() {
-  const d = await jget(`/api/address/${RESERVE}`);
-  if (d === null) return null;
-  const sat = d.balance?.confirmed?.onchain_unspent_sat;
-  return sat == null ? null : sat / 1e8;
+  // The reserve is a WALLET, not one address. Customer deposits land on the
+  // per-user addresses this desk hands out — all derived from the same xpub —
+  // so counting only index 0 made a confirmed, fee-bearing wrap invisible on
+  // the proof page: 10 PCN arrived and Surplus still read 0.00. Sum index 0
+  // plus every allocated address.
+  //
+  // Failure shape matters on a solvency page: if INDEX 0 is unreadable the
+  // whole figure is UNKNOWN (return null — never render a failed read as a
+  // zero balance). If an ALLOCATED address is unreadable, skip it: that can
+  // only UNDERCOUNT the surplus, never the core backing, which is the safe
+  // direction to be wrong in.
+  const one = async (a) => {
+    const d = await jget(`/api/address/${a}`);
+    if (d === null) return null;
+    const sat = d.balance?.confirmed?.onchain_unspent_sat;
+    return sat == null ? null : sat / 1e8;
+  };
+  const main = await one(RESERVE);
+  if (main === null) return null;
+  const allocated = Object.values(load().requests || {})
+    .map((r) => r.address).filter((a) => a && a !== RESERVE);
+  const extras = await Promise.all(allocated.map(one));
+  return extras.reduce((sum, v) => sum + (v ?? 0), main);
 }
 
 // ── rate limit: the pool is finite, so allocation is what needs limiting ─────
