@@ -69,6 +69,9 @@ class SendActivity : AppCompatActivity() {
     private lateinit var bookScroll: ScrollView
     private lateinit var amountField: EditText
     private lateinit var maxButton: Button
+    private lateinit var feeNormalButton: Button
+    private lateinit var feeFastButton: Button
+    private lateinit var feeVeryFastButton: Button
     private lateinit var composeError: TextView
     private lateinit var reviewButton: Button
 
@@ -95,6 +98,7 @@ class SendActivity : AppCompatActivity() {
     private lateinit var doneButton: Button
 
     private var sendMax = false
+    private var feeTier = ForwardPolicy.FeeTier.NORMAL
     private var prepared: ForwardEngine.Prepared? = null
     private var busy = false
 
@@ -139,6 +143,7 @@ class SendActivity : AppCompatActivity() {
         prefs = Prefs(this)
         book = AddressBookStore(this)
         setContentView(R.layout.activity_send)
+        padForSystemBars()
 
         available = findViewById(R.id.send_available)
         gateNotice = findViewById(R.id.send_gate_notice)
@@ -150,6 +155,9 @@ class SendActivity : AppCompatActivity() {
         bookScroll = findViewById(R.id.book_scroll)
         amountField = findViewById(R.id.amount_field)
         maxButton = findViewById(R.id.max_button)
+        feeNormalButton = findViewById(R.id.fee_normal)
+        feeFastButton = findViewById(R.id.fee_fast)
+        feeVeryFastButton = findViewById(R.id.fee_very_fast)
         composeError = findViewById(R.id.compose_error)
         reviewButton = findViewById(R.id.review_button)
 
@@ -209,6 +217,10 @@ class SendActivity : AppCompatActivity() {
         saveButton.setOnClickListener { saveName() }
 
         maxButton.setOnClickListener { toggleMax() }
+        feeNormalButton.setOnClickListener { setFeeTier(ForwardPolicy.FeeTier.NORMAL) }
+        feeFastButton.setOnClickListener { setFeeTier(ForwardPolicy.FeeTier.FAST) }
+        feeVeryFastButton.setOnClickListener { setFeeTier(ForwardPolicy.FeeTier.VERY_FAST) }
+        markFeeTierButtons()
         reviewButton.setOnClickListener { onReview() }
         confirmButton.setOnClickListener { onConfirm() }
         // Same guard as onBackPressed, and for the same reason. Guarding the
@@ -456,6 +468,40 @@ class SendActivity : AppCompatActivity() {
         maxButton.alpha = if (sendMax) 1f else 0.75f
     }
 
+    // Guarded on `busy` like every compose-mutating control: a pick landing
+    // after showReview would not change what Confirm broadcasts (`prepared`
+    // is already built), but it would leave the hidden selector disagreeing
+    // with the fee the user is looking at.
+    private fun setFeeTier(t: ForwardPolicy.FeeTier) {
+        if (busy) return
+        feeTier = t
+        markFeeTierButtons()
+    }
+
+    // The selected tier is FILLED like the primary button; the others stay
+    // ghost outlines. An alpha difference alone was tried first and the owner
+    // could not tell which one was selected -- the selected state has to
+    // survive a glance in sunlight, not reward a close look.
+    private fun markFeeTierButtons() {
+        val buttons = mapOf(
+            ForwardPolicy.FeeTier.NORMAL to feeNormalButton,
+            ForwardPolicy.FeeTier.FAST to feeFastButton,
+            ForwardPolicy.FeeTier.VERY_FAST to feeVeryFastButton,
+        )
+        for ((tier, button) in buttons) {
+            val selected = tier == feeTier
+            button.isEnabled = !selected
+            button.alpha = 1f
+            if (selected) {
+                button.setBackgroundResource(R.drawable.btn_primary)
+                button.setTextColor(getColor(R.color.on_brand))
+            } else {
+                button.setBackgroundResource(R.drawable.btn_ghost)
+                button.setTextColor(getColor(R.color.brand))
+            }
+        }
+    }
+
     // ------------------------------------------------------------------ compose
 
     private fun onReview() {
@@ -498,11 +544,14 @@ class SendActivity : AppCompatActivity() {
         reviewButton.text = getString(R.string.send_preparing)
 
         val wallet = prefs.payoutWallet
+        // Captured before the thread starts, like `wallet`: the background
+        // build must use the tier that was selected when Review was pressed.
+        val tier = feeTier
         Thread {
             var built: ForwardEngine.Prepared? = null
             var err: String? = null
             try {
-                built = MinerService.engine()?.prepareSend(addr, amountSat, sendMax, wallet)
+                built = MinerService.engine()?.prepareSend(addr, amountSat, sendMax, wallet, tier)
                     ?: throw ForwardEngine.SendRefused("The wallet service is not running yet.")
             } catch (e: Exception) {
                 err = e.message ?: e.javaClass.simpleName

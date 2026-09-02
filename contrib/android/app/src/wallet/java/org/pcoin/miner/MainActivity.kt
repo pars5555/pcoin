@@ -105,6 +105,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         setContentView(R.layout.activity_wallet)
+        padForSystemBars()
 
         nodeDot = findViewById(R.id.node_dot)
         nodeStatus = findViewById(R.id.node_status)

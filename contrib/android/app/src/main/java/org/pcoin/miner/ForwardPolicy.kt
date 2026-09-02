@@ -304,8 +304,45 @@ object ForwardPolicy {
      * `sendrawtransaction`'s maxfeerate, in PCN/kvB -- a DIFFERENT UNIT from
      * the sat/vB above, on the immediately adjacent call. 0.0001 PCN/kvB =
      * 10 sat/vB = 10x our target, which is the intended headroom.
+     *
+     * This is the cap for the AUTOMATIC sweep/probe path, which always pays
+     * the floor rate. A user-directed send carries its tier's own cap
+     * ([FeeTier.broadcastMaxFeeRatePcnKvb]) instead; for [FeeTier.NORMAL] the
+     * two are equal by construction, and a test asserts it.
      */
     const val BROADCAST_MAX_FEE_RATE = 0.0001
+
+    /**
+     * Every fee ceiling is `rate x this`, in both units: the decoded-fee
+     * ceilings ([maxFeeSat], [maxFeeSatFor]) and the broadcast maxfeerate.
+     * One number so the "raised in lockstep" property is structural.
+     */
+    const val FEE_CEILING_HEADROOM = 10.0
+
+    /**
+     * The rates a user can choose on the send screen. STATIC on purpose:
+     * this chain has no fee history (blocks are mostly coinbase-only), so
+     * `estimatesmartfee` returns an error, not a number, and there is nothing
+     * to be dynamic about. A higher tier buys robustness -- clearing a miner
+     * running a raised `blockmintxfee`, or outbidding a competing tx -- not
+     * auction position.
+     *
+     * Only this enum can reach the user path's `fee_rate`, so only these
+     * three vetted values can ever be sent.
+     */
+    enum class FeeTier(val rateSatVb: Double) {
+        NORMAL(1.0),
+        FAST(5.0),
+        VERY_FAST(20.0);
+
+        /**
+         * The `sendrawtransaction`/`testmempoolaccept` maxfeerate for this
+         * tier, in PCN/kvB. 1 sat/vB = 1e-5 PCN/kvB; the only place that
+         * conversion is written.
+         */
+        val broadcastMaxFeeRatePcnKvb: Double
+            get() = rateSatVb * FEE_CEILING_HEADROOM / 100_000.0
+    }
 
     /** P2WPKH sweep to one output: weight 166 + 272n, i.e. vsize 41.5 + 68n. */
     fun estimatedVsize(inputs: Int): Double = 41.5 + 68.0 * inputs
@@ -319,16 +356,20 @@ object ForwardPolicy {
      * This is the assertion that catches a fee-unit blunder before it costs
      * anything.
      */
-    fun maxFeeSat(inputs: Int): Long = ceil(10.0 * estimatedVsize(inputs)).toLong()
+    fun maxFeeSat(inputs: Int): Long = ceil(FEE_CEILING_HEADROOM * estimatedVsize(inputs)).toLong()
 
     /**
      * The same ceiling for a transaction the NODE chose the inputs for.
      *
      * A user-directed send does not pass an input set, so the count is only
      * known after decoding. Two outputs rather than one adds 31 vbytes.
+     *
+     * Scales with the tier's rate so that Fast/Very fast keep the SAME 10x
+     * headroom rather than a loosened absolute bound; the default keeps every
+     * floor-rate caller and test exactly where it was.
      */
-    fun maxFeeSatFor(inputs: Int, outputs: Int): Long =
-        ceil(10.0 * (10.5 + 68.0 * inputs + 31.0 * outputs)).toLong()
+    fun maxFeeSatFor(inputs: Int, outputs: Int, rateSatVb: Double = FEE_RATE_SAT_VB): Long =
+        ceil(FEE_CEILING_HEADROOM * rateSatVb * (10.5 + 68.0 * inputs + 31.0 * outputs)).toLong()
 
     /**
      * A user-directed send, checked against the transaction the node actually
@@ -354,6 +395,7 @@ object ForwardPolicy {
         requestedSat: Long,
         sendMax: Boolean,
         inputValueSat: Long,
+        rateSatVb: Double = FEE_RATE_SAT_VB,
     ): String? {
         if (decoded.txid != expectedTxid) return "txid does not match the decoded transaction"
         if (decoded.inputs.isEmpty()) return "the transaction spends nothing"
@@ -386,8 +428,8 @@ object ForwardPolicy {
         val outValue = decoded.outputs.sumOf { it.valueSat }
         val fee = inputValueSat - outValue
         if (fee <= 0) return "fee is not positive"
-        val ceiling = maxFeeSatFor(decoded.inputs.size, decoded.outputs.size)
-        if (fee > ceiling) return "fee $fee sat exceeds the $ceiling sat ceiling"
+        val ceiling = maxFeeSatFor(decoded.inputs.size, decoded.outputs.size, rateSatVb)
+        if (fee > ceiling) return "fee $fee sat exceeds the $ceiling sat ceiling at $rateSatVb sat/vB"
         return null
     }
 

@@ -22,11 +22,14 @@ android {
     buildFeatures { buildConfig = true }
 
     namespace = "org.pcoin.miner"
-    compileSdk = 34
+    // 35 because Google Play refuses new submissions targeting 34 (checked
+    // against the real console error, 2026-08-31). AGP 8.5.1 only *warns*
+    // about compileSdk 35; the suppression is in gradle.properties.
+    compileSdk = 35
 
     defaultConfig {
         minSdk = 24
-        targetSdk = 34
+        targetSdk = 35
 
         // Deliberately NO ndk.abiFilters here: the prebuilt PCoin binaries only
         // exist for arm64-v8a and filtering must never drop that ABI.
@@ -182,8 +185,29 @@ android {
             // lookup that resolving a RECEIVE's inputs does; gating both on it
             // hid the button on the newest payment, which is the one most likely
             // to be repeated. Caught by opening a real unconfirmed row.
-            versionCode = 11
-            versionName = "0.2.8"
+            // 0.2.9: fee tiers on the send screen (Normal/Fast/Very fast,
+            // static 1/5/20 sat/vB with per-tier ceilings), and address book
+            // export/import to a user-kept JSON file. The tier plumbing lands
+            // in src/main but only the wallet has a send screen, so only the
+            // wallet's behaviour changes and only its version moves.
+            // 0.2.10: same features as 0.2.9, rebuilt for Google Play —
+            // targetSdk 35 (Play refuses 34 for new submissions), CameraX
+            // 1.4.2, and libbitcoind/libbitcoincli relinked with
+            // -Wl,-z,max-page-size=16384 for the 16 KB page-size requirement.
+            // A different binary never ships under a number that already
+            // reached a phone, and 0.2.9 is on two of them.
+            // 0.2.11: the selected fee tier is now a FILLED button. The
+            // alpha-only difference shipped in 0.2.9 was invisible on the
+            // owner's phone; a state the user cannot see is a state that does
+            // not exist.
+            // 0.2.12: history scrolls forever (pages of 50 via listtransactions'
+            // own skip offset) instead of stopping at the first 50; and every
+            // screen pads itself clear of the system bars and the keyboard.
+            // targetSdk 35 made Android draw edge-to-edge and quietly turned
+            // `adjustResize` into a no-op, which put the Send button under the
+            // navigation bar and the keyboard over the field being typed into.
+            versionCode = 15
+            versionName = "0.2.12"
 
             buildConfigField("boolean", "MINING", "false")
             // The ONLY genuine collision between the two apps. bitcoind is
@@ -326,9 +350,12 @@ dependencies {
     // any of it. PaymentUri stays in src/main and needs neither library, so
     // scoping these costs nothing.
     "walletImplementation"("com.google.zxing:core:3.5.3")
-    "walletImplementation"("androidx.camera:camera-camera2:1.3.4")
-    "walletImplementation"("androidx.camera:camera-lifecycle:1.3.4")
-    "walletImplementation"("androidx.camera:camera-view:1.3.4")
+    // 1.4.x, NOT 1.3.x: CameraX 1.3's libimage_processing_util_jni.so is
+    // 4 KB-aligned and fails Google Play's 16 KB page-size check that comes
+    // with targetSdk 35. 1.4 ships 16 KB-aligned native libs.
+    "walletImplementation"("androidx.camera:camera-camera2:1.4.2")
+    "walletImplementation"("androidx.camera:camera-lifecycle:1.4.2")
+    "walletImplementation"("androidx.camera:camera-view:1.4.2")
 
     testImplementation("junit:junit:4.13.2")
 }

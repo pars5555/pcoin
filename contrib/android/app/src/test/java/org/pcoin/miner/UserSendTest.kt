@@ -58,6 +58,7 @@ class UserSendTest {
         expectedTxid: String = txid,
         destination: String = dest,
         script: String = destScript,
+        rateSatVb: Double = ForwardPolicy.FEE_RATE_SAT_VB,
     ) = ForwardPolicy.verifyUserSend(
         decoded = tx,
         destination = destination,
@@ -66,6 +67,7 @@ class UserSendTest {
         requestedSat = requested,
         sendMax = sendMax,
         inputValueSat = inValueSat,
+        rateSatVb = rateSatVb,
     )
 
     // ------------------------------------------------------------ the real ones
@@ -224,6 +226,47 @@ class UserSendTest {
         val why = verify(exactSend(), inValueSat = inValue + 1_000_000L)
         assertNotNull(why)
         assertTrue(why!!.contains("ceiling"))
+    }
+
+    @Test
+    fun `a fee above the FAST ceiling is refused at FAST but passes at VERY FAST`() {
+        // The ceiling must move with the tier in BOTH directions: 10,000 sat
+        // is over FAST's 7,025 sat ceiling and under VERY_FAST's 28,100.
+        val inWithBigFee = paidSat + changeSat + 10_000L
+        val why = verify(
+            exactSend(),
+            inValueSat = inWithBigFee,
+            rateSatVb = ForwardPolicy.FeeTier.FAST.rateSatVb,
+        )
+        assertNotNull(why)
+        assertTrue(why!!.contains("ceiling"))
+        assertNull(
+            verify(
+                exactSend(),
+                inValueSat = inWithBigFee,
+                rateSatVb = ForwardPolicy.FeeTier.VERY_FAST.rateSatVb,
+            )
+        )
+    }
+
+    @Test
+    fun `the normal tier is judged by exactly the old ceiling`() {
+        // The default-parameter refactor must not have moved the floor bound:
+        // a fee AT the old ceiling passes, one satoshi over refuses.
+        val ceiling = ForwardPolicy.maxFeeSatFor(1, 2)
+        assertNull(verify(exactSend(), inValueSat = paidSat + changeSat + ceiling))
+        assertNotNull(verify(exactSend(), inValueSat = paidSat + changeSat + ceiling + 1))
+    }
+
+    @Test
+    fun `tier ceilings stay proportionally tight`() {
+        // The same tight/loose bounds the floor test pins, scaled per tier --
+        // so no tier's ceiling quietly stops being a check.
+        for (t in ForwardPolicy.FeeTier.values()) {
+            val ceiling = ForwardPolicy.maxFeeSatFor(1, 2, t.rateSatVb)
+            assertTrue("tier $t ceiling $ceiling too tight", ceiling > (141L * t.rateSatVb).toLong())
+            assertTrue("tier $t ceiling $ceiling too loose", ceiling < (10_000L * t.rateSatVb).toLong())
+        }
     }
 
     @Test

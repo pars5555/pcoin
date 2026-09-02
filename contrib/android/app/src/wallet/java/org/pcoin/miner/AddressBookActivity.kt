@@ -66,6 +66,7 @@ class AddressBookActivity : AppCompatActivity() {
         prefs = Prefs(this)
         picking = intent?.getBooleanExtra(EXTRA_PICK, false) == true
         setContentView(R.layout.activity_addressbook)
+        padForSystemBars()
 
         savedHint = findViewById(R.id.book_saved_hint)
         savedRows = findViewById(R.id.book_saved_rows)
@@ -74,6 +75,8 @@ class AddressBookActivity : AppCompatActivity() {
         recentRows = findViewById(R.id.book_recent_rows)
 
         addButton.setOnClickListener { promptAdd() }
+        findViewById<Button>(R.id.book_export_button).setOnClickListener { startExport() }
+        findViewById<Button>(R.id.book_import_button).setOnClickListener { startImport() }
 
         recentStatus.text = getString(R.string.book_recent_loading)
         renderSaved()
@@ -192,6 +195,103 @@ class AddressBookActivity : AppCompatActivity() {
             v.findViewById<Button>(R.id.row_recent_name).setOnClickListener { promptName(a) }
             recentRows.addView(v)
         }
+    }
+
+    // -------------------------------------------------------- export / import
+
+    /**
+     * Both directions go through the Storage Access Framework: the user picks
+     * the file, this app never holds a storage permission, and the only thing
+     * that crosses the boundary is the book's own JSON — names and addresses,
+     * no keys, no phrase, nothing from the wallet.
+     */
+    private fun startExport() {
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .setType("application/json")
+            .putExtra(Intent.EXTRA_TITLE, EXPORT_FILENAME)
+        startActivityForResult(intent, REQUEST_EXPORT)
+    }
+
+    private fun startImport() {
+        // */* rather than application/json: a file that has been through a
+        // messenger or a cloud drive often comes back as octet-stream, and a
+        // picker that greys it out reads as "my backup is gone".
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .setType("*/*")
+        startActivityForResult(intent, REQUEST_IMPORT)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (resultCode != Activity.RESULT_OK) return
+        val uri = data?.data ?: return
+        when (requestCode) {
+            REQUEST_EXPORT -> doExport(uri)
+            REQUEST_IMPORT -> doImport(uri)
+        }
+    }
+
+    private fun doExport(uri: android.net.Uri) {
+        try {
+            val entries = store.load()
+            val json = store.exportJson()
+            // "wt" so a re-export over an existing longer file truncates it:
+            // the default "w" on some providers leaves the old tail in place,
+            // and a JSON blob with trailing garbage fails the next import.
+            contentResolver.openOutputStream(uri, "wt")?.use { out ->
+                out.write(json.toByteArray(Charsets.UTF_8))
+            } ?: throw java.io.IOException("could not open the file")
+            Toast.makeText(this, getString(R.string.book_export_done, entries.size), Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            AlertDialog.Builder(this)
+                .setMessage(getString(R.string.book_export_failed, e.message ?: e.javaClass.simpleName))
+                .setPositiveButton(R.string.book_cancel, null)
+                .show()
+        }
+    }
+
+    private fun doImport(uri: android.net.Uri) {
+        try {
+            val raw = contentResolver.openInputStream(uri)?.use { input ->
+                readCapped(input)
+            } ?: throw java.io.IOException("could not open the file")
+            val r = store.importJson(raw)
+            val msg =
+                if (r.added > 0) getString(R.string.book_import_done, r.added, r.alreadyKnown, r.skipped)
+                else getString(R.string.book_import_nothing, r.alreadyKnown, r.skipped)
+            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+            renderSaved()
+            renderRecent(recent)
+        } catch (e: Exception) {
+            // The message never includes file content: JSONTokener embeds the
+            // whole input in its message, and that input may be some other
+            // private file picked by mistake.
+            AlertDialog.Builder(this)
+                .setMessage(getString(R.string.book_import_failed, e.javaClass.simpleName))
+                .setPositiveButton(R.string.book_cancel, null)
+                .show()
+        }
+    }
+
+    /**
+     * Read at most [IMPORT_MAX_BYTES]. A full book is tens of kilobytes, so
+     * anything near the cap is not an address book — refuse rather than feed
+     * a video into a JSON parser.
+     */
+    private fun readCapped(input: java.io.InputStream): String {
+        val buf = java.io.ByteArrayOutputStream()
+        val chunk = ByteArray(8 * 1024)
+        while (true) {
+            val n = input.read(chunk)
+            if (n < 0) break
+            buf.write(chunk, 0, n)
+            if (buf.size() > IMPORT_MAX_BYTES) {
+                throw java.io.IOException("file too large to be an address book")
+            }
+        }
+        return buf.toString("UTF-8")
     }
 
     // --------------------------------------------------------------- dialogs
@@ -321,5 +421,12 @@ class AddressBookActivity : AppCompatActivity() {
 
         /** Same cap HistoryActivity uses, and for the same reason. */
         private const val HISTORY_LIMIT = 50
+
+        private const val REQUEST_EXPORT = 61
+        private const val REQUEST_IMPORT = 62
+        private const val EXPORT_FILENAME = "pcoin-addressbook.json"
+
+        /** ~50x a full 200-entry book. See [readCapped]. */
+        private const val IMPORT_MAX_BYTES = 1024 * 1024
     }
 }

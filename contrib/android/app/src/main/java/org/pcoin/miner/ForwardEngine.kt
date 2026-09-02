@@ -744,11 +744,15 @@ class ForwardEngine(context: Context, private val node: NodeController) {
         return arr
     }
 
-    /** @return the reject reason verbatim, or null when the node would take it. */
-    private fun testAccept(hex: String): String? {
+    /**
+     * @return the reject reason verbatim, or null when the node would take it.
+     * The default maxfeerate is the floor-rate cap; only a user send with a
+     * chosen tier passes anything else.
+     */
+    private fun testAccept(hex: String, maxFeeRate: Double = ForwardPolicy.BROADCAST_MAX_FEE_RATE): String? {
         val r = rpc.call(
             "testmempoolaccept",
-            JSONArray().put(JSONArray().put(hex)).put(ForwardPolicy.BROADCAST_MAX_FEE_RATE),
+            JSONArray().put(JSONArray().put(hex)).put(maxFeeRate),
             readTimeoutMs = RPC_TIMEOUT_MS,
         ) as? JSONArray ?: return "the node did not answer testmempoolaccept"
         val first = r.optJSONObject(0) ?: return "the node did not answer testmempoolaccept"
@@ -1273,6 +1277,7 @@ class ForwardEngine(context: Context, private val node: NodeController) {
         val feeSat: Long,
         val inputs: Int,
         val sendMax: Boolean,
+        val tier: ForwardPolicy.FeeTier,
     )
 
     /** Thrown with a message already fit to show a user. */
@@ -1286,7 +1291,13 @@ class ForwardEngine(context: Context, private val node: NodeController) {
      * fine".
      */
     @Throws(SendRefused::class, IOException::class)
-    fun prepareSend(destination: String, amountSat: Long, sendMax: Boolean, wallet: String): Prepared {
+    fun prepareSend(
+        destination: String,
+        amountSat: Long,
+        sendMax: Boolean,
+        wallet: String,
+        tier: ForwardPolicy.FeeTier,
+    ): Prepared {
         if (!sendMax && Amounts.isDust(amountSat)) {
             throw SendRefused("That amount is too small to send.")
         }
@@ -1313,7 +1324,7 @@ class ForwardEngine(context: Context, private val node: NodeController) {
         // -4 "Insufficient funds"; sendall on an empty wallet is -6 with a
         // paragraph about uneconomic UTXOs. None of those are worth showing raw.
         val built = try {
-            if (sendMax) callSendAllTo(canonical, wallet) else callExactSend(canonical, amountSat, wallet)
+            if (sendMax) callSendAllTo(canonical, wallet, tier) else callExactSend(canonical, amountSat, wallet, tier)
         } catch (e: RpcClient.RpcError) {
             throw SendRefused(explainBuildFailure(e))
         }
@@ -1348,12 +1359,13 @@ class ForwardEngine(context: Context, private val node: NodeController) {
             requestedSat = amountSat,
             sendMax = sendMax,
             inputValueSat = inValue,
+            rateSatVb = tier.rateSatVb,
         )
         if (why != null) throw SendRefused("The transaction the node built is not the one asked for: $why")
 
         val paid = annotated.outputs.first { it.address == canonical }.valueSat
         val fee = inValue - annotated.outputs.sumOf { it.valueSat }
-        return Prepared(built.hex, built.txid, canonical, paid, fee, annotated.inputs.size, sendMax)
+        return Prepared(built.hex, built.txid, canonical, paid, fee, annotated.inputs.size, sendMax, tier)
     }
 
     /**
@@ -1386,14 +1398,16 @@ class ForwardEngine(context: Context, private val node: NodeController) {
      */
     @Throws(SendRefused::class, IOException::class)
     fun broadcastPrepared(p: Prepared): String {
-        testAccept(p.hex)?.let { reason ->
+        // The cap matches the tier the transaction was BUILT at; a floor cap
+        // here would refuse the Fast/Very fast transactions it just vetted.
+        testAccept(p.hex, p.tier.broadcastMaxFeeRatePcnKvb)?.let { reason ->
             if (isAlreadySent(reason)) return p.txid
             throw SendRefused(explainReject(reason))
         }
         val txid = try {
             rpc.call(
                 "sendrawtransaction",
-                JSONArray().put(p.hex).put(ForwardPolicy.BROADCAST_MAX_FEE_RATE),
+                JSONArray().put(p.hex).put(p.tier.broadcastMaxFeeRatePcnKvb),
                 readTimeoutMs = RPC_TIMEOUT_MS,
             ) as? String ?: throw SendRefused("The node did not confirm the broadcast.")
         } catch (e: RpcClient.RpcError) {
@@ -1486,12 +1500,32 @@ class ForwardEngine(context: Context, private val node: NodeController) {
      * `receive`. `orphan` is a mined block that lost a reorg; on a chain with a
      * ~3% stale rate it is not hypothetical, and it is folded into CONFLICTED
      * because the money is genuinely not there.
+     *
+     * [skip] is `listtransactions`' own offset, counted from the NEWEST
+     * transaction, which is what makes endless scrolling possible: page N asks
+     * for `skip = N * count`. Rows this function drops (an unreadable amount, a
+     * category this chain never produces) are dropped AFTER the node counted
+     * them, so a page can come back shorter than `count` without meaning the
+     * history ended. Only an EMPTY page proves the end -- a caller that stops
+     * on a short one will silently hide transactions.
      */
+    /**
+     * One page of history, plus how many rows the NODE returned before this
+     * function dropped any. The raw count is what decides whether more pages
+     * exist; the filtered list is what the screen draws. Conflating the two
+     * ends the list early on a page that happened to be all-unreadable.
+     */
+    data class HistoryPage(val entries: List<HistoryEntry>, val rawCount: Int)
+
     @Throws(IOException::class)
-    fun listHistory(wallet: String, count: Int = 50): List<HistoryEntry> {
+    fun listHistory(wallet: String, count: Int = 50, skip: Int = 0): List<HistoryEntry> =
+        listHistoryPage(wallet, count, skip).entries
+
+    @Throws(IOException::class)
+    fun listHistoryPage(wallet: String, count: Int = 50, skip: Int = 0): HistoryPage {
         val arr = rpc.call(
             "listtransactions",
-            JSONArray().put("*").put(count).put(0).put(true),
+            JSONArray().put("*").put(count).put(skip).put(true),
             wallet = wallet,
             readTimeoutMs = LIST_TIMEOUT_MS,
         ) as? JSONArray ?: throw IOException("the node did not answer listtransactions")
@@ -1529,7 +1563,7 @@ class ForwardEngine(context: Context, private val node: NodeController) {
             )
         }
         out.reverse()
-        return out
+        return HistoryPage(out, arr.length())
     }
 
     /**
@@ -1630,10 +1664,15 @@ class ForwardEngine(context: Context, private val node: NodeController) {
     )
 
     /** Exact amount, node-selected inputs, change back to us. */
-    private fun callExactSend(destination: String, amountSat: Long, wallet: String): Built {
+    private fun callExactSend(
+        destination: String,
+        amountSat: Long,
+        wallet: String,
+        tier: ForwardPolicy.FeeTier,
+    ): Built {
         val options = JSONObject()
             .put("add_to_wallet", false)
-            .put("fee_rate", ForwardPolicy.FEE_RATE_SAT_VB)
+            .put("fee_rate", tier.rateSatVb)
         // The amount goes over as an exact fixed-point STRING. AmountFromValue
         // runs ParseFixedPoint over the raw text, and a double can serialise as
         // 1.0E-8, which the node rejects.
@@ -1658,10 +1697,10 @@ class ForwardEngine(context: Context, private val node: NodeController) {
      * "JSON value of type object is not of expected type number". Verified
      * against a regtest node; do not shorten this argument list.
      */
-    private fun callSendAllTo(destination: String, wallet: String): Built {
+    private fun callSendAllTo(destination: String, wallet: String, tier: ForwardPolicy.FeeTier): Built {
         val options = JSONObject()
             .put("add_to_wallet", false)
-            .put("fee_rate", ForwardPolicy.FEE_RATE_SAT_VB)
+            .put("fee_rate", tier.rateSatVb)
         val params = JSONArray()
             .put(JSONArray().put(destination))
             .put(JSONObject.NULL)

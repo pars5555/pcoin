@@ -81,6 +81,7 @@ class ForwardActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_forward)
+        padForSystemBars()
 
         prefs = Prefs(this)
         seedStore = SeedStore(this)

@@ -277,4 +277,102 @@ class AddressBookTest {
         assertNull(AddressBook.labelFor(listOf(entry(other, "Exchange")), market))
         assertNotNull(AddressBook.labelFor(listOf(entry(market, "Market")), market))
     }
+
+    // ------------------------------------------------------------------ merge
+
+    @Test
+    fun `import adds unknown addresses and counts them`() {
+        val current = listOf(entry(market, "Market"))
+        val r = AddressBook.merge(current, listOf(entry(other, "Exchange")))
+        assertEquals(2, r.merged.size)
+        assertEquals(1, r.added)
+        assertEquals(0, r.alreadyKnown)
+        assertEquals(0, r.skipped)
+        assertEquals("Exchange", AddressBook.labelFor(r.merged, other))
+    }
+
+    @Test
+    fun `the current book always wins on an address collision`() {
+        // The import is a way to get names back, never a way to overwrite the
+        // name the user has now.
+        val current = listOf(entry(market, "Market", added = 5L, used = 9L))
+        val r = AddressBook.merge(current, listOf(entry(market, "OldName")))
+        assertEquals(1, r.merged.size)
+        assertEquals("Market", r.merged[0].name)
+        assertEquals(9L, r.merged[0].lastUsedAtMs)
+        assertEquals(0, r.added)
+        assertEquals(1, r.alreadyKnown)
+    }
+
+    @Test
+    fun `an address collision matches by key, not by spelling`() {
+        val r = AddressBook.merge(
+            listOf(entry(market, "Market")),
+            listOf(entry(market.uppercase(), "Shouty")),
+        )
+        assertEquals(1, r.merged.size)
+        assertEquals("Market", r.merged[0].name)
+        assertEquals(1, r.alreadyKnown)
+    }
+
+    @Test
+    fun `a name clash is skipped, not renamed`() {
+        // Two entries called "Market" is the confident-wrong-payment failure;
+        // an auto-suffixed "Market (2)" is a label the user never chose.
+        val r = AddressBook.merge(
+            listOf(entry(market, "Market")),
+            listOf(entry(other, "market")),
+        )
+        assertEquals(1, r.merged.size)
+        assertEquals(0, r.added)
+        assertEquals(1, r.skipped)
+    }
+
+    @Test
+    fun `two imported entries clashing with each other keep only the first`() {
+        val third = "pc1qthird000000000000000000000000000000000"
+        val r = AddressBook.merge(
+            emptyList(),
+            listOf(entry(other, "Exchange"), entry(third, "exchange")),
+        )
+        assertEquals(1, r.merged.size)
+        assertEquals(1, r.added)
+        assertEquals(1, r.skipped)
+    }
+
+    @Test
+    fun `an unreadable imported row is skipped without failing the rest`() {
+        val r = AddressBook.merge(
+            emptyList(),
+            listOf(entry(other, ""), entry("", "Ghost"), entry(market, "Market")),
+        )
+        assertEquals(1, r.merged.size)
+        assertEquals(1, r.added)
+        assertEquals(2, r.skipped)
+        assertEquals("Market", AddressBook.labelFor(r.merged, market))
+    }
+
+    @Test
+    fun `the entry cap holds through an import`() {
+        val current = (1..AddressBook.MAX_ENTRIES).map {
+            entry("pc1qfull$it", "Name $it")
+        }
+        val r = AddressBook.merge(current, listOf(entry(other, "One more")))
+        assertEquals(AddressBook.MAX_ENTRIES, r.merged.size)
+        assertEquals(0, r.added)
+        assertEquals(1, r.skipped)
+    }
+
+    @Test
+    fun `a merged book still refuses duplicates through nameProblem`() {
+        // The invariant the skip rule protects: after any merge, every name is
+        // unique case-insensitively, so the book never holds two entries the
+        // list cannot tell apart.
+        val r = AddressBook.merge(
+            listOf(entry(market, "Market")),
+            listOf(entry(other, "Exchange")),
+        )
+        val names = r.merged.map { it.name.lowercase() }
+        assertEquals(names.size, names.toSet().size)
+    }
 }

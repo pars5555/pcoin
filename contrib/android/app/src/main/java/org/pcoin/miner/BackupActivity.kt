@@ -50,6 +50,7 @@ class BackupActivity : AppCompatActivity() {
             WindowManager.LayoutParams.FLAG_SECURE,
         )
         setContentView(R.layout.activity_backup)
+        padForSystemBars()
 
         seedStore = SeedStore(this)
         gate = SeedGate(this)

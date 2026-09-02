@@ -7,6 +7,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import java.text.SimpleDateFormat
@@ -46,8 +47,27 @@ class HistoryActivity : AppCompatActivity() {
     private lateinit var status: TextView
     private lateinit var rows: LinearLayout
     private lateinit var refresh: Button
+    private lateinit var scroll: ScrollView
 
     private var busy = false
+
+    /**
+     * Every row loaded so far, oldest page last. The screen appends rather than
+     * replaces, so scrolling back up does not re-ask the node for pages it has
+     * already drawn.
+     */
+    private val loaded = ArrayList<ForwardEngine.HistoryEntry>()
+
+    /**
+     * How many pages have been requested. The node's `skip` is counted in ITS
+     * rows, so the offset is `pages * HISTORY_LIMIT` -- never `loaded.size`,
+     * which is smaller whenever a row was dropped and would re-request rows
+     * already shown.
+     */
+    private var pages = 0
+
+    /** Set when a page comes back with no node rows at all. Then we stop asking. */
+    private var reachedEnd = false
 
     /**
      * The address book, read once per draw rather than once per row.
@@ -81,34 +101,62 @@ class HistoryActivity : AppCompatActivity() {
         // from listtransactions rather than from its outputs.
         myAddresses = setOfNotNull(prefs.payoutAddress)
         setContentView(R.layout.activity_history)
+        padForSystemBars()
 
         status = findViewById(R.id.history_status)
         rows = findViewById(R.id.row_container)
         refresh = findViewById(R.id.history_refresh)
+        scroll = findViewById(R.id.history_scroll)
         refresh.setOnClickListener { load() }
+
+        // Endless scroll. Fires when the view is within one screen-height of the
+        // bottom, so the next page is usually already drawn by the time the user
+        // gets there. `load()` guards on `busy`, so a fling that crosses the
+        // threshold repeatedly still only starts one request.
+        scroll.setOnScrollChangeListener { v, _, scrollY, _, _ ->
+            val child = (v as ScrollView).getChildAt(0) ?: return@setOnScrollChangeListener
+            val remaining = child.height - v.height - scrollY
+            if (remaining <= v.height) loadMore()
+        }
 
         status.text = getString(R.string.history_loading)
         load()
     }
 
+    /** Reload from the top: forget every page and ask again. */
     private fun load() {
         if (busy) return
+        loaded.clear()
+        pages = 0
+        reachedEnd = false
+        fetchPage(replace = true)
+    }
+
+    /** Append the next page, unless one is in flight or the list has ended. */
+    private fun loadMore() {
+        if (busy || reachedEnd || pages == 0) return
+        fetchPage(replace = false)
+    }
+
+    private fun fetchPage(replace: Boolean) {
         busy = true
         refresh.isEnabled = false
         refresh.alpha = 0.6f
         refresh.text = getString(R.string.history_loading_short)
+        if (!replace) status.text = getString(R.string.history_loading_more, loaded.size)
 
         val wallet = prefs.payoutWallet
+        val skip = pages * HISTORY_LIMIT
         Thread {
-            var list: List<ForwardEngine.HistoryEntry>? = null
+            var page: ForwardEngine.HistoryPage? = null
             var err: String? = null
             try {
-                list = MinerService.engine()?.listHistory(wallet, HISTORY_LIMIT)
+                page = MinerService.engine()?.listHistoryPage(wallet, HISTORY_LIMIT, skip)
                     ?: throw IllegalStateException(getString(R.string.history_no_service))
             } catch (e: Exception) {
                 err = e.message ?: e.javaClass.simpleName
             }
-            val got = list
+            val got = page
             ui.post {
                 busy = false
                 refresh.isEnabled = true
@@ -117,9 +165,14 @@ class HistoryActivity : AppCompatActivity() {
                 if (got == null) {
                     // Deliberately leaves whatever is already on screen in place.
                     status.text = getString(R.string.history_failed, err.orEmpty())
-                } else {
-                    render(got)
+                    return@post
                 }
+                pages++
+                // The NODE's row count decides the end, not the filtered one.
+                if (got.rawCount == 0) reachedEnd = true
+                if (replace) loaded.clear()
+                loaded.addAll(got.entries)
+                render(loaded)
             }
         }.start()
     }
@@ -139,12 +192,13 @@ class HistoryActivity : AppCompatActivity() {
                 else getString(R.string.history_empty_syncing)
             return
         }
-        // Say so when the list is cut off, rather than presenting the cap as the
-        // total. A restored mining phrase passes 50 coinbases inside a day, and
-        // silently hiding everything older reads as "my payments are missing".
+        // The list is no longer capped -- scrolling loads more -- so the count
+        // is only qualified while more pages may still exist. Saying a bare
+        // total before the end is reached would present a page as the whole
+        // history, which is the thing the old cap message existed to prevent.
         status.text =
-            if (list.size >= HISTORY_LIMIT) getString(R.string.history_count_capped, list.size)
-            else resources.getQuantityString(R.plurals.history_count, list.size, list.size)
+            if (reachedEnd) resources.getQuantityString(R.plurals.history_count, list.size, list.size)
+            else getString(R.string.history_count_more, list.size)
 
         val inflater = LayoutInflater.from(this)
         val stamp = SimpleDateFormat("d MMM yyyy, HH:mm", Locale.getDefault())

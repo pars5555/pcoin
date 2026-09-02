@@ -262,6 +262,50 @@ object AddressBook {
                 .thenBy { it.name.lowercase() }
         )
 
+    /** What an import did: the resulting book, plus counts for the user. */
+    data class ImportResult(
+        val merged: List<Entry>,
+        val added: Int,
+        /** Address already in the book — the existing entry was kept as-is. */
+        val alreadyKnown: Int,
+        /** Name clash or the MAX_ENTRIES cap — the imported entry was NOT added. */
+        val skipped: Int,
+    )
+
+    /**
+     * Merge an exported book into the current one. THE CURRENT BOOK ALWAYS
+     * WINS: an import must never rename, move or reorder what the user has
+     * now — it is a way to get names back, not a way to overwrite them.
+     *
+     * An imported entry is added only when its address is unknown AND its
+     * name collides with nothing (current or already merged, case-insensitive
+     * like [nameProblem]) AND the book is under [MAX_ENTRIES]. A name clash is
+     * skipped rather than suffixed, because two entries with one name is the
+     * confident-wrong-payment failure the book must never contain — and an
+     * auto-renamed "market (2)" is a label the user never chose.
+     */
+    fun merge(current: List<Entry>, imported: List<Entry>): ImportResult {
+        val out = current.toMutableList()
+        val keys = current.map { it.key }.toHashSet()
+        val names = current.map { it.name.lowercase() }.toHashSet()
+        var added = 0
+        var known = 0
+        var skipped = 0
+        for (e in imported) {
+            val name = cleanName(e.name)
+            if (e.address.isBlank() || name.isEmpty()) { skipped++; continue }
+            if (!keys.add(e.key)) { known++; continue }
+            if (!names.add(name.lowercase()) || out.size >= MAX_ENTRIES) {
+                keys.remove(e.key)
+                skipped++
+                continue
+            }
+            out.add(e.copy(name = name))
+            added++
+        }
+        return ImportResult(out, added, known, skipped)
+    }
+
     /**
      * Addresses this wallet has paid that have no name yet, newest first.
      *

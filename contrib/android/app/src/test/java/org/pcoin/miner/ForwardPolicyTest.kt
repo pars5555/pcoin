@@ -686,4 +686,68 @@ class ForwardPolicyTest {
         assertEquals(1_095L, ForwardPolicy.maxFeeSat(1))
         assertEquals(136_415L, ForwardPolicy.maxFeeSat(200))
     }
+
+    // -------------------------------------------------------------- fee tiers
+
+    @Test
+    fun tierRatesAreTheShippedConstants() {
+        // The rates the send screen advertises. If one moves, the
+        // send_fee_hint string and these assertions move with it.
+        assertEquals(1.0, ForwardPolicy.FeeTier.NORMAL.rateSatVb, 0.0)
+        assertEquals(5.0, ForwardPolicy.FeeTier.FAST.rateSatVb, 0.0)
+        assertEquals(20.0, ForwardPolicy.FeeTier.VERY_FAST.rateSatVb, 0.0)
+    }
+
+    @Test
+    fun everyTierBroadcastCapIsHeadroomTimesRateInPcnPerKvb() {
+        // 1 sat/vB = 1e-5 PCN/kvB. The broadcast cap and the decoded-fee
+        // ceiling are BOTH rate x 10, so raising a tier raises them in
+        // lockstep by construction.
+        for (t in ForwardPolicy.FeeTier.values()) {
+            assertEquals(t.rateSatVb * 10.0 / 100_000.0, t.broadcastMaxFeeRatePcnKvb, 0.0)
+        }
+        assertEquals(0.0001, ForwardPolicy.FeeTier.NORMAL.broadcastMaxFeeRatePcnKvb, 0.0)
+        assertEquals(0.0005, ForwardPolicy.FeeTier.FAST.broadcastMaxFeeRatePcnKvb, 0.0)
+        assertEquals(0.002, ForwardPolicy.FeeTier.VERY_FAST.broadcastMaxFeeRatePcnKvb, 0.0)
+    }
+
+    @Test
+    fun theFloorTierBroadcastCapEqualsTheSweepCap() {
+        // The automatic sweep path still uses the global constant; NORMAL
+        // must be exactly that, or "default tier changes nothing" is false.
+        assertEquals(
+            ForwardPolicy.BROADCAST_MAX_FEE_RATE,
+            ForwardPolicy.FeeTier.NORMAL.broadcastMaxFeeRatePcnKvb,
+            0.0,
+        )
+    }
+
+    @Test
+    fun perTierCeilingsKeepTheSameHeadroom() {
+        // 1-in/2-out modelled vsize is 140.5 vB; ceiling = rate x 10 x that.
+        assertEquals(1_405L, ForwardPolicy.maxFeeSatFor(1, 2))
+        assertEquals(7_025L, ForwardPolicy.maxFeeSatFor(1, 2, 5.0))
+        assertEquals(28_100L, ForwardPolicy.maxFeeSatFor(1, 2, 20.0))
+        // No rate argument means the floor: the pre-tier ceiling, unchanged.
+        assertEquals(
+            ForwardPolicy.maxFeeSatFor(1, 2),
+            ForwardPolicy.maxFeeSatFor(1, 2, ForwardPolicy.FEE_RATE_SAT_VB),
+        )
+    }
+
+    @Test
+    fun aFeeUnitBlunderIsCaughtAtEveryTier() {
+        // The blunder the ceilings exist for: a sat/vB figure sent where
+        // PCN/kvB belongs is ~1e5 off. Whatever the tier, its ceiling must
+        // sit far below that -- i.e. headroom must stay orders of magnitude
+        // under the unit-confusion factor.
+        for (t in ForwardPolicy.FeeTier.values()) {
+            val blunderFeeSat = (t.rateSatVb * 100_000.0 * 140.5).toLong()
+            val ceiling = ForwardPolicy.maxFeeSatFor(1, 2, t.rateSatVb)
+            assertTrue(
+                "tier $t ceiling $ceiling would let a unit blunder ($blunderFeeSat sat) through",
+                blunderFeeSat > ceiling,
+            )
+        }
+    }
 }

@@ -116,6 +116,7 @@ class SetupActivity : AppCompatActivity() {
             WindowManager.LayoutParams.FLAG_SECURE,
         )
         setContentView(R.layout.activity_setup)
+        padForSystemBars()
 
         prefs = Prefs(this)
         seedStore = SeedStore(this)

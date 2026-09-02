@@ -116,6 +116,14 @@
     <!-- MAX, not "All": next to an amount box "All" reads as a quantity that
          could be typed, while MAX is unmistakably the button that fills it. -->
     <string name="send_max">MAX</string>
+    <!-- The rates ARE fixed: this chain has no fee history to estimate from,
+         so these are honest constants, not a broken estimator. Keep the
+         figures in send_fee_hint matching ForwardPolicy.FeeTier. -->
+    <string name="send_fee_label">Network fee rate</string>
+    <string name="send_fee_normal">Normal</string>
+    <string name="send_fee_fast">Fast</string>
+    <string name="send_fee_very_fast">Very fast</string>
+    <string name="send_fee_hint">Fixed rates: 1, 5 or 20 sat per vbyte. Normal is enough unless the network is busy.</string>
     <string name="send_review">Check this send</string>
 
     <string name="send_check_title">Check before sending</string>
@@ -167,6 +175,9 @@
     <string name="history_empty">Nothing yet. Payments in and out will appear here.</string>
     <string name="history_empty_syncing">This phone is still catching up. Your transactions will appear once it has.</string>
     <string name="history_count_capped">Showing the most recent %1$d</string>
+    <!-- Shown while more pages may exist: scrolling to the bottom loads them. -->
+    <string name="history_count_more">%1$d so far &#8212; scroll for more</string>
+    <string name="history_loading_more">Loading more&#8230; (%1$d so far)</string>
     <string name="history_failed">Could not load your activity: %1$s</string>
     <string name="history_no_service">The wallet service is not running yet.</string>
 
@@ -282,6 +293,14 @@
     <string name="book_saved_toast">Saved as %1$s</string>
     <string name="book_removed_toast">Name removed. Your payments are untouched.</string>
 
+    <string name="book_export">Export to a file</string>
+    <string name="book_import">Import from a file</string>
+    <string name="book_export_hint">The file holds only names and addresses &#8212; no keys, no phrase. Keep it anywhere; importing it never changes names you already have.</string>
+    <string name="book_export_done">Saved %1$d names to the file.</string>
+    <string name="book_export_failed">Could not write the file: %1$s</string>
+    <string name="book_import_done">Added %1$d names. %2$d were already here, %3$d skipped.</string>
+    <string name="book_import_nothing">That file added nothing new. %1$d names were already here, %2$d skipped.</string>
+    <string name="book_import_failed">Could not read that file as an address book: %1$s</string>
     <string name="book_remove_title">Remove this name?</string>
     <string name="book_remove_body">%1$s\n%2$s\n\nThis removes the name only. Payments you have already made are not affected and the address still appears in your activity.</string>
 

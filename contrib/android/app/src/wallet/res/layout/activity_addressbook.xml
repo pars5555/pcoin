@@ -81,6 +81,46 @@
                 android:textAllCaps="false"
                 android:textColor="@color/brand"
                 android:textSize="15sp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/book_export_button"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:background="@drawable/btn_ghost"
+                    android:minHeight="48dp"
+                    android:text="@string/book_export"
+                    android:textAllCaps="false"
+                    android:textColor="@color/brand"
+                    android:textSize="15sp" />
+
+                <Button
+                    android:id="@+id/book_import_button"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="10dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/btn_ghost"
+                    android:minHeight="48dp"
+                    android:text="@string/book_import"
+                    android:textAllCaps="false"
+                    android:textColor="@color/brand"
+                    android:textSize="15sp" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="@string/book_export_hint"
+                android:textColor="@color/ink_muted"
+                android:textSize="12sp" />
         </LinearLayout>
 
         <!-- ===================== paid, not named ===================== -->

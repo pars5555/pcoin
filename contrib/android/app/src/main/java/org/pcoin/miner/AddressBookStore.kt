@@ -74,6 +74,29 @@ class AddressBookStore(context: Context) {
         if (after != before) save(after)
     }
 
+    /**
+     * The book as a file the user keeps: EXACTLY the stored format, so an
+     * import goes through the same [decode] that reads the book at startup —
+     * same version gate, same per-entry salvage, same dedup. One format means
+     * one reader, and the reader is the code that is already trusted.
+     */
+    fun exportJson(): String = encode(load())
+
+    /**
+     * Merge an exported file back in. Throws on anything unreadable — the
+     * caller shows the failure; an import that silently does nothing would be
+     * indistinguishable from one that worked (§7.1).
+     *
+     * The current book always wins; see [AddressBook.merge]. Nothing is
+     * written unless something was actually added.
+     */
+    @Throws(Exception::class)
+    fun importJson(raw: String): AddressBook.ImportResult {
+        val result = AddressBook.merge(load(), decode(raw))
+        if (result.added > 0) save(result.merged)
+        return result
+    }
+
     private fun encode(entries: List<AddressBook.Entry>): String {
         val arr = JSONArray()
         for (e in entries) {
