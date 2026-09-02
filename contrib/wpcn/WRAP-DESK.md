@@ -471,6 +471,55 @@ or a multicall can batch them — and keying on the hash alone would pay the fir
 and **silently drop** the rest. Exactly the mistake all four deposit rails
 shipped first (CLAUDE.md §8c #1), in a new place.
 
+### 10.8 The customer's side: `/redeem` calls the contract from THEIR wallet
+
+Until 2026-09-02 `/redeem` was instructions only: open the verified contract on
+BscScan, connect, fill `redeem` by hand. The first real attempt — MetaMask on
+Android, through BscScan's *Write Contract* form — failed before anything was
+sent: `Invalid params maxFeePerGas … received: null`. BscScan pre-fills the
+EIP-1559 fee fields with `null` and MetaMask mobile's validation rejects the
+request. Not our bug, not fixable from our side of BscScan, and a real wall for
+exactly the people this page is for.
+
+So the page now carries a small browser-side helper (`REDEEM_JS` in
+`wrapdesk-server.mjs`) that does the encoding itself and asks the visitor's own
+wallet to sign:
+
+* `eth_requestAccounts`, then `wallet_switchEthereumChain` / `wallet_addEthereumChain`
+  to BSC (`0x38`), then `balanceOf` via `eth_call`, so the page can refuse an
+  amount the account does not hold;
+* the PCoin address is checked client-side — bech32/bech32m with hrp `pc`, or
+  base58check version 55/56 — and a bech32 input is lowercased, because the
+  watcher's structural regex is lowercase-only. A checksum rules out a typo; it
+  does **not** prove the address is the visitor's, and the page says so;
+* a review box shows amount, account and destination before anything is signed;
+* the transaction is **exactly** `{from, to, data}` — `0x24b76fd5` + `uint256`
+  + offset `0x40` + length + address bytes — and nothing else, so the wallet
+  fills every fee field itself. That single omission is the whole fix;
+* it polls `eth_getTransactionReceipt`, links the BscScan page, and keeps a
+  receipt list in the visitor's `localStorage`. A phone without an injected
+  provider is handed `https://metamask.app.link/dapp/wrapdesk.pc.am/redeem`,
+  which opens the page inside MetaMask's own browser.
+
+What did not change: no key of ours is anywhere near this, the desk server never
+sees the transaction, no BSC address is rendered server-side, and §10.5 still
+applies unchanged — the burn is observed by `pcoin-redeem-watch` and a person
+pays. The manual BscScan route stays on the page, with a note about the
+MetaMask-Android failure, for anyone who prefers to read the contract themselves.
+
+The encoder was checked against web3.py vectors, the address checks against
+valid, tampered, mixed-case and foreign-chain inputs, and the full flow against
+a mock `window.ethereum` — asserting that the request carried only
+`from,to,data` and that the calldata equalled the vector — before it went live.
+
+Then it was used for real. On 2026-09-02 the first redemption went through it
+from a phone: a type-2 transaction with the wallet's own fee fields, selector
+`24b76fd5`, exactly one `Redeem` event (BSC block 119476262, logIndex 163).
+`pcoin-redeem-watch` found the burn on its own scan and alerted; the address was
+checked with `validateaddress`; 1 PCN was paid from the market float and the
+redemption marked with `--paid` — the §10.5 procedure, exercised once end to
+end rather than only by injection.
+
 ---
 
 ## 11. The keeper — connecting the two prices automatically

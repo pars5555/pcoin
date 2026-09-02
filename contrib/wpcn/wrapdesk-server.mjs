@@ -29,6 +29,13 @@
  * no admin surface on this port. It records intent and reports what the chain
  * says. A human releases the wPCN. The machine observes; a person pays.
  *
+ * The one thing the browser does on its own is /redeem: a page-side helper
+ * encodes redeem(value, pcoinAddress) and asks the VISITOR'S wallet to sign it.
+ * No key of ours is involved and the server never sees the transaction. It
+ * exists because BscScan's Write Contract form hands MetaMask for Android a
+ * transaction with null fee fields and fails; the helper sends only
+ * {from, to, data} and lets the wallet fill in the rest.
+ *
  * PRIVACY: a BSC address is never shown on any public page. Linking someone's
  * PCoin deposit address to their BSC address is a connection only we hold, and
  * publishing it would create a leak that does not otherwise exist. /activity
@@ -268,34 +275,327 @@ wallet's sent transactions. Every address this desk hands out belongs to the
 public reserve, so you can also look it up on
 <a href="https://explorer.pc.am">explorer.pc.am</a>.</p>`);
 
+const REDEEM_JS = String.raw`
+(function () {
+  'use strict';
+  var SEL_REDEEM = '0x24b76fd5';            // keccak('redeem(uint256,string)')[:4]
+  var SEL_BALANCE = '0x70a08231';           // keccak('balanceOf(address)')[:4]
+  var BSC = '0x38';
+  var $ = function (id) { return document.getElementById(id); };
+  var eth = null, account = null, balance = null, checked = null;
+
+  // ── ABI encoding (only what redeem() needs) ─────────────────────────────
+  function hex32(n) { return n.toString(16).padStart(64, '0'); }
+  function encodeRedeem(value, addr) {
+    var b = new TextEncoder().encode(addr), h = '';
+    for (var i = 0; i < b.length; i++) h += b[i].toString(16).padStart(2, '0');
+    h = h.padEnd(Math.ceil(b.length / 32) * 64, '0');
+    return SEL_REDEEM + hex32(value) + hex32(64n) + hex32(BigInt(b.length)) + h;
+  }
+  function parseAmount(t) {
+    t = String(t).trim().replace(',', '.');
+    if (!/^(\d+(\.\d{0,8})?|\.\d{1,8})$/.test(t)) return null;
+    var parts = t.split('.'), i = parts[0] || '0', f = parts[1] || '';
+    var v = BigInt(i) * 100000000n + BigInt((f + '00000000').slice(0, 8));
+    return v > 0n ? v : null;
+  }
+  function fmt(v) {
+    var t = v.toString().padStart(9, '0');
+    return t.slice(0, -8) + '.' + t.slice(-8);
+  }
+
+  // ── PCoin address checks: bech32/bech32m (pc1…) and base58check (P…) ────
+  var CS = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+  var GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+  function polymod(vals) {
+    var chk = 1;
+    for (var i = 0; i < vals.length; i++) {
+      var top = chk >>> 25; chk = ((chk & 0x1ffffff) << 5) ^ vals[i];
+      for (var j = 0; j < 5; j++) if ((top >>> j) & 1) chk ^= GEN[j];
+    }
+    return chk >>> 0;
+  }
+  function convertBits(data, from, to) {
+    var acc = 0, bits = 0, out = [], maxv = (1 << to) - 1;
+    for (var i = 0; i < data.length; i++) {
+      acc = ((acc << from) | data[i]) & 0x3ffffff; bits += from;
+      while (bits >= to) { bits -= to; out.push((acc >>> bits) & maxv); }
+    }
+    if (bits >= from || ((acc << (to - bits)) & maxv)) return null;
+    return out;
+  }
+  function checkBech32(a) {
+    if (a !== a.toLowerCase() && a !== a.toUpperCase()) return { ok: false, why: 'mixed upper and lower case' };
+    a = a.toLowerCase();
+    var pos = a.lastIndexOf('1');
+    if (pos < 1 || pos + 7 > a.length || a.length > 90) return { ok: false, why: 'not an address' };
+    var hrp = a.slice(0, pos);
+    if (hrp !== 'pc') return { ok: false, why: 'this is not a PCoin address (PCoin addresses start with pc1)' };
+    var data = [], hrpx = [], i;
+    for (i = 0; i < hrp.length; i++) hrpx.push(hrp.charCodeAt(i) >> 5);
+    hrpx.push(0);
+    for (i = 0; i < hrp.length; i++) hrpx.push(hrp.charCodeAt(i) & 31);
+    for (i = pos + 1; i < a.length; i++) {
+      var d = CS.indexOf(a[i]); if (d < 0) return { ok: false, why: 'invalid character "' + a[i] + '"' };
+      data.push(d);
+    }
+    var ver = data[0], want = ver === 0 ? 1 : 0x2bc830a3;
+    if (polymod(hrpx.concat(data)) !== want) return { ok: false, why: 'checksum failed — one character is wrong' };
+    var prog = convertBits(data.slice(1, -6), 5, 8);
+    if (!prog || ver > 16 || prog.length < 2 || prog.length > 40) return { ok: false, why: 'malformed' };
+    if (ver === 0 && prog.length !== 20 && prog.length !== 32) return { ok: false, why: 'malformed' };
+    return { ok: true, kind: ver === 0 ? (prog.length === 20 ? 'native SegWit (pc1q…)' : 'SegWit script (pc1q…)') : ver === 1 ? 'Taproot (pc1p…)' : 'SegWit v' + ver };
+  }
+  var B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+  function checkBase58(a) {
+    var n = 0n, i, zeros = 0;
+    for (i = 0; i < a.length; i++) {
+      var d = B58.indexOf(a[i]); if (d < 0) return Promise.resolve({ ok: false, why: 'invalid character "' + a[i] + '"' });
+      n = n * 58n + BigInt(d);
+    }
+    for (i = 0; i < a.length && a[i] === '1'; i++) zeros++;
+    var h = n.toString(16); if (h.length % 2) h = '0' + h;
+    var bytes = new Uint8Array(zeros + h.length / 2);
+    for (i = 0; i < h.length / 2; i++) bytes[zeros + i] = parseInt(h.substr(i * 2, 2), 16);
+    if (bytes.length !== 25) return Promise.resolve({ ok: false, why: 'not an address' });
+    if (bytes[0] !== 55 && bytes[0] !== 56) return Promise.resolve({ ok: false, why: 'this is not a PCoin address' });
+    return crypto.subtle.digest('SHA-256', bytes.slice(0, 21)).then(function (h1) {
+      return crypto.subtle.digest('SHA-256', h1);
+    }).then(function (h2) {
+      var c = new Uint8Array(h2);
+      for (var k = 0; k < 4; k++) if (c[k] !== bytes[21 + k]) return { ok: false, why: 'checksum failed — one character is wrong' };
+      return { ok: true, kind: bytes[0] === 55 ? 'legacy (P…)' : 'legacy script (P…)' };
+    });
+  }
+  function checkAddress(a) {
+    a = a.trim();
+    if (!a) return Promise.resolve({ ok: false, why: 'empty' });
+    if (/^pc1/i.test(a)) return Promise.resolve(checkBech32(a));
+    if (/^P[1-9A-HJ-NP-Za-km-z]{33}$/.test(a)) return checkBase58(a);
+    if (/^(bc1|1|3|0x)/.test(a)) return Promise.resolve({ ok: false, why: 'that is a Bitcoin or BSC address, not a PCoin one — PCoin addresses start with pc1' });
+    return Promise.resolve({ ok: false, why: 'not a PCoin address (pc1… or P…)' });
+  }
+
+  // ── UI ──────────────────────────────────────────────────────────────────
+  function say(id, cls, text) {
+    var el = $(id); el.className = cls; el.textContent = text; el.hidden = !text;
+  }
+  function errText(e) {
+    if (!e) return 'unknown error';
+    if (e.code === 4001) return 'You rejected the request in the wallet. Nothing was sent.';
+    var m = (e.data && e.data.message) || e.message || String(e);
+    return m.length > 300 ? m.slice(0, 300) + '…' : m;
+  }
+  function provider() {
+    return window.ethereum || null;
+  }
+  function ensureBsc() {
+    return eth.request({ method: 'eth_chainId' }).then(function (id) {
+      if (String(id).toLowerCase() === BSC) return;
+      return eth.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: BSC }] })
+        .catch(function (e) {
+          if (e && (e.code === 4902 || /4902|unrecognized|not added|Unrecognized chain/i.test(e.message || ''))) {
+            return eth.request({ method: 'wallet_addEthereumChain', params: [{
+              chainId: BSC, chainName: 'BNB Smart Chain',
+              nativeCurrency: { name: 'BNB', symbol: 'BNB', decimals: 18 },
+              rpcUrls: ['https://bsc-dataseed.binance.org/'], blockExplorerUrls: ['https://bscscan.com'] }] });
+          }
+          throw e;
+        }).then(function () { return eth.request({ method: 'eth_chainId' }); })
+        .then(function (id2) {
+          if (String(id2).toLowerCase() !== BSC) throw new Error('The wallet is not on BNB Smart Chain. Switch network in the wallet and try again.');
+        });
+    });
+  }
+  function readBalance() {
+    var data = SEL_BALANCE + account.slice(2).toLowerCase().padStart(64, '0');
+    return eth.request({ method: 'eth_call', params: [{ to: TOKEN, data: data }, 'latest'] }).then(function (r) {
+      balance = BigInt(r === '0x' ? 0 : r);
+      $('bal').textContent = fmt(balance) + ' wPCN';
+      $('acct').textContent = account.slice(0, 6) + '…' + account.slice(-4);
+      $('connected').hidden = false;
+    });
+  }
+  function connect() {
+    eth = provider();
+    if (!eth) { $('nowallet').hidden = false; return; }
+    say('msg', 'muted', 'Waiting for the wallet…');
+    eth.request({ method: 'eth_requestAccounts' }).then(function (acc) {
+      account = acc && acc[0]; if (!account) throw new Error('No account was shared by the wallet.');
+      return ensureBsc();
+    }).then(readBalance).then(function () {
+      say('msg', '', ''); $('form').hidden = false; $('connectBtn').hidden = true;
+    }).catch(function (e) { say('msg', 'err', 'Could not connect: ' + errText(e)); });
+  }
+  function review() {
+    var v = parseAmount($('amount').value), a = $('addr').value.trim();
+    checked = null; $('confirm').hidden = true;
+    if (v === null) return say('msg', 'err', 'Enter an amount in wPCN, up to 8 decimals, greater than zero.');
+    if (balance !== null && v > balance) return say('msg', 'err', 'That is more than this account holds (' + fmt(balance) + ' wPCN).');
+    say('msg', 'muted', 'Checking the address…');
+    checkAddress(a).then(function (r) {
+      if (!r.ok) return say('msg', 'err', 'PCoin address rejected: ' + r.why + '. Nothing was sent.');
+      // bech32 is case-insensitive but the desk's tooling expects lower case
+      if (/^pc1/i.test(a)) a = a.toLowerCase();
+      checked = { value: v, addr: a };
+      $('c_amount').textContent = fmt(v) + ' wPCN';
+      $('c_addr').textContent = a;
+      $('c_kind').textContent = r.kind;
+      $('c_acct').textContent = account;
+      say('msg', '', ''); $('confirm').hidden = false;
+    });
+  }
+  function send() {
+    if (!checked) return;
+    var c = checked; checked = null; $('confirm').hidden = true;
+    $('sendBtn').disabled = true;
+    say('msg', 'muted', 'Confirm the transaction in your wallet…');
+    ensureBsc().then(function () {
+      var data = encodeRedeem(c.value, c.addr);
+      // Only from/to/data. Every fee field is left to the wallet on purpose: a
+      // pre-filled null here is exactly what breaks BscScan's form on MetaMask.
+      return eth.request({ method: 'eth_sendTransaction', params: [{ from: account, to: TOKEN, data: data }] });
+    }).then(function (hash) {
+      $('sendBtn').disabled = false;
+      $('form').hidden = true;
+      $('txlink').href = 'https://bscscan.com/tx/' + hash; $('txlink').textContent = hash;
+      $('done').hidden = false;
+      say('msg', '', '');
+      try {
+        var k = 'wpcn-redeems', l = JSON.parse(localStorage.getItem(k) || '[]');
+        l.unshift({ hash: hash, amount: fmt(c.value), to: c.addr, at: new Date().toISOString() });
+        localStorage.setItem(k, JSON.stringify(l.slice(0, 20)));
+      } catch (e) {}
+      watch(hash);
+    }).catch(function (e) {
+      $('sendBtn').disabled = false; $('form').hidden = false;
+      say('msg', 'err', 'Not sent: ' + errText(e));
+    });
+  }
+  function watch(hash) {
+    var tries = 0;
+    (function poll() {
+      eth.request({ method: 'eth_getTransactionReceipt', params: [hash] }).then(function (r) {
+        if (r && r.blockNumber) {
+          var okk = r.status === '0x1' || r.status === 1 || r.status === true;
+          say('status', okk ? 'ok' : 'err', okk
+            ? 'Burn confirmed in BSC block ' + parseInt(r.blockNumber, 16) + '. Once BSC finalises it (a minute or two) the desk sees it on its next check; a person then sends your PCN. Allow hours, not minutes.'
+            : 'The transaction was mined but REVERTED — nothing was burned and no PCN is owed. Check the balance and try again.');
+          return;
+        }
+        if (++tries < 60) setTimeout(poll, 4000);
+        else say('status', 'muted', 'Still pending after 4 minutes. Keep the hash; the burn counts when it is mined.');
+      }).catch(function () { if (++tries < 60) setTimeout(poll, 4000); });
+    })();
+  }
+  function showPrevious() {
+    try {
+      var l = JSON.parse(localStorage.getItem('wpcn-redeems') || '[]');
+      if (!l.length) return;
+      var ul = $('prevlist');
+      l.forEach(function (r) {
+        var li = document.createElement('li'), a = document.createElement('a');
+        a.href = 'https://bscscan.com/tx/' + r.hash; a.rel = 'noopener'; a.textContent = r.hash.slice(0, 10) + '…' + r.hash.slice(-6);
+        li.appendChild(document.createTextNode(r.at.slice(0, 16).replace('T', ' ') + ' UTC · ' + r.amount + ' wPCN → ' + r.to + ' · '));
+        li.appendChild(a); ul.appendChild(li);
+      });
+      $('prev').hidden = false;
+    } catch (e) {}
+  }
+
+  $('connectBtn').addEventListener('click', connect);
+  $('reviewBtn').addEventListener('click', review);
+  $('sendBtn').addEventListener('click', send);
+  $('maxBtn').addEventListener('click', function () { if (balance !== null) { $('amount').value = fmt(balance); } });
+  $('backBtn').addEventListener('click', function () { checked = null; $('confirm').hidden = true; });
+  $('addr').addEventListener('input', function () { checked = null; $('confirm').hidden = true; });
+  $('amount').addEventListener('input', function () { checked = null; $('confirm').hidden = true; });
+  showPrevious();
+  if (!provider()) {
+    // MetaMask injects at document start; give a slow in-app browser a moment.
+    setTimeout(function () { if (!provider()) { $('nowallet').hidden = false; } }, 1200);
+  }
+})();
+`;
+
 const redeem = () => page('Redeem wPCN back into PCN', '/redeem', `
 <h1>Redeem wPCN back into PCN</h1>
-<p class="lead">The door opens both ways. Redemption is handled by the token
-contract itself, not by this website.</p>
+<p class="lead">The door opens both ways. Redemption is done by the token
+contract itself — this page only helps your wallet call it.</p>
 
-<h2>How</h2><div class="card"><ol class="steps">
+<h2>From your wallet</h2><div class="card">
+<p class="muted" style="margin-top:0">Connect the wallet that holds your wPCN
+(BNB Smart Chain). The page checks the PCoin address, shows you exactly what
+will be burned, and then asks the wallet to sign one transaction.</p>
+<button id="connectBtn" type="button" style="margin-top:.4rem">Connect wallet</button>
+<div id="nowallet" hidden>
+<p class="warn"><b>No wallet found in this browser.</b>
+On a phone, open this page inside your wallet's own browser —
+<a href="https://metamask.app.link/dapp/wrapdesk.pc.am/redeem">tap here to open it in MetaMask</a>.
+On a computer, use a browser with the MetaMask extension. Or use the manual
+route further down.</p></div>
+<div id="connected" hidden><table>
+<tr><th>Account</th><td><code id="acct"></code></td></tr>
+<tr><th>wPCN held</th><td><b id="bal"></b></td></tr></table></div>
+<div id="form" hidden>
+<label for="amount">Amount to redeem, in wPCN</label>
+<div style="display:flex;gap:.6rem;align-items:center">
+<input id="amount" inputmode="decimal" autocomplete="off" placeholder="1.00000000">
+<button id="maxBtn" type="button" style="margin:0;padding:.55rem .8rem;background:#21262d">All</button></div>
+<label for="addr">PCoin address to receive the PCN (pc1q…)</label>
+<input id="addr" autocomplete="off" spellcheck="false" placeholder="pc1q…">
+<button id="reviewBtn" type="button">Review</button>
+<div id="confirm" hidden style="margin-top:1.1rem;border:1px solid var(--amber);border-radius:9px;padding:1rem 1.1rem">
+<p style="margin:0 0 .5rem" class="warn"><b>Read this once more before you press the button.</b></p>
+<table>
+<tr><th>Burn</th><td><b id="c_amount"></b> from <code id="c_acct"></code></td></tr>
+<tr><th>PCN goes to</th><td><code id="c_addr"></code><br><span class="muted" id="c_kind"></span></td></tr></table>
+<p class="muted" style="margin:.5rem 0 0">The address has a valid checksum, which
+rules out a typo. It does not prove the address is <i>yours</i> — that only you
+can check, in the wallet you copied it from.</p>
+<button id="sendBtn" type="button" style="background:#9e6a03">Burn and request PCN</button>
+<button id="backBtn" type="button" style="background:#21262d;margin-left:.6rem">Back</button></div>
+</div>
+<div id="done" hidden>
+<p class="ok"><b>Sent.</b> Transaction: <a id="txlink" rel="noopener" target="_blank"></a></p>
+<p class="muted">Keep that hash — it is your receipt. The desk pays the PCoin
+address you gave; nothing else needs to be done on your side.</p></div>
+<p id="status" class="muted" hidden></p>
+<p id="msg" hidden></p>
+<div id="prev" hidden><h2 style="margin-top:1.4rem">Redemptions from this device</h2>
+<ul id="prevlist" class="muted" style="padding-left:1.1rem;font-size:.88rem"></ul></div>
+<noscript><p class="err">This helper needs JavaScript. The manual route below works without it.</p></noscript>
+</div>
+
+<div class="card">
+<p class="err"><b>Check the address twice.</b> The burn happens first and cannot
+be undone. If the PCoin address is wrong, your wPCN is gone and we have nowhere
+valid to send the PCN — we will have to contact you to fix it.</p>
+<p class="warn"><b>Redemption is manual, like wrapping.</b> The contract cannot
+send PCN by itself: no contract on BNB Smart Chain can move a coin on the PCoin
+chain. A person does it. Allow hours, not minutes.</p></div>
+
+<h2>Manual route</h2><div class="card"><ol class="steps">
 <li>Open the wPCN contract on
  <a href="https://bscscan.com/address/${TOKEN}#writeContract">BscScan</a> and
  connect the wallet holding your wPCN.</li>
 <li>Call <code>redeem(value, pcoinAddress)</code> — the amount in satoshi-units
- (8 decimals), and the PCoin address you want the PCN sent to.</li>
+ (8 decimals, so 1 wPCN is <code>100000000</code>), and the PCoin address you
+ want the PCN sent to.</li>
 <li>The contract <b>burns your wPCN immediately</b> and logs your address.</li>
-<li>A person sends the PCN. Allow hours, not minutes.</li>
-</ol></div>
-
-<div class="card">
-<p class="err"><b>Check the address twice.</b> The burn happens first and cannot
-be undone. If the PCoin address is wrong or mistyped, your wPCN is gone and we
-have nowhere valid to send the PCN — we will have to contact you to fix it.</p>
-<p class="warn"><b>Redemption is manual, like wrapping.</b> The contract cannot
-send PCN by itself: no contract on BNB Smart Chain can move a coin on the PCoin
-chain. A person does it.</p></div>
+<li>A person sends the PCN.</li>
+</ol>
+<p class="muted" style="margin-bottom:0">Known problem: BscScan's form fails on
+MetaMask for Android with <i>"Invalid params … maxFeePerGas … received:
+null"</i>. That is BscScan's page, not your wallet — use the button above.</p></div>
 
 <h2>Why it matters</h2><div class="card"><p class="muted">A wrapped token nobody
 can redeem is an IOU resting on trust. A redeemable one is checkable — and it is
 what lets arbitrage hold the PCN and wPCN prices together. Every redemption also
 shows up in the <a href="/proof">backing figures</a>, because burning lowers the
-supply the reserve has to cover.</p></div>`);
+supply the reserve has to cover.</p></div>
+<script>var TOKEN=${JSON.stringify(TOKEN)};</script>
+<script>${REDEEM_JS}</script>`);
 
 async function proof() {
   const bal = await reserveBalance();
