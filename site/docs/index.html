@@ -74,8 +74,8 @@
   them, and the rules that stop you crediting money that is not there.</p>
 
   <div class="note">
-    <p><strong>Four production integrations follow this guide</strong> — AiControl,
-    checker.pc.am, webbuilderbot and 3dmodels.pc.am. Every rule below exists because it was got
+    <p><strong>Five production integrations follow this guide</strong> — AiControl,
+    checker.pc.am, webbuilderbot, 3dmodels.pc.am and 3dmodel.oonak.ai. Every rule below exists because it was got
     wrong once, usually expensively. Where a rule looks paranoid, the reason is
     stated so you can judge it yourself.</p>
   </div>
@@ -118,7 +118,7 @@
     <p><strong>There is nothing to "collect".</strong> Every user's deposit address is
     a child of one account key, so all your deposits are already in a single wallet.
     Your balance is a sum over the pool, not a transaction anybody has to make. This
-    is why no sweep code exists in any of the four integrations — see §12.</p>
+    is why no sweep code exists in any of the five integrations — see §12.</p>
   </div>
 
   <div class="note bad">
@@ -369,8 +369,10 @@ node pcoin-seed-vault.mjs new --system myapp</code></pre>
     <tr><td>minimum deposit</td><td>your call</td><td>ignore dust rather than write a row per satoshi</td></tr>
   </table>
 
-  <p>All four production integrations run <strong>6 confirmations</strong> — roughly
-  half an hour of work behind a deposit at current spacing. Make it a config value,
+  <p>Four of the five production integrations run <strong>6 confirmations</strong> — roughly
+  half an hour of work behind a deposit at current spacing; the fifth runs 3 and instead
+  corroborates every deposit above $0.05 against a second, independent explorer. Make it
+  a config value,
   not a constant, and raise it for large amounts. Pair a low value with a per-user
   monthly cap: the cap is what bounds your loss between reviews.</p>
 
@@ -441,7 +443,7 @@ node pcoin-seed-vault.mjs new --system myapp</code></pre>
   <div class="note bad">
     <p><strong>Key the ledger on <code>(txid, address)</code> — never on
     <code>(txid, vout)</code>.</strong> This is the single most expensive mistake
-    made in these integrations, and all four shipped it before it was found.</p>
+    made in these integrations, and all four of the original ones shipped it before it was found.</p>
   </div>
 
   <p>The explorer's address-tx summary carries <strong>no vout at all</strong>. Faced
@@ -588,8 +590,8 @@ fsync($tmpHandle); rename($tmp, $f); fsync($dirHandle);</code></pre>
 
   <h3>Never hardcode the rate</h3>
   <p>It moves. pc.am itself displayed &ldquo;1,000&nbsp;PCN = $1.00&rdquo; for hours after
-  the rate had changed, quoting customers <strong>one fifteenth</strong> of what four
-  live services were actually paying them. A number written into a template is a number
+  the rate had changed, quoting customers <strong>one fifteenth</strong> of what the four
+  services live at the time were actually paying them. A number written into a template is a number
   nobody will remember to change.</p>
 
   <h3>Stamp the rate on the deposit row</h3>

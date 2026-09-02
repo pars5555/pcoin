@@ -758,11 +758,11 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
   <section id="spend">
     <div class="wrap">
       <span class="kicker">Where you can spend it</span>
-      <h2>Mine PCoin on your phone. Spend it on four real services.</h2>
+      <h2>Mine PCoin on your phone. Spend it on five real services.</h2>
       <p class="lede">
-        PCN is not a coin waiting for somewhere to be useful. <b>Four live products accept it
+        PCN is not a coin waiting for somewhere to be useful. <b>Five live products accept it
         today</b>, each with its own deposit address, and each crediting your balance
-        automatically once the payment has six confirmations. The same phone that runs the miner
+        automatically once the payment has confirmed (six confirmations on most of them). The same phone that runs the miner
         can pay for what it uses.
       </p>
 
@@ -782,6 +782,16 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
           <span class="spend-desc">Ready-to-use 3D models, generated on demand and downloadable
           in the usual formats.</span>
           <span class="spend-host">3dmodels.pc.am</span>
+        </a>
+
+        <a class="spend-app" href="https://3dmodel.oonak.ai" rel="noopener">
+          <span class="spend-logo" aria-hidden="true">
+            <svg viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#1f1530"/><path d="M16 5l9 5v12l-9 5-9-5V10z" fill="none" stroke="#c084fc" stroke-width="2.4" stroke-linejoin="round"/><path d="M16 27V16l9-5M16 16l-9-5" fill="none" stroke="#c084fc" stroke-width="2.4" stroke-linejoin="round"/></svg>
+          </span>
+          <span class="spend-name">3dmodel by Oonak</span>
+          <span class="spend-desc">Turn a single photo into a print-ready 3D model &mdash; pick a
+          polygon budget, export GLB, pay per generation.</span>
+          <span class="spend-host">3dmodel.oonak.ai</span>
         </a>
 
         <a class="spend-app" href="https://checker.pc.am" rel="noopener">
@@ -832,13 +842,14 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
         <div class="card">
           <h3>A rate, not a market</h3>
           <p>
-            All four services credit at the <strong>same published rate</strong>, taken from
+            All five services credit at the <strong>same published rate</strong>, taken from
             <a href="https://price.pc.am" rel="noopener">price.pc.am</a> at the moment your
             deposit confirms &mdash; so none of them can quote you one number and pay another.
             The rate follows what PCN currently costs on the
             <a href="https://market.pc.am" rel="noopener">market ladder</a> and is deliberately
-            slow-moving. <strong>It is not a market price</strong> &mdash; PCN is not traded on any
-            exchange, so no market price exists. Check the live figure before you send.
+            slow-moving. <strong>It is not a market price</strong> &mdash; PCN itself is not listed on
+            any exchange. Its wrapped form, wPCN, trades on PancakeSwap in a small pool that
+            follows this rate rather than setting it. Check the live figure before you send.
           </p>
         </div>
       </div>
@@ -899,7 +910,7 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
         address printed above &mdash; check the balance against the token's fixed 50,000 supply yourself;
         that is why both are published. The contract has <b>no owner and no mint function</b>, so nobody,
         including us, can create more. Five things to know before buying: the pool is <b>small</b>
-        (about $824 across both sides &mdash; a $20 trade moves the price about 10%, which is arithmetic, not a
+        (about $900 across both sides on 2&nbsp;September&nbsp;2026 &mdash; a $20 trade moves the price roughly 9%, which is arithmetic, not a
         flaw); the <b>liquidity is not locked</b> and the project holds the LP tokens;
         <b>you can redeem wPCN back into PCN</b> &mdash; the contract burns your tokens and we send
         the PCN by hand, so it is not instant &mdash; but <b>turning PCN into wPCN is not open yet</b>;
@@ -1035,7 +1046,7 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
       <p class="lede">
         There is no gateway to sign up with, no merchant account and no fee. You watch the
         chain for payments to addresses you derive yourself, and you keep your own keys.
-        <b>Four production systems run on exactly this</b> &mdash; the guide below is the one
+        <b>Five production systems run on exactly this</b> &mdash; the guide below is the one
         they were built from, including the mistakes they made first.
       </p>
 
@@ -1206,14 +1217,15 @@ sudo systemctl stop pcoin-miner
           <span class="mono">/api</span> for wallets and, eventually, exchange integrations.</p>
         </li>
         <li>
-          <h3>PCN accepted by four live services <span class="tag">Shipped</span></h3>
+          <h3>PCN accepted by five live services <span class="tag">Shipped</span></h3>
           <p>Not a pilot and not a promise:
           <a href="https://aicontrol.pc.am" rel="noopener">AI&nbsp;Control</a>,
           <a href="https://3dmodels.pc.am" rel="noopener">3dmodels.pc.am</a>,
+          <a href="https://3dmodel.oonak.ai" rel="noopener">3dmodel.oonak.ai</a>,
           <a href="https://checker.pc.am" rel="noopener">checker.pc.am</a> and
           <a href="https://t.me/MyWebsiteBuilderBot" rel="noopener">@MyWebsiteBuilderBot</a> all take
-          PCN today. Each issues you an address only your account is credited for, waits six
-          confirmations, and converts at the rate published by
+          PCN today. Each issues you an address only your account is credited for, waits for
+          confirmations (six on most of them), and converts at the rate published by
           <a href="https://price.pc.am" rel="noopener">price.pc.am</a>. Every deposit is
           checked against <b>two independent block explorers</b> before any balance moves, and a
           deposit that cannot be corroborated is held rather than credited.</p>
@@ -1238,7 +1250,7 @@ sudo systemctl stop pcoin-miner
         </li>
         <li>
           <h3>Tipping and person-to-person payments <span class="tag">Planned</span></h3>
-          <p>Paying <em>services</em> with PCN now works &mdash; see the four above. What does not exist
+          <p>Paying <em>services</em> with PCN now works &mdash; see the five above. What does not exist
           yet is paying <em>people</em>: tipping a creator, settling a small debt, sending value to
           someone who is not a merchant. That needs a wallet ordinary people will actually install,
           which is why the browser wallet sits above this one.</p>
