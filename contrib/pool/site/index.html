@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PCoin Pool — pool.pc.am</title>
+<meta name="description" content="The PCoin (PCN) mining pool. Paid from each block's coinbase, so the pool never holds your coins. PPLNS, 2% fee, no registration.">
+<meta name="theme-color" content="#0a0b10">
+<link rel="icon" href="https://pc.am/brand/pcoin-64.png">
+<style>
+  :root{
+    --bg:#0a0b10; --panel:#11131d; --panel2:#151827;
+    --line:rgba(255,255,255,.09); --line-soft:rgba(255,255,255,.06);
+    --text:#e9ebf4; --muted:#9aa2b8; --dim:#6b7288;
+    --violet:#8b5cf6; --teal:#2dd4bf; --radius:16px;
+    --mono:ui-monospace,"Cascadia Code",Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    font-size:16.5px;line-height:1.65;-webkit-font-smoothing:antialiased}
+  a{color:var(--teal);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:860px;margin:0 auto;padding:0 24px}
+  header{border-bottom:1px solid var(--line-soft);padding:22px 0}
+  .nav{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  .brand{display:flex;align-items:center;gap:11px;font-weight:700;font-size:1.15rem;color:var(--text)}
+  .brand img{width:30px;height:30px;border-radius:8px}
+  .nav .sp{margin-left:auto;display:flex;gap:20px;flex-wrap:wrap}
+  .nav .sp a{color:var(--muted);font-size:.93rem;font-weight:500}
+  .hero{padding:52px 0 30px}
+  h1{font-size:2.3rem;line-height:1.15;letter-spacing:-.02em;font-weight:800}
+  .lede{color:var(--muted);margin-top:14px;font-size:1.06rem;max-width:64ch}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin:30px 0 8px}
+  .stat{border:1px solid var(--line-soft);background:var(--panel);border-radius:var(--radius);padding:16px 18px}
+  .stat .k{color:var(--dim);font-size:.76rem;text-transform:uppercase;letter-spacing:.07em;font-weight:700}
+  .stat .v{font-size:1.5rem;font-weight:750;margin-top:5px;font-family:var(--mono);letter-spacing:-.02em}
+  .stat .s{color:var(--muted);font-size:.83rem;margin-top:2px}
+  section{padding:30px 0;border-top:1px solid var(--line-soft)}
+  h2{font-size:1.32rem;font-weight:750;letter-spacing:-.01em;margin-bottom:12px}
+  h3{font-size:.97rem;font-weight:700;margin:18px 0 6px;color:var(--muted)}
+  p{color:var(--muted)}
+  p+p{margin-top:10px}
+  pre{margin:6px 0 0;padding:13px 15px;overflow-x:auto;border-radius:11px;
+      background:rgba(255,255,255,.04);border:1px solid var(--line-soft);
+      font-family:var(--mono);font-size:.85rem;line-height:1.5;color:var(--text)}
+  code{font-family:var(--mono);font-size:.88em;background:rgba(255,255,255,.05);
+       border:1px solid var(--line-soft);border-radius:6px;padding:1px 6px}
+  pre code{background:none;border:0;padding:0}
+  ul{margin:8px 0 0 18px;color:var(--muted)}
+  li{margin:5px 0}
+  .box{border:1px solid rgba(45,212,191,.28);background:rgba(45,212,191,.05);
+       border-radius:var(--radius);padding:18px 20px;margin-top:18px}
+  .box.warn{border-color:rgba(139,92,246,.32);background:rgba(139,92,246,.05)}
+  .box b{color:var(--text)}
+  table{border-collapse:collapse;width:100%;margin-top:10px;font-size:.94rem}
+  td{padding:7px 10px;border-bottom:1px solid var(--line-soft);color:var(--muted)}
+  td:first-child{color:var(--text);font-weight:600;width:38%}
+  footer{border-top:1px solid var(--line-soft);padding:26px 0 60px;color:var(--dim);font-size:.9rem}
+</style>
+</head>
+<body>
+
+<header><div class="wrap"><div class="nav">
+  <a class="brand" href="https://pc.am"><img src="https://pc.am/brand/pcoin-64.png" alt="">PCoin Pool</a>
+  <span class="sp">
+    <a href="https://pc.am">pc.am</a>
+    <a href="https://explorer.pc.am">Explorer</a>
+    <a href="/api/pools">API</a>
+    <a href="https://github.com/pars5555/pcoin">GitHub</a>
+  </span>
+</div></div></header>
+
+<div class="wrap">
+
+  <div class="hero">
+    <h1>Mine PCoin here, get paid every block</h1>
+    <p class="lede">Solo mining is a lottery — a whole 50 PCN block or nothing, and a small CPU can
+    wait days. This pool pays you for the work you actually did, out of the coinbase of every block
+    it finds.</p>
+  </div>
+
+  <div class="stats" id="stats">
+    <div class="stat"><div class="k">Pool hashrate</div><div class="v" id="ph">—</div><div class="s" id="phs">loading…</div></div>
+    <div class="stat"><div class="k">Miners</div><div class="v" id="cm">—</div><div class="s">connected now</div></div>
+    <div class="stat"><div class="k">Network</div><div class="v" id="nh">—</div><div class="s" id="nhs">&nbsp;</div></div>
+    <div class="stat"><div class="k">Blocks found</div><div class="v" id="tb">—</div><div class="s" id="tbs">by this pool</div></div>
+  </div>
+  <p style="font-size:.85rem;color:var(--dim);margin-top:8px">
+    Live from <a href="/api/pools">/api/pools</a>, the same endpoint mining directories read.
+    Nothing on this page is typed in by hand.
+  </p>
+
+  <section>
+    <h2>Connect</h2>
+    <p>You do not need separate mining software — it is built into the PCoin node. You <b>do</b> need
+    <b>v1.3.0 or newer</b>, and both the node and <code>bitcoin-cli</code> must be that version: an
+    older CLI sends the thread count as text and the call fails with a type error even against a new
+    node. <a href="https://pc.am/download/">Downloads</a>.</p>
+
+    <h3>Windows (PowerShell)</h3>
+<pre><code>$P = if (Test-Path C:\PCoin\bitcoin-cli.exe) { 'C:\PCoin' } else { "$env:LOCALAPPDATA\PCoin" }
+&amp; "$P\bitcoin-cli.exe" -datadir="$P\data" `
+  startpoolmining "pool.pc.am:3333" "&lt;your pc1q… address&gt;" 4</code></pre>
+
+    <h3>Linux</h3>
+<pre><code>sudo systemctl stop pcoin-miner        # or it will pull you back to solo
+sudo -u pcoin pcoin-cli -datadir=/var/lib/pcoin \
+  startpoolmining "pool.pc.am:3333" "&lt;your pc1q… address&gt;" 4</code></pre>
+
+    <p>The last number is threads; <code>0</code> means every core. <code>stopmining</code> stops it.</p>
+
+    <h3>Already have a mining rig? Use SRBMiner-Multi.</h3>
+    <p><a href="https://github.com/doktor83/SRBMiner-Multi/releases" rel="noopener">SRBMiner-Multi</a>
+    mines PCN natively from <b>version 3.5.6</b> (17 August 2026) with the <code>randompcn</code> algorithm —
+    Windows, Linux and HiveOS custom miner, no PCoin node, no sync and no wallet on the machine.
+    Verified against this pool on 2 September 2026: connects, receives work, shares accepted.</p>
+<pre><code>SRBMiner-MULTI --disable-gpu --algorithm randompcn --pool pool.pc.am:3333 --wallet &lt;your pc1q… address&gt; --cpu-threads 4</code></pre>
+    <p>CPU only. SRBMiner charges its own <b>0.85% developer fee</b> on this algorithm, which goes to its
+    author and not to us, on top of this pool's 2%. It is third-party software: take it only from its
+    GitHub releases page and check the published checksum.</p>
+
+    <h3>Already running xmrig?</h3>
+    <p>An <code>rx/pcoin</code> algorithm is
+    <a href="https://github.com/Bendr0id/xmrigCC/pull/435" rel="noopener">an open pull request to xmrigCC</a>,
+    <b>not reviewed or merged yet</b>. If you would rather stay on xmrig than switch to SRBMiner, there is an
+    unofficial Linux build with checksums:
+    <a href="https://github.com/pars5555/xmrigCC/releases/tag/rx-pcoin-v1" rel="noopener">rx-pcoin-v1</a>.</p>
+<pre><code>./xmrigMiner -o pool.pc.am:3333 -u &lt;your pc1q… address&gt; -a rx/pcoin -t 4</code></pre>
+    <p>No Windows xmrig build from us: cross-compiling needs a UCRT mingw toolchain that Ubuntu does not
+    ship. On Windows use SRBMiner above, the node's miner, or build the branch with MSVC.</p>
+
+    <div class="box warn">
+      <b>If you tried xmrig here before 16 Aug and got nothing, that was our bug.</b>
+      <p style="margin-top:8px">This pool rejected <b>every</b> share from a standard xmrig with
+      <i>"share above target"</i>, while the miner hashed perfectly. It rebuilt the submitted header
+      with the nonce bytes in the opposite order to the xmrig convention, so it was hashing a header
+      nobody had mined. Our node's miner and this pool were written from the same wrong assumption,
+      so they agreed with each other and nothing looked broken until a third-party miner existed.
+      Both byte orders are accepted now — worth retrying.</p>
+    </div>
+
+    <div class="box">
+      <b>It returns before it has connected.</b>
+      <p style="margin-top:8px">The command answers immediately with a status of <code>starting</code>,
+      which is not yet success. Run <code>getcpuminerinfo</code> a few seconds later and check the pool
+      status field — a refused address or an unreachable pool is reported <i>there</i>, and nowhere else.</p>
+    </div>
+
+    <div class="box warn">
+      <b>Use a <code>pc1q…</code> address.</b>
+      <p style="margin-top:8px">Taproot <code>pc1p…</code> addresses pass the node's own check and are
+      then refused by the pool. The address is simply where you are credited — no wallet is opened and
+      <b>no private key is involved on that machine</b>. Your node also does not need to be synced
+      first, because the pool supplies the block.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>How it pays</h2>
+    <table>
+      <tr><td>Scheme</td><td>PPLNS — a block pays the most recent window of work, weighted by how hard each share was</td></tr>
+      <tr><td>Payout</td><td><b>Direct from each block's coinbase.</b> No pool wallet, no private key on the server, no withdrawal to request, and no balance an operator could walk away with</td></tr>
+      <tr><td>Fee</td><td><span id="fee">2</span>% — taken off the block reward before anything is split</td></tr>
+      <tr><td>Minimum</td><td><span id="minpay">0.00000294</span> PCN, the network dust limit. Below it you are skipped for that block, your shares stay in the window, and the amount goes to the other miners rather than the pool</td></tr>
+      <tr><td>Stratum</td><td><code>pool.pc.am:3333</code> — plain TCP. There is no TLS port yet</td></tr>
+      <tr><td>Login</td><td>Your payout address. No registration, no worker names, no account</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>Things worth knowing before you start</h2>
+    <ul>
+      <li><b>A pool does not increase your earnings.</b> It reduces variance. After the fee you earn
+        slightly less on average than solo. What you buy is predictability.</li>
+      <li><b>Coins are locked for 100 blocks.</b> Roughly 15–17 hours. That is a consensus rule, not
+        something the pool invents — it applies to solo miners identically.</li>
+      <li><b>An orphaned block erases its payouts.</b> It happens on a young network. The work was
+        real; the block was not.</li>
+      <li><b>PCN is not traded on any exchange.</b> No orderbook, no way to sell it. Treat it as worth
+        nothing until a real market exists.</li>
+      <li><b>A pool concentrates hashrate</b>, and on a network this small that is a real risk. The
+        pool's share of the network is shown above, from the API, so you can check it rather than
+        take our word — and we would rather see a second pool run by somebody else than grow this one.</li>
+    </ul>
+  </section>
+
+  <footer>
+    PCoin (PCN) — an independent Layer-1 blockchain.
+    <a href="https://pc.am">pc.am</a> ·
+    <a href="https://explorer.pc.am">explorer</a> ·
+    <a href="https://github.com/pars5555/pcoin">source</a> ·
+    <a href="https://bitcointalk.org/index.php?topic=5591113.0">announcement</a> ·
+    <a href="https://t.me/PCoinPCN">Telegram</a>
+  </footer>
+</div>
+
+<script>
+(function () {
+  var hs = function (v) {
+    if (!isFinite(v)) return '—';
+    if (v >= 1e6) return (v / 1e6).toFixed(2) + ' MH/s';
+    if (v >= 1e3) return (v / 1e3).toFixed(2) + ' kH/s';
+    return v.toFixed(0) + ' H/s';
+  };
+  var set = function (id, txt) { var e = document.getElementById(id); if (e) e.textContent = txt; };
+  fetch('/api/pools', { cache: 'no-store' })
+    .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then(function (d) {
+      var p = d.pools && d.pools[0];
+      if (!p) throw new Error('no pool in response');
+      var ps = p.poolStats || {}, ns = p.networkStats || {};
+      set('ph', hs(ps.poolHashrate));
+      set('cm', ps.connectedMiners != null ? String(ps.connectedMiners) : '—');
+      set('nh', hs(ns.networkHashrate));
+      set('tb', p.totalBlocks != null ? String(p.totalBlocks) : '—');
+      if (ps.poolHashrate && ns.networkHashrate)
+        set('phs', (100 * ps.poolHashrate / ns.networkHashrate).toFixed(1) + '% of network');
+      if (ns.blockHeight) set('nhs', 'height ' + ns.blockHeight);
+      if (p.poolFeePercent != null) set('fee', String(p.poolFeePercent));
+      var mp = p.paymentProcessing && p.paymentProcessing.minimumPayment;
+      if (mp != null) set('minpay', Number(mp).toFixed(8));
+    })
+    .catch(function () {
+      // Say the read failed. A dash that looks like a number is worse than
+      // admitting we could not reach our own API.
+      ['ph', 'cm', 'nh', 'tb'].forEach(function (id) { set(id, '—'); });
+      set('phs', 'could not read /api/pools');
+    });
+})();
+</script>
+</body>
+</html>

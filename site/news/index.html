@@ -107,6 +107,29 @@
   <main>
 
     <article class="entry">
+      <div class="meta"><time>2026-09-02</time><span class="tag infra">Listings &amp; miners</span></div>
+      <h2>Komodo accepted PCN, and SRBMiner-Multi mines it out of the box</h2>
+      <p><b>The Komodo DeFi Framework listing is no longer a request.</b>
+      <a href="https://github.com/GLEECBTC/coins/pull/1964" rel="noopener">Pull request #1964</a> was
+      merged on 31 August after the maintainer ran a swap of their own against our chain &mdash; the
+      second completed PCN atomic swap, and the first not between two wallets we control. PCN is now
+      in the <a href="https://github.com/GLEECBTC/coins/blob/master/coins" rel="noopener">coins list</a>
+      (<code>PCN</code>, legacy <code>P&hellip;</code> addresses, 2 confirmations, both ElectrumX servers).
+      Neither swap is a price; nothing here will ever cite one as such.</p>
+      <p><b>If you already run a mining rig, you no longer need our node to mine PCN.</b>
+      <a href="https://github.com/doktor83/SRBMiner-Multi/releases" rel="noopener">SRBMiner-Multi</a>
+      added a native <code>randompcn</code> algorithm in version 3.5.6 on 17 August, and we verified
+      it against <a href="https://pool.pc.am">pool.pc.am</a> on 2 September: it connects, receives work
+      and has shares accepted. <code>--algorithm randompcn --pool pool.pc.am:3333 --wallet &lt;pc1q&hellip;&gt;</code>,
+      CPU only, with SRBMiner's own 0.85% developer fee on top of the pool's 2%. The
+      <code>rx/pcoin</code> pull request to xmrigCC remains open and unmerged. Our own miner stays built
+      into the node and stays the path we support first.</p>
+      <p>Also noticed, rather than arranged by us: <a href="https://www.livecoinwatch.com/price/PCoin-__PCN" rel="noopener">LiveCoinWatch</a>
+      lists PCN &mdash; with no price, because there is no market to read one from. CoinCodex has said
+      it will not list a coin that is on no exchange, and that remains the honest state of things.</p>
+    </article>
+
+    <article class="entry">
       <div class="meta"><time>2026-08-31</time><span class="tag infra">wPCN</span></div>
       <h2>PCN can now be traded, wrapped and redeemed</h2>
       <p><b>wPCN</b> is PCoin wrapped as a BEP-20 on BNB Smart Chain, trading against USDT on

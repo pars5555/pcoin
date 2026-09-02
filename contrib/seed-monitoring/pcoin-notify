@@ -74,12 +74,29 @@ TEXT=$(printf '*%s*\n%s\n\n_%s — %s_' \
         "$SUBJECT" "$BODY" "$HOST" "$(date -u '+%Y-%m-%d %H:%M UTC')")
 
 # --data-urlencode so a message containing & or = cannot truncate itself.
-RESP=$(curl -s --max-time 25 \
+send() {
+    curl -s --max-time 25 \
         -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
         --data-urlencode "chat_id=${ALERT_CHAT}" \
-        --data-urlencode "text=${TEXT}" \
-        --data-urlencode "parse_mode=Markdown" \
-        --data-urlencode "disable_web_page_preview=true" 2>&1)
+        --data-urlencode "disable_web_page_preview=true" "$@" 2>&1
+}
+RESP=$(send --data-urlencode "text=${TEXT}" --data-urlencode "parse_mode=Markdown")
+
+# The body is written by the checks and is NOT escaped for Markdown. A single
+# unpaired _ or * in it -- "<bsc_txhash>", "*** EXHAUSTED ***", a txid -- makes
+# Telegram reject the whole message with "can't parse entities", and the
+# wrap-desk nag was lost that way 22 times in a row (2026-08-31 20:12 to
+# 2026-09-01 18:39 UTC) while the log said "failed" and nothing else noticed. Formatting
+# is decoration; delivery is the job. On a parse rejection send it again as
+# plain text, losing the bold subject and nothing else.
+case "$RESP" in
+    *"can't parse entities"*)
+        log "Markdown rejected, resending as plain text: $SUBJECT"
+        PLAIN=$(printf '%s\n%s\n\n%s — %s' \
+                "$SUBJECT" "$BODY" "$HOST" "$(date -u '+%Y-%m-%d %H:%M UTC')")
+        RESP=$(send --data-urlencode "text=${PLAIN}")
+        ;;
+esac
 
 case "$RESP" in
     *'"ok":true'*)

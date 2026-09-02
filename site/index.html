@@ -478,7 +478,7 @@
             </li>
             <li>
               <span class="tick"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="#2dd4bf" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12.5 10 18 20 6"/></svg></span>
-              <p><b>No extra software needed.</b> The miner is built into the node, so nothing else is required. If you already run <span class="mono">xmrig</span>, an <span class="mono">rx/pcoin</span> algorithm is <a href="https://github.com/Bendr0id/xmrigCC/pull/435" rel="noopener">submitted to xmrigCC</a> — not yet reviewed or merged, so the node's own miner stays the supported path.</p>
+              <p><b>No extra software needed &mdash; but yours works too.</b> The miner is built into the node, so nothing else is required. If you already run mining software, <a href="https://github.com/doktor83/SRBMiner-Multi/releases" rel="noopener">SRBMiner-Multi</a> mines PCN natively from version 3.5.6 (algorithm <span class="mono">randompcn</span>) &mdash; verified against the pool on 2 September 2026, see the pool section below. An <span class="mono">rx/pcoin</span> algorithm for <span class="mono">xmrig</span> is <a href="https://github.com/Bendr0id/xmrigCC/pull/435" rel="noopener">an open pull request to xmrigCC</a>, not yet merged.</p>
             </li>
             <li>
               <span class="tick"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="#2dd4bf" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12.5 10 18 20 6"/></svg></span>
@@ -702,6 +702,14 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
           from a node at height 0 with no peers. Solo mining on an unsynced node is worse than slow:
           it builds on a chain your node has not verified, so anything it finds is thrown away.
         </p>
+        <p style="margin:14px 0 4px"><b>Already run a mining rig? SRBMiner-Multi mines PCN directly.</b> From version <b>3.5.6</b> (17 August 2026)
+        <a href="https://github.com/doktor83/SRBMiner-Multi/releases" rel="noopener">SRBMiner-Multi</a> carries a native <code>randompcn</code>
+        algorithm, so a Windows or Linux rig &mdash; or a HiveOS custom miner &mdash; can point at the pool with no PCoin node, no sync and
+        no wallet on the machine:</p>
+        <pre style="margin:0;padding:12px 14px;overflow-x:auto;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid var(--line-soft)"><code>SRBMiner-MULTI --disable-gpu --algorithm randompcn --pool pool.pc.am:3333 --wallet &lt;your pc1q… address&gt; --cpu-threads 4</code></pre>
+        <p style="margin:8px 0 0;font-size:.93em;opacity:.85">CPU only, like everything else on this chain. SRBMiner charges its own <b>0.85% developer fee</b> on this
+        algorithm, which goes to its author and not to us, on top of the pool&#39;s 2%. It is third-party software: take it only from its GitHub releases
+        page and check the published checksum. Verified 2 September 2026 &mdash; connects, receives work and has shares accepted.</p>
       </div>
 
       <div class="split" style="margin-top:22px">
@@ -863,8 +871,8 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
         real barrier to PCN ever being tradable &mdash; not paperwork, not permission.
         <b>Two ElectrumX servers now serve the PCoin chain</b>, which is the standard interface every
         Electrum-protocol wallet and most decentralised exchanges expect. On the strength of that,
-        PCN has completed <b>its first atomic swap</b> and has been <b>submitted</b> to the Komodo
-        DeFi Framework. Separately, <b>wPCN</b> &mdash; a wrapped claim on PCN &mdash; now trades on
+        PCN has completed <b>its first atomic swaps</b> and has been <b>accepted into the Komodo
+        DeFi Framework coin list</b> (pull request merged 31 August 2026). Separately, <b>wPCN</b> &mdash; a wrapped claim on PCN &mdash; now trades on
         PancakeSwap, so a stranger with a wallet and USDT can buy exposure without needing a
         counterparty. Read what that is, and is not, below.
       </p>
@@ -876,7 +884,8 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
             <tr><th>First atomic swap</th><td>100&nbsp;PCN traded for DOGE, non-custodially, settled on both chains &mdash; <a href="https://github.com/GLEECBTC/coins/blob/master/swaps/PCN-DOGE.md" rel="noopener">the five transactions</a></td></tr>
             <tr><th>wPCN on PancakeSwap</th><td>BEP-20 on BNB Smart Chain, <a href="https://bscscan.com/address/0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1#code" rel="noopener">source verified</a> &mdash; <code>0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1</code> &middot; <a href="https://pancakeswap.finance/swap?outputCurrency=0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1" rel="noopener">trade</a>. Backed 1:1 by PCN at <code>pc1q7hhzmdkkx0zjtzj6qkwmuvhlgwfqjrc6j2dk52</code></td></tr>
             <tr><th>Wrap desk</th><td><a href="https://wrapdesk.pc.am" rel="noopener">wrapdesk.pc.am</a> &mdash; send PCN, receive wPCN. <b>250 PCN per person</b>, 5% fee, 100 confirmations (~18&nbsp;h), released by hand. Redemption the other way exists too: the contract burns your wPCN and the PCN is sent back manually</td></tr>
-            <tr><th>Komodo DeFi listing</th><td><b>Submitted, not accepted.</b> <a href="https://github.com/GLEECBTC/coins/pull/1964" rel="noopener">Pull request #1964</a> &mdash; its live status is on that page, not this one</td></tr>
+            <tr><th>Komodo DeFi listing</th><td><b>Accepted.</b> <a href="https://github.com/GLEECBTC/coins/pull/1964" rel="noopener">Pull request #1964</a> was merged on 31 August 2026 after the maintainer ran a swap of their own against our chain, so PCN is now in the <a href="https://github.com/GLEECBTC/coins/blob/master/coins" rel="noopener">Komodo DeFi Framework coin list</a> (<code>PCN</code>, legacy <code>P&hellip;</code> addresses, 2 confirmations)</td></tr>
+            <tr><th>Price aggregators</th><td><a href="https://www.livecoinwatch.com/price/PCoin-__PCN" rel="noopener">LiveCoinWatch</a> lists PCN &mdash; <b>with no price</b>, because there is no market to read one from. CoinCodex declined until PCN is on an exchange; CoinMarketCap was applied to on 13 August and has not listed it</td></tr>
           </tbody>
         </table>
       </div>
@@ -900,9 +909,10 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
         the services above.
         <br><br>
         The first atomic swap was between <b>two wallets we control</b>. It exists because Komodo
-        requires a completed swap before they will consider a coin, and for no other reason. It
-        proves the machinery works end to end; it is <b>not a price</b>, and any number derived from
-        it would be us quoting ourselves. Nothing on this site will ever cite it as one.
+        requires a completed swap before they will consider a coin, and for no other reason. The
+        second was the Komodo maintainer swapping 100 PCN we sent them, before merging the listing.
+        Both prove the machinery works end to end; neither is <b>a price</b>, and any number derived
+        from them would be us quoting ourselves. Nothing on this site will ever cite one as such.
         <br><br>
         We are also not approaching custodial exchanges &mdash; the kind that hold your coins and
         credit you a balance &mdash; and that is deliberate. <b>The address that once mined the majority of blocks has gone

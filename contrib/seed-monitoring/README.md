@@ -4,6 +4,16 @@ Watchers for the PCoin chain and for the services that take PCN. They alert to
 the **private** ops channel via `pcoin-notify`. Nothing here may post to the
 public channel -- see `CLAUDE.md` §8b.
 
+`pcoin-notify` sends with Telegram's legacy `parse_mode=Markdown` so the subject
+can be bold, but **alert bodies are not escaped**. One unpaired `_` or `*` in a
+body -- `<bsc_txhash>`, `*** EXHAUSTED ***`, half a txid -- and Telegram rejects
+the whole message with *can't parse entities*. That dropped the wrap-desk nag
+22 times in a row (2026-08-31 20:12 to 2026-09-01 18:39 UTC) with nothing but a
+`failed` row in `pcoin-telegram-log` to show for it. Since 2026-09-01 the
+notifier resends as plain text on that rejection: the bold is lost, the message
+is not. Still write bodies as if they were plain text -- the fallback is a net,
+not a formatting feature.
+
 ## pcoin-deposit-watch: who watches which rail
 
 This script checks each rail by reading that rail's **own** evidence -- its

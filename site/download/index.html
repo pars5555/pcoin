@@ -670,7 +670,10 @@ cmake --build build -j "$(nproc)"
     <summary>Can I mine with a GPU or an ASIC?</summary>
     <p>No, and that is the point. PCoin uses RandomX, which runs well on ordinary CPUs
     and badly on specialised hardware, so a laptop is a legitimate participant.
-    <code>xmrig</code> and every SHA-256 miner are useless against this chain.</p>
+    Every SHA-256 miner is useless against this chain, and so is stock <code>xmrig</code>. If you
+    already run a rig, <a href="https://github.com/doktor83/SRBMiner-Multi/releases" rel="noopener">SRBMiner-Multi</a>
+    3.5.6 or newer mines PCN natively (algorithm <code>randompcn</code>) against
+    <a href="https://pool.pc.am">the pool</a> &mdash; CPU only, and with its own 0.85% developer fee.</p>
   </details>
 
   <details class="faq">

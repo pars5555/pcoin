@@ -3,6 +3,10 @@
 #
 #   pcoin-announce "<title>" "<body>"          post it
 #   pcoin-announce --dry-run "<title>" "<body>" show exactly what would be sent
+#   pcoin-announce --photo card.png "<title>" "<body>"
+#                                               post it under a picture (sendPhoto;
+#                                               the text becomes the caption, which
+#                                               Telegram caps at 1024 characters)
 #   pcoin-announce --list                       what has already been announced
 #
 # This is the ONLY sanctioned path to the public channel, and it is deliberately
@@ -40,7 +44,7 @@ ANNOUNCE_CHAT="-1003712285504"          # @PCoinPCN, public. NOT the ops channel
 CONF=/etc/pcoin/alert.conf
 SEEN=/var/lib/pcoin-monitor/announced
 TGLOG=/usr/local/bin/pcoin-telegram-log
-DRY=0; FORCE=0; REASON=""; KEY=""
+DRY=0; FORCE=0; REASON=""; KEY=""; PHOTO=""
 
 log() { logger -t pcoin-announce -- "$*" 2>/dev/null || printf '%s\n' "$*" >&2; }
 die() { log "$*"; printf 'pcoin-announce: %s\n' "$*" >&2; exit 1; }
@@ -55,20 +59,41 @@ while [ $# -gt 0 ]; do
     --dry-run) DRY=1; shift ;;
     --force)   FORCE=1; REASON="${2:-}"; shift 2 ;;
     --key)     KEY="${2:-}"; shift 2 ;;
+    --photo)   PHOTO="${2:-}"; shift 2 ;;
     --list)    for f in $(ls -1t "$SEEN" 2>/dev/null | head -40); do
                  printf '%-26s %s\n' "$f" "$(cat "$SEEN/$f" 2>/dev/null)"; done; exit 0 ;;
-    --help|-h) sed -n '2,32p' "$0"; exit 0 ;;
+    --help|-h) sed -n '2,36p' "$0"; exit 0 ;;
     *) break ;;
   esac
 done
 
 TITLE="${1:-}"; BODY="${2:-}"
-[ -n "$TITLE" ] || die "usage: pcoin-announce [--dry-run] [--key K] \"<title>\" \"<body>\""
+[ -n "$TITLE" ] || die "usage: pcoin-announce [--dry-run] [--key K] [--photo FILE] \"<title>\" \"<body>\""
 
 TEXT="$TITLE"
 [ -n "$BODY" ] && TEXT="$TITLE
 
 $BODY"
+
+# ── picture ───────────────────────────────────────────────────────────────
+# With --photo the text rides along as the caption of a sendPhoto call, and a
+# caption has a hard 1024-character limit where a message has 4096. Telegram
+# counts UTF-16 code units of the text AFTER the Markdown is parsed: '*' and
+# backticks are gone, a [label](url) is just its label, and every character
+# outside the BMP (the emoji) is two units. Reproduce that count here so the
+# refusal happens on the operator's screen, not at Telegram with nothing posted.
+if [ -n "$PHOTO" ]; then
+  [ -r "$PHOTO" ] || die "--photo: cannot read $PHOTO"
+  case "$(head -c 4 "$PHOTO" | od -An -tx1 | tr -d ' \n')" in
+    89504e47|ffd8ff*) ;;
+    *) die "--photo: $PHOTO is not a PNG or JPEG" ;;
+  esac
+  PBYTES=$(wc -c < "$PHOTO")
+  [ "$PBYTES" -le 10485760 ] || die "--photo: $PHOTO is $PBYTES bytes; sendPhoto stops at 10 MB"
+  PLAIN=$(printf '%s' "$TEXT" | sed -E 's/\[([^]]*)\]\([^)]*\)/\1/g' | tr -d '*`')
+  CAPLEN=$(( $(printf '%s' "$PLAIN" | LC_ALL=C.UTF-8 wc -m) + $(printf '%s' "$PLAIN" | LC_ALL=C tr -cd '\360-\367' | wc -c) ))
+  [ "$CAPLEN" -le 1024 ] || die "caption is $CAPLEN characters; a photo caption stops at 1024 — shorten it, or post the text without --photo"
+fi
 
 # ── leak guard ────────────────────────────────────────────────────────────
 # Patterns chosen from things that have ACTUALLY been leaked or nearly leaked,
@@ -111,6 +136,7 @@ fi
 
 if [ "$DRY" = "1" ]; then
   echo "--- would post to @PCoinPCN ($ANNOUNCE_CHAT), key=$KEY ---"
+  [ -n "$PHOTO" ] && echo "[photo: $PHOTO, $PBYTES bytes; caption $CAPLEN/1024 characters]"
   printf '%s\n' "$TEXT"
   echo "--- end (nothing sent) ---"
   exit 0
@@ -127,12 +153,24 @@ if [ -z "${TELEGRAM_TOKEN:-}" ]; then
   die "$CONF has no TELEGRAM_TOKEN"
 fi
 
-RESP=$(curl -s --max-time 25 -X POST \
-  "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
-  --data-urlencode "chat_id=${ANNOUNCE_CHAT}" \
-  --data-urlencode "text=${TEXT}" \
-  --data-urlencode "parse_mode=Markdown" \
-  --data-urlencode "disable_web_page_preview=false" 2>&1)
+if [ -n "$PHOTO" ]; then
+  # --form-string, not -F, for the text fields: -F gives a leading '@' or '<'
+  # and an embedded ';type=' special meaning inside the value, so a caption
+  # is not something -F can be trusted with. -F stays for the file itself.
+  RESP=$(curl -s --max-time 60 -X POST \
+    "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendPhoto" \
+    --form-string "chat_id=${ANNOUNCE_CHAT}" \
+    -F "photo=@${PHOTO}" \
+    --form-string "caption=${TEXT}" \
+    --form-string "parse_mode=Markdown" 2>&1)
+else
+  RESP=$(curl -s --max-time 25 -X POST \
+    "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+    --data-urlencode "chat_id=${ANNOUNCE_CHAT}" \
+    --data-urlencode "text=${TEXT}" \
+    --data-urlencode "parse_mode=Markdown" \
+    --data-urlencode "disable_web_page_preview=false" 2>&1)
+fi
 
 case "$RESP" in
   *'"ok":true'*)
@@ -144,7 +182,7 @@ case "$RESP" in
       # overwriting the wrong public message was the worse risk.
       MID=$(printf '%s' "$RESP" | grep -oE '"message_id":[0-9]+' | head -1 | cut -d: -f2)
       printf '%s\tmessage_id=%s\t%s\n'         "$(date -u '+%Y-%m-%d %H:%M UTC')" "${MID:-unknown}" "$TITLE" > "$SEEN/$KEY"
-      log "announced ($KEY, message_id=${MID:-unknown}): $TITLE"
+      log "announced ($KEY, message_id=${MID:-unknown}${PHOTO:+, photo=$(basename "$PHOTO")}): $TITLE"
       tglog --status sent --subject "$TITLE" --body "$BODY" --message-id "${MID:-unknown}"
       echo "posted to @PCoinPCN (message_id=${MID:-unknown})"
       ;;

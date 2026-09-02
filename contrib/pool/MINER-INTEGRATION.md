@@ -184,6 +184,23 @@ pcoin-cli startpoolmining "pool.pc.am:3333" "<your pc1q… address>" 0
 
 `0` threads means every core. Releases: <https://github.com/pars5555/pcoin/releases>
 
+## 9. Miners that already support PCN
+
+Status as of 2026-09-02. Check the miner's own release notes before trusting
+this table; it is a snapshot.
+
+| miner | status | how |
+|---|---|---|
+| **SRBMiner-Multi** | **supported** since 3.5.6 (2026-08-17) | `SRBMiner-MULTI --disable-gpu --algorithm randompcn --pool pool.pc.am:3333 --wallet <pc1q…> --cpu-threads N` |
+| xmrigCC | pull request [#435](https://github.com/Bendr0id/xmrigCC/pull/435) open, unmerged | unofficial Linux build `rx-pcoin-v1` on the pars5555 fork; `-a rx/pcoin` |
+| stock xmrig | does not work | speaks Monero's block format; no `rx/pcoin` algorithm |
+
+SRBMiner's `randompcn` was verified against `pool.pc.am:3333` on 2026-09-02:
+login accepted, jobs received, a share accepted at 1 thread. It charges its own
+0.85% developer fee on this algorithm, separate from the pool's 2%. The pool does
+not record the miner's `agent` string, so the API cannot tell you how many of the
+connected miners are SRBMiner versus the node.
+
 ---
 
 Questions, corrections, or a request for more vectors:

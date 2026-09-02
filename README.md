@@ -51,8 +51,10 @@ printf 'server=1\nrpcuser=pcoinrpc\nrpcpassword=CHANGE_ME_long_random\n' > ~/.pc
 ./bitcoin-cli getblockchaininfo   # genesis: a95d51f0cbf25cad...264a
 ```
 
-**3. Mine.** The built-in miner is all you need — no external miner software exists
-for PCoin (xmrig does **not** work; it speaks Monero's protocols):
+**3. Mine.** The built-in miner is all you need. (If you already run mining software:
+[SRBMiner-Multi](https://github.com/doktor83/SRBMiner-Multi/releases) ≥ 3.5.6 mines PCN
+natively against the pool with `--algorithm randompcn --pool pool.pc.am:3333`; stock xmrig does
+**not** work — it speaks Monero's protocols — see `contrib/pool/MINER-INTEGRATION.md` §9.)
 
 ```bash
 ./bitcoin-cli createwallet "main"

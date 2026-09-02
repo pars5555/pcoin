@@ -324,11 +324,16 @@ verifier (256 MB cache, hundreds of hashes/second), which is perfectly adequate
 at the launch difficulty of ~4096 expected hashes per block. A dedicated
 multi-threaded miner is built in: `startmining "address" ( threads ttl )`, `stopmining` and `getcpuminerinfo` (RPC category "mining"). `generatetoaddress` remains the single-threaded path.
 
-Do **not** reach for external miners:
+External miners, as of 2026-09-02:
 
-* **xmrig does NOT work.** It also mines RandomX, but it speaks Monero's
+* **SRBMiner-Multi works** — version 3.5.6 (2026-08-17) added a native
+  `randompcn` algorithm (CPU, 0.85% dev fee). It mines against the pool, not
+  against a node: `SRBMiner-MULTI --disable-gpu --algorithm randompcn
+  --pool pool.pc.am:3333 --wallet <pc1q…>`. Verified share-accepted on
+  2026-09-02. See `contrib/pool/MINER-INTEGRATION.md` §9.
+* **Stock xmrig does NOT work.** It also mines RandomX, but it speaks Monero's
   stratum/RPC protocols and Monero's block format — it cannot talk to a PCoin
-  node.
+  node. An `rx/pcoin` algorithm is an open, unmerged xmrigCC pull request (#435).
 * All the old SHA-256d tooling (cpuminer, ASICs, ckpool/public-pool, ...) is
   now irrelevant: the PoW is not SHA-256d anymore, so those miners produce
   hashes the network simply rejects.
