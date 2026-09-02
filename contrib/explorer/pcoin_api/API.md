@@ -573,7 +573,7 @@ reported as successful with a `note`. If that check cannot settle it either:
 ```
 
 `accepted_by_node: null` is a third value and means exactly what it says.
-CLAUDE.md §7.2: a `getrawtransaction` failure read as "0 confirmations" is what
+A `getrawtransaction` failure read as "0 confirmations" is what
 turns an unanswerable question into a definite "not confirmed", which in a send
 path authorises spending the same coins twice.
 
@@ -1063,7 +1063,7 @@ per-client limit becomes decorative.
 ## Deployment
 
 * **Separate host from the seed.** `seed.pc.am` is the only DNS seed and
-  `vFixedSeeds` holds three hardcoded fallback peers (CLAUDE.md §5, §11).
+  `vFixedSeeds` holds hardcoded fallback peers.
 * **Point it at a `-disablewallet` node.** Broadcast refuses anything else unless
   `--allow-wallet-node` is passed.
 * **Bind 127.0.0.1 and terminate TLS in front.** This is `http.server`: a

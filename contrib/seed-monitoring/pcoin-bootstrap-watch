@@ -17,8 +17,8 @@
 #     provider firewall, a ufw rule or a dropped Docker port publish all look
 #     like health from inside the box.
 #
-# So this runs from 116.203.221.42 -- the only host in the fleet that is NOT a
-# seed -- and looks in from where a stranger stands.
+# So this runs from the webbuilderbot host -- the only box in the fleet that is
+# NOT a seed -- and looks in from where a stranger stands.
 #
 # Alerts only on a real loss of capability. seed.pc.am has three A records
 # precisely so losing one is survivable, so one dead seed is a WARNING and all

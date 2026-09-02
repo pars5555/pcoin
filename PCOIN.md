@@ -1,7 +1,7 @@
 # PCoin (PCN)
 
 PCoin is an **independent Layer-1 blockchain**, forked from **Bitcoin Core v29.4**
-(upstream tag `v29.4`, branch `pcoin` in this repo). It is *not* a Bitcoin sidechain,
+(upstream tag `v29.4`, branch `main` in this repo). It is *not* a Bitcoin sidechain,
 token, or testnet — it has its own genesis block, its own network magic, its own
 ports and address formats, and therefore its own completely separate P2P network
 and coin supply. A PCoin node will never connect to, or sync from, the Bitcoin
@@ -116,8 +116,10 @@ Difficulty self-adjusts every block under LWMA (from height 2800 on mainnet), so
 ## 2. What was changed vs upstream v29.4
 
 No monetary or script consensus rules were altered. Besides identity/bootstrap
-changes there are **two** real consensus changes: the proof-of-work
-function (SHA-256d → RandomX, rows marked below).
+changes there are **three** real consensus changes: the proof-of-work
+function (SHA-256d → RandomX, rows marked below), the difficulty algorithm
+(LWMA, every block from height 2800) and the 15-minute future-block-time limit
+at and above that height.
 
 | File | Change |
 |---|---|
@@ -126,12 +128,15 @@ function (SHA-256d → RandomX, rows marked below).
 | `src/chainparamsseeds.h` | Rewritten: Bitcoin's ~2031 mainnet seeds replaced by PCoin's own BIP155-encoded fixed seeds (35.239.156.16, 178.105.3.51, 152.53.171.190 and its IPv6, all :9444; a fourth was removed when that box was destroyed on 2026-08-22). The file **is** `#include`d by `kernel/chainparams.cpp` and mainnet loads it into `vFixedSeeds` as a fallback for when DNS seeding yields nothing; only the test networks and regtest call `vFixedSeeds.clear()`. Regenerate from `contrib/seeds/nodes_main.txt` via `contrib/seeds/generate-seeds.py`. |
 | `src/randomx/` **(PoW)** | Vendored RandomX v1.2.x (tevador/RandomX) — the PoW hash library, built as part of the tree. |
 | `src/crypto/pow_randomx.{h,cpp}` **(PoW)** | RandomX wrapper. Fixed key (the RandomX "K" input): the ASCII string `PCoin/RandomX/v1` (16 bytes, no NUL terminator), identical on **all** networks including regtest; key rotation would be a later hard fork — v1 is fixed-key. Verification uses RandomX **light mode** (256 MB cache, no 2 GB dataset): `randomx_alloc_cache()` with the machine-appropriate flags from `randomx_get_flags()` (auto-detected JIT / hardware AES / Argon2 SSSE3/AVX2; falls back to `RANDOMX_FLAG_DEFAULT` if that allocation fails) + `randomx_init_cache(key)` once under `std::call_once`, then a `thread_local` `randomx_vm` per thread sharing that cache. `RANDOMX_FLAG_JIT` is used when available, with a mandatory fallback to the interpreter (`RANDOMX_FLAG_DEFAULT`) if JIT allocation fails — some environments block W^X pages. |
-Row is accurate but incomplete, and the §2 table omits every LWMA and miner change. Missing rows (all confirmed changed vs v29.4): `src/pow.{h,cpp}` (+264/+38, LwmaGetNextWorkRequired and the DO-NOT-MODIFY legacy overflow), `src/consensus/params.h` (+40, lwmaHeight/nLwmaAveragingWindow/nLwmaMaxSolvetime/nLwmaMaxFutureBlockTime), `src/chain.h` (+27, LWMA_MAX_FUTURE_BLOCK_TIME), `src/deploymentinfo.cpp` (+4, DEPLOYMENT_LWMA), `src/node/cpuminer.{h,cpp}` (new, +437), `src/rpc/mining.cpp` (+129, startmining/stopmining/getcpuminerinfo), `src/init.cpp` (+18, RandomXPowInit), `src/net_processing.cpp` (+19), `src/node/blockstorage.cpp` (+23), `src/rpc/client.cpp` (+2), `src/chainparams.cpp` (+1), `src/kernel/chainparams.h` (+7), `src/CMakeLists.txt`/`src/crypto/CMakeLists.txt`/`src/kernel/CMakeLists.txt`. (exactly the same byte-order convention as the existing uint256-from-bytes + `UintToArith256` path), is ≤ the nBits target. The block **ID** (`CBlockHeader::GetHash`, prev-block links, genesis asserts, RPC block hashes) stays double-SHA256 and was deliberately not touched. |
+| `src/pow.{h,cpp}` **(consensus)** | `LwmaGetNextWorkRequired` (N=60, retargeting every block from height 2800) plus the deliberately-unfixed legacy retarget overflow, in a DO-NOT-MODIFY block — fixing it would orphan live blocks 2016..2799. |
+| `src/consensus/params.h`, `src/chain.h`, `src/deploymentinfo.cpp` **(consensus)** | `lwmaHeight`, the LWMA window and solvetime parameters, `LWMA_MAX_FUTURE_BLOCK_TIME` (15 min at and above `lwmaHeight`), `DEPLOYMENT_LWMA`. |
+| `src/node/cpuminer.{h,cpp}`, `src/node/poolclient.{h,cpp}`, `src/rpc/mining.cpp` | The built-in multithreaded miner and the pool client, and the RPCs `startmining` / `stopmining` / `startpoolmining` / `getcpuminerinfo`. |
+| The PoW statement | `RandomX(80-byte serialized header)` read little-endian (exactly the same byte-order convention as the existing uint256-from-bytes + `UintToArith256` path) is ≤ the nBits target. The block **ID** (`CBlockHeader::GetHash`, prev-block links, genesis asserts, RPC block hashes) stays double-SHA256 and was deliberately not touched. |
 | `src/common/args.cpp` | `BITCOIN_CONF_FILENAME = "pcoin.conf"`; `GetDefaultDataDir()` returns `AppData\Local\PCoin` (Windows), `~/.pcoin` (Unix), `~/Library/Application Support/PCoin` (macOS). |
 | `src/common/signmessage.cpp` | `MESSAGE_MAGIC = "PCoin Signed Message:\n"` — PCN message signatures are not valid Bitcoin signatures and vice versa. |
 | `src/policy/feerate.h` | `CURRENCY_UNIT = "PCN"` (fee rates display as PCN/kvB). |
 | `src/qt/bitcoinunits.cpp` | GUI unit labels: PCN / mPCN / µPCN. |
-| `CMakeLists.txt` | `CLIENT_NAME` set to `PCoin Core` (shows up in version strings and the user agent); `project()` renamed `PCoinCore`; `HOMEPAGE_URL` set to the placeholder `https://pcoin.example/` (RFC 2606 reserved TLD, feeds `CLIENT_URL` in `--version` output and the Windows installer — replace once a real project site exists). |
+| `CMakeLists.txt` | `CLIENT_NAME` set to `PCoin Core` (shows up in version strings and the user agent); `project()` renamed `PCoinCore`; `HOMEPAGE_URL` still set to the placeholder `https://pcoin.example/` (RFC 2606 reserved TLD; feeds `CLIENT_URL` in `--version` output). Known gap: it should be `https://pc.am` — see the version-reporting item in §8. |
 
 **Not** changed: executable names (`bitcoind`, `bitcoin-cli`, `bitcoin-qt`,
 `bitcoin-wallet`, ...), Qt icons/artwork. See §8.
@@ -290,8 +295,8 @@ available as a manual fallback (e.g. `-addnode=seed.pc.am`) if DNS is blocked
 or the seed is down.
 
 **Testnet/testnet4/signet/regtest still have zero automatic peer discovery** —
-their `vSeeds` and `vFixedSeeds` are both empty (mainnet does carry three hard-coded fixed seeds; the test networks do not)
-network. On those chains a node will sit alone forever unless you tell it where
+their `vSeeds` and `vFixedSeeds` are both empty (mainnet carries hard-coded fixed
+seeds; the test networks do not). On those chains a node will sit alone forever unless you tell it where
 a peer is, via `-connect`, `-addnode`, or the `addnode` RPC. The same manual
 wiring is how you build a deliberately private two-node setup on any network.
 Once two nodes are connected, normal address gossip (addrman) takes over and
@@ -376,10 +381,12 @@ bitcoin-cli.exe generatetoaddress 1 $addr
 # -> [ "…block hash…" ]
 ```
 
-At launch difficulty (`0x1f0fffff`, ~4096 expected hashes) each call takes
-**seconds to a few minutes** on a typical CPU — the single light-mode thread
-does a few hundred hashes per second, and mining is a lottery, so individual
-blocks vary. Don't be alarmed if one call sits for a while. Repeat (or loop)
+That was true at launch difficulty (`0x1f0fffff`, ~4096 expected hashes). Today the
+network carries far more hashrate than one CPU, so a single-threaded
+`generatetoaddress` on mainnet can run for **hours or days** without a block — the
+single light-mode thread does a few hundred hashes per second, and mining is a
+lottery. Use it on regtest; on mainnet use `startpoolmining` (pool) or `startmining`
+(solo, all cores). Repeat (or loop)
 `generatetoaddress 1 $addr` to keep building the chain; below height 2800 difficulty moves only at each 2016-block retarget, and from height 2800 LWMA retargets every block (increase capped at 3x/block, decrease at 12x/block) until it matches the network's actual hashrate. Watch
 progress with:
 
@@ -603,8 +610,11 @@ correctly returns a later address than index 0.
   only a handful of CPUs mining, anyone who rents a few dozen cloud CPU cores
   (or points a modest botnet at it) can 51%-attack PCoin — rewrite history,
   double-spend, censor. Until meaningful independent hashrate exists, treat
-  PCN as **educational — assign it no monetary value and accept none for it.**
-  Do not list it, sell it, or promise anything about it.
+  PCN as **experimental and thinly traded**. A small market exists (wPCN on
+  PancakeSwap via https://wrapdesk.pc.am, the ladder at https://market.pc.am) and
+  the services listed at https://docs.pc.am accept it, but any price is unproven
+  and can be moved by one party — promise nothing about it, and do not hold more
+  than you can afford to see reorganised away.
 * **Legal.** Issuing or distributing a currency can trigger money-transmission,
   securities, tax, and consumer-protection law depending on your jurisdiction
   and what you do with it (selling, exchanging, promoting). Mining blocks on
@@ -620,7 +630,7 @@ correctly returns a later address than index 0.
     `seed.pc.am` plus three compiled-in fixed seeds in `src/chainparamsseeds.h`
     that are used when DNS seeding yields nothing; testnets still need manual
     `-addnode`/`-connect` (§4).
-  * No block explorer, no checkpoints, no `assumevalid`/minimum-chainwork
+  * No checkpoints, no `assumevalid`/minimum-chainwork
     anchors (they're zeroed — fine for a young chain, revisit once there's
     history worth anchoring).
   * Releases are cut manually (there is no CI). The one packaging script is
@@ -628,7 +638,7 @@ correctly returns a later address than index 0.
     Setup installer was dropped in 2026-08 (it added a Defender false positive
     and a second thing to keep in step, for no benefit the zip did not already
     give). Still missing: code signing and reproducible-build attestations.
-* **Sensible order of next steps:** run two VPS nodes → mine a few thousand
-  blocks → back up wallets → add more seed nodes behind `seed.pc.am` and stand
-  up a proper crawling DNS seeder + explorer → re-brand binaries and GUI →
-  only then think about inviting the public.
+* **Where this stands (2026-09):** multiple seeds behind `seed.pc.am`, three
+  explorers, a public pool, a market and five services accepting PCN all exist.
+  Still open: a crawling DNS seeder, community-run seeds, re-branding the
+  binaries and GUI, code signing and reproducible builds.

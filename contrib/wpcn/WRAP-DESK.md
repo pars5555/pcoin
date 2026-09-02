@@ -1,10 +1,12 @@
 # The wPCN wrap desk — specification
 
-**Status: not built.** This is the design, written before any of it exists, so the
-dangerous parts are decided while nothing is at stake.
+**Status: live at https://wrapdesk.pc.am** (site up since 2026-08-31, announced
+publicly 2026-09-02, t.me/PCoinPCN/38). Both legs have been exercised end to end
+(§10.8). This is the design it was built to; where the two differ,
+`wrapdesk-server.mjs` is authoritative.
 
 The wrap desk is what turns wPCN from an isolated token into something pegged to
-PCN. Until it exists, the two prices are free to drift apart arbitrarily, because
+PCN. Without it, the two prices are free to drift apart arbitrarily, because
 nothing connects them.
 
 ---
@@ -60,7 +62,8 @@ deposit path *outside* the contract, so the defence has to live in the procedure
   whole defence is that the window is uneconomic to attack; shortening it for
   someone impatient reopens it.
 
-PCoin's hashrate is currently ~70–80% concentrated on `pool.pc.am`. That is the
+PCoin's hashrate is heavily concentrated on `pool.pc.am` (the live share is at
+https://pool.pc.am/api/pools; it was ~70–80% when this was written). That is the
 project's own pool, which is better than a stranger holding it — but it does not
 change the arithmetic, and the confirmation depth is sized for the general case.
 
@@ -68,7 +71,8 @@ change the arithmetic, and the confirmation depth is sized for the general case.
 
 ## 4. Limits, and why they exist
 
-**Inventory is 19,026 wPCN and cannot be increased.** At ~$0.0183 that absorbs
+**Inventory was 19,026 wPCN on 2026-08-31 and cannot be increased.** At the $0.0183
+rate that day it absorbed
 about **$350 of miner PCN**. There is ~162,600 PCN in other hands (~$3,000), so
 demand could exceed supply by an order of magnitude on day one.
 
@@ -79,7 +83,7 @@ That is the wrong constraint. The binding one is **what happens if everyone wrap
 and immediately dumps into the pool** — the realistic failure, and the one the
 owner asked about.
 
-Measured against the live pool (30,974 wPCN / 411.97 USDT):
+Measured against the live pool on 2026-08-31 (30,974 wPCN / 411.97 USDT):
 
 | wPCN dumped | seller receives | avg price | pool price after |
 |---|---|---|---|
@@ -145,7 +149,7 @@ the operator's capital:
 3. Operator buys wPCN back from the pool with that USDT
 4. Inventory replenished; the pool has seen a real buy
 
-**Simulated from the live pool** (30,974 wPCN / 411.97 USDT, PCN rate $0.0183,
+**Simulated from the live pool on 2026-08-31** (30,974 wPCN / 411.97 USDT, PCN rate $0.0183,
 1,000 PCN per cycle):
 
 | cycle | pool price | wPCN bought back | net |
@@ -185,7 +189,7 @@ is right, and there is a specific way to get it wrong:
 either direction amplifies: a small push moves the pool, which moves
 `serviceRate`, which moves what the cycle is willing to pay, which moves the pool
 again. That is not price discovery — it is a feedback loop, and it is the exact
-shape of a manipulated spiral. On six live payment rails.
+shape of a manipulated spiral. On five live payment rails.
 
 **The only thing that breaks the circle is external demand** — trades by people
 who are not us. So the switch must be gated on that, and on nothing else:
@@ -215,7 +219,7 @@ But *what* makes it rise matters:
 
 So: unlimited growth is possible, and only the first kind is worth having. The
 constraint is not arithmetic, it is whether anyone else wants PCN — which is what
-the six services, the miners and the listings are actually for.
+the five services, the miners and the listings are actually for.
 
 ---
 
@@ -237,10 +241,14 @@ is a permanent record the operator cannot alter or deny.
 
 ---
 
-## 8. What must be disclosed when it opens
+## 8. What is disclosed on the desk (and must stay disclosed)
 
 * Wrapping and redemption are **manual**, with a stated turnaround.
 * **100 confirmations** before release, and why.
+* **The fee: 5% of the PCN sent**, shown before the deposit address is issued (100
+  PCN wraps to 95 wPCN). It is friction against wrap-to-dump, not income — across
+  the whole 1,500 wPCN allocation it comes to 75 PCN, the figure the site derives
+  itself (`FEE_TOTAL`).
 * **Per-person and total limits**, stated up front, with the inventory figure.
 * The desk can **run out**, and what happens then.
 * Backing is **verifiable**: reserve `pc1q7hhzmdkkx0zjtzj6qkwmuvhlgwfqjrc6j2dk52`
@@ -320,8 +328,8 @@ order is the thing that must be right.
 * **Idempotency.** A retried delivery must not buy twice. Key the buy on
   `order_id` in its own table, the same shape as `delivered_txid`.
 * **Never let it block or fail a delivery.** Wrap the whole thing; a pool problem
-  must never strand a paying customer. This is the §7.13 lesson from CLAUDE.md:
-  an ordered list of steps sharing one process is a chain, and a chain fails
+  must never strand a paying customer. This is the lesson of the 2026-08-21 checker
+  outage: an ordered list of steps sharing one process is a chain, and a chain fails
   whole.
 
 ### Disclosure — not optional
@@ -352,7 +360,7 @@ Now the buy is the customer's economic decision reaching the pool directly. It
 produces genuine third-party volume, which is the gate in §6 — and it is the only
 mechanism here that produces volume nobody has to take on trust.
 
-Keep the PCN option alongside it: real PCN is what the six services accept, and
+Keep the PCN option alongside it: real PCN is what the five services accept, and
 wPCN is not a substitute for that.
 
 ## 9.4 Build order — not negotiable
@@ -362,7 +370,7 @@ wPCN is not a substitute for that.
 2. **Routing** (§9.2, then §9.3). Purchases move one price.
 3. **Oracle last** (§6). Only once third-party volume dominates.
 
-Doing 3 before 1 gives a self-referential price on six live payment rails, with
+Doing 3 before 1 gives a self-referential price on five live payment rails, with
 nothing external holding it down. That is the failure this document exists to
 prevent.
 
@@ -468,8 +476,9 @@ justifies.
 
 Not on txhash. One BSC transaction can emit several `Redeem` events — a contract
 or a multicall can batch them — and keying on the hash alone would pay the first
-and **silently drop** the rest. Exactly the mistake all four deposit rails
-shipped first (CLAUDE.md §8c #1), in a new place.
+and **silently drop** the rest. Exactly the mistake every deposit rail live at the
+time shipped first — key the ledger on `(txid, address)`, never `(txid, vout)` — in
+a new place.
 
 ### 10.8 The customer's side: `/redeem` calls the contract from THEIR wallet
 
@@ -538,7 +547,7 @@ them. The keeper closes that gap mechanically, trading from our own inventory:
 
 The pool follows the posted rate. **Never the reverse.** At the time of writing
 the pool holds ~$824 of total value, and at that depth **~$20 moves the price
-10%**. Six live payment rails price off `price.pc.am`. If the posted rate
+10%**. Five live payment rails price off `price.pc.am`. If the posted rate
 followed the pool, a few hundred dollars would reprice every rail — deposit PCN
 bought cheaply elsewhere, collect credit at twice its worth.
 

@@ -4,6 +4,8 @@ PCoin is an independent Layer-1 blockchain — a fork of Bitcoin Core v29.4 with
 
 Website: **https://pc.am** · Full technical manual: **[PCOIN.md](PCOIN.md)**
 
+Live surfaces: explorer **https://explorer.pc.am** · mining pool **https://pool.pc.am** · buy from the ladder **https://market.pc.am** · wPCN on BNB Smart Chain via **https://wrapdesk.pc.am** · what accepts PCN and how to integrate: **https://docs.pc.am** · announcements **https://t.me/PCoinPCN**
+
 ## The mission
 
 Money creation for ordinary people. If you own a phone or a laptop, you can mine PCN.
@@ -29,7 +31,7 @@ Money creation for ordinary people. If you own a phone or a laptop, you can mine
 | Addresses | legacy start with `P` (base58 prefix 55); bech32 `pc1...` |
 | Genesis | block ID `a95d51f0cbf25cad10c35961c6189356525d079835f02e83e2395f382fbe264a`, time `1785600628`, nBits `0x1f0fffff` (~4096 hashes/block at launch) |
 | Config / data | `pcoin.conf` in `~/.pcoin` (Linux) or `%LOCALAPPDATA%\PCoin` (Windows) |
-| Seed node | `seed.pc.am` (35.239.156.16) |
+| Seed nodes | `seed.pc.am` (DNS seed, several addresses) plus compiled-in fixed seeds in `src/chainparamsseeds.h` |
 
 PCoin is **not** a token and does not run on any other chain. It has its own genesis
 block, network magic, ports, and address formats — a PCoin node can never connect to
@@ -37,10 +39,11 @@ or sync from the Bitcoin network.
 
 ## Quickstart (Linux)
 
-**1. Get binaries.** Build from source — see the build sections of
-[PCOIN.md](PCOIN.md). (If a pre-built package for your platform has been published on
-[GitHub releases](https://github.com/pars5555/pcoin/releases), you can use that
-instead.) Binaries keep their upstream names (`bitcoind`, `bitcoin-cli`).
+**1. Get binaries.** Linux one-liner (verifies the download against the release's
+`SHA256SUMS`, installs, and runs the setup wizard):
+`curl -fsSL https://pc.am/dl/install.sh | sudo sh`. Windows, Android and plain
+archives: https://pc.am/download. Or build from source — see
+[PCOIN.md](PCOIN.md). Binaries keep their upstream names (`bitcoind`, `bitcoin-cli`).
 
 **2. Run a node.** It auto-connects to the network via `seed.pc.am`:
 
@@ -59,28 +62,35 @@ natively against the pool with `--algorithm randompcn --pool pool.pc.am:3333`; s
 ```bash
 ./bitcoin-cli createwallet "main"
 ADDR=$(./bitcoin-cli getnewaddress)
-./bitcoin-cli generatetoaddress 1 "$ADDR"
+./bitcoin-cli startpoolmining "pool.pc.am:3333" "$ADDR" 0   # 0 = all cores
+# or solo, all cores: ./bitcoin-cli startmining "$ADDR" 0
+# status either way:  ./bitcoin-cli getcpuminerinfo
 ```
 
-At launch difficulty each block takes seconds to a few minutes on a typical CPU —
-even on a phone. Rewards mature after 100 confirmations (`bitcoin-cli getbalance`).
-Difficulty self-adjusts every block (LWMA, from height 2800) to whatever hashrate the network's CPUs actually provide.
+Difficulty now tracks the whole network's CPUs (LWMA, every block since height
+2800), so a single CPU mining solo sees a block only every few days or longer. For a
+steady share use the pool — it pays in the coinbase, and the fee is shown on
+https://pool.pc.am. Rewards mature after 100 confirmations (`bitcoin-cli getbalance`).
 
 ## Roadmap (near term)
 
+- ~~Android node + miner app~~ shipped — https://pc.am/download
+- ~~First real-world micro-payments~~ services accept PCN today — https://docs.pc.am
 - 100 independent nodes
-- Android node + miner app
+- Community-run seed nodes
 - In-browser wallet
-- First real-world micro-payment / tipping pilots
 
 ## Honest disclosures
 
-PCoin is a young, experimental chain — **it is not an investment**, and you should
-assign PCN no monetary value today. Like any small PoW network, its security grows
-with the number of independent participants; with few miners, a 51% attack is cheap.
-There is no premine: the founder holds only the first ~100 PCN mined during
-development (2 blocks). The entire source is public and MIT-licensed — audit it
-yourself.
+PCoin is a young, experimental chain — **it is not an investment**. A small, thin
+market exists (https://price.pc.am posts the rate the payment rails use; wPCN trades
+on PancakeSwap via https://wrapdesk.pc.am) and any price can be moved by one party.
+Like any small PoW network, its security grows with the number of independent
+participants; with few miners, a 51% attack is cheap.
+There is no premine and no sale, but the founder's own machines mined a large share
+of the early supply. The distribution is public and checkable at any time at
+https://explorer.pc.am/api/addresses/top — read that, not this sentence. The entire
+source is public and MIT-licensed — audit it yourself.
 
 ## License and acknowledgment
 

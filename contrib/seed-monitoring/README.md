@@ -2,7 +2,8 @@
 
 Watchers for the PCoin chain and for the services that take PCN. They alert to
 the **private** ops channel via `pcoin-notify`. Nothing here may post to the
-public channel -- see `CLAUDE.md` §8b.
+public channel -- announcements and alerts are separate acts, and alerts never go
+public.
 
 `pcoin-notify` sends with Telegram's legacy `parse_mode=Markdown` so the subject
 can be bold, but **alert bodies are not escaped**. One unpaired `_` or `*` in a
@@ -33,14 +34,15 @@ the failure is silent in exactly the way this table exists to prevent.
 | rail | evidence lives on | watched from | how |
 |---|---|---|---|
 | `checker` | 152.53.171.190 | 152.53.171.190 | MySQL `settings.last_poll_at` |
-| `webbuilderbot` | 116.203.221.42 | 116.203.221.42 | MySQL `settings.last_poll_at` |
-| `aicontrol` | 116.203.221.42 | 116.203.221.42 | MySQL `pcoin_watcher_heartbeat` |
-| `3dmodels.pc.am` | 116.203.221.42 | 116.203.221.42 | log mtime + docker db |
-| `3dmodel.oonak.ai` | 202.61.252.202 | 202.61.252.202 | log mtime + `deposits.json` |
+| `webbuilderbot` | the webbuilderbot host | same host | MySQL `settings.last_poll_at` |
+| `aicontrol` | the webbuilderbot host | same host | MySQL `pcoin_watcher_heartbeat` |
+| `3dmodels.pc.am` | the webbuilderbot host | same host | log mtime + docker db |
+| `3dmodel.oonak.ai` | its own host | same host | log mtime + `deposits.json` |
 
-Five rails, all assigned as of 2026-08-29. (`portrait2video` was assigned and then
-removed the same day: private, never used in earnest, and being deleted. A watcher
-pointed at a service that is about to vanish is a scheduled false alarm.) Before that date only `checker` was
+Host addresses are in `D:\pc.am\PCOIN-SERVERS.md` (off-repo). The rails sit behind
+Cloudflare, so their origin addresses are deliberately not written down here.
+
+Five rails, all assigned as of 2026-08-29. Before that date only `checker` was
 actually being checked, on the one host that ran the script; the rest lived on
 machines it could not read and vanished silently.
 
@@ -63,32 +65,29 @@ indistinguishable from health, and it had read as healthy for weeks.
 
 So a rail nothing looked at is now reported as **unknown** -- not as broken, and
 not as fine. Collapsing unknown into either direction is the mistake the whole
-PCN codebase is written against (`CLAUDE.md` §7.1).
+PCN codebase is written against: an answer that never arrived resolves nothing.
 
 Alerts are gated on **change**, with a daily re-assert. The concentration
 watcher already taught this estate that repeating an identical alert every few
 minutes is how people learn to ignore it; a gap that scrolled past weeks ago is
 the one nobody remembers, hence the re-assert.
 
-### portrait2video is checked differently, on purpose
+### A rail on a host the watcher cannot read
 
-It is the first rail not on a watcher host: SQLite on its own box, no config to
-read here and no database to query. Granting a watcher SSH into the machine
-that takes payments, to answer three integers, is a worse trade than asking over
-HTTP -- so it exposes a read-only status endpoint carrying heartbeat age, stuck
+One rail is not on a watcher host: its state lives on its own box, with no config
+to read here and no database to query. Granting a watcher SSH into a machine that
+takes payments, to answer three integers, is a worse trade than asking over HTTP --
+so such a rail exposes a read-only status endpoint carrying heartbeat age, stuck
 count and reorg count, and nothing else. No money, no addresses, no user data.
 
 ```sh
 # /etc/pcoin-deposit-watch.conf   (mode 600 -- it holds a token)
-RAILS_EXPECTED="checker portrait2video"
-P2V_MONITOR_URL=https://portrait2video.pc.am/pcn/monitor
-P2V_MONITOR_TOKEN=...
+RAILS_EXPECTED="checker"
 ```
 
 The token is a **path segment**, not a header: the watcher requests
-`$P2V_MONITOR_URL/$P2V_MONITOR_TOKEN`. A wrong token answers **404**, the same
-as a route that does not exist, so a leaked URL cannot be probed to learn
-whether the token half is close.
+`$URL/$TOKEN`. A wrong token answers **404**, the same as a route that does not
+exist, so a leaked URL cannot be probed to learn whether the token half is close.
 
 An unset URL is not a pass -- a rail nobody configured is a rail nobody is
 watching, and the coverage report says so. `enabled:false` in the payload is

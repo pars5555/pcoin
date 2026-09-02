@@ -3,8 +3,8 @@
 The other Play projects on this machine (`crowd-counting`, `guess-the-word`,
 `JajTur`) keep `*.jks` and `KEYSTORE-CREDENTIALS.txt` in `playstore/v1/files/`.
 Those repositories are private. **This one is public** —
-github.com/pars5555/pcoin — and `CLAUDE.md` §8 forbids any key, token, password
-or seed phrase in the tree. `.gitignore` blocks `*.keystore` and `*.aab` as a
+github.com/pars5555/pcoin — and no key, token, password or seed phrase may be in
+the tree. `.gitignore` blocks `*.keystore` and `*.aab` as a
 net under the tightrope, not as permission to keep a copy here.
 
 So this folder holds pointers, not material.

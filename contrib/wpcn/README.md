@@ -24,7 +24,7 @@ nothing here should be presented in a way that blurs it.
 | Deploy gas | **707,992** measured — about **$0.025** at 0.05 Gwei / BNB $700 |
 | Full setup gas | ~3.8M — about **$0.13** all in |
 | BSC connectivity | verified: chain 56, gas 0.05 Gwei, Router/Factory/USDT all live |
-| Deployed | **not yet** — waiting on the decisions below |
+| Deployed | **yes** — `0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1` on BNB Smart Chain, 50,000 wPCN fixed supply; PancakeSwap V2 wPCN/USDT pool live; wrap and redeem at https://wrapdesk.pc.am (see `WRAP-DESK.md`) |
 
 ---
 
@@ -81,11 +81,15 @@ Komodo PR for a reason.
    this is hoping nobody asks.
 
 3. **A small pool is a volatile pool, and that is arithmetic, not a flaw.** With
-   ~$385 of depth, a $40 buy moves the price by roughly 10%. Anyone told to
+   under $1,000 of depth (check the live pool before quoting a figure), a trade of a
+   few percent of the pool moves the price ~10%. Anyone told to
    expect a stable price will feel misled by something we knew in advance.
 
-4. **Redemption is manual and one-way through the contract.** There is no
-   automatic wPCN → PCN path. Say so; do not let "wrapped" imply otherwise.
+4. **Redemption is manual.** https://wrapdesk.pc.am/redeem calls `redeem()` from
+   your own wallet; a person then sends the PCN by hand — allow hours, not
+   minutes. PCN → wPCN goes through the same desk (5% fee, 100 confirmations).
+   Design and procedures: `WRAP-DESK.md`. Say so; do not let "wrapped" imply an
+   automatic bridge.
 
 ---
 
@@ -177,17 +181,23 @@ with no established range.
 
 ## After launch: feeding the pool price into price.pc.am
 
-**Agreed, with the safety design fixed up front rather than after an incident.**
+**Superseded.** The direction that shipped is the opposite: `price.pc.am` is the
+anchor and `pcoin-wpcn-keeper` moves the pool toward it, never the reverse
+(`WRAP-DESK.md` §11.1). The live pool price may be published as its own
+informational field but must never be presented as the PCN price. The plan below is
+kept as history; switching `serviceRate` to follow the pool is gated on a sustained
+majority of pool volume coming from addresses that are not ours (`WRAP-DESK.md` §6).
 
 On PancakeSwap the price is automatic and needs no oracle — an AMM's price *is*
 its pool ratio, so every trade moves it. The question is only what, if anything,
 downstream should follow it.
 
 **The thing not to do: wire the pool price straight into `serviceRate`.**
-`serviceRate` is what six live products credit real customers at. The pool is
-~$385 deep, so a ~$40 buy moves it ~10%. Wiring them together buys an attacker a
+`serviceRate` is what five live products credit real customers at. The pool is
+shallow — check the live pool before quoting a figure — so a small buy moves it
+~10%. Wiring them together buys an attacker a
 rate they control for a few hundred dollars: pump wPCN, spend PCN across
-checker / webbuilderbot / aicontrol / 3dmodels / portrait2video at the inflated
+checker / webbuilderbot / aicontrol / 3dmodels.pc.am / 3dmodel.oonak.ai at the inflated
 rate, sell back. That is oracle manipulation, a thin pool is the textbook
 vulnerable oracle, and the rails would be funding the attack.
 

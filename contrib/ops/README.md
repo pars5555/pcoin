@@ -6,7 +6,7 @@ market's hot wallet.
 
 It is in git for one reason: **until 2026-08-17 none of it was, and a rebuild of
 that host would have silently lost every one of these controls.** That is the
-same gap CLAUDE.md §2 records for the tray and Android helper scripts — the
+same gap that once left the tray and Android helper scripts untracked — the
 difference being that these files are the only thing standing between an
 anonymous stratum connection and a wallet.
 

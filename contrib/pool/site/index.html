@@ -173,12 +173,15 @@ sudo -u pcoin pcoin-cli -datadir=/var/lib/pcoin \
     <ul>
       <li><b>A pool does not increase your earnings.</b> It reduces variance. After the fee you earn
         slightly less on average than solo. What you buy is predictability.</li>
-      <li><b>Coins are locked for 100 blocks.</b> Roughly 15–17 hours. That is a consensus rule, not
-        something the pool invents — it applies to solo miners identically.</li>
+      <li><b>Coins are locked for 100 blocks.</b> About 17 hours at the 10-minute target; the
+        <a href="https://explorer.pc.am" rel="noopener">explorer</a> shows the current pace. That is a
+        consensus rule, not something the pool invents — it applies to solo miners identically.</li>
       <li><b>An orphaned block erases its payouts.</b> It happens on a young network. The work was
         real; the block was not.</li>
-      <li><b>PCN is not traded on any exchange.</b> No orderbook, no way to sell it. Treat it as worth
-        nothing until a real market exists.</li>
+      <li><b>PCN is not traded on any exchange.</b> The one way out is the
+        <a href="https://wrapdesk.pc.am" rel="noopener">wrap desk</a> (PCN &rarr; wPCN, 250 PCN per person
+        while it is new, 5% fee, by hand) and a small PancakeSwap pool for wPCN that follows the posted
+        price. Treat PCN as worth nothing until a real market exists.</li>
       <li><b>A pool concentrates hashrate</b>, and on a network this small that is a real risk. The
         pool's share of the network is shown above, from the API, so you can check it rather than
         take our word — and we would rather see a second pool run by somebody else than grow this one.</li>
@@ -214,8 +217,12 @@ sudo -u pcoin pcoin-cli -datadir=/var/lib/pcoin \
       set('cm', ps.connectedMiners != null ? String(ps.connectedMiners) : '—');
       set('nh', hs(ns.networkHashrate));
       set('tb', p.totalBlocks != null ? String(p.totalBlocks) : '—');
-      if (ps.poolHashrate && ns.networkHashrate)
-        set('phs', (100 * ps.poolHashrate / ns.networkHashrate).toFixed(1) + '% of network');
+      if (ps.poolHashrate && ns.networkHashrate) {
+        // pool and network hashrate come from different estimators over different windows,
+        // so the ratio can exceed 100%; say "about all of it" rather than print an impossible number
+        var share = 100 * ps.poolHashrate / ns.networkHashrate;
+        set('phs', share >= 97 ? 'about all of the network (estimate)' : share.toFixed(1) + '% of network');
+      }
       if (ns.blockHeight) set('nhs', 'height ' + ns.blockHeight);
       if (p.poolFeePercent != null) set('fee', String(p.poolFeePercent));
       var mp = p.paymentProcessing && p.paymentProcessing.minimumPayment;

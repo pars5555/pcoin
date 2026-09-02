@@ -33,6 +33,13 @@ Binaries keep upstream names — `bitcoind`, `bitcoin-cli`. Only the datadir and
 config are renamed, so **on a machine that also runs Bitcoin, always pass an
 explicit `-datadir`.**
 
+**wPCN is not PCN.** A 1:1 wrapped IOU, `wPCN`, exists as a BEP-20 token on BNB
+Smart Chain (`0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1`, 8 decimals, fixed
+50,000 supply, backed by a public reserve). It is a different asset on a different
+chain: a BSC transfer is never a PCN deposit, and the PancakeSwap price is not the
+PCN reference price — that is <https://price.pc.am>. Conversion in both directions
+is manual, via <https://wrapdesk.pc.am>.
+
 ---
 
 ## 2. Chain parameters
@@ -75,10 +82,12 @@ use SLIP-44's universal coin type 1.
 ## 3. Running a node
 
 ```bash
-# Linux
-tar xzf pcoin-1.2.6-linux-x86_64-miner.tar.gz && cd pcoin-1.2.6
-./bin/bitcoind -datadir=/var/lib/pcoin -daemon
-./bin/bitcoin-cli -datadir=/var/lib/pcoin getblockchaininfo
+# Linux — the archive unpacks to pcoin-<ver>/ with the binaries at its top level
+curl -fLO https://github.com/pars5555/pcoin/releases/download/v1.3.0/pcoin-linux-x86_64-miner.tar.gz
+tar xzf pcoin-linux-x86_64-miner.tar.gz && cd pcoin-*/
+./bitcoind -datadir=/var/lib/pcoin -daemon
+./bitcoin-cli -datadir=/var/lib/pcoin getblockchaininfo
+# or, on Debian/Ubuntu: curl -fsSL https://pc.am/dl/install.sh | sudo sh
 ```
 
 A minimal `pcoin.conf` for an exchange:
@@ -103,7 +112,9 @@ changetype=bech32
 
 Verify your download first — checksums at <https://pc.am/dl/SHA256SUMS.txt>.
 
-**Resource note.** The whole chain is roughly 20 MB today and a full sync from
+**Resource note.** The whole chain is still tiny (tens of MB — `size_on_disk` in
+`getblockchaininfo` is the real figure; `du` on `blocks/` overstates it because Core
+preallocates) and a full sync from
 genesis takes minutes. RandomX verification uses a ~256 MB cache in light mode;
 budget that per node.
 
@@ -198,7 +209,9 @@ exists so you never have to guess.
 `POST /api/tx` accepts only signed transaction hex. The service holds no keys
 and will refuse a request containing key material.
 
-**It is one server.** Run your own node for anything where money depends on the
+**These are three independent instances** — <https://explorer.pc.am>,
+<https://explorer2.pc.am>, <https://explorer3.pc.am> — and corroborating two of them
+is what the project's own payment rails do. Still run your own node for anything where money depends on the
 answer; this is a convenience, not infrastructure you should depend on.
 
 ---
@@ -245,18 +258,26 @@ Stated plainly, because assuming otherwise wastes days:
 If you are evaluating PCoin for listing, these are the facts you would find
 anyway, stated up front:
 
-* **The chain launched in August 2026** and is days old at the time of writing.
-* **Hashrate is small and concentrated.** Most of it is the founder's own
-  machines. A well-resourced attacker could reorg this chain today.
-* **Coin distribution is highly concentrated.** One address holds roughly 92% of
-  everything mined, because almost all mining so far has been done by the
-  founder's hardware. There was no premine and no sale — it was mined — but the
-  concentration is real and checkable at
-  <https://explorer.pc.am/api/addresses/top>.
-* **There is no market.** PCN is not listed anywhere and has no price.
-* **Difficulty changes behaviour at height 2800**, switching from Bitcoin's
-  2016-block retarget to per-block LWMA. Nodes older than v1.2.0 will fork
-  there.
+* **The chain launched on 1 August 2026.** Check its age and height live at
+  <https://explorer.pc.am/api/status> rather than trusting a date in this file.
+* **Hashrate is small and concentrated.** Most of it goes through the project's
+  own pool, `pool.pc.am` — its share is published at <https://pool.pc.am/api/pools>
+  (`poolStats.poolHashrate` against `networkStats.networkHashrate`). A
+  well-resourced attacker could reorg this chain today.
+* **Coin distribution is concentrated.** Almost all early mining was done by the
+  founder's hardware; there was no premine and no sale. Do not take a figure from
+  this document — the live rich list is at
+  <https://explorer.pc.am/api/addresses/top>. Note that the wPCN reserve
+  (`pc1q7hhzmdkkx0zjtzj6qkwmuvhlgwfqjrc6j2dk52`, 50,000 PCN backing the wrapped
+  token) appears on that list and is not a holder.
+* **The market is tiny.** A posted rate exists at <https://price.pc.am> (the anchor
+  the payment rails price off), PCN is sold from a finite ladder at
+  <https://market.pc.am>, and a 1:1 wrapped token (wPCN, BEP-20 on BNB Smart Chain)
+  trades on PancakeSwap with very little depth — tens of dollars move that price by
+  double digits. Treat any quoted price as unproven.
+* **Difficulty changed behaviour at height 2800** (passed), switching from
+  Bitcoin's 2016-block retarget to per-block LWMA. Nodes older than v1.2.0 are
+  forked off and must upgrade.
 
 ---
 

@@ -179,7 +179,8 @@ The PCoin node has a CPU miner built in and speaks this protocol itself, so
 "what do I run" already has an answer that needs no third-party software:
 
 ```
-pcoin-cli startpoolmining "pool.pc.am:3333" "<your pc1q… address>" 0
+bitcoin-cli startpoolmining "pool.pc.am:3333" "<your pc1q… address>" 0
+# (the .deb also installs a `pcoin-cli` alias for the same binary)
 ```
 
 `0` threads means every core. Releases: <https://github.com/pars5555/pcoin/releases>

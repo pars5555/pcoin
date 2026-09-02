@@ -296,8 +296,8 @@ def _pace_prose(ctx, s):
             "The lifetime average of %s is an <i>artefact</i>, not a track record, "
             "and so is any window longer than about a hundred blocks: heights 0 to "
             "2015 were mined at the minimum difficulty roughly a minute apart, and "
-            "the difficulty has retargeted only once since. Read the recent window, "
-            "not the average."
+            "the difficulty only began adjusting every block at height 2800. Read "
+            "the recent window, not the average."
             % esc(duration(allt["seconds"])))
     if lwma.get("height") is None:
         out.append("LWMA difficulty retargeting is disabled on this network.")
@@ -692,8 +692,8 @@ def tx_page(ctx, txid):
             eta = ("" if not mat or mat.get("seconds") is None else
                    " &mdash; roughly %s at the pace measured over the last %s "
                    "blocks. That estimate comes from this chain's measured pace, "
-                   "never from the 600 s target, because the chain does not run "
-                   "at target."
+                   "never from the 600 s target alone, because the chain has not "
+                   "always run at target."
                    % (esc(duration(mat["seconds"])), num(mat.get("window"))))
             banners.append(banner(
                 "warn",
@@ -1124,14 +1124,15 @@ blocks &mdash; so the index unwinds losing branches by subtracting back the exac
 per-address amounts it had added, rather than recomputing them. Orphaned blocks
 are kept and still resolve to a page. %(reorgs)s</p>
 
-<h2>Why the chain is slow right now</h2>
+<h2>Block pace and difficulty</h2>
 <p>%(pace)s</p>
 
 <h2>Coinbase maturity</h2>
 <p>Mined coins need <b>%(maturity)s confirmations</b> before they can be spent.
 Maturity is counted in blocks, which is the consensus rule; wherever a time
 estimate appears next to it, it is derived from the pace measured on this chain
-and never from the 600 s target, because the chain does not run at target.</p>
+and never from the 600 s target alone, because the chain has not always run at
+target.</p>
 
 <h2>Index state right now</h2>
 </div></div>

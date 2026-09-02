@@ -41,8 +41,8 @@ coins is not a recoverable mistake, so purge only prints where the data is and
 leaves it alone.
 
 The service is deliberately left disabled after install. A node that starts
-mining before it has synced builds on a chain it has not verified (`CLAUDE.md`
-§7.9), and the same caution applies to starting unattended at all. The
+mining before it has synced builds on a chain it has not verified, and the same
+caution applies to starting unattended at all. The
 `postinst` prints the one command that starts it.
 
 ## Testing a change

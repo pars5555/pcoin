@@ -125,7 +125,8 @@
       <code>rx/pcoin</code> pull request to xmrigCC remains open and unmerged. Our own miner stays built
       into the node and stays the path we support first.</p>
       <p>Also noticed, rather than arranged by us: <a href="https://www.livecoinwatch.com/price/PCoin-__PCN" rel="noopener">LiveCoinWatch</a>
-      lists PCN &mdash; with no price, because there is no market to read one from. CoinCodex has said
+      lists PCN &mdash; with no price. PCN itself is on no exchange, and wPCN's PancakeSwap pool is one
+      we steer to price.pc.am rather than a price discovered by strangers, so we do not offer it as one. CoinCodex has said
       it will not list a coin that is on no exchange, and that remains the honest state of things.</p>
     </article>
 
@@ -140,22 +141,41 @@
       into wPCN: you are given a deposit address that is yours alone, and after 100
       confirmations a person sends your wPCN. Going back is handled by the contract itself
       &mdash; <code>redeem()</code> burns your wPCN and the PCN is sent to the PCoin address
-      you name.</p>
+      you name; <a href="https://wrapdesk.pc.am/redeem">wrapdesk.pc.am/redeem</a> lets the wallet
+      on your phone call it without typing satoshi amounts into BscScan.</p>
       <p>Read the limits before using it: <b>250 PCN per person</b>, 1,500 wPCN in total while
-      the desk is new, a <b>5% fee</b>, and roughly 18 hours of confirmations. Both directions
+      the desk is new, a <b>5% fee</b>, and about 17 hours of confirmations (100 blocks). Both directions
       are <b>manual</b> &mdash; a person releases the funds, so allow hours rather than minutes.
-      The pool is small (about $824), a ~$20 trade moves its price about 10%, the liquidity is
+      The pool is small &mdash; a trade of a few tens of dollars moves its price about 10% &mdash; the liquidity is
       <b>not locked</b>, and we trade that pool ourselves to hold it near the rate posted at
       price.pc.am. Backing is 1:1 and you can check it yourself on the
       <a href="https://wrapdesk.pc.am/proof">proof page</a>.</p>
+      <p><b>Update, 2 September.</b> Both doors have now been used end to end. The first redemption
+      completed today &mdash; 1 wPCN burned on BNB Smart Chain, 1 PCN paid and confirmed in PCoin
+      block 6172 &mdash; and the listing and the desk were announced on
+      <a href="https://t.me/PCoinPCN/37" rel="noopener">@PCoinPCN</a>. wPCN needs a BNB Smart Chain wallet
+      that lets you add a custom BEP-20 token (MetaMask works; Exodus currently hides the token). Redeem
+      through <a href="https://wrapdesk.pc.am/redeem">wrapdesk.pc.am/redeem</a> from inside your wallet's
+      browser &mdash; BscScan's own &ldquo;Write Contract&rdquo; form fails from MetaMask on Android. A wrap in
+      progress is at <a href="https://wrapdesk.pc.am/track">/track</a>.</p>
     </article>
 
     <article class="entry">
-      <div class="meta"><time>2026-08-31</time><span class="tag rel">Release v1.3.13</span></div>
-      <h2>Android: the miner's icon gets room to breathe</h2>
-      <p>The miner's launcher icon filled its circle edge to edge, so at the size a launcher
-      actually draws it the milled rim ran into the mask. It now carries the same inset the
-      wallet's coin has. Cosmetic, but it is the thing most people see most often.</p>
+      <div class="meta"><time>2026-08-31</time><span class="tag rel">Releases v1.3.13 &ndash; v1.3.15</span></div>
+      <h2>Android miner: a fresh install could not find a peer, and a stuck pool job went unnoticed</h2>
+      <p><b>v1.3.14.</b> The app shipped only two bootstrap peers, and they were the same machine. When
+      that node's inbound slots were full a new phone connected, was greeted, and was dropped seconds
+      later &mdash; every time &mdash; so the miner correctly refused to start and the screen said
+      &ldquo;waiting to sync&rdquo; with no error anywhere. The app now lists the DNS seed plus four
+      separate machines, and that node's connection limit was raised.</p>
+      <p><b>v1.3.15.</b> A pool client could latch onto a job the pool had already forgotten and mine for
+      an hour earning nothing, while every rejected share said <i>stale</i>. A run of consecutive
+      rejections now forces a reconnect, which issues fresh work. The fix lives in the bundled node, so
+      it needed a rebuilt native binary to reach a phone.</p>
+      <p><b>v1.3.13.</b> The launcher icon carries the same inset as the wallet's coin. All three install
+      in place over the previous version; phones still on the original app id
+      (<code>org.pcoin.miner</code>) need the <code>-legacy</code> APK from the
+      <a href="/download/">download page</a>. The wallet APK is unchanged at v1.2.8.</p>
     </article>
 
     <article class="entry">
@@ -331,13 +351,12 @@
     </article>
 
     <div class="note">
-      <h3>What is being worked on</h3>
-      <p><strong>A mining pool.</strong> RandomX over a Bitcoin-style header means no existing
-      pool software runs unmodified, so it is being written. The share validator agrees with
-      the chain on 100 real blocks and assembled blocks are accepted by a node. It is
-      <b>open now</b> at <a href="https://pool.pc.am" rel="noopener">pool.pc.am</a>, stratum on
-      port 3333. Solo mining is supported today and is not going away.</p>
-      <p>No dates are promised for this or anything else.</p>
+      <h3>Where things stand</h3>
+      <p><strong>The mining pool is open</strong> at <a href="https://pool.pc.am" rel="noopener">pool.pc.am</a>,
+      stratum on port 3333, 2% fee, since 13 August. It was written from scratch because RandomX over
+      a Bitcoin-style header runs on no existing pool software unmodified. Solo mining is supported
+      today and is not going away.</p>
+      <p>No dates are promised for anything else.</p>
     </div>
   </main>
 

@@ -296,12 +296,20 @@
   }
 
   @media (max-width:760px){
-    .hero-inner{padding:64px 24px 72px}
-    .hero-art{order:-1;flex-basis:auto}
+    .hero-inner{padding:64px 24px 72px;flex-direction:column;align-items:flex-start;gap:28px}
+    .hero-art{order:-1;flex-basis:auto;align-self:center}
     .hero-art svg{width:150px}
     section{padding:64px 0}
     .nav-inner{gap:14px}
     nav.links{gap:16px}
+    /* a 560px-wide table on a 390px phone is a table nobody reads: stack each row */
+    table.params{min-width:0}
+    table.params tbody,table.params tr{display:block}
+    table.params tr{padding:12px 16px;border-bottom:1px solid var(--line-soft)}
+    table.params tr:last-child{border-bottom:none}
+    table.params th,table.params td{display:block;padding:0;border-bottom:none;width:auto;white-space:normal}
+    table.params th{font-size:.76rem;letter-spacing:.08em;text-transform:uppercase;margin-bottom:4px}
+    table.params td{overflow-wrap:anywhere}
   }
 </style>
 <style>
@@ -314,16 +322,16 @@
   .tab:hover{color:var(--text);border-color:rgba(255,255,255,.2)}
   .tab[aria-selected="true"]{background:var(--grad);color:#0a0b10;border-color:transparent}
   .panelx[hidden]{display:none}
-  .step{display:grid;grid-template-columns:34px 1fr;gap:16px;margin:0 0 26px}
+  .step{display:grid;grid-template-columns:34px minmax(0,1fr);gap:16px;margin:0 0 26px}
   .step-n{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;
           font-weight:700;font-size:14px;background:var(--panel-2);border:1px solid var(--line);color:var(--teal)}
   .step h3{margin:4px 0 8px;font-size:17px}
   .step p{margin:0 0 10px;color:var(--muted);line-height:1.65}
   pre.cmd{position:relative;background:#080a0f;border:1px solid var(--line);border-radius:12px;
-          padding:16px 52px 16px 16px;overflow-x:auto;font-family:var(--mono);font-size:13px;line-height:1.6}
+          padding:16px 72px 16px 16px;overflow-x:auto;font-family:var(--mono);font-size:13px;line-height:1.6}
   pre.cmd .c{color:var(--dim)}
-  .copy{position:absolute;top:10px;right:10px;cursor:pointer;font:inherit;font-size:11px;
-        padding:5px 10px;border-radius:7px;border:1px solid var(--line);background:var(--panel);color:var(--muted)}
+  .copy{position:absolute;top:10px;right:10px;cursor:pointer;font:inherit;font-size:12px;
+        padding:8px 12px;min-height:32px;border-radius:7px;border:1px solid var(--line);background:var(--panel);color:var(--muted)}
   .copy:hover{color:var(--text)}
   .note{border-left:3px solid var(--teal);background:rgba(45,212,191,.06);
         padding:14px 16px;border-radius:0 10px 10px 0;margin:16px 0;color:var(--muted);line-height:1.65;font-size:14px}
@@ -339,7 +347,7 @@
   details.faq{border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:10px 0;background:var(--panel)}
   details.faq summary{cursor:pointer;font-weight:600;color:var(--text)}
   details.faq > :not(summary){color:var(--muted);line-height:1.7;margin-top:10px}
-  @media (max-width:640px){.step{grid-template-columns:28px 1fr;gap:12px}}
+  @media (max-width:640px){.step{grid-template-columns:28px minmax(0,1fr);gap:12px}}
 </style>
 </head>
 <body id="top">
@@ -357,6 +365,9 @@
       <a href="/#calculator">Calculator</a>
       <a href="https://docs.pc.am" rel="noopener">Integrate</a>
       <a href="https://explorer.pc.am" rel="noopener">Explorer</a>
+      <a href="https://market.pc.am" rel="noopener">Buy PCN</a>
+      <a href="https://wrapdesk.pc.am" rel="noopener">Wrap desk</a>
+      <a href="/news/">News</a>
       <a href="https://t.me/PCoinPCN" rel="noopener">Community</a>
       <a class="gh-pill" href="https://github.com/pars5555/pcoin" rel="noopener">GitHub</a>
     </nav>
@@ -549,13 +560,20 @@ sudo apt install ./pcoin-linux-amd64-miner.deb</pre>
 
   <p style="color:var(--muted);line-height:1.7;max-width:72ch">
     Two apps from one codebase. Both carry a full PCoin node and a wallet; the
-    difference is whether mining is compiled in at all.
+    difference is whether mining is compiled in at all. Neither app holds <b>wPCN</b>, the
+    wrapped form of PCN on BNB Smart Chain &mdash; that lives in a BSC wallet that can add a
+    custom BEP-20 token (MetaMask works) and trades on PancakeSwap.
+    <a href="https://wrapdesk.pc.am/redeem" rel="noopener">wrapdesk.pc.am/redeem</a> turns wPCN
+    back into PCN you can receive in these apps, and
+    <a href="https://wrapdesk.pc.am" rel="noopener">wrapdesk.pc.am</a> goes the other way. To get
+    PCN without mining, see <a href="https://market.pc.am" rel="noopener">market.pc.am</a>.
   </p>
   <div class="table-shell">
   <table class="files">
     <tr><th>File</th><th>What it is</th></tr>
     <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.3.15/pcoin-android-miner.apk">pcoin-android-miner.apk</a></td><td>Node, wallet and mining</td></tr>
-    <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.2.8/pcoin-android-wallet.apk">pcoin-android-wallet.apk</a></td><td>Node and wallet, no mining</td></tr>
+    <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.3.15/pcoin-1.3.15-android-miner-legacy.apk">pcoin-1.3.15-android-miner-legacy.apk</a></td><td>The same miner for phones whose installed app shows package <code>org.pcoin.miner</code> (Settings &rarr; Apps &rarr; PCoin Miner &rarr; app details). It upgrades in place; the file above would install as a second app, and uninstalling the old one destroys its wallet</td></tr>
+    <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.2.8/pcoin-android-wallet.apk">pcoin-android-wallet.apk</a></td><td>Node and wallet, no mining &middot; <a href="/wallet-privacy.html">privacy policy</a></td></tr>
   </table>
   </div>
 
@@ -655,7 +673,10 @@ cmake --build build -j "$(nproc)"
     <p>Each block pays 50 PCN and arrives roughly every ten minutes, shared among
     everyone mining. Your share is your hashrate over the network&rsquo;s.
     <a href="/#calculator">The calculator on the front page</a> does the arithmetic with
-    live numbers. PCN is not traded on any exchange, so there is no market price &mdash;
+    live numbers. PCN itself is on no exchange. Its wrapped form, wPCN, trades in a small
+    PancakeSwap pool that is steered to the rate posted at
+    <a href="https://price.pc.am" rel="noopener">price.pc.am</a> &mdash; the same rate the services
+    that accept PCN use &mdash; so read that page, not the pool, for a price. Either way,
     treat this as a young project, not an income.</p>
   </details>
 

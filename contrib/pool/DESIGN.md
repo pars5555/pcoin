@@ -1,10 +1,13 @@
 # A mining pool for PCoin — design
 
-Status: **design only, nothing built.** Written 2026-08-13.
+Status: **built and public** — `pool.pc.am:3333`, payouts in the coinbase (see
+`MINER-INTEGRATION.md`). This design was written 2026-08-13 and is kept as the
+rationale; steps 1-5 below are done.
 
 ## Why
 
-A miner with 100 H/s against a 28,000 H/s network finds a block every **~47
+A miner with 100 H/s against a 28,000 H/s network (the rate on 2026-08-13; see
+https://pool.pc.am/api/pools for today's) finds a block every **~47
 hours** on average — and "on average" hides the real problem, which is that the
 distribution is exponential. Half of those miners wait longer than 32 hours for
 their *first* payout, and a meaningful fraction see nothing for a week and
@@ -19,7 +22,8 @@ do with user experience:
 
 * **Security.** 28,000 H/s is rentable for pocket money. Every miner the pool
   retains raises the cost of a 51% attack.
-* **Distribution.** 62.8% of supply was mined in the first 27.7 hours. Nothing
+* **Distribution.** 62.8% of the supply that existed on 2026-08-13 was mined in
+  the first 27.7 hours. Nothing
   dilutes that except other people mining, and nothing makes other people mine
   like getting paid this week instead of next month.
 
@@ -302,7 +306,8 @@ Each step is independently useful and testable:
    a validator that accepts everything prints the same "100/100" as a correct
    one, so the tampered run is the only evidence worth anything. Links the
    vendored `src/randomx` only, no Bitcoin Core.
-2. **Job server + share validator**, no payouts. Miners connect, submit shares,
+2. ~~**Job server + share validator**, no payouts.~~ **DONE** — `pool.pc.am:3333`,
+   protocol in `MINER-INTEGRATION.md` §6. Miners connect, submit shares,
    the pool logs them and submits real blocks. Solo-with-extra-steps, but it
    proves the protocol end to end.
 3. ~~**Share store and PPLNS accounting**, with payouts *computed and logged but
@@ -336,9 +341,10 @@ Each step is independently useful and testable:
 
    Still to do in step 3's spirit: **run it against real shares for a week and
    reconcile by hand.** Nothing above substitutes for that.
-4. **Payouts enabled**, threshold-triggered, idempotent on
-   `(block_height, miner_address)`.
-5. **`startpoolmining`** in the node, then flip the fleet over.
+4. ~~**Payouts enabled**~~ **DONE** — paid in each block's coinbase, one output per
+   miner (`MINER-INTEGRATION.md` §7), idempotent on `(block_height, miner_address)`.
+5. ~~**`startpoolmining`** in the node~~ **DONE** — `src/rpc/mining.cpp`; the fleet
+   mines through the pool.
 
 **Do not skip 3.** A payout engine that has never been reconciled against a real
 week of shares is how a pool loses its operator's money rather than its users'.
@@ -364,7 +370,7 @@ Consequences worth writing down now, so they are not rediscovered:
   fleet's payout addresses; a stranger who finds the port gets a clean
   rejection rather than silently accruing a balance nobody planned to pay.
 
-## Open questions for the owner
+## Questions as originally posed (all answered in the Decisions table above; kept for the record)
 
 1. **Fee?** 0% buys goodwill at launch and costs a rounding error at this size.
    1–2% is normal. It should be published either way.

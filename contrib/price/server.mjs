@@ -642,10 +642,13 @@ createServer(async (req, res) => {
         } : null,
         // Stated so nobody mistakes a posted price for a market price.
         note: 'Posted from a finite 100,000 PCN order-book ladder, not discovered on a market. ' +
-              'PCN is not exchange traded. ' +
+              'PCN is not exchange traded; its wrapped form wPCN trades in a small PancakeSwap ' +
+              'pool that a keeper holds to THIS rate, so that pool follows this feed and must ' +
+              'not be read as a price. ' +
               (st.buybackOpen
                 ? 'Buying PCN back is a separate constant-product curve at a much lower price.'
-                : 'There is currently NO buyback: PCN cannot be sold back at any price.'),
+                : 'This service is not buying PCN back at present; the way out is to wrap PCN ' +
+                  'into wPCN at https://wrapdesk.pc.am and sell that pool.'),
         role: ROLE,
         // A consumer can tell a fresh price from a remembered one. Both are
         // usable; only one is current, and pretending otherwise is how a stale

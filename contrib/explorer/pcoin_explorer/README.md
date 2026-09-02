@@ -77,7 +77,7 @@ answer is actively misleading:
   base58check offline — PCoin's hrp `pc`/`tpc`/`pcrt` and base58 versions
   55/56 and 117/118 — so the page can say "valid, never used, balance zero".
 * **A wrong-network address is named, not silently unmatched.** PCoin inherited
-  Bitcoin's BIP32 version bytes (CLAUDE.md §6), so the two chains' addresses
+  Bitcoin's BIP32 version bytes, so the two chains' addresses
   have to be told apart loudly.
 
 When nothing matches *and* the index is behind the node, the miss says so rather
@@ -107,7 +107,7 @@ than asserting the thing does not exist.
    `stale`" as the exact failure that table exists to prevent.
 2. **The unconfirmed balance is `not indexed`, never `0.00000000`.** There is no
    mempool index, so nobody has answered that question. Rendering an unanswered
-   question as a definite zero is CLAUDE.md §7.2 — the mistake that, in a
+   question as a definite zero is the project’s oldest mistake — the one that, in a
    wallet's send path, authorises spending the same coins twice. The API returns
    `"unconfirmed": null` with a reason string for the same reason.
 3. **Coinbase maturity is counted in blocks.** An output is spendable in the
@@ -144,7 +144,8 @@ artefact. A test builds a two-era chain and asserts the home page says "slower".
 The hashrate estimate is work over time from `chainwork`, mirroring Core's
 `GetNetworkHashPS`: the **span** of the block timestamps in the window, not
 last-minus-first, because block timestamps are not monotonic in height here
-(CLAUDE.md §3). When the span is not positive it returns `None` and the page
+(the 15-minute future-time allowance at and above height 2800). When the span is
+not positive it returns `None` and the page
 says so — an unknown, never a zero.
 
 ---

@@ -31,11 +31,13 @@ const ACCOUNT_PATH = "m/84'/9444'/0'";
 // running service and confirmed to derive that service's known deposit address
 // at 0/0. See PCOIN-SECRETS.md 12.3-12.7.
 const RAILS = {
-  '84147040': 'webbuilderbot          (116.203.221.42)',
-  '48769b4c': '3dmodels.pc.am         (116.203.221.42, container)',
-  'b7d3c3e7': '3dmodel.oonak.ai       (202.61.252.202)',
-  '90762186': 'aicontrol.pc.am        (116.203.221.42)',
-  '61d91155': 'checker.pc.am          (152.53.171.190)',
+  // Hosts are in PCOIN-SERVERS.md (off-repo): these rails are behind Cloudflare,
+  // so their origin addresses do not belong in a public tree.
+  '84147040': 'webbuilderbot',
+  '48769b4c': '3dmodels.pc.am         (container on the webbuilderbot host)',
+  'b7d3c3e7': '3dmodel.oonak.ai',
+  '90762186': 'aicontrol.pc.am        (webbuilderbot host)',
+  '61d91155': 'checker.pc.am          (seed 4)',
   // The custody wallet in 12.1. It backs no live rail, but identifying it is
   // still a useful answer.
   //

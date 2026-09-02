@@ -296,12 +296,23 @@
   }
 
   @media (max-width:760px){
-    .hero-inner{padding:64px 24px 72px}
-    .hero-art{order:-1;flex-basis:auto}
+    .hero-inner{padding:64px 24px 72px;flex-direction:column;align-items:flex-start;gap:28px}
+    .hero-art{order:-1;flex-basis:auto;align-self:center}
     .hero-art svg{width:150px}
     section{padding:64px 0}
-    .nav-inner{gap:14px}
-    nav.links{gap:16px}
+    /* fifteen links wrap to five rows on a phone: let the header scroll away instead of pinning it */
+    header.nav{position:static}
+    .nav-inner{gap:10px 14px}
+    nav.links{gap:6px 14px}
+    nav.links a{font-size:.88rem;padding:4px 0}
+    /* a 560px-wide table on a 390px phone is a table nobody reads: stack each row */
+    table.params{min-width:0}
+    table.params tbody,table.params tr{display:block}
+    table.params tr{padding:12px 16px;border-bottom:1px solid var(--line-soft)}
+    table.params tr:last-child{border-bottom:none}
+    table.params th,table.params td{display:block;padding:0;border-bottom:none;width:auto;white-space:normal}
+    table.params th{font-size:.76rem;letter-spacing:.08em;text-transform:uppercase;margin-bottom:4px}
+    table.params td{overflow-wrap:anywhere}
   }
 </style>
 </head>
@@ -465,7 +476,7 @@
           <p style="color:var(--muted);font-size:.99rem">
             Difficulty <b style="color:var(--text)">retargets on every block</b> (LWMA, live since
             height 2800) to hold a 10-minute average against whatever hashrate the community's CPUs
-            provide. It has risen by several thousand times since launch, so a single phone now
+            provide. It has risen by orders of magnitude since launch, so a single phone now
             contributes to a shared effort rather than finding blocks alone — what a phone earns
             tracks its share of total hashrate, not a fixed rate.
           </p>
@@ -649,7 +660,7 @@
           a <b>recent enough node</b>: <code>startpoolmining</code> ships from <b>v1.3.0</b>, and
           <b>both</b> the node and <code>bitcoin-cli</code> must be that version or newer. An older
           CLI sends the thread count as text and the call fails with a type error, even against a
-          new node. If in doubt, reinstall from the Download section above.
+          new node. If in doubt, reinstall from the <a href="#download">Download section below</a>.
         </p>
         <p style="margin:12px 0 4px"><b>Windows — nothing installed yet?</b> One line does everything: it installs the node, waits for it to sync, asks where to pay you, and starts mining.</p>
         <pre style="margin:0;padding:12px 14px;overflow-x:auto;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid var(--line-soft)"><code>&amp; ([scriptblock]::Create((irm https://pc.am/dl/install.ps1))) -Mine</code></pre>
@@ -819,8 +830,10 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
         Would rather not mine? You can buy PCN with ordinary crypto at
         <a href="https://market.pc.am" rel="noopener">market.pc.am</a>. It is sold from a fixed
         ladder of 100,000 coins that gets dearer as it empties, so the price rises with demand
-        rather than being set by anyone. <b>There is currently nowhere to sell PCN back</b> &mdash;
-        buy what you intend to spend.
+        rather than being set by anyone. <b>The market does not buy PCN back.</b> The one practical way
+        out is to wrap PCN into wPCN at the <a href="https://wrapdesk.pc.am" rel="noopener">wrap desk</a>
+        and sell that into PancakeSwap's small pool &mdash; terms in the
+        <a href="#trade">Trading section</a> &mdash; so buy what you intend to spend.
       </p>
       <div class="cards">
         <div class="card">
@@ -856,19 +869,21 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
 
       <div class="honest-box" style="max-width:100%;margin-top:26px">
         <b>Status: live.</b>
-        Open AI&nbsp;Control, choose <b>PCoin</b> in the menu, and you get <b>your own deposit
-        address</b> with a QR code. Send PCN to it and the balance appears on your account after
-        <b>6 confirmations</b>. The address is yours alone &mdash; that is how a deposit is matched
-        to an account, since a PCN transfer carries no sender identity and no memo.
+        Take AI&nbsp;Control as the worked example; the other four follow the same shape. Open it, choose
+        <b>PCoin</b> in the menu, and you get <b>your own deposit address</b> with a QR code. Send PCN to
+        it and the balance appears on your account after <b>6 confirmations</b>, credited at the rate
+        <a href="https://price.pc.am" rel="noopener">price.pc.am</a> posts at that moment. The address is
+        yours alone &mdash; that is how a deposit is matched to an account, since a PCN transfer carries
+        no sender identity and no memo.
         <br><br>
-        Two things to know before you send. It is <b>one-way</b>: PCN converts to AI&nbsp;Control
-        balance and cannot be converted back or withdrawn. And confirmations are <b>slow</b> &mdash;
+        Two things to know before you send. It is <b>one-way</b>: PCN converts to a balance on that
+        service and cannot be converted back or withdrawn. And confirmations are <b>slow</b> &mdash;
         PCoin targets a block every ten minutes, so 6 confirmations is about an hour. Deposits are
         recorded the moment they confirm; the balance follows.
         <br><br>
         This is also the honest answer to <em>&ldquo;where can I actually use PCN?&rdquo;</em> &mdash;
-        one place, run by the same people who build PCoin, at a rate they set. It is a real use, not a
-        market. Anything that calls it a price is overselling it.
+        five places, all run by the same people who build PCoin, at a rate they set. It is a real use,
+        not a market. Anything that calls it a price is overselling it.
       </div>
     </div>
   </section>
@@ -878,7 +893,7 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
       <span class="kicker">Trading</span>
       <h2>PCoin can now be reached by wallets we did not write.</h2>
       <p class="lede">
-        Until today, the only software that could talk to PCoin was software we built. That was the
+        Until late August 2026, the only software that could talk to PCoin was software we built. That was the
         real barrier to PCN ever being tradable &mdash; not paperwork, not permission.
         <b>Two ElectrumX servers now serve the PCoin chain</b>, which is the standard interface every
         Electrum-protocol wallet and most decentralised exchanges expect. On the strength of that,
@@ -887,6 +902,16 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
         PancakeSwap, so a stranger with a wallet and USDT can buy exposure without needing a
         counterparty. Read what that is, and is not, below.
       </p>
+      <div class="cta-row" style="margin-bottom:22px">
+        <a class="btn btn-primary" href="https://wrapdesk.pc.am" rel="noopener">Wrap PCN &rarr; wPCN</a>
+        <a class="btn btn-ghost" href="https://wrapdesk.pc.am/redeem" rel="noopener">Redeem wPCN &rarr; PCN</a>
+        <a class="btn btn-ghost" href="https://wrapdesk.pc.am/faq" rel="noopener">How the desk works</a>
+      </div>
+      <p class="lede" style="margin-top:0">
+        You need a BSC wallet that can add a custom BEP-20 token &mdash; MetaMask on a phone works
+        (open the redeem page inside the wallet's own browser). Never send wPCN to an exchange deposit
+        address: no exchange lists it. Both directions are done <b>by hand</b> &mdash; allow hours, not minutes.
+      </p>
 
       <div class="table-shell">
         <table class="params">
@@ -894,9 +919,9 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
             <tr><th>ElectrumX</th><td><code>electrum1.pc.am</code> &middot; <code>electrum2.pc.am</code> &mdash; SSL on 50002, WSS on 50004, TCP on 50001</td></tr>
             <tr><th>First atomic swap</th><td>100&nbsp;PCN traded for DOGE, non-custodially, settled on both chains &mdash; <a href="https://github.com/GLEECBTC/coins/blob/master/swaps/PCN-DOGE.md" rel="noopener">the five transactions</a></td></tr>
             <tr><th>wPCN on PancakeSwap</th><td>BEP-20 on BNB Smart Chain, <a href="https://bscscan.com/address/0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1#code" rel="noopener">source verified</a> &mdash; <code>0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1</code> &middot; <a href="https://pancakeswap.finance/swap?outputCurrency=0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1" rel="noopener">trade</a>. Backed 1:1 by PCN at <code>pc1q7hhzmdkkx0zjtzj6qkwmuvhlgwfqjrc6j2dk52</code></td></tr>
-            <tr><th>Wrap desk</th><td><a href="https://wrapdesk.pc.am" rel="noopener">wrapdesk.pc.am</a> &mdash; send PCN, receive wPCN. <b>250 PCN per person</b>, 5% fee, 100 confirmations (~18&nbsp;h), released by hand. Redemption the other way exists too: the contract burns your wPCN and the PCN is sent back manually</td></tr>
+            <tr><th>Wrap desk</th><td><a href="https://wrapdesk.pc.am" rel="noopener">wrapdesk.pc.am</a> &mdash; send PCN, receive wPCN. <b>250 PCN per person</b>, 5% fee, 100 confirmations (~18&nbsp;h), released by hand. Redemption the other way is open too: <a href="https://wrapdesk.pc.am/redeem" rel="noopener">wrapdesk.pc.am/redeem</a> lets your own wallet burn the wPCN and the PCN is sent back by hand &mdash; allow hours, not minutes</td></tr>
             <tr><th>Komodo DeFi listing</th><td><b>Accepted.</b> <a href="https://github.com/GLEECBTC/coins/pull/1964" rel="noopener">Pull request #1964</a> was merged on 31 August 2026 after the maintainer ran a swap of their own against our chain, so PCN is now in the <a href="https://github.com/GLEECBTC/coins/blob/master/coins" rel="noopener">Komodo DeFi Framework coin list</a> (<code>PCN</code>, legacy <code>P&hellip;</code> addresses, 2 confirmations)</td></tr>
-            <tr><th>Price aggregators</th><td><a href="https://www.livecoinwatch.com/price/PCoin-__PCN" rel="noopener">LiveCoinWatch</a> lists PCN &mdash; <b>with no price</b>, because there is no market to read one from. CoinCodex declined until PCN is on an exchange; CoinMarketCap was applied to on 13 August and has not listed it</td></tr>
+            <tr><th>Price aggregators</th><td><a href="https://www.livecoinwatch.com/price/PCoin-__PCN" rel="noopener">LiveCoinWatch</a> lists PCN &mdash; <b>with no price</b>, because PCN itself has no market to read one from (wPCN's PancakeSwap pool is a market in the wrapped token, and one our bot steers to price.pc.am, so it discovers nothing). CoinCodex declined until PCN is on an exchange; CoinMarketCap was applied to on 13 August and has not listed it</td></tr>
           </tbody>
         </table>
       </div>
@@ -907,13 +932,14 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
         be refused.
         <br><br>
         <b>wPCN is not PCN.</b> It is an IOU on another chain, backed 1:1 by PCN held in a reserve
-        address printed above &mdash; check the balance against the token's fixed 50,000 supply yourself;
-        that is why both are published. The contract has <b>no owner and no mint function</b>, so nobody,
+        address printed above &mdash; check the balance against the token's fixed 50,000 supply yourself,
+        or read <a href="https://wrapdesk.pc.am/proof" rel="noopener">wrapdesk.pc.am/proof</a>, which does
+        the comparison live; that is why both are published. The contract has <b>no owner and no mint function</b>, so nobody,
         including us, can create more. Five things to know before buying: the pool is <b>small</b>
         (about $900 across both sides on 2&nbsp;September&nbsp;2026 &mdash; a $20 trade moves the price roughly 9%, which is arithmetic, not a
         flaw); the <b>liquidity is not locked</b> and the project holds the LP tokens;
-        <b>you can redeem wPCN back into PCN</b> &mdash; the contract burns your tokens and we send
-        the PCN by hand, so it is not instant &mdash; but <b>turning PCN into wPCN is not open yet</b>;
+        <b>both doors are open but neither is instant</b> &mdash; the wrap desk releases wPCN by hand
+        after 100 confirmations, and redeeming burns your tokens first and then a person sends the PCN;
         <b>we trade this pool ourselves</b>, running a bot that buys or sells wPCN to hold the pool
         near the rate we post at price.pc.am, so the price you see is one we influence and not one
         strangers set on their own; and buying wPCN gets you a claim, not coins you can spend on
@@ -1070,11 +1096,11 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
 
       <div class="card">
         <h3>What a payment check looks like</h3>
-        <pre class="mono"># has this address been paid?
+        <pre class="mono" style="overflow-x:auto;padding-bottom:6px"># has this address been paid?
 curl -s https://explorer.pc.am/api/address/pc1q&hellip;/summary
 
 # what is a PCN worth right now?
-curl -s https://price.pc.am      # -&gt; {"serviceRate":0.015, &hellip;}</pre>
+curl -s https://price.pc.am      # -&gt; {"serviceRate":&lt;USD per PCN&gt;, &hellip;}  read it live, never copy it</pre>
         <p class="note">
           Credit after <b>6 confirmations</b>, and key your ledger on
           <span class="mono">(txid,&nbsp;address)</span> &mdash; not on
@@ -1099,25 +1125,24 @@ curl -s https://price.pc.am      # -&gt; {"serviceRate":0.015, &hellip;}</pre>
       <h2>One command. Then watch it mine.</h2>
       <p class="lede">
         There is no mining software to find, configure or trust — the miner is inside the node,
-        and the node is what you just installed. Point it at an address and it runs.
+        and the node is what the one command below installs. Point it at an address and it runs.
       </p>
 
       <div class="steps">
-        <div class="step"><span class="num">1</span><h4>Get an address</h4><p>Install the <a href="#download">wallet app</a> and write down the twelve words it gives you. That address is where your mining pays, and those words are the only way back to it.</p></div>
+        <div class="step"><span class="num">1</span><h4>Get an address</h4><p>On Windows and Android the miner makes a wallet for you &mdash; write down the twelve words it shows. On Linux the machine holds no key, so install the <a href="#download">wallet app</a> first and use an address from it. That address is where your mining pays, and those words are the only way back to it.</p></div>
         <div class="step"><span class="num">2</span><h4>Install</h4><p>One command for Windows, one for Debian/Ubuntu, an APK for Android. Each verifies its own download before it runs &mdash; <a href="/download/">full instructions per platform</a>.</p></div>
         <div class="step"><span class="num">3</span><h4>Paste the address in</h4><p>Setup checks it against the node, so a typo is caught before it costs you a block rather than after.</p></div>
         <div class="step"><span class="num">4</span><h4>Wait for sync, then mine</h4><p>Mining starts by itself once the node is caught up. Starting sooner would build on blocks it has not checked.</p></div>
       </div>
 
-      <div class="term">
-        <div class="term" style="margin-bottom:22px">
+      <div class="term" style="margin-bottom:22px">
         <div class="term-bar"><i></i><i></i><i></i><span>quickstart &mdash; PowerShell (Windows)</span></div>
         <pre><span class="c"># One command. Downloads the miner, checks it against the published</span>
 <span class="c"># SHA-256, installs it, and starts mining -- auto-tuned to the fastest</span>
 <span class="c"># core count for your CPU. Approve the UAC prompt to finish setup.</span>
 &amp; ([scriptblock]::Create((irm https://pc.am/dl/install.ps1))) -Mine
 
-<span class="o">  PCoin 1.2.6 installer
+<span class="o">  PCoin 1.3.12 installer
   sha256 ok
   tray app present
   desktop shortcut created
@@ -1126,6 +1151,7 @@ curl -s https://price.pc.am      # -&gt; {"serviceRate":0.015, &hellip;}</pre>
 <span class="c"># Prefer to do it by hand? Download the .zip above, unzip it anywhere and</span>
 <span class="c"># run PCoinTray.exe. Same files, same result.</span></pre>
       </div>
+      <div class="term">
 
       <div class="term-bar"><i></i><i></i><i></i><span>quickstart — bash (Linux)</span></div>
         <pre><span class="c"># On Debian or Ubuntu, this is the whole thing.</span>
@@ -1181,8 +1207,8 @@ sudo systemctl stop pcoin-miner
       </div>
 
       <div class="honest-box" style="max-width:100%">
-        <b>What to expect:</b> mining is a lottery. Each <span class="mono">generatetoaddress</span> call can
-        return in seconds or sit for a long time — that is the nature of it, not a fault. As more people
+        <b>What to expect:</b> mining is a lottery. The next block your miner finds can
+        arrive in seconds or take a long time — that is the nature of it, not a fault. As more people
         mine, difficulty rises and blocks get harder to find; from height 2800 it adjusts
         <b>every block</b> (LWMA) rather than every 2016. Config lives in <span class="mono">pcoin.conf</span>
         — note the name, it is not <span class="mono">bitcoin.conf</span> — and data in
@@ -1207,7 +1233,7 @@ sudo systemctl stop pcoin-miner
         <li>
           <h3>Android wallet app <span class="tag">Shipped</span></h3>
           <p>A wallet-only build with no miner in it: balance, send, receive with a QR code, and history.
-          It carries a full node rather than trusting a server, which the whole chain being about 20 MB
+          It carries a full node rather than trusting a server, which the whole chain still being small
           makes practical. A twelve-word recovery phrase restores it on any device.</p>
         </li>
         <li>
@@ -1240,13 +1266,14 @@ sudo systemctl stop pcoin-miner
           <h3>100 independent nodes <span class="tag">In progress</span></h3>
           <p>Get one hundred people running always-on nodes in different places. Decentralized block
           production and history is the foundation for everything else. Today the number is far smaller
-          than that, and most of the hashrate is the founder's own machines.</p>
+          than that, and most of the hashrate flows through one pool &mdash; ours.</p>
         </li>
         <li>
           <h3>Browser-based wallet <span class="tag">Planned</span></h3>
           <p><b>Not built yet.</b> The intent is send and receive without installing anything, for people who
           will never touch a command line. Until it exists, the Android wallet and the desktop node are the
-          only wallets there are.</p>
+          only wallets built for it; the Komodo listing above lets other software reach the chain, but
+          nothing there is aimed at a first-time user.</p>
         </li>
         <li>
           <h3>Tipping and person-to-person payments <span class="tag">Planned</span></h3>
@@ -1269,7 +1296,9 @@ sudo systemctl stop pcoin-miner
         <div class="honest-card">
           <h3>Young, experimental chain</h3>
           <p>PCoin launched in August 2026. It is an experiment in fair money creation —
-          <b>not an investment</b>. It has no price, and nothing here is financial advice. Treat PCN as
+          <b>not an investment</b>. It has no exchange price &mdash; the rate at price.pc.am is posted by the
+          project, not discovered on a market, and the wPCN pool follows it &mdash; and nothing here is
+          financial advice. Treat PCN as
           something you mine and learn with, not something you buy.</p>
         </div>
         <div class="honest-card">
@@ -1279,12 +1308,13 @@ sudo systemctl stop pcoin-miner
           it stronger.</b> That is exactly why participation matters.</p>
         </div>
         <div class="honest-card">
-          <h3>Right now, one miner finds most of the blocks</h3>
-          <p>Measured over blocks 4125–4274 on 19 August 2026, a single address — <b>not one of
-          ours</b> — found <b>71%</b> of them (95% confidence 64–78%). A miner holding more than half of
-          the hashrate can reorganise recent blocks and reverse a payment that already looked settled.
-          Nothing has gone wrong: there have been no reorgs and the supply is exact. But the capability
-          is real, and against a miner holding a majority no confirmation depth is provably safe —
+          <h3>Hashrate is concentrated, and who holds it changes</h3>
+          <p>On a chain this small one party routinely holds more than half of the hashrate, and which
+          party that is has changed more than once in a month — in August an outside address (71% of
+          blocks 4125–4274, measured on 19 August), today our own pool. A miner holding a majority can
+          reorganise recent blocks and reverse a payment that already looked settled. Shallow reorgs of
+          a block or two do happen here (the <a href="https://explorer.pc.am/api/status" rel="noopener">explorer</a>
+          counts them); the supply is exact. Against a majority no confirmation depth is provably safe —
           waiting longer buys time and cost, not certainty. If you are accepting PCN for anything that
           matters, wait deeper than you would on a chain with spread-out hashrate, and watch for
           reorgs rather than trusting depth alone. Recompute the share yourself from the
@@ -1319,6 +1349,8 @@ sudo systemctl stop pcoin-miner
       <a href="https://pc.am">pc.am</a>
       <a href="https://explorer.pc.am" rel="noopener">Block explorer</a>
       <a href="https://market.pc.am" rel="noopener">Buy PCN &mdash; market.pc.am</a>
+      <a href="https://wrapdesk.pc.am" rel="noopener">Wrap desk &mdash; PCN &harr; wPCN</a>
+      <a href="https://pool.pc.am" rel="noopener">Mining pool &mdash; pool.pc.am</a>
       <a href="https://github.com/pars5555/pcoin" rel="noopener">GitHub — source code</a>
       <a href="https://github.com/pars5555/pcoin/releases" rel="noopener">Releases</a>
       <a href="https://pc.am/dl/SHA256SUMS.txt">Checksums (SHA-256)</a>
@@ -1415,9 +1447,9 @@ sudo systemctl stop pcoin-miner
   //   node: bitcoin-cli getblock $(bitcoin-cli getblockhash <tip>) | jq .difficulty
   //   spacing: median gap over the last ~25 blocks, discarding negative gaps
   //            (block timestamps are not monotonic in height on this chain)
-  var SNAPSHOT_DIFF = 0.009697080;  // measured 14 Aug 2026 at height 3389
-  var SNAPSHOT_SPACING = 556;       // measured median, same date
-  var SNAPSHOT_WHEN = "14 Aug 2026";
+  var SNAPSHOT_DIFF = 0.08590709;   // measured 2 Sep 2026 at height 6183
+  var SNAPSHOT_SPACING = 348;       // measured median of the last 29 gaps, same date
+  var SNAPSHOT_WHEN = "2 Sep 2026";
 
   var sel   = document.getElementById("calc-device");
   var thr   = document.getElementById("calc-threads");

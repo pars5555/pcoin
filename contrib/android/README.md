@@ -11,7 +11,9 @@ contain are described below, and the app will not build without them.
 **`app/src/main/jniLibs/arm64-v8a/`** — `libbitcoind.so` and `libbitcoincli.so`,
 about 14 MB. These are the node itself, cross-compiled for arm64, and they are
 build products of the C++ tree in this repository rather than app source. Build
-them with the Android NDK (see [`../../CLAUDE.md`](../../CLAUDE.md)) and drop
+them with the Android NDK (recipe: [`playstore/v1/DEPLOY.md`](playstore/v1/DEPLOY.md),
+section "Rebuild the native node" — NDK r26b, arm64-v8a, API 24, linked
+`-Wl,-z,max-page-size=16384`) and drop
 them in.
 
 Note the filenames have no hyphen: Android only extracts and grants execute
@@ -51,18 +53,21 @@ Run the whole suite. It is device-free.
 gradlew.bat :app:testWalletDebugUnitTest
 ```
 
-141 cases across ten classes: `UserSendTest` (24), `ForwardPolicyTest` (62),
-`AmountsTest` (10), `BalanceTrustTest` (11) in package `org.pcoin.miner`, plus
-`QrTest` (11) and `QrDumpTest` (2), plus `DerivationVectorsTest` (13), `PublishedVectorsTest` (1), `RedactTest` (4) and `WordlistIntegrityTest` (3) in
+215 cases across fourteen classes (counted from the tree, 2026-09-02):
+`ForwardPolicyTest` (67), `AddressBookTest` (35), `UserSendTest` (27),
+`TxPartiesTest` (12), `BalanceTrustTest` (11), `QrTest` (11), `AmountsTest` (10),
+`PaymentUriTest` (10), `NodeLogTest` (9) and `QrDumpTest` (2) in package
+`org.pcoin.miner`, plus `DerivationVectorsTest` (13), `RedactTest` (4),
+`WordlistIntegrityTest` (3) and `PublishedVectorsTest` (1) in
 `org.pcoin.miner.wallet`.
 
 > Earlier revisions of this file told you to scope every run to
 > `--tests "org.pcoin.miner.wallet.*"` because of an end-to-end forwarding test
 > that drove a real phone over adb. **That test no longer exists** — there is no
 > `ForwardSandboxE2ETest`, no `SandboxHarness`, no `androidTest` source set, and
-> nothing matching in git history. The filter is now actively harmful: it runs 18
-> of 125 cases and skips *every* send-path test, which is the money-moving half
-> of the app. Use a filter only to narrow a specific investigation.
+> nothing matching in git history. The filter is now actively harmful: it runs the
+> wallet package only (21 of 215 cases) and skips *every* send-path test, which is
+> the money-moving half of the app. Use a filter only to narrow a specific investigation.
 
 `namespace` stays `org.pcoin.miner` for both flavours — it is only the
 R/BuildConfig package, which is why the test package names do not mention the

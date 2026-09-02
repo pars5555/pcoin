@@ -1,7 +1,9 @@
 # market.pc.am — selling PCN from a finite ladder
 
-This is the only place PCN can be bought with ordinary crypto, and the only
-place it can be sold back. It is a small Node service in front of MariaDB.
+This is the ladder where PCN is sold for ordinary crypto at designed prices. It is
+no longer the only venue — wPCN (a 1:1 wrapped PCN on BNB Smart Chain) trades on
+PancakeSwap, and https://wrapdesk.pc.am converts in both directions — and buying
+back here is currently closed (§5b). It is a small Node service in front of MariaDB.
 
 It is also the only PCoin service that **sends coins**. Every other one is
 watch-only, and its worst bug fails to credit somebody. This one's worst bug
@@ -171,7 +173,7 @@ the mechanism. Both are there deliberately.
 
 Reserving costs nothing. If reservations moved the published price, anyone could
 open orders they never intend to pay for and walk it up — and because
-`serviceRate` follows that number, it would inflate what four separate products
+`serviceRate` follows that number, it would inflate what five separate products
 credit real customers. Quoting still respects reservations, so we can never
 oversell; only the *published* number ignores them.
 
@@ -189,7 +191,7 @@ case is an order with no invoice, which the sweeper expires.
 **The market refuses to sell when the ladder price and the rate the products
 credit PCN at have drifted more than 20% apart.**
 
-PCN is only worth buying here because the four products accept it over there. If
+PCN is only worth buying here because the five products accept it over there. If
 the two prices come apart, someone buys a coin at one price and has it accepted
 at another — and the gap is unbounded, because the ladder runs to $10.00 while
 `serviceRate` walks at a bounded speed.
@@ -369,7 +371,7 @@ every sign-in and change is written to `admin_audit` and announced on Telegram.
 
 What it can change: sales on/off, buyback on/off, order limits, the auto-send
 cutoff, float levels, order TTL, divergence limit. What it deliberately
-**cannot**: `serviceRate` and the ladder's own prices. Those move money in four
+**cannot**: `serviceRate` and the ladder's own prices. Those move money in five
 other products; they belong behind the CLI, where a mistyped form cannot reach
 them.
 

@@ -62,6 +62,10 @@ const CONFIRMATIONS = Number(process.env.WRAP_CONFIRMATIONS || 100);
 const RESERVE = process.env.WRAP_RESERVE || 'pc1q7hhzmdkkx0zjtzj6qkwmuvhlgwfqjrc6j2dk52';
 const TOKEN   = process.env.WPCN_TOKEN   || '0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1';
 const ISSUED  = Number(process.env.WPCN_ISSUED || 50000);
+// Shown wherever the wait or the fee is described. Derived, so a change to
+// CONFIRMATIONS or the allocation cannot leave a stale number on a public page.
+const WAIT_H    = Math.round(CONFIRMATIONS / 6);          // 600 s target: 6 blocks an hour
+const FEE_TOTAL = TOTAL_ALLOC * FEE_PCT / 100;            // PCN, if the whole allocation wraps
 
 // Index 0 is the MAIN RESERVE holding the backing. Never handed out, or a
 // customer deposit becomes indistinguishable from the backing itself.
@@ -200,6 +204,28 @@ th{color:var(--mut);font-weight:600}
  display:grid;place-items:center;font-weight:700}
 .pill{display:inline-block;padding:.1rem .55rem;border-radius:99px;font-size:.8rem;
  border:1px solid var(--line);color:var(--mut)}
+a,td,li,.lead{overflow-wrap:anywhere}
+th{white-space:nowrap;vertical-align:top}
+input{min-width:0}
+nav a{display:inline-block;padding:.35rem 0}
+.help{margin-top:3.5rem;border-top:1px solid var(--line);padding-top:1rem}
+@media (max-width:420px){
+ .wrap{padding:0 1rem 4rem}
+ header .wrap{gap:.5rem .9rem;padding:.6rem 1rem}
+ nav{gap:.7rem}
+ nav a{font-size:.9rem}
+ h1{font-size:1.35rem}
+ .card{padding:.9rem 1rem}
+ .big{font-size:1.3rem}
+ /* every table here is label/value: on a phone stack each row instead of squeezing two columns */
+ table,tbody,tr,td,th{display:block}
+ tr{padding:.5rem 0;border-bottom:1px solid #21262d}
+ tr:last-child{border-bottom:none}
+ td,th{padding:0;border-bottom:none;font-size:.93rem}
+ th{white-space:normal;font-size:.78rem;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.15rem}
+ #connectBtn,#reviewBtn,#sendBtn,#backBtn,form>button{width:100%}
+ #backBtn{margin-left:0!important;margin-top:.6rem}
+}
 `;
 
 const NAV = [['/', 'Wrap'], ['/track', 'Track'], ['/redeem', 'Redeem'],
@@ -212,9 +238,10 @@ const page = (title, active, body) => `<!doctype html><html lang="en"><head>
  NAV.map(([h, l]) => `<a href="${h}"${h === active ? ' class="on"' : ''}>${l}</a>`).join('')
 }</nav></div></header>
 <div class="wrap">${body}
-<p class="muted" style="margin-top:3.5rem;border-top:1px solid var(--line);padding-top:1rem">
+<p class="muted help">Help: <a href="https://t.me/PCoinPCN" rel="noopener">Telegram @PCoinPCN</a> ·
+<a href="https://github.com/pars5555/pcoin/issues" rel="noopener">report a problem</a><br>
 <a href="https://pc.am">pc.am</a> · <a href="https://explorer.pc.am">explorer</a> ·
-<a href="https://price.pc.am">price</a></p></div></body></html>`;
+<a href="https://price.pc.am">price feed (JSON)</a> · <a href="https://docs.pc.am">docs</a></p></div></body></html>`;
 
 // ── the honest block, shown wherever someone might be about to commit ────────
 const RISKS = `<h2>Before you send anything</h2><div class="card">
@@ -223,10 +250,11 @@ reserve, on a different chain. You can check that reserve yourself on the
 <a href="/proof">proof page</a>.</p>
 <p class="warn"><b>This is manual.</b> A person releases your wPCN after checking.
 It is not instant and it is not automated.</p>
-<p class="err"><b>The market for wPCN is small.</b> A ~$20 trade moves the
-PancakeSwap price about 10%, <b>we trade that pool ourselves</b> to keep it near
-the rate posted at price.pc.am, and the <b>liquidity is not locked</b> — the
-project holds the LP tokens. Only send what you can afford to lose.</p></div>`;
+<p class="err"><b>The market for wPCN is small.</b> The PancakeSwap pool holds
+only a few hundred dollars of liquidity, so even a small trade moves its price
+sharply; <b>we trade that pool ourselves</b> to keep it near the rate posted at
+price.pc.am, and the <b>liquidity is not locked</b> — the project holds the LP
+tokens. Only send what you can afford to lose.</p></div>`;
 
 // ── pages ───────────────────────────────────────────────────────────────────
 const home = (msg = '') => page('PCoin wrap desk — turn PCN into wPCN', '/', `
@@ -235,8 +263,12 @@ const home = (msg = '') => page('PCoin wrap desk — turn PCN into wPCN', '/', `
 trade on PancakeSwap. Backed 1:1 by the PCN you send.</p>
 ${msg}
 <div class="card"><form method="POST" action="/request">
-<label>Your BSC address — where the wPCN will be sent</label>
-<input name="bsc" placeholder="0x…" autocomplete="off" spellcheck="false" required>
+<label>Your BSC address — where the wPCN will be sent. Use a wallet <b>you</b>
+control (MetaMask, or any wallet that lets you add a custom BEP-20 token).
+<b>Never an exchange deposit address</b> — no exchange lists wPCN, so it could
+not credit you.</label>
+<input name="bsc" placeholder="0x…" pattern="0x[0-9a-fA-F]{40}"
+ title="0x followed by 40 hex characters" autocomplete="off" spellcheck="false" required>
 <label>How much PCN do you want to wrap? (max ${PER_PERSON})</label>
 <input name="amount" type="number" step="0.00000001" min="0.00000001"
  max="${PER_PERSON}" placeholder="e.g. 100" required>
@@ -247,18 +279,23 @@ ${msg}
 <li>You give your BSC address and an amount.</li>
 <li>You get a PCoin deposit address that is <b>yours alone</b>.</li>
 <li>You send PCN to it — any amount up to ${PER_PERSON}, any number of times.</li>
-<li>After <b>${CONFIRMATIONS} confirmations</b> (~18&nbsp;h) a person sends your wPCN.</li>
+<li>After <b>${CONFIRMATIONS} confirmations</b> (~${WAIT_H}&nbsp;h) a person sends your wPCN.</li>
 </ol><p class="muted" style="margin:.6rem 0 0">Track it at any point on the
-<a href="/track">track page</a> using your deposit address.</p></div>
+<a href="/track">track page</a> using your deposit address.</p>
+<p class="muted" style="margin:.6rem 0 0">To see the wPCN in your wallet, add it
+as a custom token: contract <code>${TOKEN}</code>, symbol wPCN, 8 decimals. It
+trades on <a href="https://pancakeswap.finance/swap?chain=bsc&amp;outputCurrency=${TOKEN}"
+rel="noopener">PancakeSwap</a>. Want PCN back later? The
+<a href="/redeem">redeem page</a> is the same door in the other direction.</p></div>
 
 <h2>The terms</h2><div class="card"><table>
 <tr><th>Limit</th><td>${PER_PERSON} PCN per person · ${TOTAL_ALLOC} wPCN total while the desk is new</td></tr>
 <tr><th>Fee</th><td>${FEE_PCT}% — send 100 PCN, receive ${100 - FEE_PCT} wPCN</td></tr>
-<tr><th>Wait</th><td>${CONFIRMATIONS} confirmations, about 18 hours</td></tr>
+<tr><th>Wait</th><td>${CONFIRMATIONS} confirmations, about ${WAIT_H} hours</td></tr>
 <tr><th>Backing</th><td>1:1, <a href="/proof">verifiable</a></td></tr>
 </table><p class="muted" style="margin:.7rem 0 0">The limit and the fee exist to
 slow a rush of wrapping-to-sell, not to make money — ${FEE_PCT}% of the entire
-allocation is under $2.</p></div>
+allocation comes to ${FEE_TOTAL} PCN.</p></div>
 ${RISKS}`);
 
 const track = (msg = '') => page('Track a wrap', '/track', `
@@ -524,9 +561,21 @@ const redeem = () => page('Redeem wPCN back into PCN', '/redeem', `
 contract itself — this page only helps your wallet call it.</p>
 
 <h2>From your wallet</h2><div class="card">
-<p class="muted" style="margin-top:0">Connect the wallet that holds your wPCN
-(BNB Smart Chain). The page checks the PCoin address, shows you exactly what
-will be burned, and then asks the wallet to sign one transaction.</p>
+<ol class="steps" style="margin-bottom:.8rem">
+<li>On a phone, open this page <b>inside your wallet's own browser</b>
+ (MetaMask &rarr; Browser tab &rarr; <code>wrapdesk.pc.am/redeem</code>). On a
+ computer, use a browser with the MetaMask extension.</li>
+<li>Tap <b>Connect wallet</b> and approve. The page switches the wallet to BNB
+ Smart Chain and shows your wPCN balance.</li>
+<li>Enter the amount and the PCoin address (<code>pc1q…</code>) the PCN should
+ go to, then <b>Review</b>.</li>
+<li>Read the summary, press <b>Burn and request PCN</b>, and confirm in the
+ wallet. The account needs a little BNB for the network fee — with none, the
+ wallet refuses and it looks as if this page is broken.</li>
+<li>A person sends the PCN to your address. Allow hours, not minutes.</li>
+</ol>
+<p class="muted" style="margin-top:0">The page checks the PCoin address, shows you
+exactly what will be burned, and asks the wallet to sign one transaction.</p>
 <button id="connectBtn" type="button" style="margin-top:.4rem">Connect wallet</button>
 <div id="nowallet" hidden>
 <p class="warn"><b>No wallet found in this browser.</b>
@@ -557,7 +606,7 @@ can check, in the wallet you copied it from.</p>
 <button id="backBtn" type="button" style="background:#21262d;margin-left:.6rem">Back</button></div>
 </div>
 <div id="done" hidden>
-<p class="ok"><b>Sent.</b> Transaction: <a id="txlink" rel="noopener" target="_blank"></a></p>
+<p class="ok"><b>Sent.</b> Transaction: <a id="txlink" rel="noopener" target="_blank" style="overflow-wrap:anywhere"></a></p>
 <p class="muted">Keep that hash — it is your receipt. The desk pays the PCoin
 address you gave; nothing else needs to be done on your side.</p></div>
 <p id="status" class="muted" hidden></p>
@@ -608,10 +657,11 @@ async function proof() {
 word for it — both numbers below are things you can check yourself.</p>
 
 <div class="card"><div class="grid">
-<div><div class="muted">PCN in the reserve</div>
+<div><div class="muted">PCN in the reserve wallet <span class="muted" style="font-size:.8rem">(main address + deposit addresses)</span></div>
  <div class="big" style="color:${known ? 'var(--green)' : 'var(--amber)'}">${
    known ? n2(bal) : 'UNKNOWN'}</div></div>
-<div><div class="muted">wPCN issued</div><div class="big">${n2(ISSUED)}</div></div>
+<div><div class="muted">wPCN issued <span style="font-size:.8rem">(issuedSupply, fixed at creation)</span></div><div class="big">${n2(ISSUED)}</div>
+  <div class="muted" style="font-size:.8rem">outstanding totalSupply is lower by everything redeemed</div></div>
 <div><div class="muted">Backing</div><div class="big">${
   ratio === null ? '—' : (ratio * 100).toFixed(1) + '%'}</div></div>
 <div><div class="muted">Surplus</div><div class="big">${
@@ -637,7 +687,8 @@ circulating tokens. It is not customer money and holding it makes the token
 <i>more</i> covered, not less.</p></div>
 
 <h2>Check it yourself</h2><div class="card"><table>
-<tr><th>Reserve address</th><td><a href="https://explorer.pc.am/address/${RESERVE}"><code>${RESERVE}</code></a></td></tr>
+<tr><th>Reserve address</th><td><a href="https://explorer.pc.am/address/${RESERVE}"><code>${RESERVE}</code></a><br>
+<span class="muted" style="font-size:.85rem">The figure above also counts the deposit addresses this desk has handed out, which belong to the same wallet — so it can read slightly higher than this one address.</span></td></tr>
 <tr><th>wPCN contract</th><td><a href="https://bscscan.com/address/${TOKEN}#readContract"><code>${TOKEN}</code></a></td></tr>
 </table>
 <p class="muted" style="margin-top:.7rem">On BscScan read <code>issuedSupply</code>
@@ -667,7 +718,7 @@ token on BNB Smart Chain that represents PCN held in a reserve. It is useful
 because it can trade on PancakeSwap; it is <b>not</b> the coin itself, and you
 cannot use it to pay for anything that takes PCN.</p></div>
 
-<h2>Why does it take 18 hours?</h2><div class="card"><p class="muted">${CONFIRMATIONS}
+<h2>Why does it take about ${WAIT_H} hours?</h2><div class="card"><p class="muted">${CONFIRMATIONS}
 confirmations at roughly ten minutes a block. The depth is what protects the desk
 against a chain reorganisation — if we released wPCN after two confirmations and
 the deposit were later reversed, the wPCN would exist with nothing behind it.
@@ -680,8 +731,8 @@ whoever sold second. The limit protects the people using it, and it will rise as
 the pool deepens.</p></div>
 
 <h2>What is the fee for?</h2><div class="card"><p class="muted">${FEE_PCT}%, and it
-is friction rather than income — ${FEE_PCT}% of the entire allocation is under
-$2. It exists to slow a rush of people wrapping purely to sell.</p></div>
+is friction rather than income — ${FEE_PCT}% of the entire allocation comes to
+${FEE_TOTAL} PCN. It exists to slow a rush of people wrapping purely to sell.</p></div>
 
 <h2>Can I send more than once to the same address?</h2><div class="card">
 <p class="muted">Yes. Your deposit address is permanent and reusable. Each deposit
@@ -692,6 +743,33 @@ is handled separately, and the per-person limit applies across all of them.</p><
 If you sent to an address that is not yours, tell us — the deposit addresses all
 belong to one reserve wallet, so the PCN is not lost, but working out whose it is
 takes a human.</p></div>
+
+<h2>I typed the wrong BSC address on the form</h2><div class="card">
+<p class="muted">If you have not sent PCN yet, simply submit the form again with
+the right address — a new request gets its own deposit address. If you have
+already sent PCN, <b>get in touch before the wPCN is released</b> (Telegram
+<a href="https://t.me/PCoinPCN" rel="noopener">@PCoinPCN</a>) and quote your
+deposit address; the release is done by a person, who can hold it.</p></div>
+
+<h2>Which wallet do I need?</h2><div class="card"><p class="muted">For wPCN:
+MetaMask, or any wallet on BNB Smart Chain that lets you add a custom BEP-20
+token (contract <code>${TOKEN}</code>, 8 decimals). Not an exchange deposit
+address — exchanges do not list wPCN and cannot credit it. For the PCN side you
+need a PCoin address, from the <a href="https://pc.am/#download">PCoin wallet
+app</a> or a node.</p></div>
+
+<h2>Is the PancakeSwap price the PCN price?</h2><div class="card">
+<p class="muted">No. The PCN price is the one posted at
+<a href="https://price.pc.am">price.pc.am</a>, and that is what every service
+that accepts PCN charges against. The pool is small and we trade it ourselves to
+keep it near that rate — so the pool follows price.pc.am, never the other way
+round. Do not read the pool as the market's verdict on PCN.</p></div>
+
+<h2>How do I get PCN back?</h2><div class="card"><p class="muted">Through the
+<a href="/redeem">redeem page</a>: your wallet burns the wPCN and names a PCoin
+address, and a person sends the PCN there — 1 PCN for every 1 wPCN burned, no
+fee on that side, but not instant. The burn is done by the token contract and
+cannot be undone, so check the PCoin address twice.</p></div>
 
 <h2>Who runs this?</h2><div class="card"><p class="muted">The PCoin project. The
 same people who run <a href="https://pc.am">pc.am</a>, the explorer and the
@@ -719,11 +797,14 @@ createServer(async (req, res) => {
 
   try {
     const p = url.pathname;
-    if (req.method === 'GET' && p === '/')       return send(200, home());
-    if (req.method === 'GET' && p === '/track')  return send(200, track());
-    if (req.method === 'GET' && p === '/redeem') return send(200, redeem());
-    if (req.method === 'GET' && p === '/faq')    return send(200, faq());
-    if (req.method === 'GET' && p === '/proof')  return send(200, await proof());
+    // HEAD answers like GET (Node drops the body itself): link checkers, uptime
+    // monitors and social-card fetchers all probe with HEAD and read 404 as "dead".
+    const isGet = req.method === 'GET' || req.method === 'HEAD';
+    if (isGet && p === '/')       return send(200, home());
+    if (isGet && p === '/track')  return send(200, track());
+    if (isGet && p === '/redeem') return send(200, redeem());
+    if (isGet && p === '/faq')    return send(200, faq());
+    if (isGet && p === '/proof')  return send(200, await proof());
 
     // ── allocate (or return) a deposit address ──────────────────────────────
     if (req.method === 'POST' && p === '/request') {
@@ -765,10 +846,11 @@ reusable. Send to it any time.</p>
 <tr><th>Fee (${FEE_PCT}%)</th><td>${n8(eligible * FEE_PCT / 100)} wPCN</td></tr>
 <tr><th>You receive</th><td><b>${n8(net)} wPCN</b></td></tr>
 <tr><th>Sent to</th><td><code>${esc(r.bsc)}</code></td></tr>
-<tr><th>Ready after</th><td>${CONFIRMATIONS} confirmations (~18 hours)</td></tr>
+<tr><th>Ready after</th><td>${CONFIRMATIONS} confirmations (~${WAIT_H} hours)</td></tr>
 </table></div>
 <p class="warn"><b>Save this address.</b> It is how you track your wrap, and how we
-know the PCN is yours. Sending from an exchange is fine.</p>
+know the PCN is yours. It does not matter which wallet or address you send
+from — the deposit address alone identifies you.</p>
 <div class="card"><form method="GET" action="/status">
 <input type="hidden" name="addr" value="${esc(r.address)}">
 <button type="submit">Track my wrap</button></form></div>`));

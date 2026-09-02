@@ -1,3 +1,5 @@
+<!DOCTYPE html>
+<html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Accept PCoin — integration guide</title>
@@ -317,7 +319,7 @@ node pcoin-seed-vault.mjs new --system myapp</code></pre>
     <code>is_coinbase</code></strong> — its keys stop at
     <code>received_sat</code> / <code>net_sat</code> / <code>n_out</code>. Both facts
     drive §7. Fetch <code>/api/tx/{txid}</code> when you need them.</li>
-    <li>Balances are split into <code>confirmed</code> (with
+    <li>Balances sit under a <code>balance</code> key, split into <code>confirmed</code> (with
     <code>mature_sat</code>, <code>immature_sat</code>, <code>spendable_sat</code>),
     <code>unconfirmed</code>, and <code>lifetime</code>. Each carries both a
     <code>_sat</code> integer and a <code>_pcn</code> string — use the integer.</li>
@@ -362,26 +364,27 @@ node pcoin-seed-vault.mjs new --system myapp</code></pre>
 
   <table>
     <tr><th>Gate</th><th>Value</th><th>Why</th></tr>
-    <tr><td>confirmations</td><td><strong>6</strong></td><td>~69 chain tips seen; ~3% lifetime stale rate</td></tr>
+    <tr><td>confirmations</td><td><strong>6</strong></td><td>reorgs of a block or two are routine on a chain this small; the explorer counts them</td></tr>
     <tr><td>deposit height</td><td>&ge; 2800</td><td>below it difficulty is frozen</td></tr>
     <tr><td>coinbase maturity</td><td>100</td><td>mined output, not spendable sooner</td></tr>
-    <tr><td>index health</td><td><code>blocks_unwound == 0</code></td><td>reorg in flight = untrustworthy counts</td></tr>
+    <tr><td>index health</td><td><code>index.stale == false</code> and <code>blocks_behind == 0</code></td><td><code>blocks_unwound</code> and <code>reorg_count</code> are lifetime counters, not health &mdash; they only ever grow</td></tr>
     <tr><td>minimum deposit</td><td>your call</td><td>ignore dust rather than write a row per satoshi</td></tr>
   </table>
 
-  <p>Four of the five production integrations run <strong>6 confirmations</strong> — roughly
-  half an hour of work behind a deposit at current spacing; the fifth runs 3 and instead
+  <p>Four of the five production integrations run <strong>6 confirmations</strong> — about an
+  hour at the 600&nbsp;s target, less when the chain runs fast; the fifth runs 3 and instead
   corroborates every deposit above $0.05 against a second, independent explorer. Make it
   a config value,
   not a constant, and raise it for large amounts. Pair a low value with a per-user
   monthly cap: the cap is what bounds your loss between reviews.</p>
 
   <h3>Gate on the deposit's height, not the tip</h3>
-  <p>Below height 2800 the difficulty is <strong>frozen</strong> at
-  <code>1e0b7c33</code> — the legacy retarget fires only every 2016 blocks and does
-  not run again until 4032. Anyone renting hashrate can rewrite that history cheaply
-  and the chain cannot push back. A tip-based gate credits a pre-LWMA deposit the
-  instant the tip crosses 2800, which is exactly wrong.</p>
+  <p>Below height 2800 the difficulty <strong>was frozen</strong> at
+  <code>1e0b7c33</code> — the legacy retarget fired only every 2016 blocks, so those
+  blocks are cheap to rewrite for anyone renting hashrate, and the chain cannot push
+  back. LWMA has retargeted every block since 2800, but a deposit that sits in the
+  frozen era stays cheap to reorganise forever. A tip-based gate credits such a
+  deposit the instant the tip is high enough, which is exactly wrong.</p>
 
 <pre><code><span class="c">// wrong: credits old, cheap-to-reorg coins once the tip moves</span>
 <span class="k">if</span> (tipHeight &gt;= MIN_HEIGHT) credit();
@@ -443,7 +446,8 @@ node pcoin-seed-vault.mjs new --system myapp</code></pre>
   <div class="note bad">
     <p><strong>Key the ledger on <code>(txid, address)</code> — never on
     <code>(txid, vout)</code>.</strong> This is the single most expensive mistake
-    made in these integrations, and all four of the original ones shipped it before it was found.</p>
+    made in these integrations: every one live at the time it was found — four of today's five —
+    had shipped it.</p>
   </div>
 
   <p>The explorer's address-tx summary carries <strong>no vout at all</strong>. Faced
@@ -577,7 +581,7 @@ fsync($tmpHandle); rename($tmp, $f); fsync($dirHandle);</code></pre>
 
   <p>The rate is published, free and unauthenticated:</p>
 <pre><code>curl -s https://price.pc.am</code></pre>
-<pre><code>{
+<pre><code>{                          <span class="c">// example from August 2026 &mdash; the live value differs</span>
   "price": 0.015,
   "serviceRate": 0.015,     &lt;-- USD per 1 PCN. Use THIS.
   "currency": "USD",
@@ -587,6 +591,17 @@ fsync($tmpHandle); rename($tmp, $f); fsync($dirHandle);</code></pre>
 
   <p>Read <code>serviceRate</code>. It is USD per one PCN, so
   <code>usd = pcn &times; serviceRate</code>.</p>
+
+  <div class="note warn">
+    <p><strong>PancakeSwap is not the price either.</strong> wPCN (a BEP-20 claim on PCN)
+    trades on BNB Smart Chain, and a bot holds that pool <em>to</em> the price.pc.am
+    rate &mdash; the pool follows the feed, never the reverse. Its liquidity is a few
+    hundred dollars, so a single small trade moves it by percent; reading it as a price
+    lets anyone who spends $20 set your credit rate. Read price.pc.am, and only
+    price.pc.am. A customer holding wPCN pays you by redeeming it for PCN at
+    <a href="https://wrapdesk.pc.am/redeem">wrapdesk.pc.am/redeem</a> and sending the PCN &mdash;
+    never accept wPCN directly unless you run your own BSC watcher.</p>
+  </div>
 
   <h3>Never hardcode the rate</h3>
   <p>It moves. pc.am itself displayed &ldquo;1,000&nbsp;PCN = $1.00&rdquo; for hours after
@@ -776,6 +791,8 @@ bitcoin-cli unloadwallet sweep-tmp</code></pre>
     <li>Deposit-height gate on the deposit's own height, asserted twice</li>
     <li>Coinbase deposits require 100 confirmations</li>
     <li>Every failure path holds rather than credits</li>
+    <li>Rate read from price.pc.am at credit time, <code>ladder.stale</code> honoured, and
+    <code>credited_rate_usd</code> stamped on the row &mdash; no rate anywhere in a template or a constant</li>
     <li><code>block_hash</code> re-checked for recent credits; flags, does not reverse — and the flag is visible</li>
     <li>Addresses validated locally</li>
     <li>Treasury figure on the admin page, and it refuses to show a partial sum</li>
@@ -807,3 +824,4 @@ bitcoin-cli unloadwallet sweep-tmp</code></pre>
     here were learned the expensive way.</p>
   </footer>
 </div>
+</html>

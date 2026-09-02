@@ -104,7 +104,8 @@ when it stops being true.
   toolchain. If PCoin ever needs to patch them, say so loudly in the release
   notes — a fork of the build system is a fork of the trust model.
 * **The Android `libbitcoind.so` is out of scope.** It is built separately with
-  the NDK (see `CLAUDE.md` §4) and is not covered by any of this. The APK is
+  the NDK (recipe: `contrib/android/playstore/v1/DEPLOY.md`) and is not covered by
+  any of this. The APK is
   also debug-signed today, so its provenance rests on the signing key, not on
   the build.
 * **Do not run this on a seed.** It will saturate the machine for hours. Use a

@@ -28,9 +28,9 @@ copy app\build\outputs\bundle\walletRelease\app-wallet-release.aab `
      playstore\v1\PCoinWallet-release-<ver>-vc<code>.aab
 ```
 
-> **Never run bare `gradlew.bat testDebugUnitTest`.** It runs
-> `ForwardSandboxE2ETest`, which shells out to a hard-coded adb + phone serial
-> and holds that device for 10 minutes. Always pass `--tests`.
+> The former device-holding `ForwardSandboxE2ETest` no longer exists (see
+> `../../README.md`), so the full `testWalletDebugUnitTest` suite is device-free;
+> a `--tests` filter is only for narrowing an investigation.
 
 Verify the signer before anything leaves the machine:
 

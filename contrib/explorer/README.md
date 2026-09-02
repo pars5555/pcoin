@@ -49,7 +49,7 @@ P2P minus one**, so regtest is 49443, not Bitcoin's 18443 and not testnet3's
 19443.
 
 **Do not deploy this on the seed host.** `seed.pc.am` is the only DNS seed and
-`vFixedSeeds` holds three hardcoded fallback peers (CLAUDE.md §5, §11): if that box gets loaded off the
+`vFixedSeeds` holds hardcoded fallback peers: if that box gets loaded off the
 network nobody new can bootstrap PCoin. Separate host.
 
 **It never generates an address, holds a key or signs anything.** Clients derive
@@ -80,7 +80,7 @@ Two consequences worth stating:
 ## Reorgs: the core feature
 
 `getchaintips` on the live seed returns ~66 tips over ~2 100 blocks — a ~3% stale
-rate — and LWMA at height 2800 roughly halves block spacing again, which raises
+rate at the time — and LWMA (active since height 2800) roughly halved block spacing, which raises
 it further (stale rate tracks propagation delay over block spacing). Reorgs here
 are routine. An indexer that unwinds one incorrectly reports wrong balances
 forever and never notices, which is worse than having no explorer.
@@ -108,7 +108,7 @@ genesis hash the node reported for height 0, so `blocks[0]` is genesis.
 *Step.* Assume `blocks[0..T-1]` is a genuine chain. A row is only ever added at
 height `T`, and only if its `prev_hash` equals `blocks[T-1].hash`. Block IDs on
 PCoin are still double-SHA256 of the 80-byte header — PoW is RandomX but
-`GetHash()` is unchanged (CLAUDE.md §3) — so equality of `prev_hash` and `hash`
+`GetHash()` is unchanged — so equality of `prev_hash` and `hash`
 means this block's header genuinely commits to that parent. Hence `blocks[0..T]`
 is a chain. ∎
 
@@ -198,7 +198,8 @@ Two things a naive schema gets wrong on this chain:
 
 ### Coinbase maturity
 
-2 126 of 2 136 transactions on mainnet today are coinbases, so a balance that
+At height 2125 (August 2026), 2 126 of 2 136 mainnet transactions were coinbases,
+and the ratio is still overwhelming, so a balance that
 counts immature coinbase as spendable is wrong more often than it is right.
 Every coinbase output carries `maturity_height = height + 100`, the first height
 at which it may be spent (`nSpendHeight - nHeight >= COINBASE_MATURITY`). The
@@ -219,7 +220,7 @@ current tip height, so a stored value goes stale with nothing writing to it.
 describes, and `queries.health()` turns it into `blocks_behind`,
 `last_poll_age_seconds`, `stale` and `stale_reasons`.
 
-It follows CLAUDE.md §7.1/§7.2 literally: **an RPC that failed, timed out or
+It follows the project's doctrine literally: **an RPC that failed, timed out or
 answered "I do not know" resolves nothing.** The `node_*` fields are written
 *only* after a successful poll, so a node that has gone away leaves the last
 observation intact and `blocks_behind` keeps growing — it is never silently reset
@@ -375,4 +376,5 @@ guarantee — hence the per-block unwind, which stays cheap when it isn't.
   (`CMakeLists.txt:146,236`); polling is the right answer anyway, because a
   dropped ZMQ notification stalls an indexer silently.
 * Coinbase maturity is reported **in blocks**, never as an ETA — block spacing on
-  this chain is neither the 600 s target nor stable, and it changes again at 2800.
+  this chain is neither the 600 s target nor stable (LWMA retargets every block
+  since 2800).

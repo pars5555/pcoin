@@ -20,8 +20,8 @@
 - [ ] Privacy policy live — verify CONTENT, not status code:
       `curl -s https://pc.am/wallet-privacy.html | grep -o "<title>[^<]*</title>"`
 - [ ] Signed AAB built and its signer verified (see `SIGNING.md`)
-- [ ] Unit tests green: `gradlew.bat testWalletDebugUnitTest --tests "org.pcoin.miner.*"`
-      (never bare `testDebugUnitTest` — it holds a real phone for 10 minutes)
+- [ ] Unit tests green: `gradlew.bat testWalletDebugUnitTest`
+      (the whole suite is device-free; the old device-holding E2E test was removed)
 
 ## 1. Create app
 
@@ -93,7 +93,7 @@ Checks run ~10-15 min, then it goes to Google automatically.
 5. **targetSdk 35 is mandatory** for new submissions and changes app behaviour:
    Android draws edge-to-edge and `adjustResize` stops working. Without
    `padForSystemBars()` the Send button hides under the navigation bar.
-   See `../app/src/main/java/org/pcoin/miner/SystemInsets.kt`.
+   See `../../app/src/main/java/org/pcoin/miner/SystemInsets.kt`.
 
 6. **CameraX must be 1.4.x.** 1.3's `libimage_processing_util_jni.so` is
    4 KB-aligned and fails Play's 16 KB page-size check.
