@@ -108,7 +108,7 @@ export function totpValid(secretB32, code, at = Date.now()) {
 }
 
 // ── the panel ──────────────────────────────────────────────────────────────
-export function makeAdmin({ pool, cfg, settings, ladder, delivery, backing, notify, log = console }) {
+export function makeAdmin({ pool, cfg, settings, ladder, delivery, backing, waivers, notify, log = console }) {
   const q = async (sql, args = []) => (await pool.query(sql, args))[0];
   const esc = s => String(s ?? '').replace(/[&<>"']/g,
     c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -505,7 +505,7 @@ export function makeAdmin({ pool, cfg, settings, ladder, delivery, backing, noti
   const NAV_GROUPS = [
     ['Overview', [['', 'Dashboard']]],
     ['Money',    [['orders', 'Orders'], ['ipn', 'Payments'], ['fills', 'Fills']]],
-    ['Market',   [['ladder', 'Ladder'], ['settings', 'Settings']]],
+    ['Market',   [['ladder', 'Ladder'], ['waivers', 'Waivers'], ['settings', 'Settings']]],
     ['People',   [['users', 'Customers'], ['audit', 'Audit log']]],
   ];
   const NAV = NAV_GROUPS.flatMap(([, items]) => items);
@@ -777,9 +777,11 @@ ${left !== undefined ? `<p class="s" style="color:var(--dim)">${left} attempt(s)
     // somewhere that renders instead of answering "no such page".
     if (req.method === 'GET' &&
         ['settings', 'order/deliver', 'order/send', 'order/expire',
+         'waiver/grant', 'waiver/revoke',
          'totp/enrol', 'totp/confirm', 'totp/disable', 'logout'].includes(sub)) {
       if (sub !== 'settings') {
         res.writeHead(303, { Location: sub.startsWith('order/') ? '/admin/orders'
+                                   : sub.startsWith('waiver/') ? '/admin/waivers'
                                    : sub === 'logout' ? '/admin' : '/admin/settings' });
         return res.end();
       }
@@ -874,6 +876,57 @@ ${left !== undefined ? `<p class="s" style="color:var(--dim)">${left} attempt(s)
           await audit(email, 'order.send', `${id} -> ${r.txid || r.why}`, ip);
           return done('/admin/orders', r.ok ? 'ok' : 'err',
                       r.ok ? `Sent: ${r.txid || 'recorded'}` : r.why);
+        } else if (act === 'waiver/grant') {
+          // A waiver does not change the price. It lifts the refusal for ONE
+          // order by ONE buyer who has been told what it costs them, and it is
+          // recorded with the figures they were shown so "nobody told me" has an
+          // answer that is a row rather than a memory.
+          const wEmail = String(f.get('email') || '').trim().toLowerCase();
+          const wUsd = Number(f.get('max_usd'));
+          const wHours = Math.min(168, Math.max(1, Number(f.get('hours')) || 24));
+          if (!wEmail || !wEmail.includes('@')) {
+            return done('/admin/waivers', 'err', 'Give the buyer\'s email address.');
+          }
+          if (!(wUsd > 0) || wUsd > Number(settings.get('maxOrderUsd'))) {
+            return done('/admin/waivers', 'err',
+              `The ceiling must be between $0 and the $${settings.get('maxOrderUsd')} maximum order.`);
+          }
+          // Price it NOW, so what is stored is what this buyer would actually
+          // pay rather than a number from whenever the form was opened.
+          let shownPrice = null, shownRate = null, shownLoss = null;
+          try {
+            const rungs = await ladder.rungsWithStock();
+            const walk = ladder.walkUsd(rungs, wUsd);
+            const st2 = await ladder.ladderState();
+            shownPrice = walk.pcn > 0 ? walk.avgPrice : st2.marginalPrice;
+            const pr = await fetch('https://price.pc.am', { signal: AbortSignal.timeout(8000) })
+              .then(r => r.json()).catch(() => null);
+            shownRate = Number(pr?.serviceRate) || null;
+            if (shownPrice && shownRate) shownLoss = (1 - shownRate / shownPrice) * 100;
+          } catch (e) { log.warn('[waiver] could not price the grant:', e.message); }
+          const id = await waivers.grant({
+            email: wEmail, maxUsd: wUsd, hours: wHours, grantedBy: email,
+            shownPrice, shownRate, shownLossPct: shownLoss,
+            note: String(f.get('note') || '').slice(0, 500) || null });
+          await audit(email, 'waiver.grant',
+            `#${id} ${wEmail} up to $${wUsd.toFixed(2)} for ${wHours}h` +
+            (shownLoss != null ? ` (buyer loses ${shownLoss.toFixed(1)}% on spend)` : ''), ip);
+          await notify(
+            `\u{1F7E1} <b>Order waiver granted</b>\n<code>${esc(wEmail)}</code>\n` +
+            `up to <b>$${wUsd.toFixed(2)}</b>, valid ${wHours}h, one order.\n` +
+            (shownLoss != null
+              ? `At today's ladder they pay $${shownPrice.toFixed(6)}/PCN against a ` +
+                `$${shownRate.toFixed(6)} service rate — they lose <b>${shownLoss.toFixed(1)}%</b> on spend.\n`
+              : `The price could not be read at grant time; nothing was stored for it.\n`) +
+            `Granted by ${esc(email)}.`).catch(() => {});
+          return done('/admin/waivers', 'ok',
+            `Waiver #${id} for ${wEmail}, up to $${wUsd.toFixed(2)}, ${wHours}h, one order.`);
+        } else if (act === 'waiver/revoke') {
+          const wid = Number(f.get('id'));
+          const ok = await waivers.revoke(wid, email);
+          await audit(email, 'waiver.revoke', `#${wid} ${ok ? 'revoked' : 'not revocable'}`, ip);
+          return done('/admin/waivers', ok ? 'ok' : 'err',
+            ok ? `Waiver #${wid} revoked.` : `Waiver #${wid} was already used, revoked or gone.`);
         } else if (act === 'order/expire') {
           const id = f.get('order_id');
           const r = await q(`UPDATE orders SET status='expired' WHERE order_id=? AND status='pending'`, [id]);
@@ -940,6 +993,7 @@ ${left !== undefined ? `<p class="s" style="color:var(--dim)">${left} attempt(s)
         // browser on a POST-only URL, and the refresh after reading it would
         // 404 — which is exactly the fault being fixed here.
         const back = act.startsWith('order/') ? '/admin/orders'
+                   : act.startsWith('waiver/') ? '/admin/waivers'
                    : act.startsWith('totp/')  ? '/admin/settings'
                    : `/admin/${act}`;
         return done(back, 'err', e.message);
@@ -986,6 +1040,51 @@ ${left !== undefined ? `<p class="s" style="color:var(--dim)">${left} attempt(s)
            buyback <b>${s.buybackOpen ? 'open' : 'closed'}</b> ·
            auto-send at or below <b>$${s.autoMaxUsd}</b> ·
            orders $${s.minOrderUsd}–$${s.maxOrderUsd}</p>`, email, csrfTok));
+    }
+
+    if (sub === 'waivers') {
+      const rows = await waivers.recent(30);
+      const lad = await ladder.ladderState();
+      const body = flash + `
+        <div class="note">
+          <p>A waiver lets <b>one buyer</b> place <b>one order</b> that the divergence guard
+          would otherwise refuse, <b>at the ladder's own price</b> — it is not a discount and it
+          changes nothing for anyone else. The systemic interlock is untouched: if the price
+          oracle itself drifts, the market still shuts for everybody.</p>
+          <p class="s">Why orders get refused: the ladder spans 667&times; in price across 100,000
+          coins, so a large order climbs many rungs and its average price runs above what the
+          services credit PCN at. The current marginal price is
+          <b>$${money(lad.marginalPrice ?? 0)}</b>. Grant a waiver only when the buyer has been
+          told, in dollars, what they lose by spending those coins on the services.</p>
+        </div>
+        <form method="POST" action="/admin/waiver/grant" class="card" style="padding:14px">
+          <input type="hidden" name="csrf" value="${csrfTok}">
+          <p><input name="email" type="email" placeholder="buyer's email" required style="min-width:260px"></p>
+          <p><input name="max_usd" type="number" step="0.01" min="1" placeholder="ceiling in USD" required>
+             <input name="hours" type="number" min="1" max="168" value="24" title="hours until it expires">
+             <input name="note" placeholder="why (optional)" style="min-width:260px"></p>
+          <p><button>Grant a one-order waiver</button></p>
+        </form>
+        <table><tr><th>#</th><th>Buyer</th><th>Ceiling</th><th>State</th>
+          <th>They were told</th><th>Granted</th><th>Expires</th><th></th></tr>` +
+        (rows.length ? rows.map(w => {
+          const state = w.used_order_id ? `used by ${esc(w.used_order_id)}`
+                      : w.revoked_at ? 'revoked'
+                      : Number(w.live) ? '<b>live</b>' : 'expired';
+          const told = w.shown_loss_pct == null ? '<span class="s">not recorded</span>'
+            : `$${Number(w.shown_price).toFixed(6)}/PCN vs $${Number(w.shown_rate).toFixed(6)} ` +
+              `→ <b>−${Number(w.shown_loss_pct).toFixed(1)}%</b> on spend`;
+          return `<tr><td>${w.id}</td><td>${esc(w.email)}</td>
+            <td>$${Number(w.max_usd).toFixed(2)}</td><td>${state}</td><td>${told}</td>
+            <td class="s">${esc(String(w.granted_at).slice(0, 16))}<br>${esc(w.granted_by)}</td>
+            <td class="s">${esc(String(w.expires_at).slice(0, 16))}</td>
+            <td>${Number(w.live) ? `<form class="inline" method="POST" action="/admin/waiver/revoke">
+                   <input type="hidden" name="csrf" value="${csrfTok}">
+                   <input type="hidden" name="id" value="${w.id}">
+                   <button class="ghost">Revoke</button></form>` : ''}</td></tr>`;
+        }).join('') : `<tr><td colspan="8" class="s">No waivers yet.</td></tr>`) +
+        `</table>`;
+      return sendHtml(200, page('Waivers', 'waivers', body, email, csrfTok));
     }
 
     if (sub === 'orders') {

@@ -130,6 +130,7 @@ function validAddress(addr) {
 // already lost once when it was a JSON file, and an engine you cannot run in
 // isolation is an engine nobody re-tests after changing it.
 import { makeLadder } from './ladder.mjs';
+import { makeWaivers, lossOnSpendPct } from './waivers.mjs';
 // The notifier is passed in so a failing reservation sweep can say so; without
 // it the ladder silently stops returning inventory from unpaid orders.
 //
@@ -144,6 +145,8 @@ import { makeLadder } from './ladder.mjs';
 const L = makeLadder(pool, { notify: (...args) => notify(...args),
                              getSetting: k => S.get(k) });
 setInterval(L.sweepExpiredOrders, 15 * 60 * 1000).unref?.();
+const W = makeWaivers(pool);
+await W.ensureTable();
 
 // ── settings ───────────────────────────────────────────────────────────────
 // Loaded BEFORE delivery, because delivery reads its limits from here. Awaited
@@ -295,7 +298,8 @@ setInterval(() => R.scan().catch(e => console.error('[retire]', e.message)),
 
 // ── admin panel ────────────────────────────────────────────────────────────
 import { makeAdmin } from './admin.mjs';
-const ADMIN = makeAdmin({ pool, cfg, settings: S, ladder: L, delivery: D, backing: B, notify });
+const ADMIN = makeAdmin({ pool, cfg, settings: S, ladder: L, delivery: D, backing: B,
+                          waivers: W, notify });
 await ADMIN.ensureTable();
 
 // ── the divergence interlock ───────────────────────────────────────────────
@@ -361,7 +365,7 @@ async function publicServiceRates() {
 
 /** May we sell right now? Fails CLOSED: an unreadable oracle blocks the sale.
  *  This path takes money, and "I could not check" is not "it is fine". */
-async function saleGate(usd = null) {
+async function saleGate(usd = null, email = null) {
   // The master switch, checked first: an operator turning sales off means off,
   // regardless of what every other signal says.
   if (!S.get('saleOpen')) {
@@ -440,16 +444,39 @@ async function saleGate(usd = null) {
     // Without one, it IS systemic: the ladder itself has drifted from the rate,
     // and nothing anyone orders will fix that.
     const perOrder = typeof usd === 'number' && usd > 0;
+
+    // A waiver lifts the refusal for ONE buyer who has been told what it costs
+    // them. It never touches the systemic branch below: that one exists to
+    // catch a stuck or wrong oracle, and no operator convenience is worth
+    // selling through that.
+    if (perOrder && email) {
+      const waiver = await W.find(email, usd).catch(() => null);
+      if (waiver) {
+        const loss = lossOnSpendPct(judged, worst);
+        return { open: true, waived: true, waiverId: waiver.id,
+          divergencePct, serviceRate: worst, judgedPrice: judged,
+          marginalPrice: st.marginalPrice, nextFillPrice: st.nextFillPrice, ...spread,
+          notice:
+          `You are buying above the rate the services credit PCN at. You would pay ` +
+          `$${judged.toFixed(6)} per PCN; the services credit PCN at $${worst.toFixed(6)}. ` +
+          `If you spend these coins there you lose ${loss.toFixed(1)}% immediately, and the ` +
+          `wPCN pool is held to the same rate, so it is not a better exit. This order was ` +
+          `allowed by a one-time waiver at your request; the price is the ladder's own.` };
+      }
+    }
+
     return { open: false, divergencePct, serviceRate: worst, judgedPrice: judged,
       marginalPrice: st.marginalPrice, nextFillPrice: st.nextFillPrice,
       scope: perOrder ? 'order' : 'market', ...spread,
       reason: perOrder
         ? `this order cannot be filled at a fair price right now: the PCN still on ` +
-          `sale would cost you $${judged.toFixed(6)} each, ${divergencePct.toFixed(1)}% above the ` +
-          `$${worst.toFixed(6)} the services credit PCN at, past the ` +
-          `${S.get('maxDivergencePct')}% limit. The cheaper rungs are held by orders that have ` +
-          `not been paid for; they are released when those expire, so this usually clears within ` +
-          `the hour. The market itself is open.`
+          `sale would cost you $${judged.toFixed(6)} each, and the services credit PCN at ` +
+          `$${worst.toFixed(6)} — so spending these coins there would lose you ` +
+          `${(lossOnSpendPct(judged, worst) ?? 0).toFixed(1)}% immediately. That is past the ` +
+          `${S.get('maxDivergencePct')}% limit, so the order is refused rather than sold into ` +
+          `the gap. A smaller order fills at a better price. If you want this size anyway, ` +
+          `ask and it can be allowed once, at the same price, with that loss stated. The ` +
+          `market itself is open.`
         : `sales are paused: ${judgedLabel} ($${judged.toFixed(6)}) and the rate the ` +
           `services credit PCN at ($${worst.toFixed(6)}) have drifted ${divergencePct.toFixed(1)}% apart, ` +
           `past the ${S.get('maxDivergencePct')}% limit. Selling into that gap would shortchange you. ` +
@@ -1048,7 +1075,7 @@ createServer(async (req, res) => {
       // holds. But it must carry the gate, so the page can grey the button out
       // and explain, rather than let someone fill in an address and a payment
       // amount only to be refused at the click that matters.
-      const gate = await saleGate(usd);
+      const gate = await saleGate(usd, email);
       return json(res, 200, {
         // Names kept from the AMM response so nothing downstream has to change.
         pcn: w.pcn,
@@ -1215,7 +1242,7 @@ createServer(async (req, res) => {
       // The interlock, checked before anything is reserved or any invoice is
       // raised. Fails closed by construction: saleGate() returns open:false
       // when it cannot read the rate at all.
-      const gate = await saleGate(usd);
+      const gate = await saleGate(usd, email);
       if (!gate.open) return json(res, 503, { error: gate.reason, saleOpen: false });
 
       // Checked inside the transaction below as well; this is the cheap early
@@ -1326,6 +1353,14 @@ createServer(async (req, res) => {
            VALUES (?,?,?,?,?,?, 'pending', ?, ?)`,
           [orderId, email, usd, addr, w.pcn.toFixed(8), w.avgPrice.toFixed(10),
            clientIp(req), String(req.headers['user-agent'] || '').slice(0, 255) || null]);
+
+        // Spend the waiver inside the SAME transaction as the order. Outside it,
+        // a crash between the two leaves either a waiver spent on no order or an
+        // order that consumed nothing and could be repeated.
+        if (gate.waived && gate.waiverId) {
+          const took = await W.consume(gate.waiverId, orderId, conn);
+          if (!took) throw new Error('that waiver was already used; nothing was ordered');
+        }
         await conn.commit();
       } catch (e) {
         await conn.rollback();
