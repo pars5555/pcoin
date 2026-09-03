@@ -138,6 +138,9 @@ namespace PCoinTray
         /** Consecutive failed evaluations before the user is told. Never 1. */
         const int STUCK_AFTER_FAILURES = 3;
 
+        /** The log this engine appends to, next to the exe. PCoinWallet.exe sets its own. */
+        public static string LogFile = "pcoin-tray.log";
+
         /** Re-entries allowed into ResolveRecord from the -27 recovery path. */
         const int MAX_RESOLVE_DEPTH = 2;
 
@@ -1900,6 +1903,416 @@ namespace PCoinTray
             };
         }
 
+        // =================================================================
+        // The wallet app's user-directed paths: inspect-then-commit send, and
+        // history.
+        //
+        // A port of the Android app's prepareSend / broadcastPrepared /
+        // listHistoryPage. They share the plumbing above (Call, Decode,
+        // AnnotateChange, the mempool check and the broadcast) and NONE of the
+        // forwarding state: nothing here reads or writes the ForwardStore, and
+        // nothing here runs from the tick. PCoinWallet.exe constructs this
+        // engine only for these methods and never starts forwarding.
+        //
+        // The shape is the one the tray's sweep already proved on the live
+        // chain: build with add_to_wallet=false, decode what came back, read
+        // every input with gettxout so the fee is a difference of two OBSERVED
+        // numbers, assert the decoded transaction is the one asked for, and
+        // only then show it. The user confirms REAL figures, never an estimate.
+        // =================================================================
+
+        /**
+         * A built, verified, NOT yet broadcast user send.
+         *
+         * The hex is the only thing that is ever broadcast. If the broadcast
+         * fails or times out, the same hex is re-sent - a rebuild would produce
+         * a second, different transaction over the same coins (rule R1).
+         */
+        public class Prepared
+        {
+            public string Hex = "";
+            public string Txid = "";
+            /** The node's canonical spelling of the destination, from validateaddress. */
+            public string Destination = "";
+            public long PaidSat;
+            /** inputs - outputs, both sides read from the node. Never an estimate. */
+            public long FeeSat;
+            public int Inputs;
+            public bool SendMax;
+            public ForwardPolicy.FeeTier Tier = ForwardPolicy.FeeTier.NORMAL;
+        }
+
+        /** Thrown with a message already fit to show a user. Nothing was sent. */
+        public class SendRefused : Exception
+        {
+            public SendRefused(string message) : base(message) { }
+        }
+
+        /**
+         * Build and fully verify, but do not broadcast.
+         *
+         * Every failure below is a refusal, never a silent fallback: an
+         * unanswered node resolves nothing, and "I could not check" must not
+         * read as "it is fine".
+         *
+         * @param destination what the user typed, already through
+         *   ForwardPolicy.NormalizeAddress. The node re-spells it.
+         * @param amountSat ignored when sendMax.
+         */
+        public Prepared PrepareSend(string wallet, string destination, long amountSat, bool sendMax, ForwardPolicy.FeeTier tier)
+        {
+            if (tier == null) tier = ForwardPolicy.FeeTier.NORMAL;
+            if (!sendMax && Amounts.IsDust(amountSat))
+                throw new SendRefused("That amount is too small to send.");
+
+            // The sync gate. A wallet on a node that has not caught up cannot
+            // know what it holds, and the node's own coin selection would spend
+            // from a stale view. Same condition the Android screen applies:
+            // height and headers both known, not in IBD, height >= headers.
+            Dictionary<string, object> chain;
+            try { chain = Json.Obj(Call(null, "getblockchaininfo", "[]", RPC_TIMEOUT_MS)); }
+            catch (RpcFailure e)
+            {
+                throw new SendRefused("Could not confirm the node is caught up (" + Trim200(e.Message) + "). Nothing was sent.");
+            }
+            bool? ibd = Json.Bool(chain, "initialblockdownload");
+            double? blocks = Json.Number(chain, "blocks");
+            double? headers = Json.Number(chain, "headers");
+            if (!ibd.HasValue || !blocks.HasValue || !headers.HasValue)
+                throw new SendRefused("Could not confirm the node is caught up. Nothing was sent.");
+            if (ibd.Value || blocks.Value < 0 || headers.Value < 0 || blocks.Value < headers.Value)
+                throw new SendRefused("The node is still catching up with the chain. Wait for it to finish, then try again.");
+
+            // The node is the authority on whether this is a PCoin address at
+            // all, and on its canonical spelling. A wrong-chain address fails
+            // here.
+            Dictionary<string, object> v;
+            try { v = Json.Obj(Call(null, "validateaddress", "[" + Json.Quote(destination ?? "") + "]", RPC_TIMEOUT_MS)); }
+            catch (RpcFailure) { v = null; }
+            if (v == null) throw new SendRefused("The node could not check that address. Nothing was sent.");
+            bool? valid = Json.Bool(v, "isvalid");
+            if (!valid.HasValue || !valid.Value) throw new SendRefused("That is not a valid PCoin address.");
+            string canonical = Json.Str(v, "address");
+            if (string.IsNullOrEmpty(canonical)) canonical = destination;
+            string expectedScript = Json.Str(v, "scriptPubKey") ?? "";
+            if (expectedScript.Trim().Length == 0)
+                throw new SendRefused("The node did not describe that address; refusing to build blind.");
+            // A witness version this network cannot spend is a silent burn.
+            bool? witness = Json.Bool(v, "iswitness");
+            double? witnessVersion = Json.Number(v, "witness_version");
+            if (witness.HasValue && witness.Value && witnessVersion.HasValue && witnessVersion.Value > 1)
+                throw new SendRefused("That address uses a format nothing on this network can spend yet.");
+
+            // Core reports "you cannot afford this" as an RPC ERROR, not as a
+            // complete=false result, so the friendly message has to be produced
+            // here rather than from the return value. Measured on regtest:
+            // asking for more than the balance AND asking for exactly the
+            // balance both come back as -4 "Insufficient funds"; sendall on an
+            // empty wallet is -6 with a paragraph about uneconomic UTXOs. None
+            // of those are worth showing raw.
+            Built built;
+            try
+            {
+                built = sendMax ? CallSendAllTo(canonical, wallet, tier) : CallExactSend(canonical, amountSat, wallet, tier);
+            }
+            catch (RpcFailure e)
+            {
+                throw new SendRefused(ExplainBuildFailure(e));
+            }
+            if (!built.Complete || built.Hex.Trim().Length == 0)
+                throw new SendRefused("Could not build the payment. You may not have enough spendable coins.");
+
+            DecodedTx decoded;
+            try { decoded = Decode(built.Hex); }
+            catch (RpcFailure e)
+            {
+                throw new SendRefused("The node could not decode the transaction it built (" + Trim200(e.Message) + "). Nothing was sent.");
+            }
+            var annotated = AnnotateChange(decoded, wallet, canonical);
+
+            // Input value comes from the node's own view of the outpoints being
+            // spent, not from anything we asked for - the fee is a difference
+            // and both sides of it must be observed.
+            long inValue = 0;
+            foreach (var o in annotated.Inputs)
+            {
+                Dictionary<string, object> prev;
+                try
+                {
+                    prev = Json.Obj(Call(null, "gettxout",
+                        "[" + Json.Quote(o.Txid) + "," + o.Vout.ToString(CultureInfo.InvariantCulture) + ",true]", RPC_TIMEOUT_MS));
+                }
+                catch (RpcFailure) { prev = null; }
+                double? value = prev == null ? null : Json.Number(prev, "value");
+                if (!value.HasValue)
+                {
+                    // Already spent, unknown, or unanswered: cannot compute a fee
+                    // we can defend.
+                    throw new SendRefused("Could not read one of the coins being spent. Nothing was sent.");
+                }
+                inValue += ForwardPolicy.ToSat(value.Value);
+            }
+
+            string why = ForwardPolicy.VerifyUserSend(annotated, canonical, expectedScript, built.Txid,
+                amountSat, sendMax, inValue, tier.RateSatVb);
+            if (why != null)
+                throw new SendRefused("The transaction the node built is not the one asked for: " + why);
+
+            long paid = 0, outSum = 0;
+            foreach (var o in annotated.Outputs)
+            {
+                outSum += o.ValueSat;
+                if (string.Equals(o.Address, canonical, StringComparison.Ordinal)) paid = o.ValueSat;
+            }
+            Log("prepared user send " + Head(built.Txid) + " to " + ForwardPolicy.ShortAddress(canonical) +
+                " paid=" + paid + " fee=" + (inValue - outSum) + " inputs=" + annotated.Inputs.Count + " tier=" + tier);
+            return new Prepared
+            {
+                Hex = built.Hex,
+                Txid = built.Txid,
+                Destination = canonical,
+                PaidSat = paid,
+                FeeSat = inValue - outSum,
+                Inputs = annotated.Inputs.Count,
+                SendMax = sendMax,
+                Tier = tier,
+            };
+        }
+
+        /**
+         * Broadcast a previously prepared send. Returns the txid.
+         *
+         * testmempoolaccept runs again here, not just at prepare time: the user
+         * may have spent a minute reading the review screen, and a reorg can
+         * have moved the coins underneath in that window. One cheap call
+         * closes it.
+         *
+         * The rest of this function exists because THIS TRANSACTION HAS ALREADY
+         * BEEN SENT is a completely different answer from THIS TRANSACTION WAS
+         * REJECTED, and the node reports the first one through the same channel
+         * as the second. Measured against a regtest node:
+         *
+         *   already in the mempool   testmempoolaccept  allowed=false
+         *                                               reject-reason txn-already-in-mempool
+         *                            sendrawtransaction succeeds, returns the txid
+         *   already confirmed        testmempoolaccept  allowed=false
+         *                                               reject-reason txn-already-known
+         *                            sendrawtransaction error -27
+         *   genuinely stale          testmempoolaccept  allowed=false
+         *                                               reject-reason missing-inputs
+         *                            sendrawtransaction error -25
+         *
+         * Rendering the first two as failure would tell somebody their payment
+         * did not go through while their coins were already gone - and the
+         * obvious reaction to that screen is to press Send again. Only the
+         * third is a real failure, and it is the one case where the money went
+         * somewhere else.
+         */
+        public string BroadcastPrepared(Prepared p)
+        {
+            // The cap matches the tier the transaction was BUILT at; a floor cap
+            // here would refuse the Fast/Very fast transactions it just vetted.
+            double cap = p.Tier.BroadcastMaxFeeRatePcnKvb;
+            string reason;
+            bool answered = TryTestAccept(p.Hex, cap, out reason);
+            if (!answered)
+                throw new SendRefused("The node did not answer. Nothing was sent - press Confirm again once it responds; " +
+                    "the same transaction is re-sent, never a new one.");
+            if (reason != null)
+            {
+                if (IsAlreadySent(reason)) { Log("user send " + Head(p.Txid) + " was already out there: " + reason); return p.Txid; }
+                throw new SendRefused(ExplainReject(reason));
+            }
+            string txid;
+            try
+            {
+                txid = Broadcast(p.Hex, cap);
+            }
+            catch (RpcFailure e)
+            {
+                // -27 is "outputs already in the UTXO set": it is already mined.
+                if (e.Code.HasValue && e.Code.Value == RPC_ALREADY_IN_UTXO_SET) return p.Txid;
+                if (e.Transport)
+                {
+                    // It may or may not have gone out. The prepared hex stays
+                    // valid, and a second Confirm re-checks the mempool first,
+                    // where an already-sent copy reads as success.
+                    throw new SendRefused("The node did not confirm the broadcast. It may or may not have gone out - " +
+                        "press Confirm again to check; the same transaction is re-sent, never a new one.");
+                }
+                throw new SendRefused(ExplainReject(e.Message ?? "the node refused it"));
+            }
+            if (string.IsNullOrEmpty(txid)) txid = p.Txid;
+            Log("user send " + Head(txid) + " broadcast (" + p.Inputs + " inputs, fee " + p.FeeSat + " sat, " + p.Tier + ")");
+            return txid;
+        }
+
+        /**
+         * Why the node would not build it.
+         *
+         * The amount is deliberately NOT restated here ("you only have X"): the
+         * balance shown on screen came from a snapshot, the node just refused
+         * using its own live view, and quoting the stale number next to the
+         * live refusal is how a user ends up believing the app is lying to
+         * them.
+         */
+        static string ExplainBuildFailure(RpcFailure e)
+        {
+            string m = e.Message ?? "";
+            if (e.Transport)
+                return "The node did not answer while building the payment. Nothing was sent.";
+            if (m.Contains("Insufficient funds"))
+                return "Not enough spendable coins for that amount plus the network fee. " +
+                       "Newly mined coins need 100 blocks before they can be spent.";
+            if (m.Contains("Total value of UTXO pool too low"))
+                return "There is nothing spendable in this wallet yet.";
+            if (m.Contains("Transaction amount too small"))
+                return "That amount is too small to send.";
+            if (m.Contains("Invalid address") || m.Contains("Invalid Bitcoin address"))
+                return "That is not a valid PCoin address.";
+            if (m.Contains("Please enter the wallet passphrase"))
+                return "The wallet is locked.";
+            int colon = m.IndexOf(": ", StringComparison.Ordinal);
+            return "Could not build the payment: " + Trim200(colon >= 0 ? m.Substring(colon + 2) : m);
+        }
+
+        /** Reject reasons that mean "this exact transaction is already out there". */
+        static bool IsAlreadySent(string reason)
+        {
+            return reason.Contains("txn-already-in-mempool") || reason.Contains("txn-already-known");
+        }
+
+        /** Node wording, turned into something worth showing a person. */
+        static string ExplainReject(string reason)
+        {
+            reason = reason ?? "";
+            if (reason.Contains("missing-inputs") || reason.Contains("missingorspent"))
+                return "Those coins have already been spent by something else. Nothing was sent - " +
+                       "go back and build the payment again.";
+            if (reason.Contains("min relay fee") || reason.Contains("mempool min fee"))
+                return "The fee is too low for the network to relay this payment.";
+            if (reason.Contains("dust"))
+                return "One of the amounts is too small for the network to carry.";
+            return "The network would not accept it: " + Trim200(reason);
+        }
+
+        /** Exact amount, node-selected inputs, change back to us. */
+        Built CallExactSend(string destination, long amountSat, string wallet, ForwardPolicy.FeeTier tier)
+        {
+            string options = "{\"add_to_wallet\":false,\"fee_rate\":" + FeeRateJson(tier) + "}";
+            // The amount goes over as exact fixed-point text (AmountJson): eight
+            // decimals, no exponent, no locale. AmountFromValue runs
+            // ParseFixedPoint over the raw text, and a formatted double can
+            // serialise as 1E-08, which the node rejects.
+            string p = "[{" + Json.Quote(destination) + ":" + AmountJson(amountSat) + "},null,\"unset\",null," + options + "]";
+            return AsBuilt(Call(wallet, "send", p, BUILD_TIMEOUT_MS));
+        }
+
+        /**
+         * Everything spendable, one output, no change.
+         *
+         * `sendall` takes the SAME positional shape as `send` -
+         * (recipients, conf_target, estimate_mode, fee_rate, options) - so the
+         * options object belongs at position 5, not position 2. Passing it
+         * second lands it in conf_target and the node refuses the whole call
+         * with "JSON value of type object is not of expected type number".
+         * Verified against a regtest node; do not shorten this argument list.
+         */
+        Built CallSendAllTo(string destination, string wallet, ForwardPolicy.FeeTier tier)
+        {
+            string options = "{\"add_to_wallet\":false,\"fee_rate\":" + FeeRateJson(tier) + "}";
+            string p = "[[" + Json.Quote(destination) + "],null,\"unset\",null," + options + "]";
+            return AsBuilt(Call(wallet, "sendall", p, BUILD_TIMEOUT_MS));
+        }
+
+        //! A tier's rate in sat/vB, with a decimal point so it is unambiguously
+        //! a number and never confused with the PCN/kvB unit on the adjacent call.
+        static string FeeRateJson(ForwardPolicy.FeeTier tier)
+        {
+            return tier.RateSatVb.ToString("0.0###", CultureInfo.InvariantCulture);
+        }
+
+        static string MaxFeeRateJson(double pcnPerKvb)
+        {
+            return pcnPerKvb.ToString("0.00000000", CultureInfo.InvariantCulture);
+        }
+
+        /**
+         * testmempoolaccept at a given cap. Returns false when the node did not
+         * answer - which is NOT a rejection and NOT an acceptance; the caller
+         * decides what an unknown means on its path. When it returns true,
+         * `reason` is null for "would accept" or the node's reject-reason.
+         */
+        bool TryTestAccept(string hex, double maxFeeRatePcnKvb, out string reason)
+        {
+            reason = null;
+            List<object> r;
+            try
+            {
+                r = Json.Arr(Call(null, "testmempoolaccept",
+                    "[[" + Json.Quote(hex) + "]," + MaxFeeRateJson(maxFeeRatePcnKvb) + "]", RPC_TIMEOUT_MS));
+            }
+            catch (RpcFailure) { return false; }
+            if (r == null || r.Count == 0) return false;
+            var first = Json.Obj(r[0]);
+            if (first == null) return false;
+            bool? allowed = Json.Bool(first, "allowed");
+            if (allowed.HasValue && allowed.Value) return true;
+            string why = Json.Str(first, "reject-reason");
+            reason = string.IsNullOrEmpty(why) ? "rejected without a reason" : why;
+            return true;
+        }
+
+        /** sendrawtransaction at a given cap. maxburnamount 0, as on the sweep path. */
+        string Broadcast(string hex, double maxFeeRatePcnKvb)
+        {
+            object r = Call(null, "sendrawtransaction",
+                "[" + Json.Quote(hex) + "," + MaxFeeRateJson(maxFeeRatePcnKvb) + ",0]", RPC_TIMEOUT_MS);
+            return (r as string) ?? "";
+        }
+
+        // ------------------------------------------------------------- history
+
+        /** The page size every history screen asks for. */
+        public const int HISTORY_PAGE = 50;
+
+        /**
+         * One page of wallet history, newest first.
+         *
+         * `listtransactions` returns oldest-last, so the page is reversed here
+         * once rather than in the UI. Wallet change does not appear at all -
+         * Core omits outputs it recognises as its own change - so a send shows
+         * as exactly one line for the amount that left.
+         *
+         * `skip` is listtransactions' own offset, counted from the NEWEST
+         * transaction, which is what makes paging possible: page N asks for
+         * skip = N * HISTORY_PAGE. Rows the classifier drops are dropped AFTER
+         * the node counted them (RawCount), so a page can come back shorter
+         * than HISTORY_PAGE without meaning the history ended. Only an EMPTY
+         * node page proves the end - a caller that stops on a short one will
+         * silently hide transactions.
+         *
+         * Throws RpcFailure when the node did not answer. The caller keeps
+         * whatever it already shows: "I could not ask" is not "you have no
+         * transactions".
+         */
+        public HistoryPage ListHistoryPage(string wallet, int skip)
+        {
+            var arr = Json.Arr(Call(wallet, "listtransactions",
+                "[\"*\"," + HISTORY_PAGE.ToString(CultureInfo.InvariantCulture) + "," +
+                skip.ToString(CultureInfo.InvariantCulture) + ",true]", LIST_TIMEOUT_MS));
+            if (arr == null) throw new RpcFailure("the node did not answer listtransactions", null, true);
+            var page = new HistoryPage();
+            page.RawCount = arr.Count;
+            foreach (var row in arr)
+            {
+                var e = ForwardPolicy.HistoryRow(row);
+                if (e != null) page.Entries.Add(e);
+            }
+            page.Entries.Reverse();
+            return page;
+        }
+
         // ---------------------------------------------------------- small helpers
 
         string Wallet()
@@ -1947,7 +2360,7 @@ namespace PCoinTray
             {
                 string dir = System.IO.Path.GetDirectoryName(
                     System.Windows.Forms.Application.ExecutablePath);
-                System.IO.File.AppendAllText(System.IO.Path.Combine(dir, "pcoin-tray.log"),
+                System.IO.File.AppendAllText(System.IO.Path.Combine(dir, LogFile),
                     DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) +
                     "  forward: " + message + Environment.NewLine);
             }

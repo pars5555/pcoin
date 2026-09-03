@@ -303,6 +303,50 @@ namespace PCoinTray
     }
 
     /** What `validateaddress` + `getaddressinfo` said about a typed address. */
+    enum HistoryKind { RECEIVED, SENT, MINED, MATURING, CONFLICTED }
+
+    /**
+     * One line of wallet history.
+     *
+     * AmountSat is a MAGNITUDE, always positive. Core reports a send as a
+     * negative amount, but the direction is already carried by Kind, and
+     * keeping a sign in two places is how a screen ends up rendering "-1.5" as
+     * received.
+     *
+     * Confirmations may be 0 (in the mempool) or NEGATIVE (the node has seen a
+     * conflicting transaction in a block). Negative is not "fewer
+     * confirmations", it is a different state entirely, and the UI must say
+     * so rather than clamping it to zero.
+     */
+    class HistoryEntry
+    {
+        public string Txid = "";
+        public HistoryKind Kind;
+        public long AmountSat;
+        /** Present only on sends; 0 otherwise. */
+        public long FeeSat;
+        public long Confirmations;
+        public long TimeSec;
+        /**
+         * What `listtransactions.address` means depends on Kind: the
+         * counterparty for SENT, YOUR OWN address for RECEIVED / MINED /
+         * MATURING, blank for a send to several destinations.
+         */
+        public string Address = "";
+    }
+
+    /**
+     * One page of history, plus how many rows the NODE returned before the
+     * classifier dropped any. The raw count is what decides whether more pages
+     * exist; the filtered list is what the screen draws. Conflating the two
+     * ends the list early on a page that happened to be all-unreadable.
+     */
+    class HistoryPage
+    {
+        public List<HistoryEntry> Entries = new List<HistoryEntry>();
+        public int RawCount;
+    }
+
     class AddressFacts
     {
         public bool IsValid;
@@ -475,7 +519,206 @@ namespace PCoinTray
          */
         public static long MaxFeeSat(int inputs)
         {
-            return (long)Math.Ceiling(10.0 * EstimatedVsize(inputs));
+            return (long)Math.Ceiling(FEE_CEILING_HEADROOM * EstimatedVsize(inputs));
+        }
+
+        /**
+         * Every fee ceiling is `rate x this`, in both units: the decoded-fee
+         * ceilings (MaxFeeSat, MaxFeeSatFor) and the broadcast maxfeerate. One
+         * number so the "raised in lockstep" property is structural.
+         */
+        public const double FEE_CEILING_HEADROOM = 10.0;
+
+        /**
+         * The rates a user can choose on the send screen. STATIC on purpose:
+         * this chain has no fee history (blocks are mostly coinbase-only), so
+         * `estimatesmartfee` returns an error, not a number, and there is
+         * nothing to be dynamic about. A higher tier buys robustness -
+         * clearing a miner running a raised `blockmintxfee`, or outbidding a
+         * competing tx - not auction position.
+         *
+         * Only this type can reach the user path's `fee_rate`, so only these
+         * three vetted values can ever be sent. A sealed class with three
+         * instances rather than an enum, because a C# enum cannot carry the
+         * rate; it is the same shape as the Kotlin enum on the Android side.
+         */
+        public sealed class FeeTier
+        {
+            public readonly string Name;
+            /** What the send screen prints on the button. */
+            public readonly string Label;
+            public readonly double RateSatVb;
+
+            FeeTier(string name, string label, double rateSatVb)
+            {
+                Name = name;
+                Label = label;
+                RateSatVb = rateSatVb;
+            }
+
+            public static readonly FeeTier NORMAL = new FeeTier("NORMAL", "Normal", 1.0);
+            public static readonly FeeTier FAST = new FeeTier("FAST", "Fast", 5.0);
+            public static readonly FeeTier VERY_FAST = new FeeTier("VERY_FAST", "Very fast", 20.0);
+            public static readonly FeeTier[] All = { NORMAL, FAST, VERY_FAST };
+
+            /**
+             * The `sendrawtransaction`/`testmempoolaccept` maxfeerate for this
+             * tier, in PCN/kvB. 1 sat/vB = 1e-5 PCN/kvB; the only place that
+             * conversion is written.
+             */
+            public double BroadcastMaxFeeRatePcnKvb
+            {
+                get { return RateSatVb * FEE_CEILING_HEADROOM / 100000.0; }
+            }
+
+            public override string ToString() { return Name; }
+
+            /** An unrecognised name is the floor, never a guess upwards. */
+            public static FeeTier ByName(string name)
+            {
+                foreach (var t in All) if (string.Equals(t.Name, name, StringComparison.Ordinal)) return t;
+                return NORMAL;
+            }
+        }
+
+        /**
+         * The same ceiling as MaxFeeSat, for a transaction the NODE chose the
+         * inputs for.
+         *
+         * A user-directed send does not pass an input set, so the count is only
+         * known after decoding. Two outputs rather than one adds 31 vbytes.
+         *
+         * Scales with the tier's rate so that Fast/Very fast keep the SAME 10x
+         * headroom rather than a loosened absolute bound; the floor-rate
+         * overload keeps every existing caller and test exactly where it was.
+         */
+        public static long MaxFeeSatFor(int inputs, int outputs)
+        {
+            return MaxFeeSatFor(inputs, outputs, FEE_RATE_SAT_VB);
+        }
+
+        public static long MaxFeeSatFor(int inputs, int outputs, double rateSatVb)
+        {
+            return (long)Math.Ceiling(FEE_CEILING_HEADROOM * rateSatVb * (10.5 + 68.0 * inputs + 31.0 * outputs));
+        }
+
+        /**
+         * A user-directed send, checked against the transaction the node
+         * actually built rather than the one we asked for.
+         *
+         * Everything here is asserted on the DECODED bytes. The request said
+         * what we wanted; this says what we got, and only the second one is
+         * about to be broadcast.
+         *
+         * The change assertion is the one that matters, and it is the same
+         * reasoning as VerifyProbe: a mis-built transaction could pay the
+         * destination perfectly and quietly send the remaining balance to a
+         * stranger. Change must be ours AND on a change descriptor.
+         *
+         * @param sendMax true when the user asked to empty the wallet, in
+         *   which case there is no change and exactly one output is expected.
+         * @return null when the transaction is exactly what was asked for,
+         *   otherwise one sentence saying what is wrong with it.
+         */
+        public static string VerifyUserSend(
+            DecodedTx decoded,
+            string destination,
+            string expectedScriptHex,
+            string expectedTxid,
+            long requestedSat,
+            bool sendMax,
+            long inputValueSat,
+            double rateSatVb)
+        {
+            if (!string.Equals(decoded.Txid, expectedTxid, StringComparison.Ordinal))
+                return "txid does not match the decoded transaction";
+            if (decoded.Inputs.Count == 0) return "the transaction spends nothing";
+
+            int expectedOutputs = sendMax ? 1 : 2;
+            // Core folds sub-dust change into the fee, so an exact-amount send
+            // can legitimately come back with one output. More than expected
+            // never can.
+            if (decoded.Outputs.Count > expectedOutputs)
+                return "expected at most " + expectedOutputs + " outputs, got " + decoded.Outputs.Count;
+            if (decoded.Outputs.Count == 0) return "the transaction pays nothing";
+
+            int paidIndex = -1;
+            for (int i = 0; i < decoded.Outputs.Count; i++)
+            {
+                if (string.Equals(decoded.Outputs[i].Address, destination, StringComparison.Ordinal)) { paidIndex = i; break; }
+            }
+            if (paidIndex < 0) return "no output pays the address you entered";
+            var paid = decoded.Outputs[paidIndex];
+
+            if (!ScriptMatches(paid.ScriptHex, expectedScriptHex))
+                return "the output script does not match that address";
+            if (!sendMax && paid.ValueSat != requestedSat)
+                return "the amount built is " + paid.ValueSat + " sat, not the " + requestedSat + " sat you asked for";
+
+            if (decoded.Outputs.Count == 2)
+            {
+                var change = decoded.Outputs[1 - paidIndex];
+                if (!change.IsMine) return "change does not come back to this wallet";
+                if (!change.IsChange) return "change is not on a change descriptor";
+            }
+
+            long outValue = 0;
+            foreach (var o in decoded.Outputs) outValue += o.ValueSat;
+            long fee = inputValueSat - outValue;
+            if (fee <= 0) return "fee is not positive";
+            long ceiling = MaxFeeSatFor(decoded.Inputs.Count, decoded.Outputs.Count, rateSatVb);
+            if (fee > ceiling)
+                return "fee " + fee + " sat exceeds the " + ceiling + " sat ceiling at " +
+                    rateSatVb.ToString("0.###", CultureInfo.InvariantCulture) + " sat/vB";
+            return null;
+        }
+
+        // ------------------------------------------------------------- history
+
+        /**
+         * One row of `listtransactions`, classified - or null when the row is
+         * dropped. Pure, so the self-test can pin every branch.
+         *
+         * Categories, all four of which this chain produces: `generate` (a
+         * mined block past maturity), `immature` (mined, not yet spendable),
+         * `send`, `receive`. `orphan` is a mined block that lost a reorg; on a
+         * chain with a ~3% stale rate it is not hypothetical, and it is folded
+         * into CONFLICTED because the money is genuinely not there.
+         *
+         * A row is dropped when it has no txid, when its `amount` field is
+         * MISSING (a send whose amount we cannot read is not a send of zero),
+         * or when its category is one this chain never produces. The caller
+         * counts rows BEFORE this drops any - see HistoryPage.RawCount.
+         */
+        public static HistoryEntry HistoryRow(object row)
+        {
+            if (Json.Obj(row) == null) return null;
+            string txid = (Json.Str(row, "txid") ?? "").Trim();
+            if (txid.Length == 0) return null;
+            string category = Json.Str(row, "category") ?? "";
+            double? confs = Json.Number(row, "confirmations");
+            long confirmations = confs.HasValue ? (long)confs.Value : 0L;
+            double? amount = Json.Number(row, "amount");
+            if (!amount.HasValue) return null;
+
+            HistoryKind kind;
+            if (confirmations < 0 || category == "orphan") kind = HistoryKind.CONFLICTED;
+            else if (category == "immature") kind = HistoryKind.MATURING;
+            else if (category == "generate") kind = HistoryKind.MINED;
+            else if (category == "send") kind = HistoryKind.SENT;
+            else if (category == "receive") kind = HistoryKind.RECEIVED;
+            else return null;
+
+            var e = new HistoryEntry();
+            e.Txid = txid;
+            e.Kind = kind;
+            e.AmountSat = Math.Abs(ToSat(amount.Value));
+            // `fee` is present only on sends, and is negative there.
+            e.FeeSat = Math.Abs(ToSat(Json.Number(row, "fee") ?? 0.0));
+            e.Confirmations = confirmations;
+            e.TimeSec = (long)(Json.Number(row, "time") ?? 0.0);
+            e.Address = Json.Str(row, "address") ?? "";
+            return e;
         }
 
         /**

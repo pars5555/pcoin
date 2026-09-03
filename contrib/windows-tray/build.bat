@@ -60,6 +60,10 @@ rem ship. Embedding needs nothing shipped alongside it.
   SeedWallet.cs ^
   SeedForms.cs ^
   SeedSelfTest.cs ^
+  Amounts.cs ^
+  AddressBook.cs ^
+  AddressBookStore.cs ^
+  QrCode.cs ^
   Bip39Wordlist.cs
 
 if errorlevel 1 exit /b 1

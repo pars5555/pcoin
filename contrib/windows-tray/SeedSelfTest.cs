@@ -154,6 +154,7 @@ namespace PCoinTray
 
             // --- forwarding -------------------------------------------------
             ok &= RunForward(log);
+            ok &= RunWallet(log);
 
             Log(log, ok ? "ALL CHECKS PASSED" : "FAILURES ABOVE - DO NOT SHIP");
             return ok;
@@ -656,6 +657,907 @@ namespace PCoinTray
             });
             return tx;
         }
+
+        // =================================================================
+        // Wallet
+        //
+        // The pure halves of the wallet app - amount parsing, fee tiers, the
+        // user-send assertions, the address book, history classification and
+        // the QR encoder - run here with no node and no window. Each section
+        // is a transcription of the Android app's JVM tests for the same
+        // code (AmountsTest, ForwardPolicyTest, UserSendTest, AddressBookTest,
+        // QrTest), so the two implementations are held to one set of vectors.
+        // =================================================================
+
+        static bool RunWallet(List<string> log)
+        {
+            bool ok = true;
+            ok &= RunAmounts(log);
+            ok &= RunFeeTiers(log);
+            ok &= RunUserSend(log);
+            ok &= RunAddressBook(log);
+            ok &= RunHistoryRows(log);
+            ok &= RunQr(log);
+            return ok;
+        }
+
+        // ---------------------------------------------------------- amounts
+
+        static string Amt(string raw)
+        {
+            long sat;
+            var r = Amounts.Parse(raw, out sat);
+            return r == Amounts.Reason.OK ? sat.ToString(CI) : r.ToString();
+        }
+
+        static bool RunAmounts(List<string> log)
+        {
+            bool ok = true;
+            Log(log, "--- amounts ---");
+            ok &= Check(log, "whole coins: 1", "100000000", Amt("1"));
+            ok &= Check(log, "whole coins: 1.0", "100000000", Amt("1.0"));
+            ok &= Check(log, "whole coins: 50", "5000000000", Amt("50"));
+            // 0.1 * 1e8 in IEEE754 is 10000000.000000002.
+            ok &= Check(log, "0.1, the value a double gets wrong", "10000000", Amt("0.1"));
+            ok &= Check(log, "0.7", "70000000", Amt("0.7"));
+            ok &= Check(log, "0.029", "2900000", Amt("0.029"));
+            ok &= Check(log, "one satoshi", "1", Amt("0.00000001"));
+            ok &= Check(log, "full precision", "12345678901", Amt("123.45678901"));
+            ok &= Check(log, "nine decimals is a typo, not a tiny amount", "TOO_MANY_DECIMALS", Amt("0.123456789"));
+            ok &= Check(log, "empty is EMPTY", "EMPTY", Amt(""));
+            ok &= Check(log, "null is EMPTY", "EMPTY", Amt(null));
+            ok &= Check(log, "whitespace is EMPTY", "EMPTY", Amt("   "));
+            ok &= Check(log, "letters are NOT_A_NUMBER", "NOT_A_NUMBER", Amt("abc"));
+            ok &= Check(log, "negative", "NEGATIVE", Amt("-1"));
+            ok &= Check(log, "zero", "ZERO", Amt("0"));
+            ok &= Check(log, "zero with decimals", "ZERO", Amt("0.00000000"));
+            ok &= Check(log, "past the 21 M cap", "TOO_LARGE", Amt("21000001"));
+            // A German PC renders 1,5 for one and a half. Accepting both
+            // spellings in one field is how someone sends 15 meaning 1.5.
+            ok &= Check(log, "grouping separator refused, never guessed (1,5)", "NOT_A_NUMBER", Amt("1,5"));
+            ok &= Check(log, "grouping separator refused, never guessed (1,000)", "NOT_A_NUMBER", Amt("1,000"));
+            // Dust is a send-time question, not a parsing one.
+            ok &= Check(log, "293 sat is a well-formed number", "293", Amt("0.00000293"));
+            ok &= Check(log, "294 sat is a well-formed number", "294", Amt("0.00000294"));
+            ok &= Check(log, "293 sat is dust", "True", Amounts.IsDust(293).ToString());
+            ok &= Check(log, "294 sat is not dust", "False", Amounts.IsDust(294).ToString());
+            ok &= Check(log, "pasted with spaces", "100000000", Amt("  1  "));
+            ok &= Check(log, "pasted with a plus", "100000000", Amt("+1"));
+            ok &= Check(log, "node string of 1 sat is fixed point", "0.00000001", Amounts.ToNodeString(1));
+            ok &= Check(log, "node string of 1 PCN", "1.00000000", Amounts.ToNodeString(100000000));
+            ok &= Check(log, "node string at full precision", "123.45678901", Amounts.ToNodeString(12345678901));
+            ok &= Check(log, "node string of a large amount", "106750.99986703", Amounts.ToNodeString(10675099986703));
+            // Compare satoshis, not trimmed strings: trimming trailing zeros
+            // turns "50" into "5", which is exactly the kind of silent
+            // corruption this class exists to prevent.
+            foreach (string s in new[] { "0.00000001", "0.00000294", "0.1", "1", "50", "123.45678901", "20999999.99999999" })
+            {
+                long v;
+                Amounts.Parse(s, out v);
+                ok &= Check(log, "round trip of " + s, v.ToString(CI), Amt(Amounts.ToNodeString(v)));
+            }
+            return ok;
+        }
+
+        // -------------------------------------------------------- fee tiers
+
+        static string D(double v) { return v.ToString("R", CI); }
+
+        static bool RunFeeTiers(List<string> log)
+        {
+            bool ok = true;
+            Log(log, "--- fee tiers ---");
+            var normal = ForwardPolicy.FeeTier.NORMAL;
+            var fast = ForwardPolicy.FeeTier.FAST;
+            var veryFast = ForwardPolicy.FeeTier.VERY_FAST;
+            // The rates the send screen advertises. If one moves, the hint text
+            // on the send screen moves with it.
+            ok &= Check(log, "NORMAL is 1 sat/vB", "1", D(normal.RateSatVb));
+            ok &= Check(log, "FAST is 5 sat/vB", "5", D(fast.RateSatVb));
+            ok &= Check(log, "VERY_FAST is 20 sat/vB", "20", D(veryFast.RateSatVb));
+            var names = new List<string>();
+            foreach (var t in ForwardPolicy.FeeTier.All) names.Add(t.Name);
+            ok &= Check(log, "three tiers, in order", "NORMAL,FAST,VERY_FAST", string.Join(",", names.ToArray()));
+            ok &= Check(log, "default tier is NORMAL", "NORMAL", ForwardPolicy.FeeTier.ByName(null).Name);
+            ok &= Check(log, "ByName finds FAST", "FAST", ForwardPolicy.FeeTier.ByName("FAST").Name);
+            ok &= Check(log, "ByName of garbage is the floor, never a guess upwards", "NORMAL", ForwardPolicy.FeeTier.ByName("garbage").Name);
+            // 1 sat/vB = 1e-5 PCN/kvB. The broadcast cap and the decoded-fee
+            // ceiling are BOTH rate x 10, so raising a tier raises them in
+            // lockstep by construction.
+            foreach (var t in ForwardPolicy.FeeTier.All)
+                ok &= Check(log, "broadcast cap of " + t + " is headroom x rate in PCN/kvB",
+                    D(t.RateSatVb * 10.0 / 100000.0), D(t.BroadcastMaxFeeRatePcnKvb));
+            ok &= Check(log, "NORMAL broadcast cap", "0.0001", D(normal.BroadcastMaxFeeRatePcnKvb));
+            ok &= Check(log, "FAST broadcast cap", "0.0005", D(fast.BroadcastMaxFeeRatePcnKvb));
+            ok &= Check(log, "VERY_FAST broadcast cap", "0.002", D(veryFast.BroadcastMaxFeeRatePcnKvb));
+            // The automatic sweep path still uses the global constant; NORMAL
+            // must be exactly that, or "default tier changes nothing" is false.
+            ok &= Check(log, "floor tier cap equals the sweep cap", D(ForwardPolicy.BROADCAST_MAX_FEE_RATE), D(normal.BroadcastMaxFeeRatePcnKvb));
+            // 1-in/2-out modelled vsize is 140.5 vB; ceiling = rate x 10 x that.
+            ok &= Check(log, "ceiling 1-in 2-out at NORMAL", "1405", ForwardPolicy.MaxFeeSatFor(1, 2).ToString(CI));
+            ok &= Check(log, "ceiling 1-in 2-out at FAST", "7025", ForwardPolicy.MaxFeeSatFor(1, 2, 5.0).ToString(CI));
+            ok &= Check(log, "ceiling 1-in 2-out at VERY_FAST", "28100", ForwardPolicy.MaxFeeSatFor(1, 2, 20.0).ToString(CI));
+            ok &= Check(log, "no rate argument means the floor", ForwardPolicy.MaxFeeSatFor(1, 2).ToString(CI),
+                ForwardPolicy.MaxFeeSatFor(1, 2, ForwardPolicy.FEE_RATE_SAT_VB).ToString(CI));
+            ok &= Check(log, "the sweep ceiling still uses the same headroom", "1095", ForwardPolicy.MaxFeeSat(1).ToString(CI));
+            // The blunder the ceilings exist for: a sat/vB figure sent where
+            // PCN/kvB belongs is ~1e5 off. Whatever the tier, its ceiling must
+            // sit far below that.
+            foreach (var t in ForwardPolicy.FeeTier.All)
+            {
+                long blunderFeeSat = (long)(t.RateSatVb * 100000.0 * 140.5);
+                long ceiling = ForwardPolicy.MaxFeeSatFor(1, 2, t.RateSatVb);
+                ok &= Check(log, "a fee-unit blunder is caught at " + t + " (" + blunderFeeSat + " > " + ceiling + ")", "True", (blunderFeeSat > ceiling).ToString());
+            }
+            // A sweep of many coinbases is a big transaction and a bigger fee; a
+            // fixed ceiling would refuse it.
+            ok &= Check(log, "ceiling grows with inputs", "True",
+                (ForwardPolicy.MaxFeeSatFor(20, 1) > ForwardPolicy.MaxFeeSatFor(1, 2)).ToString());
+            return ok;
+        }
+
+        // ---------------------------------------------------- user send check
+        //
+        // The two "good" cases are not invented. They are the transactions a
+        // real PCoin regtest node built when asked exactly the way
+        // ForwardEngine.PrepareSend asks it, transcribed field for field: the
+        // 1-in/2-out exact send and the 5-in/1-out sendall. Everything else is
+        // that same transaction with exactly one thing wrong, because a
+        // checker that passes valid input is worth nothing on its own.
+        //
+        //   `send` with add_to_wallet=false, fee_rate 1, on regtest:
+        //   txid 59aaa047d6e35d0a89e7909f37c262faf976ec0bbfbd2a7cf416460f219a8748
+        //   in   48fa2baf...57fd:0  value 50.00000000 (coinbase)
+        //   out0 48.49999859 change  pcrt1q64eg28xmta7jansumf4v6v0w3wgnxqr55nne64
+        //   out1  1.50000000 paid    pcrt1qj6f8wmkzsrnx4nh39xyz3ty3gqkrfnredu09tc
+        //   fee 141 sat, vsize 141
+
+        const string US_TXID = "59aaa047d6e35d0a89e7909f37c262faf976ec0bbfbd2a7cf416460f219a8748";
+        const string US_IN_TXID = "48fa2bafd8949307fcc15d3e113fb617e9ff7d85295861f088adddb35d4a57fd";
+        const string US_DEST = "pcrt1qj6f8wmkzsrnx4nh39xyz3ty3gqkrfnredu09tc";
+        const string US_DEST_SPK = "00149692776ec280e66acef1298828ac91402c34cc79";
+        const string US_CHANGE = "pcrt1q64eg28xmta7jansumf4v6v0w3wgnxqr55nne64";
+        const string US_CHANGE_SPK = "0014d572851cdb5f7d2ece1cda6acd31ee8b91330074";
+        const long US_IN = 5000000000L;
+        const long US_PAID = 150000000L;
+        const long US_CHANGE_SAT = 4849999859L;
+
+        static DecodedOut Out(string address, string spk, long sat, bool mine = false, bool change = false)
+        {
+            return new DecodedOut { Address = address, ScriptHex = spk, ValueSat = sat, IsMine = mine, IsChange = change };
+        }
+
+        static DecodedTx ExactSend(List<DecodedOut> outputs = null, List<Outpoint> inputs = null, string id = US_TXID)
+        {
+            var tx = new DecodedTx { Txid = id };
+            if (inputs == null) tx.Inputs.Add(new Outpoint(US_IN_TXID, 0));
+            else tx.Inputs.AddRange(inputs);
+            if (outputs == null)
+            {
+                tx.Outputs.Add(Out(US_CHANGE, US_CHANGE_SPK, US_CHANGE_SAT, true, true));
+                tx.Outputs.Add(Out(US_DEST, US_DEST_SPK, US_PAID));
+            }
+            else tx.Outputs.AddRange(outputs);
+            return tx;
+        }
+
+        static List<DecodedOut> Outs(params DecodedOut[] outs) { return new List<DecodedOut>(outs); }
+
+        static string VerifyUS(DecodedTx tx, long requested = US_PAID, bool sendMax = false, long inValue = US_IN,
+            string expectedTxid = US_TXID, string destination = US_DEST, string script = US_DEST_SPK,
+            double rate = ForwardPolicy.FEE_RATE_SAT_VB)
+        {
+            return ForwardPolicy.VerifyUserSend(tx, destination, script, expectedTxid, requested, sendMax, inValue, rate);
+        }
+
+        static string Verdict(string why) { return why == null ? "passes" : "refused"; }
+
+        static bool RunUserSend(List<string> log)
+        {
+            bool ok = true;
+            Log(log, "--- user send assertions ---");
+
+            ok &= Check(log, "the transaction the node actually built passes", "passes", Verdict(VerifyUS(ExactSend())));
+
+            // 5 inputs, 1 output, 249.99999619 out of 250.00000000 in, fee 381 sat.
+            {
+                const string sweepDest = "pcrt1qc0vvelsr2ayhm3s6pszx2kgfc0fkzh0hc4wrjg";
+                const string sweepScript = "0014c3d8ccfe0357497dc61a0c04655909c3d3615df7";
+                var tx = new DecodedTx { Txid = "sweep" };
+                for (int i = 0; i < 5; i++) tx.Inputs.Add(new Outpoint(new string('a', 64), i));
+                tx.Outputs.Add(Out(sweepDest, sweepScript, 24999999619L));
+                ok &= Check(log, "the sendall the node actually built passes", "passes",
+                    Verdict(ForwardPolicy.VerifyUserSend(tx, sweepDest, sweepScript, "sweep", 0L, true, 25000000000L, ForwardPolicy.FEE_RATE_SAT_VB)));
+            }
+
+            // 141 sat actual against the 1-in 2-out ceiling. If a refactor ever
+            // makes this tight, the send path starts refusing good transactions.
+            long ceiling12 = ForwardPolicy.MaxFeeSatFor(1, 2);
+            ok &= Check(log, "the real fee sits under the ceiling", "True", (ceiling12 > 141L).ToString());
+            ok &= Check(log, "the ceiling is tight enough to be a check", "True", (ceiling12 < 10000L).ToString());
+            ok &= Check(log, "the 5-in sendall fee sits under its ceiling", "True", (ForwardPolicy.MaxFeeSatFor(5, 1) > 381L).ToString());
+
+            ok &= Check(log, "a txid that does not match the decoded bytes is refused", "refused",
+                Verdict(VerifyUS(ExactSend(null, null, new string('f', 64)))));
+            ok &= Check(log, "a transaction that pays someone else is refused", "refused",
+                Verdict(VerifyUS(ExactSend(Outs(Out(US_CHANGE, US_CHANGE_SPK, US_CHANGE_SAT, true, true), Out("pcrt1qstranger", "0014deadbeef", US_PAID))))));
+            // The address label and the script must agree. If they can
+            // disagree, the address on the review screen is decoration.
+            ok &= Check(log, "the right address with the wrong script is refused", "refused",
+                Verdict(VerifyUS(ExactSend(Outs(Out(US_CHANGE, US_CHANGE_SPK, US_CHANGE_SAT, true, true), Out(US_DEST, "0014" + new string('0', 40), US_PAID))))));
+            {
+                string why = VerifyUS(ExactSend(Outs(Out(US_CHANGE, US_CHANGE_SPK, US_CHANGE_SAT, true, true), Out(US_DEST, US_DEST_SPK, US_PAID - 1))));
+                ok &= Check(log, "paying a different amount than asked is refused", "refused", Verdict(why));
+                ok &= Check(log, "...and says so", "True", (why != null && why.Contains("not the")).ToString());
+            }
+            // The whole point. A transaction can pay the destination perfectly
+            // and still hand the remaining 48.5 PCN to a stranger.
+            ok &= Check(log, "change to an address we do not own is refused", "refused",
+                Verdict(VerifyUS(ExactSend(Outs(Out(US_CHANGE, US_CHANGE_SPK, US_CHANGE_SAT, false, false), Out(US_DEST, US_DEST_SPK, US_PAID))))));
+            ok &= Check(log, "change to an address we own but is not a change address is refused", "refused",
+                Verdict(VerifyUS(ExactSend(Outs(Out(US_CHANGE, US_CHANGE_SPK, US_CHANGE_SAT, true, false), Out(US_DEST, US_DEST_SPK, US_PAID))))));
+            ok &= Check(log, "an extra output is refused", "refused",
+                Verdict(VerifyUS(ExactSend(Outs(Out(US_CHANGE, US_CHANGE_SPK, US_CHANGE_SAT - 1000, true, true), Out(US_DEST, US_DEST_SPK, US_PAID), Out("pcrt1qextra", "0014ababab", 1000))))));
+            // sendall must produce exactly one output. Two means something
+            // built a change output on a transaction the user asked to empty.
+            ok &= Check(log, "a sendMax with change is refused", "refused", Verdict(VerifyUS(ExactSend(), US_PAID, true)));
+            ok &= Check(log, "a transaction spending nothing is refused", "refused",
+                Verdict(VerifyUS(ExactSend(null, new List<Outpoint>()))));
+            // Outputs exceeding inputs cannot happen on a well-formed
+            // transaction, which is exactly why it must be checked: reaching
+            // it means one of the gettxout reads was wrong.
+            ok &= Check(log, "a negative fee is refused", "refused", Verdict(VerifyUS(ExactSend(), US_PAID, false, US_PAID + US_CHANGE_SAT - 1)));
+            ok &= Check(log, "a zero fee is refused", "refused", Verdict(VerifyUS(ExactSend(), US_PAID, false, US_PAID + US_CHANGE_SAT)));
+            {
+                // Same outputs, far more input value: every extra satoshi is fee.
+                string why = VerifyUS(ExactSend(), US_PAID, false, US_IN + 1000000L);
+                ok &= Check(log, "a fee above the ceiling is refused", "refused", Verdict(why));
+                ok &= Check(log, "...and names the ceiling", "True", (why != null && why.Contains("ceiling")).ToString());
+            }
+            {
+                // The ceiling must move with the tier in BOTH directions:
+                // 10,000 sat is over FAST's 7,025 and under VERY_FAST's 28,100.
+                long inWithBigFee = US_PAID + US_CHANGE_SAT + 10000L;
+                string why = VerifyUS(ExactSend(), US_PAID, false, inWithBigFee, US_TXID, US_DEST, US_DEST_SPK, ForwardPolicy.FeeTier.FAST.RateSatVb);
+                ok &= Check(log, "a fee above the FAST ceiling is refused at FAST", "refused", Verdict(why));
+                ok &= Check(log, "...naming the ceiling", "True", (why != null && why.Contains("ceiling")).ToString());
+                ok &= Check(log, "...but passes at VERY_FAST", "passes",
+                    Verdict(VerifyUS(ExactSend(), US_PAID, false, inWithBigFee, US_TXID, US_DEST, US_DEST_SPK, ForwardPolicy.FeeTier.VERY_FAST.RateSatVb)));
+            }
+            // A fee AT the floor ceiling passes; one satoshi over refuses.
+            ok &= Check(log, "the normal tier passes a fee exactly at the ceiling", "passes",
+                Verdict(VerifyUS(ExactSend(), US_PAID, false, US_PAID + US_CHANGE_SAT + ceiling12)));
+            ok &= Check(log, "the normal tier refuses one satoshi over", "refused",
+                Verdict(VerifyUS(ExactSend(), US_PAID, false, US_PAID + US_CHANGE_SAT + ceiling12 + 1)));
+            // The same tight/loose bounds the floor test pins, scaled per tier.
+            foreach (var t in ForwardPolicy.FeeTier.All)
+            {
+                long c = ForwardPolicy.MaxFeeSatFor(1, 2, t.RateSatVb);
+                ok &= Check(log, "tier " + t + " ceiling is not too tight", "True", (c > (long)(141L * t.RateSatVb)).ToString());
+                ok &= Check(log, "tier " + t + " ceiling is not too loose", "True", (c < (long)(10000L * t.RateSatVb)).ToString());
+            }
+            // Core drops a change output below the dust threshold and lets the
+            // amount become fee. One output on a non-max send is legitimate.
+            ok &= Check(log, "sub-dust change folded into the fee still passes", "passes",
+                Verdict(VerifyUS(ExactSend(Outs(Out(US_DEST, US_DEST_SPK, US_PAID))), US_PAID, false, US_PAID + 200)));
+            ok &= Check(log, "an empty expected script never matches", "refused",
+                Verdict(VerifyUS(ExactSend(), US_PAID, false, US_IN, US_TXID, US_DEST, "")));
+            return ok;
+        }
+
+        // ------------------------------------------------------ address book
+
+        const string AB_MARKET = "pc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
+        const string AB_OTHER = "pc1q9d4ywgfnd8h43da5tpcxcn6ajv590cg6d3tg6a";
+
+        static AddressBookEntry E(string address, string name, long added = 1L, long used = 0L)
+        {
+            return new AddressBookEntry(address, name, added, used);
+        }
+
+        static List<AddressBookEntry> Book(params AddressBookEntry[] entries) { return new List<AddressBookEntry>(entries); }
+
+        static string P(NameProblem? p) { return p.HasValue ? p.Value.ToString() : "ok"; }
+
+        static string OrNull(string s) { return s ?? "(null)"; }
+
+        static string Names(List<AddressBookEntry> book)
+        {
+            var names = new List<string>();
+            foreach (var e in book) names.Add(e.Name);
+            return string.Join(",", names.ToArray());
+        }
+
+        static HistoryEntry Sent(string address, long time = 0L)
+        {
+            return new HistoryEntry { Txid = "tx-" + address + "-" + time, Kind = HistoryKind.SENT, AmountSat = 1, FeeSat = 1, Confirmations = 1, TimeSec = time, Address = address };
+        }
+
+        static HistoryEntry Received(string address)
+        {
+            var e = Sent(address);
+            e.Kind = HistoryKind.RECEIVED;
+            return e;
+        }
+
+        static List<AddressBookEntry> FullBook(string prefix)
+        {
+            var full = new List<AddressBookEntry>();
+            for (int i = 1; i <= AddressBook.MAX_ENTRIES; i++) full.Add(E(prefix + i, "Name " + i));
+            return full;
+        }
+
+        static bool RunAddressBook(List<string> log)
+        {
+            bool ok = true;
+            Log(log, "--- address book ---");
+            string upper = AB_MARKET.ToUpperInvariant();
+
+            // ---- keys ----
+            ok &= Check(log, "bech32 matches regardless of case (upper)", "Market", OrNull(AddressBook.LabelFor(Book(E(AB_MARKET, "Market")), upper)));
+            ok &= Check(log, "bech32 matches regardless of case (lower)", "Market", OrNull(AddressBook.LabelFor(Book(E(AB_MARKET, "Market")), AB_MARKET)));
+            {
+                var book = AddressBook.Upsert(new List<AddressBookEntry>(), AB_MARKET, "Market", 1L);
+                book = AddressBook.Upsert(book, upper, "Market", 2L);
+                ok &= Check(log, "an uppercase paste does not create a second entry", "1", book.Count.ToString(CI));
+                // The incoming spelling wins: after a send, that is the node's own.
+                ok &= Check(log, "the incoming spelling wins", upper, book[0].Address);
+            }
+            ok &= Check(log, "surrounding whitespace does not defeat a match", "Market",
+                OrNull(AddressBook.LabelFor(Book(E(AB_MARKET, "Market")), "  " + AB_MARKET + "\n")));
+            {
+                // BIP173: valid all-lower or all-upper, never mixed. Folding a
+                // mixed case string would let an invalid address inherit a valid
+                // one's name.
+                const string mixed = "pc1QW508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
+                ok &= Check(log, "mixed case is left alone", mixed, AddressBook.Key(mixed));
+                ok &= Check(log, "mixed case inherits no name", "(null)", OrNull(AddressBook.LabelFor(Book(E(AB_MARKET, "Market")), mixed)));
+            }
+            {
+                // Base58 IS case-sensitive, so folding it would merge two
+                // genuinely different addresses under one name.
+                const string a = "PGmqNfjbG1YxpTNQnnQhFqDBRz3LPPQjHF";
+                ok &= Check(log, "base58 case is significant and is not folded", a, AddressBook.Key(a));
+                ok &= Check(log, "base58 lowercased is a different address", "(null)", OrNull(AddressBook.LabelFor(Book(E(a, "Cold")), a.ToLowerInvariant())));
+            }
+
+            // ---- stored format version ----
+            // THE ONE THAT MATTERS. An update keeps the file, but only if the
+            // new build will still READ it.
+            for (int v = 1; v <= AddressBook.FORMAT_VERSION; v++)
+                ok &= Check(log, "version " + v + " must stay readable after an update", "True", AddressBook.CanRead(v).ToString());
+            ok &= Check(log, "a newer book is refused rather than partially decoded", "False", AddressBook.CanRead(AddressBook.FORMAT_VERSION + 1).ToString());
+            ok &= Check(log, "version 99 is refused", "False", AddressBook.CanRead(99).ToString());
+            ok &= Check(log, "version 0 is not a version", "False", AddressBook.CanRead(0).ToString());
+            ok &= Check(log, "version -1 is not a version", "False", AddressBook.CanRead(-1).ToString());
+
+            // ---- names ----
+            ok &= Check(log, "names are trimmed and internal whitespace collapsed", "Market wallet", AddressBook.CleanName("  Market   wallet  "));
+            ok &= Check(log, "a newline cannot break a name across lines", "Market two", AddressBook.CleanName("Market\ntwo"));
+            ok &= Check(log, "tab and NUL are collapsed", "Market two", AddressBook.CleanName("Market" + (char)9 + (char)0 + "  two"));
+            ok &= Check(log, "an empty name is refused", "EMPTY", P(AddressBook.Problem("", Book())));
+            ok &= Check(log, "a whitespace-only name is refused", "EMPTY", P(AddressBook.Problem("   ", Book())));
+            ok &= Check(log, "a null name is refused", "EMPTY", P(AddressBook.Problem(null, Book())));
+            ok &= Check(log, "an over-long name is refused", "TOO_LONG", P(AddressBook.Problem(new string('x', AddressBook.MAX_NAME + 1), Book())));
+            ok &= Check(log, "a name at the limit is fine", "ok", P(AddressBook.Problem(new string('x', AddressBook.MAX_NAME), Book())));
+            ok &= Check(log, "a duplicate name is refused (lower)", "DUPLICATE", P(AddressBook.Problem("market", Book(E(AB_MARKET, "Market")))));
+            ok &= Check(log, "a duplicate name is refused (upper, padded)", "DUPLICATE", P(AddressBook.Problem(" MARKET ", Book(E(AB_MARKET, "Market")))));
+            ok &= Check(log, "an entry keeping its own name is not a duplicate of itself", "ok",
+                P(AddressBook.Problem("Market", Book(E(AB_MARKET, "Market")), AddressBook.Key(AB_MARKET))));
+            ok &= Check(log, "...but it still cannot take another entry's name", "DUPLICATE",
+                P(AddressBook.Problem("Exchange", Book(E(AB_MARKET, "Market"), E(AB_OTHER, "Exchange")), AddressBook.Key(AB_MARKET))));
+            {
+                var full = FullBook("pc1addr");
+                ok &= Check(log, "the book has a ceiling", "BOOK_FULL", P(AddressBook.Problem("New", full)));
+                ok &= Check(log, "renaming inside a full book still works", "ok", P(AddressBook.Problem("Renamed", full, AddressBook.Key("pc1addr1"))));
+                // The edit screen passes the typed address's own key on EVERY
+                // path, including adding a brand-new address, so a ceiling
+                // gated on `replacing == null` was dead code at the only call
+                // site that could reach it.
+                ok &= Check(log, "the ceiling still fires when the caller passes the new address's own key", "BOOK_FULL",
+                    P(AddressBook.Problem("New", full, AddressBook.Key("pc1brandnewaddress"))));
+            }
+
+            // ---- book edits ----
+            {
+                var renamed = AddressBook.Upsert(Book(E(AB_MARKET, "Market", 100L, 500L)), AB_MARKET, "Market deposit", 900L);
+                ok &= Check(log, "renaming keeps one entry", "1", renamed.Count.ToString(CI));
+                ok &= Check(log, "renaming changes the name", "Market deposit", renamed[0].Name);
+                ok &= Check(log, "renaming keeps addedAt", "100", renamed[0].AddedAtMs.ToString(CI));
+                // Losing this would drop a frequently-paid entry to the bottom
+                // of the list every time its name was corrected.
+                ok &= Check(log, "renaming keeps the usage record", "500", renamed[0].LastUsedAtMs.ToString(CI));
+            }
+            ok &= Check(log, "touch never invents an entry for an address with no name", "0",
+                AddressBook.Touch(new List<AddressBookEntry>(), AB_MARKET, 42L).Count.ToString(CI));
+            ok &= Check(log, "touch records use for an address that has a name", "42",
+                AddressBook.Touch(Book(E(AB_MARKET, "Market")), upper, 42L)[0].LastUsedAtMs.ToString(CI));
+            {
+                var left = AddressBook.Remove(Book(E(AB_MARKET, "Market"), E(AB_OTHER, "Exchange")), upper);
+                ok &= Check(log, "removing takes the name and nothing else", "Exchange", Names(left));
+            }
+            ok &= Check(log, "ordering is most recently touched first, then alphabetical", "Exchange,Alice,Market",
+                Names(AddressBook.Ordered(Book(E(AB_MARKET, "Market", 10L, 0L), E(AB_OTHER, "Exchange", 5L, 900L), E("pc1third", "Alice", 20L, 0L)))));
+            // Being added counts as a touch, so a name saved thirty seconds ago
+            // is at the top where it is about to be wanted.
+            ok &= Check(log, "an entry added a moment ago outranks an older one that was used", "Exchange",
+                AddressBook.Ordered(Book(E(AB_MARKET, "Market", 1L, 100L), E(AB_OTHER, "Exchange", 200L, 0L)))[0].Name);
+
+            // ---- unnamed recipients ----
+            ok &= Check(log, "only sends are offered for naming", AB_OTHER,
+                string.Join(",", AddressBook.UnnamedRecipients(new List<HistoryEntry> { Received(AB_MARKET), Sent(AB_OTHER) }, Book(), 20).ToArray()));
+            ok &= Check(log, "already-named addresses are not offered again", AB_OTHER,
+                string.Join(",", AddressBook.UnnamedRecipients(new List<HistoryEntry> { Sent(AB_MARKET), Sent(AB_OTHER) }, Book(E(upper, "Market")), 20).ToArray()));
+            ok &= Check(log, "repeated payments to one address appear once, newest first", AB_OTHER + "," + AB_MARKET,
+                string.Join(",", AddressBook.UnnamedRecipients(new List<HistoryEntry> { Sent(AB_OTHER, 300L), Sent(AB_MARKET, 200L), Sent(AB_OTHER, 100L) }, Book(), 20).ToArray()));
+            // listtransactions reports a blank address for a send to several
+            // outputs. There is no one counterparty, so there is nothing to name.
+            ok &= Check(log, "a send with no single destination is skipped", AB_MARKET,
+                string.Join(",", AddressBook.UnnamedRecipients(new List<HistoryEntry> { Sent(""), Sent("   "), Sent(AB_MARKET) }, Book(), 20).ToArray()));
+            ok &= Check(log, "the limit holds", "2",
+                AddressBook.UnnamedRecipients(new List<HistoryEntry> { Sent("pc1a"), Sent("pc1b"), Sent("pc1c") }, Book(), 2).Count.ToString(CI));
+
+            // ---- labelFor ----
+            // null, never "": a caller that rendered an empty string would draw
+            // a blank label where it meant to draw nothing at all.
+            ok &= Check(log, "an unknown address has no name rather than an empty one", "(null)", OrNull(AddressBook.LabelFor(Book(), AB_MARKET)));
+            ok &= Check(log, "another entry's name is not borrowed", "(null)", OrNull(AddressBook.LabelFor(Book(E(AB_OTHER, "Exchange")), AB_MARKET)));
+            ok &= Check(log, "a known address has its name", "Market", OrNull(AddressBook.LabelFor(Book(E(AB_MARKET, "Market")), AB_MARKET)));
+
+            // ---- merge ----
+            {
+                var r = AddressBook.Merge(Book(E(AB_MARKET, "Market")), Book(E(AB_OTHER, "Exchange")));
+                ok &= Check(log, "import adds unknown addresses", "2", r.Merged.Count.ToString(CI));
+                ok &= Check(log, "import counts what it added", "1/0/0", r.Added + "/" + r.AlreadyKnown + "/" + r.Skipped);
+                ok &= Check(log, "the imported name is usable", "Exchange", OrNull(AddressBook.LabelFor(r.Merged, AB_OTHER)));
+                // The invariant the skip rule protects: after any merge, every
+                // name is unique case-insensitively.
+                var seen = new HashSet<string>();
+                bool unique = true;
+                foreach (var e in r.Merged) if (!seen.Add(e.Name.ToLowerInvariant())) unique = false;
+                ok &= Check(log, "a merged book holds no duplicate names", "True", unique.ToString());
+            }
+            {
+                // The import is a way to get names back, never a way to
+                // overwrite the name the user has now.
+                var r = AddressBook.Merge(Book(E(AB_MARKET, "Market", 5L, 9L)), Book(E(AB_MARKET, "OldName")));
+                ok &= Check(log, "the current book always wins on an address collision", "Market", r.Merged[0].Name);
+                ok &= Check(log, "...keeping its usage record", "9", r.Merged[0].LastUsedAtMs.ToString(CI));
+                ok &= Check(log, "...and counting it as already known", "1/0/1/0", r.Merged.Count + "/" + r.Added + "/" + r.AlreadyKnown + "/" + r.Skipped);
+            }
+            {
+                var r = AddressBook.Merge(Book(E(AB_MARKET, "Market")), Book(E(upper, "Shouty")));
+                ok &= Check(log, "an address collision matches by key, not by spelling", "1/Market/1", r.Merged.Count + "/" + r.Merged[0].Name + "/" + r.AlreadyKnown);
+            }
+            {
+                // Two entries called "Market" is the confident-wrong-payment
+                // failure; an auto-suffixed "Market (2)" is a label the user
+                // never chose.
+                var r = AddressBook.Merge(Book(E(AB_MARKET, "Market")), Book(E(AB_OTHER, "market")));
+                ok &= Check(log, "a name clash is skipped, not renamed", "1/0/1", r.Merged.Count + "/" + r.Added + "/" + r.Skipped);
+            }
+            {
+                var r = AddressBook.Merge(Book(), Book(E(AB_OTHER, "Exchange"), E("pc1qthird000000000000000000000000000000000", "exchange")));
+                ok &= Check(log, "two imported entries clashing with each other keep only the first", "1/1/1", r.Merged.Count + "/" + r.Added + "/" + r.Skipped);
+            }
+            {
+                var r = AddressBook.Merge(Book(), Book(E(AB_OTHER, ""), E("", "Ghost"), E(AB_MARKET, "Market")));
+                ok &= Check(log, "an unreadable imported row is skipped without failing the rest", "1/1/2", r.Merged.Count + "/" + r.Added + "/" + r.Skipped);
+                ok &= Check(log, "...and the readable one landed", "Market", OrNull(AddressBook.LabelFor(r.Merged, AB_MARKET)));
+            }
+            {
+                var r = AddressBook.Merge(FullBook("pc1qfull"), Book(E(AB_OTHER, "One more")));
+                ok &= Check(log, "the entry cap holds through an import", AddressBook.MAX_ENTRIES + "/0/1", r.Merged.Count + "/" + r.Added + "/" + r.Skipped);
+            }
+
+            // ---- the stored format ----
+            {
+                string json = AddressBookStore.Encode(Book(E(AB_MARKET, "Market", 1735000000000L, 1735100000000L)));
+                ok &= Check(log, "the stored format is exactly the Android one",
+                    "{\"v\":1,\"entries\":[{\"a\":\"" + AB_MARKET + "\",\"n\":\"Market\",\"t\":1735000000000,\"u\":1735100000000}]}", json);
+                var back = AddressBookStore.Decode(json);
+                ok &= Check(log, "encode/decode round trip", "1/Market/1735000000000/1735100000000",
+                    back.Count + "/" + back[0].Name + "/" + back[0].AddedAtMs.ToString(CI) + "/" + back[0].LastUsedAtMs.ToString(CI));
+                ok &= Check(log, "an empty book encodes", "{\"v\":1,\"entries\":[]}", AddressBookStore.Encode(Book()));
+                ok &= Check(log, "a quote in a name is escaped", "{\"v\":1,\"entries\":[{\"a\":\"pc1x\",\"n\":\"A \\\"B\\\"\",\"t\":0,\"u\":0}]}",
+                    AddressBookStore.Encode(Book(E("pc1x", "A \"B\"", 0L, 0L))));
+            }
+            ok &= Check(log, "a newer stored version throws rather than half-decoding", "True", DecodeThrows("{\"v\":2,\"entries\":[]}").ToString());
+            ok &= Check(log, "a missing entries array throws", "True", DecodeThrows("{\"v\":1}").ToString());
+            ok &= Check(log, "a missing version throws", "True", DecodeThrows("{\"entries\":[]}").ToString());
+            ok &= Check(log, "malformed JSON throws", "True", DecodeThrows("not json").ToString());
+            ok &= Check(log, "a JSON array is not a book", "True", DecodeThrows("[]").ToString());
+            ok &= Check(log, "a duplicate key on disk keeps the first", "1/First",
+                Describe(AddressBookStore.Decode("{\"v\":1,\"entries\":[{\"a\":\"" + AB_MARKET + "\",\"n\":\"First\"},{\"a\":\"" + upper + "\",\"n\":\"Second\"}]}")));
+            ok &= Check(log, "rows without an address or a name are skipped, the rest kept", "1/Kept",
+                Describe(AddressBookStore.Decode("{\"v\":1,\"entries\":[{\"a\":\"\",\"n\":\"Ghost\"},{\"a\":\"pc1y\",\"n\":\"  \"},7,{\"a\":\"pc1z\",\"n\":\"Kept\"}]}")));
+            ok &= Check(log, "missing timestamps read as zero", "0/0",
+                AddressBookStore.Decode("{\"v\":1,\"entries\":[{\"a\":\"pc1z\",\"n\":\"Kept\"}]}")[0].AddedAtMs + "/" +
+                AddressBookStore.Decode("{\"v\":1,\"entries\":[{\"a\":\"pc1z\",\"n\":\"Kept\"}]}")[0].LastUsedAtMs);
+            return ok;
+        }
+
+        static bool DecodeThrows(string json)
+        {
+            try { AddressBookStore.Decode(json); return false; }
+            catch { return true; }
+        }
+
+        static string Describe(List<AddressBookEntry> book)
+        {
+            return book.Count + "/" + Names(book);
+        }
+
+        // ---------------------------------------------------- history rows
+
+        static string Row(string json)
+        {
+            var e = ForwardPolicy.HistoryRow(Json.Parse(json));
+            if (e == null) return "dropped";
+            return e.Kind + "/" + e.AmountSat.ToString(CI) + "/" + e.FeeSat.ToString(CI) + "/" + e.Confirmations.ToString(CI) + "/" + e.TimeSec.ToString(CI) + "/" + e.Address;
+        }
+
+        static bool RunHistoryRows(List<string> log)
+        {
+            bool ok = true;
+            Log(log, "--- history rows ---");
+            // A send: negative amount and fee from the node, magnitude here,
+            // direction carried by the kind alone.
+            ok &= Check(log, "a send", "SENT/150000000/141/3/100/pc1qx",
+                Row("{\"txid\":\"aa\",\"category\":\"send\",\"amount\":-1.5,\"fee\":-0.00000141,\"confirmations\":3,\"time\":100,\"address\":\"pc1qx\"}"));
+            ok &= Check(log, "a receive", "RECEIVED/250000000/0/1/200/pc1qme",
+                Row("{\"txid\":\"bb\",\"category\":\"receive\",\"amount\":2.5,\"confirmations\":1,\"time\":200,\"address\":\"pc1qme\"}"));
+            ok &= Check(log, "a mined block past maturity", "MINED/5000000000/0/150/300/pc1qme",
+                Row("{\"txid\":\"cc\",\"category\":\"generate\",\"amount\":50,\"confirmations\":150,\"time\":300,\"address\":\"pc1qme\"}"));
+            ok &= Check(log, "a mined block not yet spendable", "MATURING/5000000000/0/7/300/pc1qme",
+                Row("{\"txid\":\"dd\",\"category\":\"immature\",\"amount\":50,\"confirmations\":7,\"time\":300,\"address\":\"pc1qme\"}"));
+            // On a chain with a ~3% stale rate this is not hypothetical.
+            ok &= Check(log, "an orphaned block is conflicted", "CONFLICTED/5000000000/0/0/300/pc1qme",
+                Row("{\"txid\":\"ee\",\"category\":\"orphan\",\"amount\":50,\"confirmations\":0,\"time\":300,\"address\":\"pc1qme\"}"));
+            // Negative is not "fewer confirmations"; it is a different state,
+            // and it is NOT clamped.
+            ok &= Check(log, "negative confirmations are conflicted, whatever the category", "CONFLICTED/100000000/0/-1/400/pc1qx",
+                Row("{\"txid\":\"ff\",\"category\":\"send\",\"amount\":-1,\"confirmations\":-1,\"time\":400,\"address\":\"pc1qx\"}"));
+            ok &= Check(log, "a category this chain never produces is dropped", "dropped",
+                Row("{\"txid\":\"gg\",\"category\":\"weird\",\"amount\":1,\"confirmations\":1}"));
+            // A send whose amount we cannot read is not a send of zero.
+            ok &= Check(log, "a row with no amount is dropped, not zero", "dropped",
+                Row("{\"txid\":\"hh\",\"category\":\"send\",\"confirmations\":1}"));
+            ok &= Check(log, "a row with a non-numeric amount is dropped", "dropped",
+                Row("{\"txid\":\"ii\",\"category\":\"send\",\"amount\":\"1.5\",\"confirmations\":1}"));
+            ok &= Check(log, "a blank txid is dropped", "dropped",
+                Row("{\"txid\":\"  \",\"category\":\"send\",\"amount\":-1,\"confirmations\":1}"));
+            ok &= Check(log, "a missing txid is dropped", "dropped",
+                Row("{\"category\":\"send\",\"amount\":-1,\"confirmations\":1}"));
+            ok &= Check(log, "a non-object row is dropped", "dropped", Row("7"));
+            ok &= Check(log, "missing confirmations read as zero, missing address as blank", "RECEIVED/100000000/0/0/0/",
+                Row("{\"txid\":\"jj\",\"category\":\"receive\",\"amount\":1}"));
+            ok &= Check(log, "a multi-destination send has a blank address", "SENT/100000000/141/2/0/",
+                Row("{\"txid\":\"kk\",\"category\":\"send\",\"amount\":-1,\"fee\":-0.00000141,\"confirmations\":2,\"address\":\"\"}"));
+            return ok;
+        }
+
+        // ---------------------------------------------------------------- QR
+        //
+        // What is compared, and why not the raw modules: the comparison
+        // unmasks both symbols first and then diffs. Two conforming encoders
+        // can legitimately choose different data masks - python-qrcode's
+        // penalty scoring does not agree with a straight reading of the spec's
+        // four rules. What actually has to be identical is everything the mask
+        // does not touch: the codewords, the Reed-Solomon parity, where each
+        // bit lands, and every function pattern. Decodability was verified on
+        // the Android side with two independent decoders (OpenCV, zxing-cpp)
+        // against the same encoder logic; see QrTest.kt.
+
+        static int RefMask(string[] rows)
+        {
+            int bits = 0;
+            for (int i = 0; i <= 5; i++) if (rows[i][8] == '1') bits |= 1 << i;
+            if (rows[7][8] == '1') bits |= 1 << 6;
+            if (rows[8][8] == '1') bits |= 1 << 7;
+            if (rows[8][7] == '1') bits |= 1 << 8;
+            for (int i = 9; i <= 14; i++) if (rows[8][14 - i] == '1') bits |= 1 << i;
+            return ((bits ^ 0x5412) >> 10) & 7;
+        }
+
+        static bool RunQr(List<string> log)
+        {
+            bool ok = true;
+            Log(log, "--- qr ---");
+            ok &= Check(log, "five golden vectors loaded", "5", QR_VECTORS.Length.ToString(CI));
+            foreach (var v in QR_VECTORS)
+            {
+                ok &= Check(log, v.Name + ": row count", v.Size.ToString(CI), v.Rows.Length.ToString(CI));
+                var m = QrCode.Encode(v.Text);
+                if (m == null) { ok &= Check(log, v.Name + ": encoder returned a symbol", "symbol", "null"); continue; }
+                ok &= Check(log, v.Name + ": size (reference version " + v.Version + ")", v.Size.ToString(CI), m.Size.ToString(CI));
+                if (m.Size != v.Size) continue;
+
+                // Finders, timing, alignment, the dark module: everything the
+                // mask does not touch and that a scanner locks onto first.
+                int fdiff = 0;
+                for (int y = 0; y < v.Size; y++) for (int x = 0; x < v.Size; x++)
+                {
+                    if (!m.IsLocked(x, y)) continue;
+                    // Format modules encode the mask, so they legitimately differ.
+                    bool isFormat = (x == 8 && (y <= 8 || y >= v.Size - 8)) || (y == 8 && (x <= 8 || x >= v.Size - 8));
+                    if (isFormat) continue;
+                    if (m[x, y] != (v.Rows[y][x] == '1')) fdiff++;
+                }
+                ok &= Check(log, v.Name + ": function modules differing", "0", fdiff.ToString(CI));
+
+                // The real assertion: identical codewords, identical
+                // Reed-Solomon parity, identical placement. Independent of
+                // which mask either side chose.
+                int ourMask = QrCode.DeclaredMask(m);
+                int refMask = RefMask(v.Rows);
+                int ddiff = 0;
+                for (int y = 0; y < v.Size; y++) for (int x = 0; x < v.Size; x++)
+                {
+                    if (m.IsLocked(x, y)) continue;
+                    bool ours = m[x, y] ^ QrCode.MaskBit(ourMask, x, y);
+                    bool theirs = (v.Rows[y][x] == '1') ^ QrCode.MaskBit(refMask, x, y);
+                    if (ours != theirs) ddiff++;
+                }
+                ok &= Check(log, v.Name + ": unmasked data differing (ours mask=" + ourMask + ", ref mask=" + refMask + ")", "0", ddiff.ToString(CI));
+                ok &= Check(log, v.Name + ": declared mask is one of the eight", "True", (ourMask >= 0 && ourMask <= 7).ToString());
+            }
+
+            // 42 characters in byte mode. If this ever changes, the receive
+            // card's layout assumptions change with it.
+            {
+                var m = QrCode.Encode("pc1qtestvectoraaaaaaaaaaaaaaaaaaaaaaaaqqqq");
+                ok &= Check(log, "a real PCoin address encodes at version 3", "29", m == null ? "null" : m.Size.ToString(CI));
+                if (m != null)
+                {
+                    var centres = new[] { new[] { 3, 3 }, new[] { m.Size - 4, 3 }, new[] { 3, m.Size - 4 } };
+                    bool finders = true;
+                    foreach (var c in centres)
+                    {
+                        if (!m[c[0], c[1]]) finders = false;          // centre
+                        if (m[c[0], c[1] - 2]) finders = false;       // ring
+                        if (!m[c[0], c[1] - 3]) finders = false;      // outer
+                    }
+                    ok &= Check(log, "the finder patterns are where the spec puts them", "True", finders.ToString());
+                    // Mask selection scores every mask; an unstable choice
+                    // would make the rendered code change under the user.
+                    var again = QrCode.Encode("pc1qtestvectoraaaaaaaaaaaaaaaaaaaaaaaaqqqq");
+                    bool same = again != null && again.Size == m.Size;
+                    if (same) for (int y = 0; y < m.Size; y++) for (int x = 0; x < m.Size; x++) if (m[x, y] != again[x, y]) same = false;
+                    ok &= Check(log, "encoding is deterministic", "True", same.ToString());
+                }
+            }
+            // All eight were rendered and read back by two independent
+            // decoders on the Android side. Here we assert only the structure,
+            // which is what a self-test can check without a decoder.
+            for (int mask = 0; mask <= 7; mask++)
+            {
+                var m = QrCode.Encode("pc1qtestvectorzzzzzzzzzzzzzzzzzzzzzzzz2345", mask);
+                if (m == null) { ok &= Check(log, "mask " + mask + ": symbol", "symbol", "null"); continue; }
+                bool well = m.Size == 29 && QrCode.DeclaredMask(m) == mask && m[8, m.Size - 8];
+                // Timing patterns must survive masking.
+                for (int i = 8; i < m.Size - 8; i++)
+                {
+                    if (m[i, 6] != (i % 2 == 0)) well = false;
+                    if (m[6, i] != (i % 2 == 0)) well = false;
+                }
+                ok &= Check(log, "mask " + mask + " produces a well-formed symbol", "True", well.ToString());
+            }
+            // Null is a real answer. Truncating, or emitting a partial symbol
+            // beside an address someone is about to be paid at, is how coins
+            // go missing.
+            ok &= Check(log, "text too large for version 10 returns null rather than a wrong symbol", "null",
+                QrCode.Encode(new string('x', 400)) == null ? "null" : "symbol");
+            {
+                var m = QrCode.Encode("");
+                ok &= Check(log, "an empty string still produces a valid symbol", "21", m == null ? "null" : m.Size.ToString(CI));
+            }
+            return ok;
+        }
+
+        class QrVector { public string Name; public int Version; public int Size; public string Text; public string[] Rows; }
+
+        // Golden vectors from an INDEPENDENT implementation: the Python `qrcode`
+        // library (byte mode, ECC M, border 0), generated by scratchpad/qr_reference.py
+        // on the Android side and stored as
+        // contrib/android/app/src/test/resources/qr_vectors.txt. Transcribed by a
+        // script (gen_qr_vectors.py), never by hand.
+        static readonly QrVector[] QR_VECTORS =
+        {
+            new QrVector
+            {
+                Name = "addr_a", Version = 3, Size = 29,
+                Text = "pc1qtestvectoraaaaaaaaaaaaaaaaaaaaaaaaqqqq",
+                Rows = new[]
+                {
+                    "11111110001100110011001111111",
+                    "10000010010110010100101000001",
+                    "10111010010000101100001011101",
+                    "10111010001010110011001011101",
+                    "10111010001101111010001011101",
+                    "10000010110101111001001000001",
+                    "11111110101010101010101111111",
+                    "00000000001000111110000000000",
+                    "10010110111111101000010100000",
+                    "11110100110101101100111001001",
+                    "10011110111001101011011010110",
+                    "10000101110001010011101100100",
+                    "00101011111101001100111101001",
+                    "00011100000010100101100001000",
+                    "01110110101010000110101000001",
+                    "01011001110011110111011100001",
+                    "11010010110010000101110001000",
+                    "01000000010001001000011100111",
+                    "10010111101110100010001111111",
+                    "00110001110010111110001001011",
+                    "10110010000101101000111111101",
+                    "00000000110001101101100011001",
+                    "11111110011011101010101010010",
+                    "10000010110111010010100010111",
+                    "10111010010000101100111111000",
+                    "10111010110100000101001111010",
+                    "10111010001111000110000010001",
+                    "10000010001101110111110110010",
+                    "11111110101011100100110110010",
+                }
+            },
+            new QrVector
+            {
+                Name = "addr_b", Version = 3, Size = 29,
+                Text = "pc1qtestvectorzzzzzzzzzzzzzzzzzzzzzzzz2345",
+                Rows = new[]
+                {
+                    "11111110001110000000001111111",
+                    "10000010110001000110001000001",
+                    "10111010110110000011001011101",
+                    "10111010111001010101001011101",
+                    "10111010010101101101101011101",
+                    "10000010010001000110001000001",
+                    "11111110101010101010101111111",
+                    "00000000111110010011000000000",
+                    "10000010100111001101111001110",
+                    "11010101111110010101000110110",
+                    "10101110101101010110001011000",
+                    "10010000000100010011011111010",
+                    "01110010001100100000001000011",
+                    "10000100011010111101111111011",
+                    "00001111001101010110010100010",
+                    "11110100101000011011100011110",
+                    "00111010010011001101100000110",
+                    "10011100100110111101111111001",
+                    "11100010000011011011110010101",
+                    "10100101011000010011001111000",
+                    "10011011011011001101111111110",
+                    "00000000101010010101100010110",
+                    "11111110011110110111101011100",
+                    "10000010010000110011100011001",
+                    "10111010000011100001111110010",
+                    "10111010010110011100110001001",
+                    "10111010000000110110101110010",
+                    "10000010010010111011000001101",
+                    "11111110100101001101011111100",
+                }
+            },
+            new QrVector
+            {
+                Name = "short", Version = 1, Size = 21,
+                Text = "PCoin",
+                Rows = new[]
+                {
+                    "111111100011101111111",
+                    "100000101111101000001",
+                    "101110100100101011101",
+                    "101110100000101011101",
+                    "101110101100101011101",
+                    "100000100000101000001",
+                    "111111101010101111111",
+                    "000000000111100000000",
+                    "101010100111000010010",
+                    "111010010110001001010",
+                    "101111100010100011011",
+                    "001100010100001000010",
+                    "010111111010101010001",
+                    "000000001001010100100",
+                    "111111100001011101011",
+                    "100000100111110110000",
+                    "101110101011011100011",
+                    "101110100110001101110",
+                    "101110101000100011101",
+                    "100000100010001110010",
+                    "111111101010101100011",
+                }
+            },
+            new QrVector
+            {
+                Name = "uri", Version = 4, Size = 33,
+                Text = "pcoin:pc1qtestvectoraaaaaaaaaaaaaaaaaaaaaaaaqqqq?amount=1.5",
+                Rows = new[]
+                {
+                    "111111100100100010111111001111111",
+                    "100000100011100110001100001000001",
+                    "101110101111101100000111101011101",
+                    "101110101011100101001010001011101",
+                    "101110101111101110111111001011101",
+                    "100000101000000000101110001000001",
+                    "111111101010101010101010101111111",
+                    "000000001110101010011100100000000",
+                    "101111100110111001010010001111100",
+                    "011111001010110011111111001000101",
+                    "011011101011011111000100000101010",
+                    "011101000101110100110110010101110",
+                    "011010100100101101000010110110000",
+                    "100110001101100100011111001000101",
+                    "010101101001101110101010000001110",
+                    "010101010001011110001100111101100",
+                    "011111101101000101011010100010000",
+                    "100001010100100010111101011001001",
+                    "101000101010010110001100100111010",
+                    "101110010001101100111110010111110",
+                    "000110110000101111110010110110000",
+                    "110110011001000000011111001000111",
+                    "100010111101010100101110000001110",
+                    "100000011101011010000110110101111",
+                    "101010100001101001000010111110001",
+                    "000000001100001011111101100010001",
+                    "111111100010110110000101101011110",
+                    "100000101011110100001111100011110",
+                    "101110101010001101100000111110000",
+                    "101110101111000000011111110010111",
+                    "101110101100011110101000111101100",
+                    "100000100110000100011110000111100",
+                    "111111101001110101011011110010010",
+                }
+            },
+            new QrVector
+            {
+                Name = "long", Version = 6, Size = 41,
+                Text = "pcoin:pc1qtestvectoraaaaaaaaaaaaaaaaaaaaaaaaqqqq?amount=123.45678901&label=PCoin+cold+storage",
+                Rows = new[]
+                {
+                    "11111110111110000010011000001000101111111",
+                    "10000010110011111101000010000101001000001",
+                    "10111010110110001110010110011001101011101",
+                    "10111010010011001000101000001100101011101",
+                    "10111010111010001111001000101101001011101",
+                    "10000010011111110110110100100110101000001",
+                    "11111110101010101010101010101010101111111",
+                    "00000000001011001001101011100001100000000",
+                    "10011111110001010101000010110101110010111",
+                    "00110001110100011111000100010001110010100",
+                    "10110110001110001100010110111110000100100",
+                    "01000101110101011100000100111101001111010",
+                    "01101010000011110001000110011001111101010",
+                    "11100000001010001111101001100010001111111",
+                    "10111011001100110101110111010101000110001",
+                    "01001100001110111000100100000010000011100",
+                    "01100111000011101000101011111010010100001",
+                    "10000100000111100110111000011101010011000",
+                    "01100110111101100111100101110011111011101",
+                    "01010101111011110001110011000011010001110",
+                    "00011010001001000011010001001101001000111",
+                    "01001100101000110001001100010011000110110",
+                    "00000011110111011110000101011110010111000",
+                    "11100101111101110101101110001100010001011",
+                    "11001010010100100000100100010001111001000",
+                    "01101001110000111110000101111000001011101",
+                    "00010110111110000101111001010011010110111",
+                    "00000101011011000000100110000000110011100",
+                    "11011110010100101000101101010000000100001",
+                    "10011100110010111000110110010111110010000",
+                    "11100011000010110110110100010001010010101",
+                    "11111101110100000000000011111000101010110",
+                    "11101111000100110100101010110111111111101",
+                    "00000000111111001110000101111001100011000",
+                    "11111110110100010000010111010111101011100",
+                    "10000010110100010010100101001100100010011",
+                    "10111010110010100100011011001001111110011",
+                    "10111010110001111010101101111011010000010",
+                    "10111010010100010101111001110000100110101",
+                    "10000010001110011000100010001010001101101",
+                    "11111110101101110000101111010001100000000",
+                }
+            },
+        };
 
         static string Or(string complaint) { return complaint ?? "(null)"; }
 
