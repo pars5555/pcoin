@@ -60,6 +60,9 @@ CONF=${CONF:-/etc/pcoin-deposit-watch.conf}
 
 NOTIFY="${NOTIFY:-/usr/local/bin/pcoin-notify}"
 STALE_SECONDS="${STALE_SECONDS:-900}"      # 15 min; watchers tick every 60 s
+HOLD_TICKS="${HOLD_TICKS:-30}"             # how many ticks the holding check judges
+HOLD_MIN_TICKS="${HOLD_MIN_TICKS:-10}"     # fewer than this is UNKNOWN, not healthy
+HOLD_PCT="${HOLD_PCT:-80}"                 # alert when this % of them credited nothing
 STUCK_HOURS="${STUCK_HOURS:-6}"            # 6 conf is ~1 h, so 6 h is well past
 PROBLEMS=0
 
@@ -119,6 +122,33 @@ check_heartbeat() {
     if [ "$age" -gt "$STALE_SECONDS" ]; then
         alert "PCN watcher STOPPED: $label" \
               "No tick for $((age / 60)) min (threshold $((STALE_SECONDS / 60)) min). Deposits are not being credited. $extra"
+    fi
+}
+
+# check_holding <label> <logfile>
+#
+# "Alive and crediting nothing" -- the watcher ticks, exits clean, and settles
+# no money. A stopped watcher is loud; this is silent, and it is what a real
+# credit outage looks like from outside.
+#
+# Count TICKS, not log lines. A refusing tick writes three lines here (a
+# [WARNING], a bare echo, and the summary), so the previous `tail -n 30 |
+# grep -c skipped=` spanned only ten ticks and could never reach its own
+# threshold of 25. It stayed quiet for the whole 2026-08-30 outage. The summary
+# line is the one carrying `seen=`, so that is what a tick is counted by.
+check_holding() {
+    local label="$1" logf="$2" ticks held reason
+    [ -r "$logf" ] || return 0          # readability is already alerted on by check_heartbeat
+    local recent
+    recent=$(tail -n 400 "$logf" 2>/dev/null | grep 'seen=' | tail -n "$HOLD_TICKS")
+    ticks=$(printf '%s\n' "$recent" | grep -c 'seen=')
+    held=$(printf '%s\n' "$recent" | grep -c 'skipped=')
+    # Too few ticks to judge is UNKNOWN, not healthy: say nothing rather than pass.
+    [ "${ticks:-0}" -ge "$HOLD_MIN_TICKS" ] || return 0
+    if [ "$held" -ge $(( ticks * HOLD_PCT / 100 )) ]; then
+        reason=$(printf '%s\n' "$recent" | grep -o 'skipped=[^ ]*' | tail -1)
+        alert "PCN watcher HOLDING: $label" \
+              "$held of the last $ticks ticks credited nothing ($reason). The watcher is alive, exiting clean, and settling no money -- this is what a silent credit outage looks like, not a healthy rail."
     fi
 }
 
@@ -259,14 +289,7 @@ if [ -d "$M3D_DIR" ]; then
 
     # A hold reason repeating every tick is the 3dmodels signature: alive,
     # clean exit, crediting nothing. Worth an alert on its own.
-    if [ -r "$M3D_LOG" ]; then
-        held=$(tail -n 30 "$M3D_LOG" 2>/dev/null | grep -c 'skipped=' )
-        if [ "${held:-0}" -ge 25 ]; then
-            reason=$(tail -n 5 "$M3D_LOG" | grep -o 'skipped=[^ ]*' | tail -1)
-            alert "PCN watcher HOLDING: 3dmodels.pc.am" \
-                  "The last 30 ticks all skipped ($reason). The watcher is alive and settling nothing -- this is what a silent credit outage looks like."
-        fi
-    fi
+    check_holding "3dmodels.pc.am" "$M3D_LOG"
 
     # HELD MONEY on 3dmodels, which nothing checked until now.
     #
@@ -331,6 +354,10 @@ if [ -d "$OON_DIR" ]; then
     else
         check_heartbeat "3dmodel.oonak.ai" "" "Log $OON_LOG is unreadable."
     fi
+
+    # Same holding check as 3dmodels: this rail logs in the identical format and
+    # had none, so it refused every deposit from 2026-08-30 onward in silence.
+    check_holding "3dmodel.oonak.ai" "$OON_LOG"
 
     # HELD MONEY, read straight out of deposits.json.
     #
