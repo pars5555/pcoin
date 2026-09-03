@@ -789,6 +789,7 @@ namespace PCoinTray
             }));
             menu.Items.Add(new ToolStripMenuItem("What is this?", null, (s, e) => ShowAbout()));
             menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(new ToolStripMenuItem("Uninstall PCoin...", null, (s, e) => OnUninstall()));
             menu.Items.Add(new ToolStripMenuItem("Stop mining and exit", null, (s, e) => Quit()));
 
             _icon.ContextMenuStrip = menu;
@@ -2504,6 +2505,77 @@ namespace PCoinTray
                     : "This wallet is backed up by a 12-word recovery phrase. Keep the paper safe.\n\n") +
                 "Website: https://pc.am",
                 "About PCoin Miner", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        /**
+         * Uninstall, from the tray.
+         *
+         * The same uninstall.ps1 the Settings > Apps button runs -- one code
+         * path, so the two cannot drift into removing different things.
+         *
+         * What this does NOT do is remove anything itself. The uninstaller has
+         * to stop this process and delete the folder this executable is running
+         * from, and a program cannot delete its own running image on Windows.
+         * So it launches the script and exits immediately, leaving the script
+         * to wait for the process to go.
+         *
+         * The wallet warning is spelled out here rather than left to the
+         * console the script prints to: on a machine where the tray was
+         * launched from a shortcut there may be no console visible at all, and
+         * "where did my coins go" is not a question to answer afterwards.
+         */
+        void OnUninstall()
+        {
+            string script = Path.Combine(_dir, "uninstall.ps1");
+            if (!File.Exists(script))
+            {
+                MessageBox.Show(
+                    "The uninstaller is not in this folder:\n" + script + "\n\n" +
+                    "This install predates it. Re-run the installer once to get it, " +
+                    "or remove PCoin from Settings > Apps if it is listed there.",
+                    "Uninstall PCoin", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (MessageBox.Show(
+                    "Remove PCoin from this PC?\n\n" +
+                    "Mining stops, the node shuts down, and the program is removed.\n\n" +
+                    "Your wallet is NOT deleted. The recovery phrase and wallet file " +
+                    "are copied to a folder in your user profile first, and the " +
+                    "uninstaller tells you exactly where.\n\n" +
+                    "Windows will ask for permission, because removing the logon task " +
+                    "and firewall rule needs it.",
+                    "Uninstall PCoin", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                    MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                return;
+
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "powershell.exe",
+                    Arguments = "-NoProfile -ExecutionPolicy Bypass -File \"" + script +
+                                "\" -InstallDir \"" + _dir + "\" -Yes",
+                    UseShellExecute = true,
+                    WorkingDirectory = Path.GetTempPath()
+                };
+                Process.Start(psi);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Could not start the uninstaller:\n" + ex.Message,
+                    "Uninstall PCoin", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            // Leave without stopping the node: the uninstaller asks it to stop
+            // properly (bitcoin-cli stop) and waits for it. Killing it here
+            // would race that, and a hard-killed node is the one that needs a
+            // reindex afterwards.
+            _timer.Stop();
+            _icon.Visible = false;
+            _icon.Dispose();
+            Application.Exit();
         }
 
         void Quit()

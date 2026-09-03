@@ -409,7 +409,7 @@
       <h3>Paste one line into PowerShell</h3>
       <p>Press <b>Win</b>, type <em>PowerShell</em>, press <b>Enter</b> to open it, then paste
          this line and press <b>Enter</b> again:</p>
-      <pre class="cmd"><button class="copy" type="button">copy</button>&amp; ([scriptblock]::Create((irm https://pc.am/dl/install.ps1))) -Mine</pre>
+      <pre class="cmd"><button class="copy" type="button">copy</button>irm https://pc.am/dl/install.ps1 | iex</pre>
       <p>That single line does everything &mdash; it downloads the miner, checks the file is
          genuine, installs the node and miner, and starts mining. When a blue
          <b>User Account Control</b> box appears, click <b>Yes</b> so it can finish setting up.
@@ -471,7 +471,7 @@
   <div class="table-shell">
   <table class="files">
     <tr><th>File</th><th>What it contains</th></tr>
-    <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.3.12/pcoin-win64-miner.zip">pcoin-win64-miner.zip</a></td><td>Node, CLI and the tray miner</td></tr>
+    <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.3.16/pcoin-win64-miner.zip">pcoin-win64-miner.zip</a></td><td>Node, CLI and the tray miner</td></tr>
   </table>
   </div>
   <pre class="cmd"><button class="copy" type="button">copy</button><span class="c"># check it before you run it</span>
@@ -481,6 +481,29 @@ Get-FileHash .\pcoin-win64-miner.zip -Algorithm SHA256</pre>
     Inside are <code>bitcoind.exe</code>, <code>bitcoin-cli.exe</code> and
     <code>PCoinTray.exe</code>. The tray app is the only one you need to launch.
   </p>
+  <h2 style="font-size:20px;margin:38px 0 12px">Removing PCoin</h2>
+  <p style="color:var(--muted);line-height:1.7;max-width:72ch">
+    Any of these three &mdash; they all run the same uninstaller:
+  </p>
+  <ul style="color:var(--muted);line-height:1.7;max-width:72ch;margin:0 0 12px 18px">
+    <li><b>Settings &gt; Apps &gt; Installed apps &gt; PCoin Miner &gt; Uninstall</b></li>
+    <li>the tray icon&rsquo;s right-click menu, <b>Uninstall PCoin&hellip;</b></li>
+    <li><code>uninstall.ps1</code>, which is in the install folder and in the zip</li>
+  </ul>
+  <p style="color:var(--muted);line-height:1.7;max-width:72ch">
+    <b>It does not delete your wallet.</b> Your recovery phrase and wallet file are
+    copied into a dated folder in your user profile <em>before</em> anything is
+    removed, and the uninstaller prints the path. If that copy fails it stops and
+    changes nothing, because an uninstall you can retry is better than coins
+    nobody can reach. The chain data goes (it re-downloads in minutes);
+    <code>-KeepData</code> keeps it.
+  </p>
+  <p style="color:var(--muted);line-height:1.7;max-width:72ch">
+    If the install folder is already damaged, the uninstaller is also served on
+    its own:
+  </p>
+  <pre class="cmd"><button class="copy" type="button">copy</button>irm https://pc.am/dl/uninstall.ps1 | iex</pre>
+
   <div class="note">
     <strong>Already running Bitcoin Core on this machine?</strong>
     PCoin keeps the upstream binary names, so always pass an explicit datadir

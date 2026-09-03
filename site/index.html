@@ -663,7 +663,7 @@
           new node. If in doubt, reinstall from the <a href="#download">Download section below</a>.
         </p>
         <p style="margin:12px 0 4px"><b>Windows — nothing installed yet?</b> One line does everything: it installs the node, waits for it to sync, asks where to pay you, and starts mining.</p>
-        <pre style="margin:0;padding:12px 14px;overflow-x:auto;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid var(--line-soft)"><code>&amp; ([scriptblock]::Create((irm https://pc.am/dl/install.ps1))) -Mine</code></pre>
+        <pre style="margin:0;padding:12px 14px;overflow-x:auto;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid var(--line-soft)"><code>irm https://pc.am/dl/install.ps1 | iex</code></pre>
         <p style="margin:8px 0 0;font-size:.93em;opacity:.85">It creates a wallet for you, benchmarks your CPU and settles on the fastest core count on its own, then starts mining &mdash; there is nothing to fill in. Approve the <b>User Account Control</b> box to install into <code>C:\PCoin</code> (decline it and it installs to your user folder instead; both work the same). It will not begin mining until the node has finished syncing, because blocks mined on an unsynced node are orphaned and pay nothing. Afterwards, open the tray and write down your <b>recovery phrase</b> &mdash; it is the only way to recover your coins if Windows is ever reinstalled.</p>
         <p style="margin:14px 0 4px"><b>Windows — already installed?</b> Then call it directly. The binaries keep their upstream
         names, and the install directory depends on whether the installer had administrator rights:</p>
@@ -1016,7 +1016,7 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
         <div class="dl-card">
           <h3>Windows</h3>
           <p class="dl-sub">Node, CLI and tray app in one archive. Unzip and run, or use the one command below.</p>
-          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/download/v1.3.12/pcoin-win64-miner.zip" rel="noopener">Download (.zip)</a>
+          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/download/v1.3.16/pcoin-win64-miner.zip" rel="noopener">Download (.zip)</a>
           <a class="dl-alt" href="#get-started">or install with one command</a>
         </div>
 
@@ -1140,9 +1140,9 @@ curl -s https://price.pc.am      # -&gt; {"serviceRate":&lt;USD per PCN&gt;, &he
         <pre><span class="c"># One command. Downloads the miner, checks it against the published</span>
 <span class="c"># SHA-256, installs it, and starts mining -- auto-tuned to the fastest</span>
 <span class="c"># core count for your CPU. Approve the UAC prompt to finish setup.</span>
-&amp; ([scriptblock]::Create((irm https://pc.am/dl/install.ps1))) -Mine
+irm https://pc.am/dl/install.ps1 | iex
 
-<span class="o">  PCoin 1.3.12 installer
+<span class="o">  PCoin 1.3.16 installer
   sha256 ok
   tray app present
   desktop shortcut created

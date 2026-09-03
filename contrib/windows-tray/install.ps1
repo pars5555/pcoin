@@ -3,15 +3,25 @@
 # Installs the node, CLI and miner tray app, configures them, and starts the
 # tray app in the current desktop session.
 #
-#   powershell -ExecutionPolicy Bypass -File install.ps1
+# The published one-liner is the shortest thing that actually works:
+#
+#   irm https://pc.am/dl/install.ps1 | iex
+#
+# `irm` on its own only DOWNLOADS the script -- PowerShell has no way to run a
+# remote script without piping it somewhere, so `| iex` is the floor, and that
+# pipeline cannot carry arguments. Everything a normal install needs must
+# therefore be the DEFAULT: mining is on unless -NoMine, and the pool is chosen
+# unless -Solo. The older form still works and still takes switches, which
+# matters because copies of it are already published:
+#
+#   & ([scriptblock]::Create((irm https://pc.am/dl/install.ps1))) -Mine
 #   powershell -ExecutionPolicy Bypass -File install.ps1 -Threads 4
 #
-# Or straight from the repo:
-#   & ([scriptblock]::Create((iwr https://raw.githubusercontent.com/pars5555/pcoin/main/contrib/windows-tray/install.ps1 -UseBasicParsing).Content)) -Threads 4
-#
-# Threads 0 (the default) installs everything but does NOT start mining. Do
-# that deliberately: a node that mines before it has synced the existing chain
-# builds a competing fork.
+# Mining starting immediately is safe HERE because a new install mines to the
+# POOL, and a pool miner works on the block the pool hands it rather than one
+# built from its own chain -- so it does not need to be synced first and cannot
+# build a competing fork while it catches up. -Solo does need a synced node,
+# and the tray waits for that on its own.
 
 param(
     [int]$Threads = 0,
@@ -26,8 +36,8 @@ param(
     # half-applied bump is impossible. The hash is of pcoin-win64-miner.zip
     # and the install aborts on a mismatch, so a forgotten bump here breaks
     # every new install rather than failing quietly.
-    [string]$Version = '1.3.12',
-    [string]$Sha256 = '34ccfe8a7692cf510551c97bead2868936c6add19c194a99e014549da781aba6',
+    [string]$Version = '1.3.16',
+    [string]$Sha256 = 'ce07dcf68ad518ce8c4706245ac9703a78c5fd4af29a68655b24ba7abe1ec5c3',
     # All three seeds, not just one. The node also carries them compiled in as
     # of v1.2.1, so this is belt and braces rather than the only route in.
     [string[]]$AddNode = @('35.239.156.16:9444', '178.105.3.51:9444', '152.53.171.190:9444'),
@@ -42,11 +52,14 @@ param(
     # The default (single install) is what you want in production; this is for
     # testing a build side-by-side without disturbing an existing install.
     [switch]$NoCleanup,
-    # Start mining automatically after install, with the thread count left to the
-    # tray's auto-calibration (no need to pass -Threads). Opt-in, because a node
-    # that mines before it has synced can build a competing fork -- but on a
-    # machine whose node is already synced this is the "just earn" switch.
+    # Accepted and ignored: mining is the default now, so this switch has
+    # nothing left to turn on. It stays because the previous published one-liner
+    # passed it and copies of that command are saved in people's notes, in this
+    # repo's docs and in the fleet scripts -- dropping the parameter would turn
+    # every one of them into "a parameter cannot be found that matches -Mine".
     [switch]$Mine,
+    # Install the node and wallet without starting the miner.
+    [switch]$NoMine,
     # Re-download and re-extract even when this exact version is already installed.
     # Without it the install skips the 9 MB download when C:\PCoin already holds
     # this $Version, and only re-applies config / restarts the tray.
@@ -184,10 +197,16 @@ if (-not $script:IsAdmin -and -not $NoElevate) {
     # No -NoExit: the elevated window closes when the install finishes and leaves
     # only the tray app running. It lingers 10 s ONLY on an error.
     $extra = ''
-    if ($Mine) { $extra = $extra + ' -Mine' }
+    if ($NoMine) { $extra = $extra + ' -NoMine' }
     if ($Force) { $extra = $extra + ' -Force' }
     if ($Solo) { $extra = $extra + ' -Solo' }
-    $inner = "try { & ([scriptblock]::Create((irm https://pc.am/dl/install.ps1))) -Threads $Threads -NoElevate$extra } catch { Write-Host `$_.Exception.Message -ForegroundColor Red; Start-Sleep 10 }"
+    # Pass -Threads ONLY when it was actually given. Passing it unconditionally
+    # sent a bare "-Threads 0" to the elevated child, where it is
+    # indistinguishable from someone typing it -- so the child read 0 as an
+    # instruction and skipped the "keep the existing thread count" branch the
+    # unelevated parent had just honoured.
+    if ($PSBoundParameters.ContainsKey('Threads')) { $extra = $extra + " -Threads $Threads" }
+    $inner = "try { & ([scriptblock]::Create((irm https://pc.am/dl/install.ps1))) -NoElevate$extra } catch { Write-Host `$_.Exception.Message -ForegroundColor Red; Start-Sleep 10 }"
     try {
         Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command',$inner
         Write-Output '  Continuing in the elevated window. You can close this one.'
@@ -347,11 +366,13 @@ if (-not $PSBoundParameters.ContainsKey('Threads') -and $keep.ContainsKey('threa
 # -Mine: ensure mining is ON. The exact count barely matters -- the tray's
 # auto-calibration re-tunes it on start -- but it must be > 0, and BOTH threads=
 # and percent= must agree, or the tray's percent line wins and cancels mining.
-if ($Mine) {
+if (-not $NoMine) {
   if ($threadsOut -le 0) { $threadsOut = [Math]::Max(1, [int]([Environment]::ProcessorCount / 2)) }
   $percent = [int][Math]::Round($threadsOut * 100.0 / [Math]::Max(1, [Environment]::ProcessorCount))
   if ($percent -lt 1) { $percent = 50 }
-  Write-Output "  -Mine: mining ON (auto-calibration will tune the thread count on start)"
+  Write-Output "  mining ON (auto-calibration will tune the thread count on start)"
+} else {
+  Write-Output '  -NoMine: installed, not mining'
 }
 
 @("address=$addr",
@@ -439,6 +460,61 @@ try {
     }
 } catch {
     Write-Output ('  autostart skipped: ' + $_.Exception.Message)
+}
+
+# --- Add/Remove Programs entry -------------------------------------------
+# Without this, PCoin installs but is not in Settings > Apps, so the only way
+# to remove it is to know which folder, which scheduled task, which firewall
+# rule and which shortcuts to delete by hand. Software that cannot be
+# uninstalled the ordinary way reads as something that did not want to be.
+#
+# HKLM when elevated so every account on the PC sees it; HKCU otherwise, which
+# is the same place a per-user install belongs anyway.
+#
+# The entry is written ONLY when the uninstaller is actually on disk. An
+# UninstallString pointing at a file that was never installed is the exact
+# shape of the v1.2.3 bug where the zip shipped without PCoinTray.exe and the
+# shortcut pointed at nothing: the install still reported success, and the
+# failure surfaced later, to the user, as a button that does nothing.
+try {
+    $unins = Join-Path $InstallDir 'uninstall.ps1'
+    if (Test-Path $unins) {
+        $arpRoot = if ($script:IsAdmin) { 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PCoinMiner' }
+                   else                 { 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PCoinMiner' }
+        if (-not (Test-Path $arpRoot)) { New-Item -Path $arpRoot -Force | Out-Null }
+        $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $q  = '"' + $unins + '"'
+        $kb = 0
+        try { $kb = [int](((Get-ChildItem $InstallDir -Recurse -File -ErrorAction SilentlyContinue |
+                            Measure-Object Length -Sum).Sum) / 1024) } catch { }
+        $vals = @{
+            DisplayName     = 'PCoin Miner'
+            DisplayVersion  = $Version
+            Publisher       = 'PCoin'
+            InstallLocation = $InstallDir
+            URLInfoAbout    = 'https://pc.am'
+            # -File, not -Command: a path with a space in it (%LOCALAPPDATA% on
+            # an account whose name has one) survives -File and does not
+            # survive being pasted into -Command.
+            UninstallString = "$ps -NoProfile -ExecutionPolicy Bypass -File $q"
+            QuietUninstallString = "$ps -NoProfile -ExecutionPolicy Bypass -File $q -Yes"
+            NoModify        = 1
+            NoRepair        = 1
+            InstallDate     = (Get-Date -Format 'yyyyMMdd')
+        }
+        if ($kb -gt 0) { $vals['EstimatedSize'] = $kb }
+        $ico = Join-Path $InstallDir 'PCoinTray.exe'
+        if (Test-Path $ico) { $vals['DisplayIcon'] = $ico }
+        foreach ($k in $vals.Keys) {
+            $t = if ($vals[$k] -is [int]) { 'DWord' } else { 'String' }
+            New-ItemProperty -Path $arpRoot -Name $k -Value $vals[$k] -PropertyType $t -Force | Out-Null
+        }
+        Write-Output ('  listed in Settings > Apps (' + $(if ($script:IsAdmin) { 'all users' } else { 'this user' }) + ')')
+    } else {
+        Write-Output '  Apps-list entry skipped: uninstall.ps1 is not in this build'
+    }
+} catch {
+    Write-Output ('  Apps-list entry skipped: ' + $_.Exception.Message)
 }
 
 # Second, independent autostart: a scheduled task with an AtLogOn trigger.
