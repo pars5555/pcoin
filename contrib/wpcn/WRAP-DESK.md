@@ -2,7 +2,7 @@
 
 **Status: live at https://wrapdesk.pc.am** (site up since 2026-08-31, announced
 publicly 2026-09-02, t.me/PCoinPCN/38). Both legs have been exercised end to end
-(§10.8). This is the design it was built to; where the two differ,
+(§10.9). This is the design it was built to; where the two differ,
 `wrapdesk-server.mjs` is authoritative.
 
 The wrap desk is what turns wPCN from an isolated token into something pegged to
@@ -465,14 +465,41 @@ Unlike the wrap side there is no chain read that proves *this particular*
 redemption was settled — so a human records it, **with the txid**, so the claim
 is at least checkable afterwards.
 
-### 10.6 What is deliberately NOT built
+### 10.6 Running the watchers BY HAND — read this first
+
+**A bare `pcoin-wrapdesk-watch` is not the program systemd runs.** Every setting
+lives in the unit's `Environment=` lines, so a manual invocation inherits none
+of them. The dangerous one is `WRAP_OPENED_AT_HEIGHT`, the floor below which a
+deposit pre-dates the desk and is therefore **backing, not a wrap request**.
+Production sets it in a drop-in `override.conf`; unset, it defaults to `0`, the
+floor vanishes, and the reserve's own founding deposit is re-read as a customer
+owed wPCN. That alert is indistinguishable from a real one.
+
+**And you cannot silence it by guessing.** The notifier is `PCOIN_NOTIFY`.
+Setting `NOTIFY=` disables nothing — the real notifier runs and the ops channel
+gets a real alert. This has happened: a false "50,000 PCN wrap request" was
+posted on 2026-09-03 by exactly that pair of mistakes.
+
+So, to inspect without paging anybody:
+
+```bash
+# safe: no notification, and the floor comes from the unit
+sudo systemctl start pcoin-wrapdesk-watch.service   # the real thing
+pcoin-wrapdesk-watch --dry-run                      # inspect, notifies nobody
+```
+
+`--dry-run` forces the notifier to `/bin/true`. If you run it bare with no
+floor, the script now prints a **warning to stderr** saying so — heed it rather
+than reading the output as production truth.
+
+### 10.7 What is deliberately NOT built
 
 **Nothing sends automatically.** The watcher nags; a person pays. An automatic
 sender holding a key to the reserve, driven by a free-text address supplied by
 whoever called `redeem()`, is a much larger target than this desk's volume
 justifies.
 
-### 10.7 Keyed on (txhash, logIndex)
+### 10.8 Keyed on (txhash, logIndex)
 
 Not on txhash. One BSC transaction can emit several `Redeem` events — a contract
 or a multicall can batch them — and keying on the hash alone would pay the first
@@ -480,7 +507,7 @@ and **silently drop** the rest. Exactly the mistake every deposit rail live at t
 time shipped first — key the ledger on `(txid, address)`, never `(txid, vout)` — in
 a new place.
 
-### 10.8 The customer's side: `/redeem` calls the contract from THEIR wallet
+### 10.9 The customer's side: `/redeem` calls the contract from THEIR wallet
 
 Until 2026-09-02 `/redeem` was instructions only: open the verified contract on
 BscScan, connect, fill `redeem` by hand. The first real attempt — MetaMask on
