@@ -108,12 +108,13 @@ confirmed.onchain_unspent_sat = mature + immature        (NOT spendable)
 unconfirmed.receiving_sat     money in the mempool, in no block at all
 ```
 
-On PCoin this is not pedantry: 2 134 of 2 144 transactions on the chain today are
-coinbases, `COINBASE_MATURITY` is 100 blocks, and blocks currently arrive about
-every 19 minutes — so an address's "balance" is mostly money it cannot spend for
-another day and a half. Maturity is always reported **in blocks**
-(`next_maturity_in_blocks`), never as an ETA: block spacing here is neither the
-600 s target nor stable, and it changes again when LWMA activates at height 2800.
+On PCoin this is not pedantry: the overwhelming majority of transactions on this
+chain are coinbases and `COINBASE_MATURITY` is 100 blocks, so an address's
+"balance" is mostly money it cannot spend yet. Maturity is always reported **in
+blocks** (`next_maturity_in_blocks`), never as an ETA: block spacing here is
+neither the 600 s target nor stable. LWMA has retargeted every block since height
+2800; for the current pace read <https://explorer.pc.am/api/status> rather than a
+figure written here.
 
 ### Unknown is its own state
 

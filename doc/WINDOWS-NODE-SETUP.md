@@ -1,12 +1,17 @@
 # PCoin — Windows always-on full node setup
 
 Package: `pcoin-win64-miner.zip` from the release that built it —
-<https://github.com/pars5555/pcoin/releases/download/v1.3.8/pcoin-win64-miner.zip>
+<https://github.com/pars5555/pcoin/releases/download/v1.3.17/pcoin-win64-miner.zip>
 (PCoin Core v29.4.0, x86-64, statically linked). Components release separately, so
 `/releases/latest/` is **not** a safe way to reach a Windows build: a release that ships only
 the Android wallet has no Windows asset and the link 404s. Assets gained a role word in
 v1.2.6 — `-miner`, `-wallet`, `-earner`; `pcoin-win64.zip` is the pre-1.2.6 spelling.
-Contents: `bitcoind.exe`, `bitcoin-cli.exe`, `PCOIN.md`, `pcoin.conf.example`.
+Contents: `PCoinTray.exe` — the tray miner, and the thing you double-click — plus
+`bitcoind.exe`, `bitcoin-cli.exe`, `uninstall.ps1` and `COPYING`. There is **no**
+`PCOIN.md` and **no** example config in the archive; write `pcoin.conf` yourself
+from the template in section 2. The layout has moved between releases — older
+zips put the node binaries in `bin\`. If `bitcoind.exe` is not beside
+`PCoinTray.exe`, look one level down.
 
 The binaries are fully static (no MSVC runtime, no MinGW DLLs). Windows 10 /
 Windows Server 2016 or newer, 64-bit only.
@@ -41,7 +46,8 @@ mkdir D:\PCoinData
 
 ## 2. The config file
 
-The config file must be named **`pcoin.conf`** (PCoin Core renamed it; it is NOT `bitcoin.conf`). Copy the example config to:
+The config file must be named **`pcoin.conf`** (PCoin Core renamed it; it is NOT `bitcoin.conf`). No example config ships in the
+zip — create the file yourself at:
 
 ```
 D:\PCoinData\pcoin.conf

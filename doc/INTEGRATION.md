@@ -124,9 +124,11 @@ budget that per node.
 
 Standard Bitcoin Core practice applies. Two chain-specific points:
 
-**Confirmations.** Reorgs are routine here, not exceptional — the chain has run
-a stale rate around 3%, which is what you get when propagation delay is a
-meaningful fraction of block spacing. Do not credit at 1 confirmation. Treat
+**Confirmations.** Reorgs happen here — a chain this small reorganises a block
+or two from time to time, which is what you get when propagation delay is a
+meaningful fraction of block spacing. Read `reorg_count` from
+<https://explorer.pc.am/api/status> for the count to date rather than trusting a
+figure written here, which rots. Do not credit at 1 confirmation. Treat
 this as a small chain and require depth accordingly; 20+ is not paranoid at
 current hashrate. Note that **hashrate is currently low and concentrated**, so
 the cost of a deep reorg is correspondingly low. Price that in.
@@ -201,10 +203,23 @@ POST /api/tx                          relay a SIGNED transaction
 
 Full request and response examples: [`contrib/explorer/pcoin_api/API.md`](../contrib/explorer/pcoin_api/API.md).
 
-Every response carries an `index` block giving `indexed_height`,
-`node_height` and `blocks_behind`. **Check `blocks_behind` before trusting a
-balance** — a lagging index reports an old answer confidently, and the field
-exists so you never have to guess.
+Every response carries an `index` block giving, among others, `indexed_height`,
+`node_height`, `blocks_behind`, `stale`, `node_reachable` and — the trap —
+`reorg_count` and `blocks_unwound`.
+
+`reorg_count` and `blocks_unwound` are **cumulative lifetime counters**: they
+only ever grow. `blocks_unwound == 0` is therefore **not** a health gate. It
+went permanently false at this chain's first reorg, and every rail that had
+gated on it silently refused to credit any deposit from that moment on — alive,
+ticking, exiting clean, and settling nothing. If you want a genuine mid-reorg
+signal, compare `blocks_unwound` between two successive reads and act on the
+*change*, never on the value.
+
+**Gate on `stale == false`, `node_reachable`, and `blocks_behind == 0` before
+trusting a balance** — a lagging index reports an old answer confidently, and a
+stalled one reports `blocks_behind: 0` because it has not polled and does not
+know it is behind. `stale` is the index's own verdict, and `stale_reasons` says
+why.
 
 `POST /api/tx` accepts only signed transaction hex. The service holds no keys
 and will refuse a request containing key material.

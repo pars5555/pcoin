@@ -29,9 +29,9 @@ median-time-past, so a miner may legally backdate its **own** blocks. With raw
 solvetimes and an asymmetric clamp band `[-FTL, +ST]` that was a standing
 subsidy: the backdated block floors at `-FTL` while the honest block behind it
 caps at `+ST`, so the pair reports `ST - FTL` seconds of apparent time for about
-`2T` seconds of real time. Simulated on this exact integer model, one of PCoin's
-seven miners could hold emission at 1.31x indefinitely, and a 50% miner at
-2.09x.
+`2T` seconds of real time. Simulated on this exact integer model, a miner holding a
+seventh of the hashrate could sustain emission at 1.31x indefinitely, and a 50%
+miner at 2.09x.
 
 `lwma()` therefore folds each timestamp through `max(times[i], prev)`. Apparent
 elapsed time then telescopes to `max(timestamp) - first`, so backdating can only

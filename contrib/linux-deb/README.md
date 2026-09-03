@@ -5,9 +5,10 @@
 (see `PCOIN.md` §3) or unpack a published `pcoin-<ver>-linux-x86_64.tar.gz`.
 
 ```bash
-tar xf pcoin-1.2.6-linux-x86_64-miner.tar.gz
-contrib/linux-deb/build-deb.sh 1.2.6 pcoin-1.2.6/bin /tmp/debbuild
-sudo apt install /tmp/debbuild/pcoin_1.2.2_amd64.deb
+VER=1.2.6                       # the version you are packaging
+tar xf pcoin-$VER-linux-x86_64-miner.tar.gz
+contrib/linux-deb/build-deb.sh $VER pcoin-$VER/bin /tmp/debbuild
+sudo apt install /tmp/debbuild/pcoin_${VER}_amd64.deb
 ```
 
 ## What the package does
@@ -19,6 +20,7 @@ sudo apt install /tmp/debbuild/pcoin_1.2.2_amd64.deb
 | datadir | `/var/lib/pcoin`, owned by the `pcoin` system user, mode 710 |
 | config | `/var/lib/pcoin/pcoin.conf`, written only if absent |
 | service | `pcoind.service`, installed but **not enabled** |
+| miner | `pcoin-miner.service`, `ExecStart=/opt/pcoin/bin/pcoin-miner-supervisor` — also installed, also not enabled |
 
 Three decisions in there are load-bearing and should survive any rewrite.
 

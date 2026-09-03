@@ -12,7 +12,7 @@ Deliberate properties:
 * **One consistent snapshot per request.** Each request runs inside a single
   deferred read transaction. Without it, a page that reads the tip, then the
   balances, then the confirmations could straddle a writer's commit and render
-  a mixture of two chain states. On a chain that reorganises as often as this
+  a mixture of two chain states. On a chain that can reorganise at all, as this
   one does, that is not a theoretical concern.
 
 * **Nothing is cached that contains money.** HTML and JSON responses are

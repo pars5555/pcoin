@@ -16,13 +16,18 @@ rate, and stopping mining takes two clicks.
 - Shows live status: hash rate, blockchain height, blocks mined by this PC
 - Shows what is backed up by the phrase and what is still in the old wallet
 - Lets the user pick a mining effort from 10% to 100% of the machine, or none
+- Lets the user mine **solo or for the pool** (`pool.pc.am:3333`), and advises
+  which of the two suits this machine's hash rate
+- Can **forward** what this PC mines to another wallet — set from "Forward my
+  coins…", and armed only after a 1 PCN test payment the operator confirms
 - Remembers the chosen mode and resumes it on next launch
 - "What is this?" explains in plain language what the machine is doing
 
 ## The main window
 
 The Windows counterpart of the Android app's home screen: hash rate with an
-hour of history, chain height, peers, blocks mined, difficulty, both wallet
+hour of history, chain height, peers, blocks mined (accepted shares when it is
+pooled), difficulty, the solo/pool selector, the forwarding state, both wallet
 balances, the payout address, and the effort slider. Double-click the tray icon
 or pick "Open PCoin Miner".
 
@@ -131,9 +136,12 @@ Settings live in `pcoin-tray.cfg` next to the executable, written automatically:
 ```
 address=pc1q...        payout address (created on first run if empty)
 addresswallet=pcoin-hd which wallet that address belongs to
+poolurl=pool.pc.am:3333 mine for this pool; blank means solo
 datadir=               optional; blank means bitcoind's default location
 percent=50             0 = not mining
+optimal=4              thread count the calibration measured as fastest (0 = not measured)
 seedprompt=declined    set if the user was offered a phrase and said no
+fastmode=1             RandomX fast mode; cleared automatically if the node will not start with it
 ```
 
 Two more files appear next to it once a recovery phrase exists. Neither is ever

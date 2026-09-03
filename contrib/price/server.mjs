@@ -117,9 +117,10 @@ const DEFAULTS = {
   // PCN would be credited a thousandth of what they handed over.
   serviceCeiling: 10.00,
   // How often a retune step may fire. The clamp is +/-10% PER STEP and a ladder
-  // rung is +9.75%, so one step is almost exactly one rung: in normal trading
+  // rung is +6.7885% (see the header of contrib/market/ladder.sql for the live
+  // geometry), so one step is a little over one rung: in normal trading
   // serviceRate keeps up with the ladder, but a buyer who sweeps thirty rungs
-  // at once (+1,700%) moves it 10% an hour and a human has time to look. Set
+  // at once moves it 10% an hour and a human has time to look. Set
   // this to 24 for the slowest sane walk, or 0 to retune on every poll.
   serviceRetuneIntervalHours: 1,
   serviceRateAt: 0,         // ms epoch of the last accepted step

@@ -4,7 +4,16 @@
 13 MB build artifact and `.gitignore` excludes it. This file is how to rebuild
 it, because the recipe that knew how lived in a scratchpad and is gone.
 
-Two scripts do the whole job, from a Linux host (WSL is fine):
+Two scripts do the whole job, from a Linux host (WSL is fine) — with one gap:
+neither passes `-Wl,-z,max-page-size=16384`. Play rejects a bundle whose native
+libraries are not 16 KB-aligned (`playstore/v1/DEPLOY.md`, "Rebuild the native
+node"), and NDK r26b does not do it by default — 0.2.10 had to relink for exactly
+this. So a rebuild through these scripts as they stand silently ships 4 KB-aligned
+binaries. Add `-DCMAKE_EXE_LINKER_FLAGS='-Wl,-z,max-page-size=16384'` to the
+`cmake -B build` call in `build-android-node.sh`, and verify before packaging
+rather than assuming:
+`readelf -l libbitcoind.so | awk '/LOAD/{getline; print $NF}'` must print
+`0x4000` for every LOAD segment.
 
 ```bash
 bash contrib/android/build-android-deps.sh   # libevent, sqlite, boost  -> /root/android-prefix

@@ -327,7 +327,7 @@ need**: `bitcoin-cli generatetoaddress` grinds *real* RandomX blocks on **any**
 network, mainnet included. It is single-threaded and uses the light-mode
 verifier (256 MB cache, hundreds of hashes/second), which is perfectly adequate
 at the launch difficulty of ~4096 expected hashes per block. A dedicated
-multi-threaded miner is built in: `startmining "address" ( threads ttl )`, `stopmining` and `getcpuminerinfo` (RPC category "mining"). `generatetoaddress` remains the single-threaded path.
+multi-threaded miner is built in: `startmining "address" ( threads ttl )` (solo), `startpoolmining "url" "address" ( threads ttl )` (pool — the normal mainnet path, see §5c), `stopmining` and `getcpuminerinfo` (RPC category "mining"). `generatetoaddress` remains the single-threaded path; §5c explains why it is a regtest tool in practice on mainnet.
 
 External miners, as of 2026-09-02:
 
@@ -607,7 +607,8 @@ correctly returns a later address than index 0.
 
 * **The chain is NOT secure.** Security of a PoW chain equals the cost of
   out-mining it. RandomX removes the *ASIC* threat, not the *51%* threat: with
-  only a handful of CPUs mining, anyone who rents a few dozen cloud CPU cores
+  hashrate this thin — and a large share of blocks already found by one
+  pool — anyone who rents enough cloud CPU cores
   (or points a modest botnet at it) can 51%-attack PCoin — rewrite history,
   double-spend, censor. Until meaningful independent hashrate exists, treat
   PCN as **experimental and thinly traded**. A small market exists (wPCN on

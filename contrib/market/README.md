@@ -319,6 +319,16 @@ The ladder says what there is to sell. **Backing** says what can actually be
 handed over: the owner's own wallet balance, read from the explorer, minus every
 PCN already promised on undelivered orders. Both have to say yes.
 
+**That describes only one of two modes, and not the live one.** When
+`backingCapPcn` is greater than zero — and on this install it is — that number
+*is* the backing: `ownerSpendable()` in `delivery.mjs` returns it and neither the
+explorer nor `backingAddresses` is consulted at all. It does not fall on its own
+when the coins are spent elsewhere, which makes it the owner's number to keep
+honest. Read the live figure with `market-admin backing`, which says whether it
+is a cap you set or a wallet reading; never take it from this file.
+
+Only with `backingCapPcn = 0` does the address-summing path below run.
+
 If the explorer cannot be read, the last good balance stands for 30 minutes — a
 wallet does not empty by surprise — and past that **the market stops accepting
 orders** rather than promise coins nobody has confirmed exist.

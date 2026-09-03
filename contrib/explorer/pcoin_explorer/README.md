@@ -37,7 +37,7 @@ shared-memory file from a read-only connection).
 * **One consistent snapshot per request.** Each request runs inside a single
   deferred read transaction. Without it a page could read the tip, then the
   balances, then the confirmations, and straddle a writer's commit — on a chain
-  that reorganises as often as this one, rendering a mixture of two chain states
+  that can reorganise at all, rendering a mixture of two chain states
   is not a theoretical concern.
 * **Nothing containing money is cacheable.** HTML and JSON are `no-store`; only
   the stylesheet carries a `max-age`. A balance served from a proxy cache after
@@ -123,8 +123,9 @@ than asserting the thing does not exist.
 
 The chain's block rate is the number most easily made to lie here, so the window
 is chosen deliberately. Heights 0–2015 were mined at the minimum difficulty
-roughly 49 s apart; everything since is ~20× slower, because the legacy retarget
-only fires every 2016 blocks. Measured at height 2129:
+roughly 49 s apart; heights 2016–2799 then ran ~20× slower, because the legacy
+retarget only fired every 2016 blocks. LWMA has retargeted every block since
+height 2800. Measured at height 2129:
 
 | window | mean spacing |
 |---|---|

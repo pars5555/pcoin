@@ -80,10 +80,15 @@ Two consequences worth stating:
 ## Reorgs: the core feature
 
 `getchaintips` on the live seed returns ~66 tips over ~2 100 blocks — a ~3% stale
-rate at the time — and LWMA (active since height 2800) roughly halved block spacing, which raises
-it further (stale rate tracks propagation delay over block spacing). Reorgs here
-are routine. An indexer that unwinds one incorrectly reports wrong balances
-forever and never notices, which is worse than having no explorer.
+rate at the time — and LWMA (active since height 2800) roughly halved block spacing, which would be
+expected to raise it further (stale rate tracks propagation delay over block
+spacing). It did not: reorgs here are in fact rare, and the index has unwound
+exactly one block in the chain's life so far (height 5801, 2026-08-30). Read
+`reorg_count` and `blocks_unwound` at <https://explorer.pc.am/api/status> rather
+than trusting this sentence. **Rarity is the trap, not the reassurance** — a path
+that runs once a month is a path nobody has exercised. An indexer that unwinds
+one incorrectly reports wrong balances forever and never notices, which is worse
+than having no explorer.
 
 ### Invariant I
 

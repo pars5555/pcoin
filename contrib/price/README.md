@@ -1,8 +1,8 @@
 # price.pc.am — the one number everything agrees on
 
 PCN is not traded on any exchange, so there is no price to *discover* — only a
-price to **post**. This service posts it, and four separate payment integrations
-convert PCN to dollars with the number it publishes. Getting it wrong credits
+price to **post**. This service posts it, and every PCN payment integration
+converts PCN to dollars with the number it publishes. Getting it wrong credits
 real customers the wrong amount of money.
 
 It is one file, `server.mjs`, with its whole state in a JSON file next to it.
@@ -15,7 +15,7 @@ It is one file, `server.mjs`, with its whole state in a JSON file next to it.
 |---|---|---|
 | `price` | the **ladder's marginal rung** — what the next PCN costs to buy | the market page, humans |
 | `buybackPrice` | the **constant-product curve** — what a sell-back pays | the buyback path only |
-| `serviceRate` | what the four products **credit** PCN at | checker, webbuilderbot, aicontrol, 3dmodels |
+| `serviceRate` | what the payment rails **credit** PCN at | checker.pc.am, webbuilderbot, aicontrol.pc.am, 3dmodels.pc.am, 3dmodel.oonak.ai (a DIFFERENT product from 3dmodels.pc.am, with its own wallet) |
 
 Confusing the first two is the mistake waiting to be made. Once the ladder has
 moved they are decades apart, and using `price` to estimate a payout would
@@ -57,9 +57,10 @@ product problem, and the answer is real demand from the services.
 Every 60 seconds the **primary** polls the market's ladder and steps
 `serviceRate` toward the posted price. Three brakes, and all three matter:
 
-1. **±`serviceMaxMovePct` (10%) per step.** A ladder rung is +9.75%, so one step
-   is almost exactly one rung: in normal trading the rate keeps up, but a buyer
-   sweeping thirty rungs (+1,700%) cannot drag it there at once.
+1. **±`serviceMaxMovePct` (10%) per step.** A ladder rung is +6.7885% (the
+   header of `contrib/market/ladder.sql` states the live geometry), so one step
+   is a little over one rung: in normal trading the rate keeps up, but a buyer
+   sweeping thirty rungs cannot drag it there at once.
 2. **A minimum interval between steps** (`serviceRetuneIntervalHours`, default
    **1**). Without this the clamp is decorative — polling every 60 seconds would
    turn "10% per step" into 10% per minute, which is 1000× in half an hour.
@@ -91,7 +92,7 @@ nothing must not become a fact.**
   by three orders of magnitude — and does not retune. Past 10 minutes it reports
   `ladder.stale`.
 - **A failed replica sync resolves nothing.** The last known state is still the
-  best answer available; erasing it would take four payment systems down for a
+  best answer available; erasing it would take every payment system down for a
   network blip. `stale: true` says the number is remembered rather than current.
 - **An exhausted ladder reports `marginalPrice: null`**, which is *not* a price
   of zero. It means every rung is sold and the last rung's price stands.
@@ -102,8 +103,13 @@ One **primary** owns the curve; replicas mirror it and refuse writes with `409`.
 Two hosts accepting writes would diverge the curve, and there is no merge for a
 divergent AMM.
 
-Replicas exist because all four payment paths depend on this one service. Any
-single origin can die unnoticed.
+Replicas exist because every payment path depends on this one service. Any
+single origin can die unnoticed. **There are three origins** — a primary that
+accepts writes and two replicas — and one of them lives on another project's
+box; the full list is in `D:\pc.am\servers.md` under "price.pc.am — the rate
+oracle, 3 origins". Deploy to all three and verify against the PUBLIC url, never
+against the box you edited: Cloudflare sends most traffic to whichever origin it
+picks, so updating two of three changes nothing a consumer sees.
 
 ### The trap that caught both replicas
 
@@ -132,7 +138,7 @@ Two changes close it:
 
 > **Any new origin must be given the pinned upstream.** One left pointing at
 > `https://price.pc.am` silently re-creates this exact fault. And note the blast
-> radius of "fixing" it carelessly: all four products *refuse* a stale oracle and
+> radius of "fixing" it carelessly: all of them *refuse* a stale oracle and
 > stop crediting six hours later, so flipping that flag without fixing the
 > upstream is a self-inflicted outage.
 

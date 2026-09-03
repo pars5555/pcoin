@@ -212,7 +212,7 @@ and, written after it actually broke:
 
 > This service had NO alerting of any kind, which is how `serviceRate` walked
 > +10% a minute against a stuck retune clock until a human happened to read the
-> number. It sets the rate four payment products credit real money at, so a
+> number. It sets the rate every PCN payment product credits real money at, so a
 > wrong value here is a wrong price everywhere at once.
 
 So the pool is **a new input to a system that already distrusts its inputs**,

@@ -106,8 +106,11 @@ when it stops being true.
 * **The Android `libbitcoind.so` is out of scope.** It is built separately with
   the NDK (recipe: `contrib/android/playstore/v1/DEPLOY.md`) and is not covered by
   any of this. The APK is
-  also debug-signed today, so its provenance rests on the signing key, not on
-  the build.
+  also outside it — release APKs are signed with the release key (see
+  `contrib/android/playstore/v1/SIGNING.md`), so their provenance rests on that
+  key, not on the build. Note that Play App Signing re-signs the delivered app,
+  so a copy installed from the store carries Google's certificate rather than
+  ours; only a sideloaded APK can be checked against our key.
 * **Do not run this on a seed.** It will saturate the machine for hours. Use a
   build box.
 
