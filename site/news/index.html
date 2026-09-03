@@ -107,6 +107,34 @@
   <main>
 
     <article class="entry">
+      <div class="meta"><time>2026-09-03</time><span class="tag infra">Windows</span></div>
+      <h2>A separate wallet app for Windows, and an uninstaller bug that deleted wallets</h2>
+      <p><b>PCoin Wallet is now its own Windows application.</b> It runs its own node and never
+      mines, so it can sit alongside the miner on the same PC without either noticing the other.
+      Twelve words, receive by QR, send with the real fee shown before you commit, history, and an
+      address book. Install it with
+      <code>irm https://pc.am/dl/install-wallet.ps1 | iex</code>; remove it from
+      Settings &gt; Apps, which copies the wallet files out before deleting anything.</p>
+      <p><b>And the part we would rather not be writing.</b> For about five hours on 3 September
+      &mdash; between 03:33 and 08:49 UTC &mdash; the pinned Windows <em>miner</em> download was a
+      version whose uninstaller was broken. Releases <b>1.3.16 through 1.4.1</b> looked for the node
+      wallet in two places it is not on a fresh install, rescued only the settings file, printed
+      <code>WALLET SAVED TO &hellip;</code> and then removed the wallet anyway. If you had never
+      written your twelve-word recovery phrase down, that file was the only copy of your coins.</p>
+      <p><b>1.4.2 fixes it, but installing the fix is not enough on its own.</b> Windows runs the
+      uninstaller stored on your own machine, so Settings &gt; Apps on an affected install still
+      executes the broken copy. If you installed the Windows miner that day, run one of these
+      <em>before</em> you uninstall anything:</p>
+      <p><code>irm https://pc.am/dl/install.ps1 | iex</code> &mdash; upgrades you to 1.4.2, or<br>
+      <code>irm https://pc.am/dl/uninstall.ps1 | iex</code> &mdash; removes PCoin using the fixed
+      uninstaller.</p>
+      <p>We found this by auditing our own release notes against what the site promised: two pages
+      said, without qualification, that uninstalling never deletes your wallet. Both now say when
+      that is true and when it was not. No user reported this &mdash; which is the uncomfortable
+      part, because a wallet deleted quietly does not generate a complaint.</p>
+    </article>
+
+    <article class="entry">
       <div class="meta"><time>2026-09-02</time><span class="tag infra">Listings &amp; miners</span></div>
       <h2>Komodo accepted PCN, and SRBMiner-Multi mines it out of the box</h2>
       <p><b>The Komodo DeFi Framework listing is no longer a request.</b>
