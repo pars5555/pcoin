@@ -397,29 +397,69 @@ namespace PCoinTray
 
         //! Pool-vs-solo advice, computed from live chain data -- SUGGESTS only,
         //! never switches. Solo pays the whole 50 PCN block but only when THIS
-        //! machine finds one; the average gap between your blocks is
-        //! network_hps / (your_hps x 144 blocks/day). Past a couple of days that
-        //! gap means long dry spells with nothing, so a pool's steady share is
-        //! the better path for a small miner. A big miner (a block every day or
-        //! less) keeps the full reward with tolerable variance, so solo wins.
-        public sealed class ModeAdvice
+        //! machine finds one, and the average gap between your own blocks is
+        //! fixed by difficulty alone. Past a couple of days that gap means long
+        //! dry spells with nothing, so a pool's steady share is the better path
+        //! for a small miner. A big miner (a block every day or two, or better)
+        //! keeps the full reward with tolerable variance, so solo wins -- and a
+        //! pool that finds most of the network's blocks is in a position to
+        //! reorganise the chain, which is a reason to move capable machines off
+        //! one that goes beyond the fee they are paying it.
+
+        //! Expected hashes for one block at difficulty 1. PCoin compares a
+        //! RandomX hash against the nBits target exactly as Bitcoin compares a
+        //! double-SHA256 one, so this identity carries over unchanged.
+        public const double HASHES_PER_DIFFICULTY = 4294967296.0;   // 2^32
+
+        //! Days this machine would wait, on average, between its OWN solo
+        //! blocks. 0 means NOT KNOWN and must never be read as "no wait".
+        //!
+        //! Derived from difficulty, which is exact given nBits and needs no
+        //! network hash rate at all. The older form, 144 x (myHps / netHps),
+        //! additionally assumed 600 s spacing; this chain's real spacing wanders
+        //! well either side of target, so that form read ~7.6% optimistic when
+        //! it was last measured and flips to pessimistic the moment implied
+        //! spacing falls below 600 s.
+        public static double SoloDaysPerBlock(double myHps, double difficulty)
         {
-            public bool Ready;        // false until both hash rates are known
-            public bool PreferPool;   // the recommended mode
-            public string Line = "";  // the human-readable recommendation
+            if (myHps <= 0 || difficulty <= 0) return 0;
+            return difficulty * HASHES_PER_DIFFICULTY / myHps / 86400.0;
         }
 
-        public static ModeAdvice AdviseMode(double myHps, double netHps)
+        //! Where solo stops being worth suggesting. Two days is the point at
+        //! which a block stops being part of a weekly rhythm; the H/s floor is
+        //! a second, independent gate on the one-time offer, because a machine
+        //! that waits a week or more per block has a real chance of a month
+        //! with nothing, and that is a bad experience however sound the
+        //! arithmetic behind it was.
+        public const double SOLO_DAYS_MAX = 2.0;
+        public const double SOLO_MIN_HPS = 3000.0;
+
+        public sealed class ModeAdvice
+        {
+            public bool Ready;            // false until the arithmetic is possible
+            public bool PreferPool;       // the recommended mode
+            public double DaysPerBlock;   // 0 = not known
+            public string Line = "";      // the human-readable recommendation
+        }
+
+        //! @p difficulty is the exact input. @p netHps is a fallback for the one
+        //! case where getblockchaininfo did not answer and getmininginfo did;
+        //! with neither readable this stays not-Ready and says "measuring",
+        //! because an unreadable chain is not a recommendation.
+        public static ModeAdvice AdviseMode(double myHps, double difficulty, double netHps)
         {
             var a = new ModeAdvice();
-            if (myHps <= 0 || netHps <= 0) { a.Line = "Measuring your hash rate against the network..."; return a; }
+            double daysPerBlock = SoloDaysPerBlock(myHps, difficulty);
+            if (daysPerBlock <= 0 && myHps > 0 && netHps > 0)
+                daysPerBlock = netHps / (myHps * 144.0);         // 600 s target => 144 blocks/day
+            if (daysPerBlock <= 0) { a.Line = "Measuring your hash rate against the network..."; return a; }
             a.Ready = true;
-            double blocksPerDayYou = 144.0 * (myHps / netHps);   // 600 s target => 144 blocks/day
-            double daysPerBlock = blocksPerDayYou > 0 ? 1.0 / blocksPerDayYou : 1e9;
+            a.DaysPerBlock = daysPerBlock;
             string when = daysPerBlock < 1.0
-                ? string.Format(CultureInfo.InvariantCulture, "about {0:0.0} blocks a day solo", blocksPerDayYou)
+                ? string.Format(CultureInfo.InvariantCulture, "about {0:0.0} blocks a day solo", 1.0 / daysPerBlock)
                 : string.Format(CultureInfo.InvariantCulture, "about {0:0} day(s) between blocks solo", daysPerBlock);
-            if (daysPerBlock > 2.0)
+            if (daysPerBlock > SOLO_DAYS_MAX)
             {
                 a.PreferPool = true;
                 a.Line = "Pool recommended — at your hash rate that is " + when + ", so long dry spells. A pool pays a steady share instead.";
@@ -482,6 +522,21 @@ namespace PCoinTray
         volatile bool _calibrating;
         volatile bool _cancelCalibrate;
         int _optimalThreads;
+        //! What the last auto-tune actually MEASURED this machine at, in H/s
+        //! (0 = never measured). Persisted because that benchmark is the one
+        //! moment this PC's true rate is known: the live figure is 0 whenever
+        //! the miner is stopped, restarting, or still building the RandomX
+        //! dataset, and the solo-vs-pool arithmetic is exactly what needs it.
+        double _measuredHps;
+        //! The one-time solo-vs-pool question has been put to this machine.
+        //! Sticky whatever the answer was, exactly as _seedDeclined is: a
+        //! machine that has been asked is never asked again.
+        bool _soloAsked;
+        //! A recovery-phrase window is open. Set only around the automatic
+        //! wizard, which fires from the same node-ready path that starts
+        //! auto-tuning and is therefore the one thing the solo offer can
+        //! collide with.
+        volatile bool _phraseUiOpen;
         volatile string _calibStatus;
         bool _seedDeclined;            // the user was offered a phrase and said no
         int _threads;                  // derived from _percent, reported by the node
@@ -693,6 +748,13 @@ namespace PCoinTray
                     else if (k == "fastmode") _fastMode = v == "1";
                     else if (k == "datadir") _datadir = v;
                     else if (k == "optimal") { int o; if (int.TryParse(v, out o)) _optimalThreads = o; }
+                    else if (k == "hashrate")
+                    {
+                        double hr;
+                        if (double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out hr) && hr > 0)
+                            _measuredHps = hr;
+                    }
+                    else if (k == "soloprompt") _soloAsked = v == "asked";
                     else if (k == "percent")
                     {
                         int p;
@@ -726,7 +788,13 @@ namespace PCoinTray
                     "datadir=" + _datadir + "\r\n" +
                     "percent=" + (_mining ? _percent : 0).ToString(CultureInfo.InvariantCulture) + "\r\n" +
                     "optimal=" + _optimalThreads.ToString(CultureInfo.InvariantCulture) + "\r\n" +
+                    // Empty rather than 0 when nothing has been measured:
+                    // "hashrate=0" is a claim about this machine, and an absent
+                    // value is the truth, which is that nobody knows yet.
+                    "hashrate=" + (_measuredHps > 0
+                        ? _measuredHps.ToString("0.###", CultureInfo.InvariantCulture) : "") + "\r\n" +
                     "seedprompt=" + (_seedDeclined ? "declined" : "") + "\r\n" +
+                    "soloprompt=" + (_soloAsked ? "asked" : "") + "\r\n" +
                     "fastmode=" + (_fastMode ? "1" : "0") + "\r\n");
             }
             catch { }
@@ -1231,11 +1299,15 @@ namespace PCoinTray
 
                 Program.Note("auto-tune: " + string.Join(" ", log.ToArray()) + " -> best " + bestN + " (" + (int)bestH + " H/s)");
                 _optimalThreads = bestN;
+                // Keep the measurement, not only the thread count it picked.
+                // This is the one place this machine's real rate is ever known.
+                if (bestH > 0) _measuredHps = bestH;
                 _percent = Cpu.PercentForThreads(bestN, _cores);
                 _mining = true;
                 SaveConfig();
                 StartMining(bestN);
                 SetCalibStatus(null);
+                MaybeOfferSolo(bestH);
             }
             catch (Exception ex)
             {
@@ -1248,6 +1320,78 @@ namespace PCoinTray
         void ResetToOptimal()
         {
             if (_optimalThreads > 0) SetMode(Cpu.PercentForThreads(_optimalThreads, _cores));
+        }
+
+        /**
+         * Offer solo mining ONCE, to a machine that has just measured a rate
+         * solo actually suits.
+         *
+         * Every rule here is deliberate:
+         *
+         *  - it only ASKS. Nothing in this path changes the mining mode; the
+         *    mode changes if and only if the person clicks the solo button, and
+         *    then through the same SetPool every other caller goes through.
+         *  - it is asked once per install and BOTH answers are remembered, so a
+         *    machine whose owner chose the pool is never nagged again.
+         *  - a machine below the floor is told nothing at all about solo. So is
+         *    one whose days-per-block cannot be computed, because a difficulty
+         *    that could not be read is not a low difficulty.
+         *  - nothing downstream depends on an answer arriving. This tray can be
+         *    started into session 0, where it has no desktop and no notification
+         *    area (CLAUDE.md 7.3, seen on two of three machines), so the dialog
+         *    may never be seen by anyone; not seeing it leaves the PC exactly as
+         *    the installer configured it, which is the pool.
+         */
+        void MaybeOfferSolo(double measuredHps)
+        {
+            try
+            {
+                if (_soloAsked || _cancelCalibrate) return;
+                if (string.IsNullOrEmpty(_poolUrl)) return;     // already solo: nothing to offer
+                if (measuredHps < Cpu.SOLO_MIN_HPS) return;     // never steer a weak machine to solo
+                double diff = _difficulty;
+                if (diff <= 0)
+                {
+                    // Chain fields only land on a full poll, which may not have
+                    // happened yet on a freshly started app. Ask for one rather
+                    // than assume anything about the number that decides this.
+                    try { var r = Poll(true); if (r != null) diff = r.Difficulty; } catch { }
+                }
+                double days = Cpu.SoloDaysPerBlock(measuredHps, diff);
+                if (days <= 0 || days > Cpu.SOLO_DAYS_MAX) return;
+                _sync.BeginInvoke(new Action(() => AskSolo(measuredHps, days)));
+            }
+            catch (Exception ex) { Program.Note("solo offer: " + ex.Message); }
+        }
+
+        //! The UI half of MaybeOfferSolo. On the UI thread, because it opens a
+        //! modal dialog; the arithmetic that decided to ask was done off it.
+        void AskSolo(double measuredHps, double days)
+        {
+            try
+            {
+                if (_soloAsked) return;
+                if (_phraseUiOpen)
+                {
+                    // The phrase wizard is on screen. That one is about coins
+                    // that cannot be recovered; this one is about a fee. Leave
+                    // _soloAsked alone, so the next start asks rather than this
+                    // opening a window over somebody's twelve words.
+                    Program.Note("solo offer: deferred, phrase setup is open");
+                    return;
+                }
+                bool solo = SoloOfferForm.Ask(measuredHps, days, _poolUrl);
+                // Record that it was asked BEFORE acting on the answer: a
+                // failure in the switch below must not bring the dialog back on
+                // the next start and re-ask a person who has already answered.
+                _soloAsked = true;
+                SaveConfig();
+                Program.Note(string.Format(CultureInfo.InvariantCulture,
+                    "solo offer: {0:0} H/s, {1:0.0} days per block -> {2}",
+                    measuredHps, days, solo ? "solo" : "pool"));
+                if (solo) SetPool("");
+            }
+            catch (Exception ex) { Program.Note("solo offer: " + ex.Message); }
         }
 
         // ---------- recovery phrase ----------
@@ -1267,6 +1411,16 @@ namespace PCoinTray
             else RunPhraseSetup();
         }
 
+        //! A thin wrapper so the rest of the app can see that a modal phrase
+        //! window is on screen. Nothing may stack a dialog on top of one that is
+        //! showing somebody their twelve words.
+        void RunPhraseSetup()
+        {
+            _phraseUiOpen = true;
+            try { RunPhraseSetupCore(); }
+            finally { _phraseUiOpen = false; }
+        }
+
         /**
          * Create or restore a phrase-backed wallet.
          *
@@ -1274,7 +1428,7 @@ namespace PCoinTray
          * until the node has been made to agree, address for address, with the
          * words. If any step fails the machine is left exactly as it was.
          */
-        void RunPhraseSetup()
+        void RunPhraseSetupCore()
         {
             if (!_nodeUp)
             {
@@ -2380,6 +2534,7 @@ namespace PCoinTray
                     Syncing = _syncing,
                     Difficulty = _difficulty,
                     NetworkHashps = _networkHps,
+                    MeasuredHashrate = _measuredHps,
                     PoolMining = _poolMining,
                     PoolUrl = _poolUrl,
                     SharesAccepted = _sharesAccepted,

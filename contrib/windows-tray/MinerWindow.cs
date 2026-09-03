@@ -134,7 +134,8 @@ namespace PCoinTray
         public double Progress = 1.0;   // verificationprogress, 0..1
         public bool Syncing;
         public double Difficulty;
-        public double NetworkHashps;    // whole-network H/s, for pool-vs-solo advice
+        public double NetworkHashps;    // whole-network H/s, fallback input for the advice
+        public double MeasuredHashrate; // what auto-tuning last measured, 0 = never
         public bool PoolMining;         // is the node hashing for a pool right now
         public string PoolUrl = "";     // configured pool, empty = solo
         public long SharesAccepted;     // pool: work units the pool has credited this PC
@@ -1148,7 +1149,13 @@ namespace PCoinTray
             // The advice line is always fresh. The radios re-echo ONLY when the
             // actual configured mode changes, so a user mid-selection (picked but
             // not yet Applied) is never stomped -- the same rule as the slider.
-            var adv = Cpu.AdviseMode(s.Hashrate, s.NetworkHashps);
+            // Prefer what the node is hashing right now, and fall back to
+            // what auto-tuning measured, so a stopped miner still gets real
+            // advice instead of "measuring..." beside a machine that is
+            // measuring nothing. Difficulty is the exact input; the network
+            // rate is only for the case where the chain call failed and it did not.
+            double advHps = s.Hashrate > 0 ? s.Hashrate : s.MeasuredHashrate;
+            var adv = Cpu.AdviseMode(advHps, s.Difficulty, s.NetworkHashps);
             _modeAdvice.Text = adv.Line;
             string poolUrl = s.PoolUrl ?? "";
             if (poolUrl != _lastShownPool)

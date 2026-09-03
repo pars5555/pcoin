@@ -59,6 +59,7 @@ rem ship. Embedding needs nothing shipped alongside it.
   SeedStore.cs ^
   SeedWallet.cs ^
   SeedForms.cs ^
+  ModeForms.cs ^
   SeedSelfTest.cs ^
   Amounts.cs ^
   AddressBook.cs ^

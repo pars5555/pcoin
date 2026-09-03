@@ -140,9 +140,50 @@ poolurl=pool.pc.am:3333 mine for this pool; blank means solo
 datadir=               optional; blank means bitcoind's default location
 percent=50             0 = not mining
 optimal=4              thread count the calibration measured as fastest (0 = not measured)
+hashrate=2517.6        H/s the calibration measured at that count (blank = never measured)
 seedprompt=declined    set if the user was offered a phrase and said no
+soloprompt=asked       set once the solo-vs-pool question has been put to this machine
 fastmode=1             RandomX fast mode; cleared automatically if the node will not start with it
 ```
+
+`install.ps1` rewrites this file wholesale on every upgrade, so it carries every
+key it does not own across by hand. `hashrate` and `soloprompt` are in that list:
+losing the first costs a re-tune, and losing the second re-asks a question whose
+answer the owner already gave.
+
+## Solo or pool
+
+The window always shows a recommendation, and the app never acts on it -- the
+mode changes only when someone clicks. The arithmetic behind it is
+`Cpu.SoloDaysPerBlock`: `difficulty x 2^32 / your_H/s / 86400`, which is exact
+given `nBits` and needs no network hash rate at all. (The whole-network figure
+from `getmininginfo` survives only as a fallback for the case where
+`getblockchaininfo` did not answer; it assumes 600 s spacing, which this chain
+routinely is not at.) A hash rate or a difficulty that could not be read yields
+0 days, which every caller treats as *not known* -- never as *no wait*.
+
+Once per install, when auto-tuning has just measured a machine at
+`Cpu.SOLO_MIN_HPS` (3,000 H/s) or better **and** the exact arithmetic puts it
+within `Cpu.SOLO_DAYS_MAX` (2 days) of a block, the tray offers solo mining once
+and remembers the answer, whichever it was. Both gates must pass: the floor is
+what keeps a laptop out of a mode where a month with nothing is a real
+possibility, and the days figure is what keeps a fast machine out of it when
+difficulty has climbed.
+
+That offer exists because a pool finding most of the network's blocks could
+reorganise the chain, and machines big enough to mine alone are the ones paying
+a pool fee for variance reduction they do not need. Three rules bound it, and
+none of them may be relaxed:
+
+- new installs still default to the pool (`install.ps1`), and an existing
+  install keeps whatever it already had. There is no third state --
+  `StartMining` reads a blank `poolurl` as SOLO, so writing "undecided" there
+  would silently move every new install, laptops included.
+- the app never switches mode on its own, and never mentions solo to a machine
+  below the floor.
+- nothing depends on the dialog being answered, or seen. This app can be
+  started into session 0 with no desktop (see above), and an unanswered offer
+  leaves the machine exactly as installed.
 
 Two more files appear next to it once a recovery phrase exists. Neither is ever
 committed, and `install.ps1` does not overwrite them:

@@ -155,6 +155,9 @@ namespace PCoinTray
             // --- forwarding -------------------------------------------------
             ok &= RunForward(log);
             ok &= RunWallet(log);
+#if !PCOIN_WALLET   // Cpu lives in PCoinTray.cs; the wallet build (build-wallet.bat) defines PCOIN_WALLET
+            ok &= RunSoloAdvice(log);
+#endif
 
             Log(log, ok ? "ALL CHECKS PASSED" : "FAILURES ABOVE - DO NOT SHIP");
             return ok;
@@ -1577,6 +1580,93 @@ namespace PCoinTray
         }
 
         static void Log(List<string> log, string s) { log.Add(s); }
+
+        // =================================================================
+        // Pool-vs-solo arithmetic
+        //
+        // This is what a one-time dialog puts to somebody as a reason to change
+        // where their earnings go, so it is checked the same way the money paths
+        // are: pure inputs, exact expected outputs, and every "unknown" input
+        // proved to stay unknown rather than collapsing into a number.
+        // =================================================================
+
+#if !PCOIN_WALLET
+        static string Days(double v) { return v.ToString("0.000", CI); }
+
+        static bool RunSoloAdvice(List<string> log)
+        {
+            bool ok = true;
+            Log(log, "--- pool vs solo ---");
+
+            // 2^32 hashes per unit of difficulty. RandomX changed which hash is
+            // compared against the target, not how the target is derived.
+            ok &= Check(log, "hashes per unit of difficulty", "4294967296", Cpu.HASHES_PER_DIFFICULTY.ToString("0", CI));
+
+            // Measured on the live chain 2026-09-03 at height 6331. Difficulty
+            // moves, so these are checks of the ARITHMETIC, not claims about
+            // today: at this difficulty a 2,518 H/s desktop waits 2.30 days.
+            const double DIFF = 0.11651;
+            ok &= Check(log, "16-thread desktop, 2518 H/s", "2.300", Days(Cpu.SoloDaysPerBlock(2518.0, DIFF)));
+            ok &= Check(log, "4-core laptop, 600 H/s", "9.653", Days(Cpu.SoloDaysPerBlock(600.0, DIFF)));
+            ok &= Check(log, "100 kH/s miner", "0.058", Days(Cpu.SoloDaysPerBlock(100000.0, DIFF)));
+            // Twice the hash rate is half the wait, exactly.
+            ok &= Check(log, "doubling the rate halves the wait",
+                Days(Cpu.SoloDaysPerBlock(2518.0, DIFF) / 2.0), Days(Cpu.SoloDaysPerBlock(5036.0, DIFF)));
+
+            // UNKNOWN STAYS UNKNOWN. A rate or a difficulty that could not be
+            // read is not a small one, and 0 days would read as "a block right
+            // away" -- the exact shape of mistake CLAUDE.md 7.1 and 7.2 record.
+            ok &= Check(log, "no hash rate is not a fast machine", "0.000", Days(Cpu.SoloDaysPerBlock(0.0, DIFF)));
+            ok &= Check(log, "no difficulty is not an easy chain", "0.000", Days(Cpu.SoloDaysPerBlock(2518.0, 0.0)));
+            ok &= Check(log, "a negative difficulty is refused, not signed", "0.000", Days(Cpu.SoloDaysPerBlock(2518.0, -1.0)));
+
+            // The advice itself.
+            var stopped = Cpu.AdviseMode(0.0, 0.0, 0.0);
+            ok &= Check(log, "nothing readable means no recommendation", "False", stopped.Ready.ToString());
+            ok &= Check(log, "and it says so in words", "True", stopped.Line.StartsWith("Measuring").ToString());
+
+            var desktop = Cpu.AdviseMode(2518.0, DIFF, 719000.0);
+            ok &= Check(log, "2518 H/s: ready", "True", desktop.Ready.ToString());
+            ok &= Check(log, "2518 H/s: 2.30 days, so just past the pool threshold", "True", desktop.PreferPool.ToString());
+
+            var big = Cpu.AdviseMode(100000.0, DIFF, 719000.0);
+            ok &= Check(log, "100 kH/s: solo", "False", big.PreferPool.ToString());
+            ok &= Check(log, "100 kH/s: reported as blocks per day, not days per block",
+                "True", big.Line.Contains("blocks a day").ToString());
+
+            // Exactly at the threshold is still solo: the pool branch is a
+            // strict >, so the boundary must not drift into it.
+            double atThreshold = DIFF * Cpu.HASHES_PER_DIFFICULTY / (Cpu.SOLO_DAYS_MAX * 86400.0);
+            ok &= Check(log, "exactly SOLO_DAYS_MAX is not yet a pool machine", "False",
+                Cpu.AdviseMode(atThreshold, DIFF, 719000.0).PreferPool.ToString());
+
+            // Difficulty is the exact input and the network hash rate is only a
+            // fallback, so passing a wildly wrong netHps must change nothing
+            // while difficulty is readable. If this ever fails, the exact path
+            // has stopped being taken.
+            ok &= Check(log, "a wrong network rate cannot move the answer",
+                Days(desktop.DaysPerBlock), Days(Cpu.AdviseMode(2518.0, DIFF, 1.0).DaysPerBlock));
+
+            // The fallback, for the one case where the chain call failed and
+            // getmininginfo answered. 719 kH/s / (2518 x 144) = 1.983 days --
+            // and note it is 14% short of the exact 2.300, which is why it is a
+            // fallback and not the formula: at 600 s spacing it would agree.
+            var fallback = Cpu.AdviseMode(2518.0, 0.0, 719000.0);
+            ok &= Check(log, "no difficulty falls back to the network rate", "1.983", Days(fallback.DaysPerBlock));
+            ok &= Check(log, "and the fallback disagrees with the exact form, as expected", "True",
+                (Days(fallback.DaysPerBlock) != Days(desktop.DaysPerBlock)).ToString());
+
+            // The floor on the one-time offer is a second, independent gate: a
+            // laptop must fail it even if difficulty ever fell far enough to
+            // make its days-per-block look acceptable.
+            ok &= Check(log, "the offer floor is above a 4-core laptop", "True",
+                (600.0 < Cpu.SOLO_MIN_HPS).ToString());
+            ok &= Check(log, "and below a 16-thread desktop", "True",
+                (Cpu.SOLO_MIN_HPS < 5036.0).ToString());
+
+            return ok;
+        }
+#endif
 
         static bool Check(List<string> log, string what, string expect, string got)
         {
