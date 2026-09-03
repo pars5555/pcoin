@@ -36,8 +36,8 @@ param(
     # half-applied bump is impossible. The hash is of pcoin-win64-miner.zip
     # and the install aborts on a mismatch, so a forgotten bump here breaks
     # every new install rather than failing quietly.
-    [string]$Version = '1.3.17',
-    [string]$Sha256 = '2e9bcb871511fa509efd663e8a242cba17fc702fa2ead254a332fa03f66e3873',
+    [string]$Version = '1.4.1',
+    [string]$Sha256 = 'f0f75d3926b9b7fc631af93fb39f561d150076e66b943b8d7ef7340daff60561',
     # All three seeds, not just one. The node also carries them compiled in as
     # of v1.2.1, so this is belt and braces rather than the only route in.
     [string[]]$AddNode = @('35.239.156.16:9444', '178.105.3.51:9444', '152.53.171.190:9444'),
@@ -274,6 +274,17 @@ foreach ($attempt in 1..6) {
             ForEach-Object { Copy-Item $_.FullName $InstallDir -Force }
         Get-ChildItem -Path $tmp -Filter 'START HERE.txt' -Recurse -File |
             ForEach-Object { Copy-Item $_.FullName $InstallDir -Force }
+        # uninstall.ps1, for the same reason and swept the same way. Until
+        # v1.4.1 it was only ever picked up by accident: it happened to sit
+        # beside bitcoind.exe in a flat archive, so the $srcDir copy above took
+        # it. In the nested layout it sits one level ABOVE the node binaries and
+        # that copy misses it entirely -- and the only symptom is one line of
+        # output saying the Apps-list entry was skipped, on an install that
+        # otherwise reports success. Sweeping for it makes both layouts install
+        # identically, which is what the comment above already claims.
+        Get-ChildItem -Path $tmp -Filter 'uninstall.ps1' -Recurse -File |
+            Select-Object -First 1 |
+            ForEach-Object { Copy-Item $_.FullName $InstallDir -Force }
         break
     } catch {
         if ($attempt -eq 6) { throw }
@@ -341,6 +352,18 @@ $seedPrompt = ''
 if ($keep.ContainsKey('seedprompt')) { $seedPrompt = $keep['seedprompt'] }
 $fastMode = '1'   # default ON for a NEW install; an upgrade keeps whatever is already set, just below
 if ($keep.ContainsKey('fastmode')) { $fastMode = $keep['fastmode'] }
+# What the tray has MEASURED about this machine, and the questions it has
+# already put to its owner. `optimal` and `hashrate` are the result of an
+# auto-tune that costs a couple of minutes of mining to redo; `soloprompt`
+# records that the solo-vs-pool question has been asked and answered here.
+# Dropping them is the same failure this block exists to stop for `seedprompt`:
+# an upgrade that re-asks a person who has already decided.
+$optimal = ''
+if ($keep.ContainsKey('optimal')) { $optimal = $keep['optimal'] }
+$hashrate = ''
+if ($keep.ContainsKey('hashrate')) { $hashrate = $keep['hashrate'] }
+$soloPrompt = ''
+if ($keep.ContainsKey('soloprompt')) { $soloPrompt = $keep['soloprompt'] }
 # Default a NEW install to the pool: for a small miner, pool pays a steady share
 # instead of waiting days for a rare solo block. An existing install keeps its own
 # choice, and -Solo forces solo.
@@ -380,8 +403,11 @@ if (-not $NoMine) {
   "datadir=$DataDir",
   "threads=$threadsOut",
   "seedprompt=$seedPrompt",
+  "soloprompt=$soloPrompt",
   "fastmode=$fastMode",
   "poolurl=$poolUrl",
+  "optimal=$optimal",
+  "hashrate=$hashrate",
   "percent=$percent") |
     Set-Content -Encoding ascii $trayCfg
 if ($threadsOut -gt 0) { Write-Output "  configured to mine with $threadsOut cores" }

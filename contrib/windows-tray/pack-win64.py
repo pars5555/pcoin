@@ -10,9 +10,17 @@ one to run, PCoinTray.exe, was the smallest and least obvious of them.
     pcoin-<ver>/
       PCoinTray.exe      the thing you double-click
       START HERE.txt
+      uninstall.ps1      what Settings > Apps > Uninstall runs
       bin/bitcoind.exe
       bin/bitcoin-cli.exe
       COPYING
+
+THE UNINSTALLER MUST BE IN THE ZIP. install.ps1 writes the Settings > Apps
+entry only when uninstall.ps1 is on disk after the copy -- an UninstallString
+pointing at a file that was never installed is the v1.2.3 bug over again. This
+script did not ship it, while the release it was written against was packed by
+hand WITH it, so re-packing from here alone would have quietly removed the
+Apps-list entry from every new install and reported success doing it.
 
 FILENAMES DO NOT CHANGE. PCoinTray.exe is named in both installers, the logon
 scheduled task and six source files; bitcoin-cli.exe is called by name from
@@ -52,6 +60,7 @@ def main():
     ap.add_argument("--node-zip", required=True,
                     help="a previous pcoin-win64-miner.zip to take bitcoind/bitcoin-cli from")
     ap.add_argument("--tray", default=os.path.join(HERE, "PCoinTray.exe"))
+    ap.add_argument("--uninstaller", default=os.path.join(HERE, "uninstall.ps1"))
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
 
@@ -59,6 +68,10 @@ def main():
     out = a.out or os.path.join(HERE, "pcoin-win64-miner.zip")
     if not os.path.isfile(a.tray):
         sys.exit("no PCoinTray.exe at %s -- run build.bat first" % a.tray)
+    # Refuse rather than warn: a zip without this installs cleanly, reports
+    # success, and leaves the user no way to remove PCoin from Settings.
+    if not os.path.isfile(a.uninstaller):
+        sys.exit("no uninstall.ps1 at %s" % a.uninstaller)
 
     tmp = tempfile.mkdtemp(prefix="pcoinpack")
     try:
@@ -78,6 +91,7 @@ def main():
 
         with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
             z.write(a.tray,   "%s/PCoinTray.exe" % top)
+            z.write(a.uninstaller, "%s/uninstall.ps1" % top)
             z.writestr("%s/START HERE.txt" % top, START_HERE.replace("\n", "\r\n"))
             z.write(bitcoind,   "%s/bin/bitcoind.exe" % top)
             z.write(bitcoincli, "%s/bin/bitcoin-cli.exe" % top)
@@ -91,6 +105,10 @@ def main():
             exes_at_root = [n for n in roots if n.lower().endswith(".exe") and "/" not in n]
             assert exes_at_root == ["PCoinTray.exe"], \
                 "exactly one exe belongs at the root, found %r" % exes_at_root
+            # A check that only prints is not a check (CLAUDE.md 7.12).
+            assert "uninstall.ps1" in roots, \
+                "uninstall.ps1 is missing: every new install would lose its " \
+                "Settings > Apps entry, and the install would still say it worked"
 
         sha = hashlib.sha256(open(out, "rb").read()).hexdigest()
         print("wrote %s" % out)
