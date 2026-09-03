@@ -171,10 +171,24 @@ if (-not $Purge) {
         $p = Join-Path $InstallDir $f
         if (Test-Path $p) { $items += $p }
     }
-    foreach ($f in @('wallet.dat', 'wallets')) {
-        $p = Join-Path $DataDir $f
-        if (Test-Path $p) { $items += $p }
+    # WHERE THE NODE KEEPS THE WALLET IS NOT FIXED, AND GUESSING COST THIS
+    # SCRIPT ITS WHOLE PURPOSE. Core uses `<datadir>\wallets\` only when that
+    # folder already exists at first start; on a fresh install it does not, so
+    # each wallet goes directly under the data folder as `data\<name>\wallet.dat`.
+    # Measured on this machine: the wallet was at data\main\wallet.dat, neither
+    # of the two paths above existed, and the rescue copied the config file
+    # alone -- then printed "WALLET SAVED TO ..." and deleted the data folder.
+    # For a miner whose owner never set up a recovery phrase, and that is the
+    # default state, that file IS the coins. uninstall-wallet.ps1 already
+    # carries this fix; the miner never got it. Take every wallet wherever it is.
+    foreach ($d in (Get-ChildItem $DataDir -Directory -ErrorAction SilentlyContinue)) {
+        if ($d.Name -eq 'wallets') { continue }
+        if (Test-Path (Join-Path $d.FullName 'wallet.dat')) { $items += $d.FullName }
     }
+    # Count what was found BEFORE copying, so the message below can only claim
+    # a wallet was saved when one actually was.
+    $walletItems = @($items | Where-Object {
+        $_ -like "$DataDir*" -or (Split-Path $_ -Leaf) -eq 'pcoin-seed.dat' }).Count
     if ($items.Count -gt 0) {
         try {
             New-Item -ItemType Directory -Path $dest -Force -ErrorAction Stop | Out-Null
@@ -183,9 +197,19 @@ if (-not $Purge) {
             if ($n -lt 1) { throw 'the copy is empty' }
             $rescued = $dest
             Write-Output ''
-            Write-Output "WALLET SAVED TO: $dest"
-            Write-Output "  ($n file(s)). Keep this folder -- it is the only copy of the key"
-            Write-Output '  material that was on this PC.'
+            if ($walletItems -gt 0) {
+                Write-Output "WALLET SAVED TO: $dest"
+                Write-Output "  ($n file(s)). Keep this folder -- it is the only copy of the key"
+                Write-Output '  material that was on this PC.'
+            } else {
+                # Settings only. Saying "wallet saved" here would be the lie the
+                # scan above exists to stop: a reassuring line over a delete.
+                $rescued = ''
+                Write-Output "SETTINGS SAVED TO: $dest"
+                Write-Output '  No wallet file was found on this PC, so there was no key material'
+                Write-Output '  to save -- only your settings. If you expected a wallet here, stop'
+                Write-Output '  and look for it before deleting anything.'
+            }
         } catch {
             # Never proceed to delete when the rescue failed. Stopping here
             # leaves a working install, which is always recoverable; carrying
