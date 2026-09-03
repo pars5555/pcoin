@@ -1187,8 +1187,11 @@ curl -fsSL https://pc.am/dl/install.sh | sudo sh
   Mining.</span>
 
 <span class="c"># Watch it work. Press b for your balance, q to quit.</span>
-<span class="c"># A real session from 15 Aug 2026 — your share depends on the network</span>
-<span class="c"># size on the day, which only ever grows. Check pool.pc.am for today's.</span>
+<span class="c"># A real session from 15 Aug 2026, left exactly as it was. The network was</span>
+<span class="c"># 53.5 kH/s that day and is more than ten times that now, so the share</span>
+<span class="c"># and the block estimate below are HISTORY, not a forecast — the same</span>
+<span class="c"># machine would wait far longer today. The tool reads both live; use the</span>
+<span class="c"># calculator above, or pool.pc.am, for what to actually expect.</span>
 pcoin-mine
 
 <span class="o">  PCoin miner
@@ -1454,9 +1457,11 @@ sudo systemctl stop pcoin-miner
   //   node: bitcoin-cli getblock $(bitcoin-cli getblockhash <tip>) | jq .difficulty
   //   spacing: median gap over the last ~25 blocks, discarding negative gaps
   //            (block timestamps are not monotonic in height on this chain)
-  var SNAPSHOT_DIFF = 0.08590709;   // measured 2 Sep 2026 at height 6183
-  var SNAPSHOT_SPACING = 348;       // measured median of the last 29 gaps, same date
-  var SNAPSHOT_WHEN = "2 Sep 2026";
+  var SNAPSHOT_DIFF = 0.10412300;   // measured 3 Sep 2026 at height 6346
+  var SNAPSHOT_SPACING = 600;       // the LWMA target. Spacing is noisy and one day's
+                                    // median is no better a guess than the target it is
+                                    // held to, so the fallback uses the target.
+  var SNAPSHOT_WHEN = "3 Sep 2026";
 
   var sel   = document.getElementById("calc-device");
   var thr   = document.getElementById("calc-threads");
