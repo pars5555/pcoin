@@ -490,13 +490,18 @@ namespace PCoinTray
             _syncCard.Visibility = syncing ? Visibility.Visible : Visibility.Collapsed;
             if (syncing)
             {
+                // Progress is blocks over headers, NOT the node's
+                // verificationprogress: PCoin ships with chainTxData zeroed,
+                // so that figure reads 100% from the first block, which is
+                // exactly the wrong thing to show someone waiting.
+                double progress = s.Blocks >= 0 && s.Headers > 0 ? (double)s.Blocks / s.Headers : 0.0;
                 string where = s.Blocks >= 0 && s.Headers >= 0
                     ? "block " + s.Blocks.ToString("N0", CultureInfo.InvariantCulture) + " of " + s.Headers.ToString("N0", CultureInfo.InvariantCulture)
                     : "reading headers";
-                _syncLine.Text = "Catching up with the chain: " + where + " (" +
-                                 (s.Progress * 100.0).ToString("0.0", CultureInfo.InvariantCulture) + "%). " +
-                                 "Sending waits until this finishes; receiving works now.";
-                _syncBar.Value = Math.Max(0.0, Math.Min(1.0, s.Progress));
+                _syncLine.Text = "Catching up with the chain: " + where +
+                                 (s.Headers > 0 ? " (" + (progress * 100.0).ToString("0.0", CultureInfo.InvariantCulture) + "%)" : "") +
+                                 ". Sending waits until this finishes; receiving works now.";
+                _syncBar.Value = Math.Max(0.0, Math.Min(1.0, progress));
             }
 
             // Setup card versus receive card.

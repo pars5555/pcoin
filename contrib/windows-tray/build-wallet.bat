@@ -24,6 +24,7 @@ if not exist "%FW%\WPF\PresentationFramework.dll" (
 )
 
 "%CSC%" /nologo /target:winexe /optimize+ /out:PCoinWallet.exe ^
+  /define:PCOIN_WALLET ^
   /win32icon:pcoin.ico ^
   /win32manifest:PCoinWallet.manifest ^
   /reference:System.dll ^

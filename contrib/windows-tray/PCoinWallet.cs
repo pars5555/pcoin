@@ -307,7 +307,9 @@ namespace PCoinTray
         volatile string _addressWarning = "";
         volatile WalletSnapshot _last = new WalletSnapshot();
         bool _setupRunning;
+        bool _setupOffered;
         bool _bookWarned;
+        int _pollFailures;
 
         public WalletApp()
         {
@@ -531,8 +533,12 @@ namespace PCoinTray
             }
             catch (Exception ex) { WalletProgram.Note("node up: " + ex.Message); }
             Push();
-            if (_phrase == null && string.IsNullOrEmpty(_walletProblem))
+            // Offered ONCE per run. The node can drop out and come back while
+            // it is busy validating (see Poll), and a second offer over a
+            // dialog that is already open is noise.
+            if (_phrase == null && string.IsNullOrEmpty(_walletProblem) && !_setupOffered)
             {
+                _setupOffered = true;
                 WalletProgram.Note("node up: no wallet on this PC, offering setup");
                 try { _sync.BeginInvoke(new Action(() => RunSetup(false))); }
                 catch (Exception ex) { WalletProgram.Note("offer setup: " + ex.Message); }
@@ -649,9 +655,10 @@ namespace PCoinTray
             }
 
             var s = Snapshot();
-            var r = _rpc.Call(null, "getblockchaininfo", "[]", 10000);
+            var r = _rpc.Call(null, "getblockchaininfo", "[]", 20000);
             if (r.Ok)
             {
+                _pollFailures = 0;
                 s.ChainKnown = true;
                 s.Blocks = (long)(Json.Number(r.Result, "blocks") ?? -1.0);
                 s.Headers = (long)(Json.Number(r.Result, "headers") ?? -1.0);
@@ -660,9 +667,12 @@ namespace PCoinTray
             }
             else if (r.Transport)
             {
-                // The node stopped answering. Nothing below is worth asking,
-                // and the figures on screen keep their age rather than
-                // becoming zero.
+                // A node validating blocks can hold its main lock for longer
+                // than one poll's patience, and that is not "down". Three
+                // misses in a row is; until then the figures on screen keep
+                // their age rather than becoming zero or a red status.
+                _pollFailures++;
+                if (_pollFailures < 3) return;
                 _nodeUp = false;
                 _nodeStatus = "The PCoin node is not answering.";
                 s.NodeUp = false;
@@ -900,17 +910,22 @@ namespace PCoinTray
 
                 if (ex != null)
                 {
+                    WalletProgram.Note("setup: threw: " + RpcClient.Sanitize(ex.ToString()));
                     MessageBox.Show("Setup failed: " + RpcClient.Sanitize(ex.Message) + "\r\n\r\nNothing has been changed.",
                                     "PCoin Wallet", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     return;
                 }
                 if (outcome == null || !outcome.Ok)
                 {
+                    WalletProgram.Note("setup: refused: " + (outcome == null ? "no outcome" : RpcClient.Sanitize(outcome.Error)));
                     MessageBox.Show((outcome == null ? "Setup did not complete." : outcome.Error) +
                                     "\r\n\r\nNothing has been changed.",
                                     "PCoin Wallet", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     return;
                 }
+                WalletProgram.Note("setup: " + (restore ? "restored" : "created") + " wallet " + outcome.Wallet +
+                                   " on " + outcome.Network + ", first address " + outcome.Address +
+                                   (outcome.TxCount >= 0 ? ", " + outcome.TxCount + " tx found" : ""));
                 if (SeedStore.Exists(_dir) && !outcome.AlreadySetUp)
                 {
                     MessageBox.Show(
@@ -971,11 +986,20 @@ namespace PCoinTray
                 msg.Append("Receive address:\r\n").Append(outcome.Address).Append("\r\n\r\n");
                 if (restore)
                 {
-                    if (outcome.TxCount == 0)
+                    bool synced = _last.BalanceTrustworthy;
+                    if (outcome.TxCount == 0 && !synced)
+                        // A scan over a chain that is still downloading proves
+                        // nothing either way; the wallet keeps scanning as the
+                        // blocks arrive, so the honest statement is "not yet".
+                        msg.Append("The node is still catching up with the chain, so nothing has been found yet. " +
+                                   "Your history and balance appear as the remaining blocks arrive; wait for " +
+                                   "\"Up to date\" before deciding anything.\r\n\r\n");
+                    else if (outcome.TxCount == 0)
                         msg.Append("The scan found NO transactions for these words. If you expected coins, check " +
                                    "every word against your paper - one wrong word restores a different, empty wallet.\r\n\r\n");
                     else if (outcome.TxCount > 0)
-                        msg.Append("The scan found ").Append(outcome.TxCount).Append(" transaction(s).\r\n\r\n");
+                        msg.Append("The scan found ").Append(outcome.TxCount).Append(" transaction(s)")
+                           .Append(synced ? "" : " so far; more may appear as the node catches up").Append(".\r\n\r\n");
                 }
                 msg.Append("The same words open this wallet in the PCoin Wallet app on Android.");
                 MessageBox.Show(msg.ToString(), "PCoin Wallet", MessageBoxButtons.OK, MessageBoxIcon.Information);

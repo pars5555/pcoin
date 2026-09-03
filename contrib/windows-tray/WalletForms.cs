@@ -240,6 +240,7 @@ namespace PCoinTray
             WalletUi.Text(_compose, "Send PCN", 20, 16, 400, 26, true);
 
             WalletUi.Text(_compose, "Pay to (PCoin address)", 20, 50, 300, 20, false);
+            _addr.Name = "address";
             _addr.Location = new Point(20, 70);
             _addr.Size = new Size(410, 26);
             _addr.Font = new Font("Consolas", 10f);
@@ -251,6 +252,7 @@ namespace PCoinTray
             _addrNote.ForeColor = Color.FromArgb(90, 90, 110);
 
             WalletUi.Text(_compose, "Amount (PCN)", 20, 128, 300, 20, false);
+            _amount.Name = "amount";
             _amount.Location = new Point(20, 148);
             _amount.Size = new Size(200, 26);
             _amount.Font = new Font("Consolas", 10f);
@@ -328,6 +330,7 @@ namespace PCoinTray
             WalletUi.Text(_result, "The payment has been handed to the network. It appears in History as " +
                 "pending until a block includes it.", 20, 44, 540, 40, false);
             WalletUi.Text(_result, "Transaction id", 20, 96, 300, 20, false);
+            _txid.Name = "txid";
             _txid.Location = new Point(20, 116);
             _txid.Size = new Size(540, 26);
             _txid.Font = new Font("Consolas", 9.5f);
@@ -358,7 +361,7 @@ namespace PCoinTray
             _review.Visible = false;
             _result.Visible = false;
             _compose.Visible = true;
-            _addr.Focus();
+            ActiveControl = _addr;
         }
 
         void SetTier(ForwardPolicy.FeeTier tier)
@@ -553,6 +556,7 @@ namespace PCoinTray
             MinimumSize = new Size(600, 320);
             Font = new Font("Segoe UI", 9f);
 
+            _list.Name = "history";
             _list.View = View.Details;
             _list.FullRowSelect = true;
             _list.MultiSelect = false;
@@ -783,6 +787,7 @@ namespace PCoinTray
             MinimumSize = new Size(560, 300);
             Font = new Font("Segoe UI", 9f);
 
+            _list.Name = "book";
             _list.View = View.Details;
             _list.FullRowSelect = true;
             _list.MultiSelect = false;
@@ -1000,6 +1005,7 @@ namespace PCoinTray
             Font = new Font("Segoe UI", 9f);
 
             WalletUi.Text(this, "PCoin address", 20, 16, 300, 20, false);
+            _addr.Name = "address";
             _addr.Location = new Point(20, 36);
             _addr.Size = new Size(480, 26);
             _addr.Font = new Font("Consolas", 10f);
@@ -1008,6 +1014,7 @@ namespace PCoinTray
             Controls.Add(_addr);
 
             WalletUi.Text(this, "Name (a note for you; shown next to the address, never instead of it)", 20, 72, 480, 20, false);
+            _name.Name = "name";
             _name.Location = new Point(20, 92);
             _name.Size = new Size(300, 26);
             _name.MaxLength = AddressBook.MAX_NAME;
@@ -1023,7 +1030,10 @@ namespace PCoinTray
             var cancel = Ui.Button(this, "Cancel", 20, 180, 100, DialogResult.Cancel);
             AcceptButton = ok;
             CancelButton = cancel;
-            if (addressEditable) _addr.Focus(); else _name.Focus();
+            // ActiveControl, not Focus(): Focus() does nothing before the
+            // handle exists, and the first control in tab order - the
+            // read-only address box - would take the keystrokes instead.
+            ActiveControl = addressEditable ? (Control)_addr : _name;
         }
 
         void Save()

@@ -219,16 +219,35 @@ namespace PCoinTray
 
         public string ConfPath { get { return Path.Combine(_datadir, "pcoin.conf"); } }
 
+        readonly object _authLock = new object();
+
         void LoadAuth()
         {
             // Re-read at most every few seconds, and re-read from scratch: the
             // cookie is rewritten every time bitcoind starts, so caching the
             // first one that worked would break permanently after a restart.
-            if ((DateTime.UtcNow - _authRead).TotalSeconds < 5 && _user != null) return;
-            _authRead = DateTime.UtcNow;
-            _user = null;
-            _pass = null;
+            //
+            // Under a lock, and the fields are only ever assigned as a PAIR at
+            // the end: two threads share one client (the wallet's poll thread
+            // and a dialog's worker), and the old shape - null the fields, then
+            // re-read them - let the second thread observe the null window and
+            // report "cannot read the node's RPC credentials" for a node that
+            // was answering perfectly.
+            lock (_authLock)
+            {
+                if ((DateTime.UtcNow - _authRead).TotalSeconds < 5 && _user != null) return;
+                _authRead = DateTime.UtcNow;
+                string user, pass;
+                ReadAuth(out user, out pass);
+                _user = user;
+                _pass = pass;
+            }
+        }
 
+        void ReadAuth(out string user, out string pass)
+        {
+            user = null;
+            pass = null;
             string cookieFile = Path.Combine(_datadir, ".cookie");
             try
             {
@@ -243,8 +262,8 @@ namespace PCoinTray
                         string k = line.Substring(0, eq).Trim();
                         string v = line.Substring(eq + 1).Trim();
                         if (k == "rpcport") { int p; if (int.TryParse(v, out p)) _port = p; }
-                        else if (k == "rpcuser") _user = v;
-                        else if (k == "rpcpassword") _pass = v;
+                        else if (k == "rpcuser") user = v;
+                        else if (k == "rpcpassword") pass = v;
                         else if (k == "rpccookiefile")
                             cookieFile = Path.IsPathRooted(v) ? v : Path.Combine(_datadir, v);
                     }
@@ -252,13 +271,13 @@ namespace PCoinTray
             }
             catch { }
 
-            if (_user == null || _pass == null)
+            if (user == null || pass == null)
             {
                 try
                 {
                     string cookie = File.ReadAllText(cookieFile);
                     int c = cookie.IndexOf(':');
-                    if (c > 0) { _user = cookie.Substring(0, c); _pass = cookie.Substring(c + 1).Trim(); }
+                    if (c > 0) { user = cookie.Substring(0, c); pass = cookie.Substring(c + 1).Trim(); }
                 }
                 catch { }
             }

@@ -141,8 +141,33 @@ namespace PCoinTray
         //! money bug, so this is checked rather than assumed.
         public string DetectChain()
         {
-            var r = _rpc.Call("getblockchaininfo", "[]");
-            return r.Ok ? Json.Str(r.Result, "chain") : null;
+            string why;
+            return DetectChain(out why);
+        }
+
+        /**
+         * Three attempts, two seconds apart. A node in initial block download
+         * on a busy PC can miss one twenty-second window; one miss must not
+         * abort a setup that has changed nothing yet, and the reason for the
+         * last miss is handed back so the message can say what happened.
+         */
+        public string DetectChain(out string why)
+        {
+            why = null;
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                if (attempt > 0) System.Threading.Thread.Sleep(2000);
+                var r = _rpc.Call("getblockchaininfo", "[]");
+                if (r.Ok)
+                {
+                    string chain = Json.Str(r.Result, "chain");
+                    if (chain != null) return chain;
+                    why = "getblockchaininfo carried no chain name";
+                    continue;
+                }
+                why = r.Error ?? "no answer";
+            }
+            return null;
         }
 
         /**
@@ -225,8 +250,14 @@ namespace PCoinTray
         {
             var o = new SetupOutcome { Wallet = HD_WALLET };
 
-            string chain = DetectChain();
-            if (chain == null) { o.Error = "The PCoin node is not answering. Start it and try again."; return o; }
+            string why;
+            string chain = DetectChain(out why);
+            if (chain == null)
+            {
+                o.Error = "The PCoin node is not answering (" + RpcClient.Sanitize(why ?? "no answer") +
+                          "). Start it and try again.";
+                return o;
+            }
             var net = PCoinNetwork.ByChain(chain);
             if (net == null) { o.Error = "Unrecognised network \"" + chain + "\"; refusing to derive keys."; return o; }
 

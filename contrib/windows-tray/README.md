@@ -165,3 +165,108 @@ To have it start with Windows, put a shortcut to `PCoinTray.exe` in
   all mining threads — so the core count barely affects memory use. Expect
   roughly 300-350 MB total for node plus miner.
 - The binaries are not code-signed, so SmartScreen will warn on first run.
+
+## PCoin Wallet (`PCoinWallet.exe`)
+
+A second program built from the same source tree: the Windows counterpart of
+the Android wallet app. Create or restore twelve words, receive to a QR code,
+send with the real fee shown before anything is broadcast, scroll the history,
+keep an address book. **It does not mine**, and it is **completely separate
+from the miner tray at runtime** - the two can be installed on one PC and
+neither knows the other exists:
+
+| | miner tray | wallet |
+|---|---|---|
+| exe | `PCoinTray.exe` | `PCoinWallet.exe` |
+| install folder | `C:\PCoin` | `C:\PCoinWallet` |
+| node | its own `bitcoind.exe`, `C:\PCoin\data` | its own `bitcoind.exe`, `C:\PCoinWallet\data` |
+| RPC port | 9443 | **9543** |
+| P2P | listens on 9444 | `listen=0` - outbound only, never binds 9444 |
+| phrase file | `C:\PCoin\pcoin-seed.dat` | `C:\PCoinWallet\pcoin-seed.dat` |
+| single-instance mutex | `Global\PCoinTraySingleInstance` | `Global\PCoinWalletSingleInstance` |
+| log | `pcoin-tray.log` | `pcoin-wallet.log` |
+| installer | `install.ps1` | `install-wallet.ps1` |
+| uninstaller | `uninstall.ps1` | `uninstall-wallet.ps1` |
+
+The wallet never looks for "a bitcoind process". It asks its own port, and if
+nothing answers it starts its own node on its own data folder; if that node
+exits at once (another copy of the wallet still holds the data-folder lock) it
+waits for that one instead of claiming it. The miner's node can therefore
+never be adopted or stopped by the wallet, and vice versa. Verified on a PC
+running both: the wallet was installed, used and uninstalled while the tray
+kept mining on 9443 throughout.
+
+### Build
+
+```cmd
+cd contrib\windows-tray
+build-wallet.bat
+PCoinWallet.exe --selftest
+```
+
+Same in-box `csc.exe`, no NuGet. `build-wallet.bat` compiles the shared files
+(`Seed*.cs`, `Forward*.cs`, `Amounts.cs`, `AddressBook*.cs`, `QrCode.cs`,
+`SeedSelfTest.cs`) plus `PCoinWallet.cs`, `WalletWindow.cs` and
+`WalletForms.cs`, and leaves out the tray's `PCoinTray.cs`, `MinerWindow.cs`,
+`ForwardForms.cs` and `FleetProvision.cs`. `build.bat` (the tray) also compiles
+the four new shared files, so `PCoinTray.exe --selftest` covers them too.
+
+### What the shared code gives it, and what is new
+
+Everything that touches money is shared with the tray and was already proven
+on the live chain: derivation (`SeedKeys.cs`), the DPAPI phrase file
+(`SeedStore.cs`), the node-side wallet setup with its cross-check that the
+node derives the same first address (`SeedWallet.cs`), the RPC client, and the
+build / decode / verify / broadcast engine (`ForwardEngine.cs`). New, and each
+a 1:1 port of the Android file of the same name, pinned by the same test
+vectors under `--selftest`:
+
+* `Amounts.cs` - decimal text to satoshis, never through a double.
+* `ForwardPolicy.FeeTier` / `MaxFeeSatFor` / `VerifyUserSend` - the three fee
+  tiers (Normal 1, Fast 5, Very fast 20 sat/vB) and the assertions run on the
+  DECODED transaction before it is shown: pays the address entered, the
+  amount asked for, change comes back to a change descriptor of this wallet,
+  fee positive and under the tier's ceiling.
+* `ForwardEngine.PrepareSend` / `BroadcastPrepared` / `ListHistoryPage` -
+  inspect-then-commit: build with `add_to_wallet=false`, read every input with
+  `gettxout`, show the real fee; broadcast re-sends the same hex and never
+  rebuilds; history pages by `listtransactions`' own `skip`, and only an empty
+  node page ends the list.
+* `AddressBook.cs` + `AddressBookStore.cs` - names kept locally in
+  `pcoin-addressbook.json` (same JSON as Android, so a file exported from one
+  imports into the other), bech32 keys folded case-insensitively, base58 never.
+* `QrCode.cs` - a byte-mode, ECC-M QR encoder checked module-for-module
+  (unmasked) against the Python `qrcode` vectors the Android app uses.
+
+### Testing without real coins
+
+The wallet runs against whatever chain its data folder's `pcoin.conf` says. A
+regtest sandbox, entirely self-contained:
+
+```
+pcoin-wallet.cfg          datadir=<folder>\data
+<folder>\data\pcoin.conf  regtest=1
+                          rpcuser=sandbox
+                          rpcpassword=sandbox
+                          [regtest]
+                          rpcport=9543
+                          listen=0
+                          fallbackfee=0.00001
+                          changetype=bech32
+```
+
+Restore the standard BIP39 test phrase, then
+`bitcoin-cli -datadir=<folder>\data -regtest generatetoaddress 101 <address>`
+funds it. That is the recipe the end-to-end smoke test used (restore, receive,
+send 1.5 PCN at the Fast tier, confirm, address book, history), driven through
+UI Automation on a fleet PC that also runs the miner.
+
+### Uninstalling
+
+Settings > Apps > PCoin Wallet > Uninstall runs `uninstall-wallet.ps1`. It
+stops only the wallet's own node (through its own data folder, never
+`Stop-Process bitcoind`), copies `pcoin-seed.dat`, `pcoin-seed.info`,
+`pcoin-addressbook.json`, `pcoin-wallet.cfg` and the node's `wallets\` to
+`%USERPROFILE%\PCoinWallet-backup-<stamp>` and verifies the copy before
+deleting anything. `-Purge` deletes the wallet files too and refuses without
+`-Yes`.
