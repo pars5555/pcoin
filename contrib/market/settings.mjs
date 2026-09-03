@@ -56,9 +56,16 @@ export const DEFS = {
     label: 'Hot wallet warning (PCN)', help: 'Below this, Telegram nags every 10 minutes.' },
   floatStopPcn:        { type: 'num', def: 1000,  min: 0,   max: 10000000,
     label: 'Hot wallet floor (PCN)', help: 'Below this the server stops sending and queues everything.' },
-  orderTtlHours:       { type: 'num', def: 24,   min: 1,    max: 720,
+  orderTtlHours:       { type: 'num', def: 2,    min: 1,    max: 720,
     label: 'Unpaid order lifetime (hours)',
-    help: 'After this an unpaid order expires and its PCN goes back on the ladder.' },
+    help: 'After this an unpaid order expires and its PCN goes back on the ladder. Short is ' +
+          'kinder to everyone else: an unpaid order holds rungs, and enough of them push the ' +
+          'price a real buyer would pay past the divergence limit, which closes the market.' },
+  maxOrdersPerHour:    { type: 'num', def: 3,    min: 1,    max: 100,
+    label: 'New orders per email per hour',
+    help: 'How many orders one email may START in a rolling hour, whatever became of them. ' +
+          'maxPendingOrders bounds how many exist at once; this bounds the churn. One address ' +
+          'created seven orders over two days and paid for none, and each one reserved rungs.' },
   retireSpentCoins:    { type: 'bool', def: true,
     label: 'Retire spent coins',
     help: 'When customers spend PCN on the services, withdraw a matching share of the ladder from ' +

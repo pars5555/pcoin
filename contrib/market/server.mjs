@@ -139,7 +139,10 @@ import { makeLadder } from './ladder.mjs';
 // offline for the length of one deploy. The arrow defers the read to call time,
 // by which point the binding exists. (Same class of mistake as the CSRF-reject
 // path and the gate watcher above; the file's ordering makes it easy to repeat.)
-const L = makeLadder(pool, { notify: (...args) => notify(...args) });
+// `getSetting` is a function for the same reason `notify` is: S is declared
+// below, so passing the binding itself would throw at startup.
+const L = makeLadder(pool, { notify: (...args) => notify(...args),
+                             getSetting: k => S.get(k) });
 setInterval(L.sweepExpiredOrders, 15 * 60 * 1000).unref?.();
 
 // ── settings ───────────────────────────────────────────────────────────────
@@ -1204,6 +1207,26 @@ createServer(async (req, res) => {
         return json(res, 429, { error:
           `you already have ${pending} unpaid orders. Pay or cancel one before starting another — ` +
           `unpaid orders hold PCN that nobody else can buy.` });
+      }
+
+      // Rate, not just concurrency. maxPendingOrders bounds how many unpaid
+      // orders exist at once, which one address walked straight around by
+      // letting them expire and starting more: seven orders over two days,
+      // ~$323 quoted, nothing ever paid. Every one of them reserved rungs, and
+      // on 2026-09-03 three at once pushed the price a real buyer would pay past
+      // the divergence limit and closed the market to everybody.
+      //
+      // Counts orders CREATED in the window whatever became of them -- expired
+      // ones are exactly the churn being bounded, so excluding them would defeat
+      // the check.
+      const [{ recent }] = await q(
+        `SELECT COUNT(*) recent FROM orders
+          WHERE email = ? AND created_at > (NOW() - INTERVAL 1 HOUR)`, [email]);
+      if (Number(recent) >= S.get('maxOrdersPerHour')) {
+        return json(res, 429, { error:
+          `you have started ${recent} orders in the last hour, which is the limit. ` +
+          `Try again later — each order holds PCN that nobody else can buy until it is paid ` +
+          `or expires.` });
       }
 
       const orderId = 'M' + Date.now().toString(36) + randomBytes(3).toString('hex');

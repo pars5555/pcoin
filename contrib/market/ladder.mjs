@@ -114,8 +114,25 @@ export function walkPcn(rungs, pcn) {
   return finish(rungs, fills, gotUnits, cost, 0, fromUnits(needUnits));
 }
 
-export function makeLadder(pool, { notify = null, log = console } = {}) {
+export function makeLadder(pool, { notify = null, log = console, getSetting = null } = {}) {
   const q = async (sql, args = []) => (await pool.query(sql, args))[0];
+
+  // The admin panel exposes `orderTtlHours`, and until 2026-09-03 nothing read
+  // it: the sweep used the ORDER_TTL_HOURS constant, so changing the setting
+  // stored a new value and altered no behaviour. That was found the hard way,
+  // during an incident, by changing it and watching orders expire on the old
+  // number anyway. A dead knob in a money panel is worse than no knob -- the
+  // operator changes it, sees it saved, and believes the system changed.
+  //
+  // A FUNCTION, not the settings object: the caller's binding is declared
+  // after this call, and it is re-read per sweep so an admin edit takes effect
+  // without a restart. The constant stays as the fallback, because the four
+  // ladder test harnesses construct a ladder with no settings at all.
+  const ttlHours = () => {
+    let v = NaN;
+    try { if (getSetting) v = Number(getSetting('orderTtlHours')); } catch { /* fall back */ }
+    return Number.isFinite(v) && v > 0 ? v : ORDER_TTL_HOURS;
+  };
 
   // sweepExpiredOrders is what returns inventory from orders nobody paid for.
   // If it stops working, unpaid reservations accumulate and the ladder quietly
@@ -302,7 +319,7 @@ export function makeLadder(pool, { notify = null, log = console } = {}) {
     try {
       const stale = await q(
         `SELECT order_id FROM orders
-          WHERE status = 'pending' AND created_at < (NOW() - INTERVAL ? HOUR)`, [ORDER_TTL_HOURS]);
+          WHERE status = 'pending' AND created_at < (NOW() - INTERVAL ? HOUR)`, [ttlHours()]);
       for (const o of stale) {
         // ONE TRANSACTION for the flip and the release.
         //
