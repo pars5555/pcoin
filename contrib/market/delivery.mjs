@@ -348,7 +348,7 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
 
       await recordSent(orderId, txid);
       await notify(
-        `🟢 <b>Sent automatically</b>\n<code>${orderId}</code>\n` +
+        `🟢 <b>${force ? 'Sent from the admin panel' : 'Sent automatically'}</b>\n<code>${orderId}</code>\n` +
         `$${usd.toFixed(2)} → <b>${pcn.toFixed(8)} PCN</b>\n` +
         `to <code>${order.address}</code>\n` +
         `<code>${txid}</code>`);
@@ -401,20 +401,29 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
   // top-ups). Minting is the fallback for a wallet that has no such address yet,
   // and it labels what it mints so the next call is stable.
   const FLOAT_TOPUP_LABEL = 'float top-up';
+  // Remembered across calls so a momentary RPC failure cannot produce an
+  // alert that names no address at all -- see the fallback below.
+  let lastGoodTopup = null;
   async function receiveAddress() {
     try {
       const byLabel = await node.wallet('getaddressesbylabel', [FLOAT_TOPUP_LABEL]);
       // Sorted so that a wallet holding more than one is still deterministic --
       // an address that changes between two reads is the bug being fixed here.
       const existing = Object.keys(byLabel || {}).sort();
-      if (existing.length) return existing[0];
+      if (existing.length) { lastGoodTopup = existing[0]; return existing[0]; }
     } catch {
       // Label lookup failed. That resolves NOTHING -- it is not evidence the
       // address is absent, so do not mint a replacement for one that may well
       // exist. Minting here would hand back a different address every time the
       // node was briefly unreachable, which is the original bug wearing a
       // disguise.
-      return '(could not read the top-up address)';
+      // An alert reading "top up (could not read the top-up address)" is
+      // useless at exactly the moment it matters most. That happened on
+      // 2026-09-02 and the top-up took eight hours. Fall back to the last
+      // address we DID read; failing that, name the label so the operator
+      // can still find it by hand.
+      if (lastGoodTopup) return `${lastGoodTopup} (last known good -- the node could not be asked just now)`;
+      return `the address labelled "${FLOAT_TOPUP_LABEL}" in the market-hot wallet -- the node could not be asked for it`;
     }
     try {
       return await node.wallet('getnewaddress', [FLOAT_TOPUP_LABEL, 'bech32']);
