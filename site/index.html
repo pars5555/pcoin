@@ -1057,6 +1057,11 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
         collide with Bitcoin Core. <b>Uninstalling never deletes your wallet</b> on Windows or Linux:
         it is left in <span class="mono">C:\PCoin\data</span> or
         <span class="mono">/var/lib/pcoin</span> for you to remove yourself.
+        <b>One exception, and it cost coins:</b> the Windows miner versions
+        <b>1.3.16&ndash;1.4.1</b>, pinned here for five hours on 3 September 2026, shipped an
+        uninstaller that said it had saved the wallet and then deleted it. <b>1.4.2 fixes it.</b>
+        If you installed that day, run <span class="mono">irm https://pc.am/dl/install.ps1 | iex</span>
+        before uninstalling &mdash; Settings &gt; Apps runs the copy on your machine, not the fixed one.
         <br><br>
         <b>Android is different, and this one can cost you coins.</b> The APK holds its wallet in
         app-private storage, so <b>uninstalling the app destroys that wallet</b>. Write your twelve-word

@@ -500,6 +500,20 @@ Get-FileHash .\pcoin-win64-miner.zip -Algorithm SHA256</pre>
   </p>
 
   <h2 style="font-size:20px;margin:38px 0 12px">Removing PCoin</h2>
+  <div style="border:1px solid #a4442a;background:#2a1512;border-radius:8px;padding:14px 16px;margin:18px 0;color:#f0d8d2;line-height:1.7;max-width:72ch">
+    <b>If you installed the Windows miner on 3 September 2026, upgrade before you uninstall.</b><br>
+    Versions <b>1.3.16 to 1.4.1</b> &mdash; the pinned download between 03:33 and 08:49 UTC that day &mdash;
+    shipped an uninstaller that looked for the node wallet in two places it is not on a fresh
+    install. It rescued only the settings file, printed <span class="mono">WALLET SAVED TO &hellip;</span>
+    and then removed the wallet anyway. If you never wrote your twelve-word recovery phrase down,
+    that file was the only copy of your coins. <b>1.4.2 fixes it.</b>
+    <br><br>
+    <b>Settings &gt; Apps runs the copy on your own machine</b>, not this site&rsquo;s, so the fix
+    does not reach you by itself. Run either of these <em>first</em>:
+    <br><br>
+    <span class="mono">irm https://pc.am/dl/install.ps1 | iex</span> &mdash; upgrades you to 1.4.2, or<br>
+    <span class="mono">irm https://pc.am/dl/uninstall.ps1 | iex</span> &mdash; removes PCoin with the fixed uninstaller.
+  </div>
   <p style="color:var(--muted);line-height:1.7;max-width:72ch">
     Any of these three &mdash; they all run the same uninstaller:
   </p>
@@ -509,7 +523,8 @@ Get-FileHash .\pcoin-win64-miner.zip -Algorithm SHA256</pre>
     <li><code>uninstall.ps1</code>, which is in the install folder and in the zip</li>
   </ul>
   <p style="color:var(--muted);line-height:1.7;max-width:72ch">
-    <b>It does not delete your wallet.</b> Your recovery phrase and wallet file are
+    <b>It does not delete your wallet</b> &mdash; true of 1.4.2 and later, and of
+    everything before 1.3.16 (see the warning above). Your recovery phrase and wallet file are
     copied into a dated folder in your user profile <em>before</em> anything is
     removed, and the uninstaller prints the path. If that copy fails it stops and
     changes nothing, because an uninstall you can retry is better than coins
