@@ -313,15 +313,38 @@ def main() -> int:
     print(f"allowed this run     : {budget:,.6f} {unit}")
 
     if budget <= 0:
-        why = ("daily cap reached" if (st["usdt_spent"] if buying else st["wpcn_spent"]) > 0
-               else f"{need_label} float at or below floor")
+        # Name the term that ACTUALLY bound the budget. Choosing the reason by
+        # "have we spent anything today" blamed the daily cap on every run after
+        # the first trade, including when the cap had plenty left and the float
+        # was sitting on its floor -- which sends the reader to raise a limit
+        # that was not binding while the wallet stays empty.
+        if buying:
+            cap_left = DAILY_USDT_CAP - st["usdt_spent"]
+            floor_left = max(0.0, have_usdt - MIN_USDT_FLOOR)
+            cap_txt = f"{cap_left:,.4f} of {DAILY_USDT_CAP:,.0f} USDT/day left"
+            floor_txt = f"float {have_usdt:,.4f} USDT against a {MIN_USDT_FLOOR:,.2f} floor"
+        else:
+            cap_left = DAILY_WPCN_CAP - st["wpcn_spent"]
+            floor_left = max(0.0, have_wpcn - MIN_WPCN_FLOOR)
+            cap_txt = f"{cap_left:,.2f} of {DAILY_WPCN_CAP:,.0f} wPCN/day left"
+            floor_txt = f"float {have_wpcn:,.2f} wPCN against a {MIN_WPCN_FLOOR:,.2f} floor"
+        if cap_left <= 0:
+            why = "daily cap reached"
+            fix = "Raise KEEPER_DAILY_%s_CAP, or wait for the daily reset." % unit.upper()
+        elif floor_left <= 0:
+            why = f"{need_label} float at or below floor"
+            fix = f"Top the float up -- send {need_label} to {acct.address}."
+        else:
+            why = "nothing to trade"
+            fix = "No action: the gap is already inside the dead band."
         notify_throttled("blocked",
                f"keeper: cannot close the gap -- {why}",
                f"pool ${pool:.8f} vs posted ${posted:.8f} ({gap*100:+.2f}%).\n"
-               f"Needs {want:,.4f} {unit} but none is available: {why}.\n"
-               f"float {have_usdt:,.4f} USDT / {have_wpcn:,.2f} wPCN.\n"
-               f"Top the float up, or the gap stays open.")
-        print(f"BLOCKED: {why}")
+               f"Needs {want:,.4f} {unit}, none available: {why}.\n"
+               f"cap: {cap_txt}\n"
+               f"floor: {floor_txt}\n"
+               f"{fix}")
+        print(f"BLOCKED: {why}  (cap: {cap_txt}; {floor_txt})")
         return 1
 
     if not live:
