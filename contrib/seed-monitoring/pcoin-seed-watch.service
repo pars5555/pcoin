@@ -2,6 +2,15 @@
 Description=PCoin seed health check
 Documentation=https://github.com/pars5555/pcoin/blob/main/doc/SEED-MONITORING.md
 
+# Wire the detector to the notifier HERE, in the tracked unit, exactly as
+# pcoin-fork-watch.service does. This lived only in an untracked drop-in
+# (/etc/systemd/system/pcoin-seed-watch.service.d/10-onfailure.conf) on two of
+# the three seeds; the third had nothing, so its seed check had been failing
+# silently -- the precise failure this check exists to prevent, in the check
+# itself. A fresh install from this repo now alerts without anyone remembering
+# to add a file.
+OnFailure=pcoin-alert@%n.service
+
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/pcoin-seed-watch
@@ -14,5 +23,4 @@ TimeoutStartSec=60
 
 # A failure here is deliberately loud in systemd rather than silently retried:
 # `systemctl list-units --failed` and `systemctl status pcoin-seed-watch` both
-# show it, and OnFailure= can be pointed at a notifier later without changing
-# any of the checking logic.
+# show it, and the OnFailure= above carries it to the private ops channel.
