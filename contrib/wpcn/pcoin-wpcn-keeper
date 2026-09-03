@@ -381,9 +381,10 @@ def main() -> int:
     after = u2 / w2
     print(f"\npool ${pool:.8f} -> ${after:.8f}  (target ${posted:.8f})")
     notify("keeper: traded",
-           f"{'Bought' if buying else 'Sold'} {budget:,.6f} {unit}.\n"
+           (f"Spent {budget:,.6f} USDT buying wPCN." if buying
+            else f"Sold {budget:,.6f} wPCN for USDT.") + "\n"
            f"pool ${pool:.8f} -> ${after:.8f}, posted ${posted:.8f}\n"
-           f"float now {have_usdt:,.4f} USDT / {have_wpcn:,.2f} wPCN (pre-trade).")
+           f"float before this trade {have_usdt:,.4f} USDT / {have_wpcn:,.2f} wPCN.")
     return 0
 
 

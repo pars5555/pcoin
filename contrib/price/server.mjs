@@ -443,13 +443,16 @@ async function pollLadder(force = false) {
     }
     if (tune.moved) {
       console.log(`[price] serviceRate -> ${tune.serviceRate} (ladder ${st.ladderPrice})`);
-      // Every move, no throttle. This is the number four products credit money
-      // at; it moves at most once an hour by construction, and the one time it
-      // ran away it did so unobserved for as long as it took someone to look.
+      // Every move, no throttle. This is the number every PCN payment rail
+      // credits money at; it moves at most once an hour by construction, and the
+      // one time it ran away it did so unobserved for as long as it took someone
+      // to look. Do NOT list the rails here: the list said four for days after
+      // the fifth went live, and an alert nobody can trust to be complete is
+      // worse than one that does not try.
       await notify(`💱 <b>serviceRate moved</b>\n` +
         `<code>${before.serviceRate}</code> → <b><code>${tune.serviceRate}</code></b>\n` +
         `ladder ${st.ladderPrice} · ceiling ${st.serviceCeiling} · max move ${st.serviceMaxMovePct}%\n` +
-        `checker, webbuilderbot, aicontrol and 3dmodels now credit at the new rate.`);
+        `Every service that credits PCN deposits reads this number and uses the new rate from now on.`);
     }
     return { ok: true, ...tune };
   } catch (e) {
