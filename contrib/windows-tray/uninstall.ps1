@@ -92,8 +92,18 @@ if (-not $script:IsAdmin -and -not $NoElevate) {
     if ($Purge)    { $extra = $extra + ' -Purge' }
     if ($KeepData) { $extra = $extra + ' -KeepData' }
     if ($Yes)      { $extra = $extra + ' -Yes' }
+    # $MyInvocation.MyCommand.Path is EMPTY when this script is running from a
+    # pipe -- which is exactly how pc.am advertises the standalone recovery
+    # form, `irm https://pc.am/dl/uninstall.ps1 | iex`. Building the relaunch
+    # around an empty path produced "& '' -InstallDir ...", so the elevated
+    # window opened and did nothing. Fall back to re-fetching the same script
+    # in the child, the way install.ps1 already does.
     $self = $MyInvocation.MyCommand.Path
-    $inner = "try { & '$self' -InstallDir '$InstallDir' -NoElevate$extra } catch { Write-Host `$_.Exception.Message -ForegroundColor Red; Start-Sleep 10 }"
+    if ($self -and (Test-Path $self)) {
+        $inner = "try { & '$self' -InstallDir '$InstallDir' -NoElevate$extra } catch { Write-Host `$_.Exception.Message -ForegroundColor Red; Start-Sleep 10 }"
+    } else {
+        $inner = "try { & ([scriptblock]::Create((irm https://pc.am/dl/uninstall.ps1))) -InstallDir '$InstallDir' -NoElevate$extra } catch { Write-Host `$_.Exception.Message -ForegroundColor Red; Start-Sleep 10 }"
+    }
     try {
         Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command',$inner -Wait
         Write-Output '  Elevated uninstall finished.'
@@ -104,6 +114,12 @@ if (-not $script:IsAdmin -and -not $NoElevate) {
 }
 
 # --- confirm -------------------------------------------------------------
+# Refuse -Purge FIRST. Checking it after the prompt meant typing YES and then
+# being told no, which reads as the script losing the answer.
+if ($Purge -and -not $Yes) {
+    Write-Output 'Refusing -Purge without -Yes: that combination deletes the wallet.'
+    exit 1
+}
 if (-not $Yes) {
     Write-Output 'This will stop mining, shut the node down and remove PCoin from this PC.'
     if ($Purge) {
@@ -117,10 +133,6 @@ if (-not $Yes) {
     $a = Read-Host 'Type YES to continue'
     if ($a -ne 'YES') { Write-Output 'Cancelled. Nothing was changed.'; exit 1 }
     Write-Output ''
-}
-if ($Purge -and -not $Yes) {
-    Write-Output 'Refusing -Purge without -Yes.'
-    exit 1
 }
 
 # --- stop everything -----------------------------------------------------
