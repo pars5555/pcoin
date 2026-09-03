@@ -472,6 +472,7 @@
   <table class="files">
     <tr><th>File</th><th>What it contains</th></tr>
     <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.3.17/pcoin-win64-miner.zip">pcoin-win64-miner.zip</a></td><td>Node, CLI and the tray miner</td></tr>
+    <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.4.0/pcoin-win64-wallet.zip">pcoin-win64-wallet.zip</a></td><td>The wallet: node, CLI and <code>PCoinWallet.exe</code> &mdash; no mining</td></tr>
   </table>
   </div>
   <pre class="cmd"><button class="copy" type="button">copy</button><span class="c"># check it before you run it</span>
@@ -481,6 +482,23 @@ Get-FileHash .\pcoin-win64-miner.zip -Algorithm SHA256</pre>
     Inside are <code>bitcoind.exe</code>, <code>bitcoin-cli.exe</code> and
     <code>PCoinTray.exe</code>. The tray app is the only one you need to launch.
   </p>
+  <h2 style="font-size:20px;margin:38px 0 12px" id="wallet-win">Just a wallet, no mining</h2>
+  <p style="color:var(--muted);line-height:1.7;max-width:72ch">
+    <b>PCoin Wallet</b> is a separate program: create or restore your twelve words, receive to a
+    QR code, send with the real fee shown before anything goes out, scroll your history, keep an
+    address book. It runs its own node in its own folder (<code>C:\PCoinWallet</code>) and never
+    mines, so it can live on a PC that also runs the miner. The same twelve words open the wallet
+    in the Android app.
+  </p>
+  <pre class="cmd"><button class="copy" type="button">copy</button>irm https://pc.am/dl/install-wallet.ps1 | iex</pre>
+  <p style="color:var(--muted);line-height:1.7;max-width:72ch">
+    That downloads <code>pcoin-win64-wallet.zip</code>, checks its SHA-256, installs it, puts
+    <b>PCoin Wallet</b> on the desktop and in Settings &rarr; Apps, and opens it. Removing it
+    later is the ordinary Settings &rarr; Apps &rarr; Uninstall; the uninstaller copies your
+    wallet files to your user folder before it deletes anything. Prefer to unzip by hand?
+    Run <code>PCoinWallet.exe</code> from the archive above &mdash; it needs nothing else.
+  </p>
+
   <h2 style="font-size:20px;margin:38px 0 12px">Removing PCoin</h2>
   <p style="color:var(--muted);line-height:1.7;max-width:72ch">
     Any of these three &mdash; they all run the same uninstaller:
