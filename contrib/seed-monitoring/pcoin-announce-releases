@@ -1,0 +1,92 @@
+#!/bin/bash
+# Announce a new PCoin release to @PCoinPCN, automatically, once.
+#
+# Releases are the one class of news users must ACT on: an un-upgraded node can
+# end up mining a branch nobody accepts, and the only channel that reaches an
+# operator we cannot contact is the public one. Everything else -- new services,
+# milestones, policy changes -- is written by a person and sent with
+# pcoin-announce by hand, because a machine cannot judge whether it is worth
+# interrupting people.
+#
+# Safe to run every 15 minutes forever:
+#   * pcoin-announce is idempotent on the release tag, so a repeat is a no-op;
+#   * a failed GitHub call announces NOTHING (an unreadable API is not "no new
+#     release" -- it is "I do not know", and the two must not collapse);
+#   * only a release NEWER than the last announced one is posted, so importing
+#     history never floods the channel.
+#
+# First run seeds the marker WITHOUT announcing. Otherwise installing this
+# would immediately announce whatever release happens to be current, as news.
+
+set -u
+REPO="pars5555/pcoin"
+STATE=/var/lib/pcoin-monitor/last-release-announced
+ANNOUNCE=/usr/local/bin/pcoin-announce
+
+log() { logger -t pcoin-announce-releases -- "$*" 2>/dev/null || printf '%s\n' "$*"; }
+
+mkdir -p "$(dirname "$STATE")" 2>/dev/null
+
+J=$(curl -sfL --max-time 25 -H 'Accept: application/vnd.github+json' \
+      "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null) || {
+  log "GitHub unreachable — announcing nothing (unknown is not 'no release')"
+  exit 0
+}
+
+TAG=$(printf '%s' "$J"  | grep -oE '"tag_name":[[:space:]]*"[^"]+"' | head -1 | cut -d'"' -f4)
+NAME=$(printf '%s' "$J" | grep -oE '"name":[[:space:]]*"[^"]*"'     | head -1 | cut -d'"' -f4)
+URL=$(printf '%s' "$J"  | grep -oE '"html_url":[[:space:]]*"[^"]+"' | head -1 | cut -d'"' -f4)
+DRAFT=$(printf '%s' "$J" | grep -oE '"draft":[[:space:]]*(true|false)' | head -1 | grep -o 'true\|false')
+PRE=$(printf '%s' "$J"  | grep -oE '"prerelease":[[:space:]]*(true|false)' | head -1 | grep -o 'true\|false')
+
+[ -n "$TAG" ] || { log "could not parse a tag — announcing nothing"; exit 0; }
+[ "$DRAFT" = "true" ] && { log "latest is a draft ($TAG) — skipping"; exit 0; }
+[ "$PRE" = "true" ]   && { log "latest is a prerelease ($TAG) — skipping"; exit 0; }
+
+if [ ! -f "$STATE" ]; then
+  printf '%s' "$TAG" > "$STATE"
+  log "seeded at $TAG without announcing (first run)"
+  exit 0
+fi
+
+LAST=$(cat "$STATE" 2>/dev/null)
+[ "$LAST" = "$TAG" ] && exit 0
+
+TITLE="PCoin $TAG released"
+
+# Does this release actually touch the node?
+#
+# The consensus warning below is true of a node release and FALSE of everything
+# else, and it used to be printed unconditionally. v1.4.0 was a new, separate
+# wallet application -- it changes nothing about consensus -- and subscribers
+# were told an old node might follow a chain nobody accepts. A warning that
+# fires on every release is a warning nobody reads on the one that matters.
+#
+# The release title already says what it is: platform-only releases name their
+# platform. If it cannot be told, say NOTHING. An omitted warning is
+# recoverable; a false one spends credibility that is not.
+LOWER=$(printf '%s' "$NAME" | tr 'A-Z' 'a-z')
+case "$LOWER" in
+  *"android miner only"*|*"android only"*|*"windows:"*|*"wallet"*|*"tray"*|*"installer"*|*"site"*|*"docs"*)
+      NODE_NOTE="" ;;
+  *node*|*consensus*|*"full node"*|*bitcoind*)
+      NODE_NOTE="
+
+Upgrading takes a minute and needs no resync. If you run a node or a miner, please update — an old node can end up following a chain nobody else accepts." ;;
+  *)  NODE_NOTE="" ;;
+esac
+
+BODY="$NAME
+
+Download and checksums: https://pc.am/#download
+Release notes: $URL$NODE_NOTE"
+
+if "$ANNOUNCE" --key "release-$TAG" "$TITLE" "$BODY"; then
+  printf '%s' "$TAG" > "$STATE"
+  log "announced $TAG"
+else
+  # Deliberately do NOT advance the marker: a failed announcement must be
+  # retried on the next run, not remembered as delivered.
+  log "announcement FAILED for $TAG — will retry"
+  exit 1
+fi

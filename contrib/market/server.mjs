@@ -474,9 +474,9 @@ async function saleGate(usd = null, email = null) {
           `$${worst.toFixed(6)} — so spending these coins there would lose you ` +
           `${(lossOnSpendPct(judged, worst) ?? 0).toFixed(1)}% immediately. That is past the ` +
           `${S.get('maxDivergencePct')}% limit, so the order is refused rather than sold into ` +
-          `the gap. A smaller order fills at a better price. If you want this size anyway, ` +
-          `ask and it can be allowed once, at the same price, with that loss stated. The ` +
-          `market itself is open.`
+          `the gap. **Buy it in several smaller orders instead** — each one starts again at the ` +
+          `cheapest PCN still on sale, so the same money buys more coins than one large order ` +
+          `would. The market itself is open.`
         : `sales are paused: ${judgedLabel} ($${judged.toFixed(6)}) and the rate the ` +
           `services credit PCN at ($${worst.toFixed(6)}) have drifted ${divergencePct.toFixed(1)}% apart, ` +
           `past the ${S.get('maxDivergencePct')}% limit. Selling into that gap would shortchange you. ` +
