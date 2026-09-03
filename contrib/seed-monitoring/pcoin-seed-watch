@@ -18,20 +18,40 @@
 # ends up muted.
 set -u
 
-CONTAINER=pcoin-seed
+CONTAINER=${CONTAINER:-pcoin-seed}
 STATE=/var/lib/pcoin-seed-watch/state
 STALL_SECONDS=${STALL_SECONDS:-7200}   # 2 h. Target spacing is 600 s and the
                                        # chain has run past 1200 s, so anything
                                        # tighter cries wolf.
+
+# How to reach the node. NOT every seed runs it in Docker: one runs pcoind
+# natively under systemd, and this script's hardcoded `docker exec` meant the
+# first check there failed with "container pcoin-seed is not running" -- a
+# permanent false UNHEALTHY. So that host simply never ran the check, and the
+# largest node in the estate went unmonitored because the monitor could not
+# start. A check that cannot run on a host is indistinguishable from one that
+# passes: nobody sees either.
+#
+# Set PCOIN_CLI in /etc/default/pcoin-seed-watch on a native host, e.g.
+#   PCOIN_CLI="sudo -u pcoin /opt/pcoin/bin/bitcoin-cli -conf=/etc/pcoin/pcoin.conf"
+# Leave it unset on a Docker host and nothing changes.
+PCOIN_CLI=${PCOIN_CLI:-}
+
 mkdir -p "$(dirname "$STATE")"
 
 fail() { echo "UNHEALTHY: $*"; exit 1; }
 say()  { echo "$*"; }
 
-docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null | grep -q true \
-  || fail "container $CONTAINER is not running"
-
-cli() { docker exec "$CONTAINER" bitcoin-cli "$@" 2>/dev/null; }
+if [ -n "$PCOIN_CLI" ]; then
+  cli() { $PCOIN_CLI "$@" 2>/dev/null; }
+  # There is no container to inspect; the RPC probe below is the liveness test,
+  # and it is a better one -- a running container with a wedged node passes the
+  # inspect and fails this.
+else
+  docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null | grep -q true \
+    || fail "container $CONTAINER is not running"
+  cli() { docker exec "$CONTAINER" bitcoin-cli "$@" 2>/dev/null; }
+fi
 
 INFO=$(cli getblockchaininfo) || fail "RPC did not answer"
 [ -n "$INFO" ] || fail "RPC returned nothing"

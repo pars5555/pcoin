@@ -13,6 +13,9 @@ OnFailure=pcoin-alert@%n.service
 
 [Service]
 Type=oneshot
+# Optional, and absent on the Docker seeds. A native-systemd seed sets
+# PCOIN_CLI here so the check can reach pcoind without a container.
+EnvironmentFile=-/etc/default/pcoin-seed-watch
 ExecStart=/usr/local/bin/pcoin-seed-watch
 
 # The check itself must never be the thing that loads the box.
