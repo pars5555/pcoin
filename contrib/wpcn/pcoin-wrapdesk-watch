@@ -68,6 +68,15 @@ REQUESTS = os.environ.get("WRAPDESK_REQUESTS", "/var/lib/wrapdesk/requests.json"
 # Set it to the chain height at the moment the desk opens.
 OPENED_AT_HEIGHT = int(os.environ.get("WRAP_OPENED_AT_HEIGHT", "0"))
 
+# --dry-run: print what would be reported, notify nobody.
+#
+# It exists because the notifier is chosen by PCOIN_NOTIFY, and someone
+# reasonably guessing "NOTIFY=/bin/true" disables NOTHING -- the real notifier
+# runs and the ops channel gets a real alert. That happened on 2026-09-03.
+DRY_RUN = "--dry-run" in sys.argv
+if DRY_RUN:
+    NOTIFY = "/bin/true"
+
 
 def get(url, timeout=25):
     """JSON GET, or None. None is UNKNOWN and must never be treated as a value."""
@@ -79,11 +88,23 @@ def get(url, timeout=25):
 
 
 def load_state():
+    # NORMALISE, do not just parse. The skeleton used to be returned only when
+    # the file was unreadable, so a file that parsed but lacked a key -- a fresh
+    # "{}", or one written by an older version -- crashed with KeyError: 'seen'
+    # on the first wrap it looked at. A first install is the worst possible
+    # moment for a traceback, and the failure looked like a broken watcher
+    # rather than a missing key.
     try:
         with open(STATE) as f:
-            return json.load(f)
+            st = json.load(f)
+        if not isinstance(st, dict):
+            st = {}
     except Exception:
-        return {"seen": {}, "nagged": {}}
+        st = {}
+    for k in ("seen", "nagged", "outstanding"):
+        if not isinstance(st.get(k), dict):
+            st[k] = {}
+    return st
 
 
 def save_state(s):
@@ -165,6 +186,19 @@ def main() -> int:
                       f"Could not read the wrap desk request file ({REQUESTS}): {e}\n"
                       f"Deposits to allocated addresses cannot be seen right now. "
                       f"This is UNKNOWN, not 'nothing pending'."))
+
+    # EVERY setting lives in the systemd unit's Environment= lines, so running
+    # this script by hand gets none of them. The one that matters is the floor:
+    # without it the reserve's own founding deposit -- the PCN the whole wPCN
+    # supply was sized against -- is re-read as a customer owed wPCN, and the
+    # alert is indistinguishable from a real one. Say so rather than quietly
+    # producing a confident wrong answer.
+    if OPENED_AT_HEIGHT <= 0:
+        print("WARNING: WRAP_OPENED_AT_HEIGHT is unset, so there is NO floor and "
+              "deposits that pre-date the desk (the reserve's own funding) will "
+              "be reported as wrap requests. The production value lives in "
+              "pcoin-wrapdesk-watch.service; run via systemd, or pass it "
+              "explicitly.", file=sys.stderr)
 
     used_total = 0.0        # allocation consumed, summed across ALL addresses
     # Rebuilt from the chain every run, never accumulated -- it is what
