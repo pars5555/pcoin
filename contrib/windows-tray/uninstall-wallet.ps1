@@ -169,10 +169,20 @@ $rescued = ''
 if (-not $Purge) {
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $dest = Join-Path $env:USERPROFILE "PCoinWallet-backup-$stamp"
-    $items = @()
-    foreach ($f in @('pcoin-seed.dat', 'pcoin-seed.info', 'pcoin-addressbook.json', 'pcoin-wallet.cfg')) {
+    # Two lists, because the message at the end must not be able to lie: the
+    # miner's uninstaller once printed "WALLET SAVED" over a folder holding a
+    # config file and nothing else, and deleted the wallet it had not found.
+    # Only KEY MATERIAL counts as a wallet - the phrase file and the node's
+    # wallet.dat. The address book and the config are settings.
+    $walletItems = @()
+    $otherItems = @()
+    foreach ($f in @('pcoin-seed.dat', 'pcoin-seed.info')) {
         $p = Join-Path $InstallDir $f
-        if (Test-Path $p) { $items += $p }
+        if (Test-Path $p) { $walletItems += $p }
+    }
+    foreach ($f in @('pcoin-addressbook.json', 'pcoin-wallet.cfg')) {
+        $p = Join-Path $InstallDir $f
+        if (Test-Path $p) { $otherItems += $p }
     }
     # Where the node keeps the wallet depends on the node: with no `wallets\`
     # folder present at first start, Core puts each wallet directly under the
@@ -182,23 +192,33 @@ if (-not $Purge) {
     # `wallets\` would have missed it. Take every wallet wherever it is.
     foreach ($f in @('wallet.dat', 'wallets')) {
         $p = Join-Path $DataDir $f
-        if (Test-Path $p) { $items += $p }
+        if (Test-Path $p) { $walletItems += $p }
     }
     foreach ($d in (Get-ChildItem $DataDir -Directory -ErrorAction SilentlyContinue)) {
         if ($d.Name -eq 'wallets') { continue }
-        if (Test-Path (Join-Path $d.FullName 'wallet.dat')) { $items += $d.FullName }
+        if (Test-Path (Join-Path $d.FullName 'wallet.dat')) { $walletItems += $d.FullName }
     }
+    $items = $walletItems + $otherItems
     if ($items.Count -gt 0) {
         try {
             New-Item -ItemType Directory -Path $dest -Force -ErrorAction Stop | Out-Null
             foreach ($p in $items) { Copy-Item $p -Destination $dest -Recurse -Force -ErrorAction Stop }
             $n = @(Get-ChildItem $dest -Recurse -File -ErrorAction SilentlyContinue).Count
             if ($n -lt 1) { throw 'the copy is empty' }
-            $rescued = $dest
             Write-Output ''
-            Write-Output "WALLET SAVED TO: $dest"
-            Write-Output "  ($n file(s)). Keep this folder, or make sure your twelve words are on"
-            Write-Output '  paper - either one rebuilds the wallet.'
+            if ($walletItems.Count -gt 0) {
+                $rescued = $dest
+                Write-Output "WALLET SAVED TO: $dest"
+                Write-Output "  ($n file(s)). Keep this folder, or make sure your twelve words are on"
+                Write-Output '  paper - either one rebuilds the wallet.'
+            } else {
+                # Settings only. Said plainly, so nobody reads a config copy as a
+                # rescued wallet.
+                Write-Output "SETTINGS SAVED TO: $dest"
+                Write-Output "  ($n file(s): address book and config). NO WALLET FILES were found - no"
+                Write-Output "  pcoin-seed.dat in $InstallDir and no wallet.dat under $DataDir."
+                Write-Output '  If this PC ever held a wallet, stop now and look for those files by hand.'
+            }
         } catch {
             Write-Output ''
             Write-Output ('COULD NOT SAVE THE WALLET: ' + $_.Exception.Message)
@@ -208,7 +228,7 @@ if (-not $Purge) {
             exit 1
         }
     } else {
-        Write-Output '  no wallet files found to save'
+        Write-Output '  no wallet or settings files found to save (nothing was ever set up here)'
     }
 }
 
