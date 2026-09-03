@@ -427,13 +427,33 @@ async function saleGate(usd = null) {
   const spread = rates.length > 1 && Math.min(...rates) !== Math.max(...rates)
     ? { oracleDisagrees: true, ratesSeen: [...new Set(rates)].sort() } : {};
   if (divergencePct > S.get('maxDivergencePct')) {
+    // ONE refusal, TWO different things to say.
+    //
+    // With a usd amount this is a judgement about THIS ORDER, not about the
+    // market: the rungs left after everyone else's holds would price this buyer
+    // above what the services credit PCN at. The market may be perfectly in
+    // step -- on 2026-09-03 it was, the published price and serviceRate exactly
+    // equal -- while every individual quote was refused because unpaid orders
+    // held the cheap rungs. Saying "sales are paused" there sent the operator
+    // (and me) looking for an outage that did not exist.
+    //
+    // Without one, it IS systemic: the ladder itself has drifted from the rate,
+    // and nothing anyone orders will fix that.
+    const perOrder = typeof usd === 'number' && usd > 0;
     return { open: false, divergencePct, serviceRate: worst, judgedPrice: judged,
-      marginalPrice: st.marginalPrice, nextFillPrice: st.nextFillPrice, ...spread,
-      reason:
-      `sales are paused: ${judgedLabel} ($${judged.toFixed(6)}) and the rate the ` +
-      `services credit PCN at ($${worst.toFixed(6)}) have drifted ${divergencePct.toFixed(1)}% apart, ` +
-      `past the ${S.get('maxDivergencePct')}% limit. Selling into that gap would shortchange you. ` +
-      `This clears itself once the two are back in step.` };
+      marginalPrice: st.marginalPrice, nextFillPrice: st.nextFillPrice,
+      scope: perOrder ? 'order' : 'market', ...spread,
+      reason: perOrder
+        ? `this order cannot be filled at a fair price right now: the PCN still on ` +
+          `sale would cost you $${judged.toFixed(6)} each, ${divergencePct.toFixed(1)}% above the ` +
+          `$${worst.toFixed(6)} the services credit PCN at, past the ` +
+          `${S.get('maxDivergencePct')}% limit. The cheaper rungs are held by orders that have ` +
+          `not been paid for; they are released when those expire, so this usually clears within ` +
+          `the hour. The market itself is open.`
+        : `sales are paused: ${judgedLabel} ($${judged.toFixed(6)}) and the rate the ` +
+          `services credit PCN at ($${worst.toFixed(6)}) have drifted ${divergencePct.toFixed(1)}% apart, ` +
+          `past the ${S.get('maxDivergencePct')}% limit. Selling into that gap would shortchange you. ` +
+          `This clears itself once the two are back in step.` };
   }
   return { open: true, divergencePct, serviceRate: worst, judgedPrice: judged,
            marginalPrice: st.marginalPrice, nextFillPrice: st.nextFillPrice,
