@@ -829,8 +829,10 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
       <p class="lede">
         Would rather not mine? You can buy PCN with ordinary crypto at
         <a href="https://market.pc.am" rel="noopener">market.pc.am</a>. It is sold from a fixed
-        ladder of 100,000 coins that gets dearer as it empties, so the price rises with demand
-        rather than being set by anyone. <b>The market does not buy PCN back.</b> The one practical way
+        ladder of 100,000 coins that gets dearer as it empties, so the price rises as the
+        ladder sells &mdash; but those rungs are a schedule we wrote, not a market, and the rate
+        at <a href="https://price.pc.am" rel="noopener">price.pc.am</a> is posted by us rather
+        than discovered by trading. <b>The market does not buy PCN back.</b> The one practical way
         out is to wrap PCN into wPCN at the <a href="https://wrapdesk.pc.am" rel="noopener">wrap desk</a>
         and sell that into PancakeSwap's small pool &mdash; terms in the
         <a href="#trade">Trading section</a> &mdash; so buy what you intend to spend.
@@ -951,8 +953,22 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
         Both prove the machinery works end to end; neither is <b>a price</b>, and any number derived
         from them would be us quoting ourselves. Nothing on this site will ever cite one as such.
         <br><br>
-        We are also not approaching custodial exchanges &mdash; the kind that hold your coins and
-        credit you a balance &mdash; and that is deliberate. <b>The address that once mined the majority of blocks has gone
+        There is one distribution fact we would rather you heard from us than worked out later.
+        The first <b>2,015 blocks</b> &mdash; about 27.7 hours after genesis &mdash; paid out
+        <b>100,750 PCN</b> at the difficulty floor, while almost nobody was mining. That is
+        roughly a third of everything mined so far, and the share falls every ten minutes as the
+        chain grows. It was open mining and not a premine: the code, the genesis block and the
+        difficulty were public from the first block, and anyone could point a CPU at it &mdash;
+        but "anyone could have" is not the same as "many did", and the coins are real. The
+        invariant never changes, so check it rather than trusting this sentence: divide 100,750
+        by the supply reported at
+        <a href="https://explorer.pc.am/api/status" rel="noopener">explorer.pc.am/api/status</a>.
+        <br><br>
+        Custodial exchanges &mdash; the kind that hold your coins and credit you a balance &mdash;
+        are not where we are pushing, though we should be exact rather than pious about it:
+        applications have been sitting unanswered since August at two small ones, SafeTrade and
+        FreiExchange. We are not chasing anything larger while one pool still routes most blocks,
+        and we would rather you could hold your own coins than have us hold them for you. <b>The address that once mined the majority of blocks has gone
         completely silent</b> &mdash; zero blocks in its most recent stretch, after finding most of
         them a few days earlier. We are not printing a percentage here on purpose: on a chain this
         size, one address turning its hashrate on or off changes the honest answer within hours,
