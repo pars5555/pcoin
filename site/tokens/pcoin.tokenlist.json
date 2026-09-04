@@ -1,0 +1,36 @@
+{
+  "name": "PCoin",
+  "timestamp": "2026-09-04T07:00:00.000Z",
+  "version": {
+    "major": 1,
+    "minor": 0,
+    "patch": 0
+  },
+  "keywords": [
+    "pcoin",
+    "pcn",
+    "wpcn",
+    "wrapped",
+    "bsc"
+  ],
+  "logoURI": "https://pc.am/brand/pcoin-round-256.png",
+  "tags": {
+    "wrapped": {
+      "name": "Wrapped",
+      "description": "A token backed 1:1 by an asset held in reserve on another chain, redeemable back to it."
+    }
+  },
+  "tokens": [
+    {
+      "chainId": 56,
+      "address": "0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1",
+      "name": "Wrapped PCoin",
+      "symbol": "wPCN",
+      "decimals": 8,
+      "logoURI": "https://pc.am/brand/wpcn-round-256.png",
+      "tags": [
+        "wrapped"
+      ]
+    }
+  ]
+}
