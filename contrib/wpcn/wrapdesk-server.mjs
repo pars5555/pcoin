@@ -187,6 +187,10 @@ button{margin-top:1.1rem;padding:.62rem 1.25rem;background:#238636;border:0;
  border-radius:8px;color:#fff;font-size:15px;font-weight:600;cursor:pointer}
 button:hover{background:#2ea043}
 .muted{color:var(--mut);font-size:.92rem}
+button.ghost{background:#21262d;border:1px solid var(--line);color:var(--fg);font-weight:500;margin-top:0}
+button.ghost:hover{background:#30363d}
+button.ghost[disabled]{opacity:.55;cursor:default}
+.good{color:var(--green)}
 .warn{border-left:3px solid var(--amber);padding-left:.9rem;color:#e3b341}
 .err{border-left:3px solid var(--red);padding-left:.9rem;color:#ff7b72}
 .ok{border-left:3px solid var(--green);padding-left:.9rem;color:#56d364}
@@ -230,6 +234,59 @@ nav a{display:inline-block;padding:.35rem 0}
 
 const NAV = [['/', 'Wrap'], ['/track', 'Track'], ['/redeem', 'Redeem'],
              ['/proof', 'Proof of backing'], ['/faq', 'FAQ']];
+
+// ── one-click "add wPCN to my wallet" (EIP-747) ──────────────────────────────
+// wPCN is on no token list, so every wallet treats it as unknown and every user
+// has to paste a 42-character contract address by hand. That is the step people
+// abandon, and it is also the step a phisher imitates -- an address arriving in
+// a chat message looks exactly like an attack. wallet_watchAsset lets the page
+// hand the wallet the address, the symbol, the decimals and the logo directly.
+//
+// Progressive enhancement on purpose: the button starts `hidden` and only JS
+// with an injected provider reveals it, and the hand-typed details stay on the
+// page underneath. Most mobile browsers have no provider at all, and a button
+// that does nothing is worse than no button.
+const ADD_TOKEN = `<p id="addtok" hidden style="margin:.75rem 0 0">
+<button type="button" id="addtokbtn" class="ghost">Add wPCN to my wallet</button>
+<span id="addtokmsg" class="muted"></span></p>
+<script>
+(function () {
+  var eth = window.ethereum;
+  if (!eth) return;                     // no injected wallet — leave it hidden
+  var p = document.getElementById('addtok');
+  var b = document.getElementById('addtokbtn');
+  var m = document.getElementById('addtokmsg');
+  if (!p || !b || !m) return;
+  p.hidden = false;
+  function say(t, cls) { m.textContent = t ? '  ' + t : ''; m.className = cls || 'muted'; }
+  b.onclick = function () {
+    say('asking the wallet…'); b.disabled = true;
+    // Get the chain right BEFORE watchAsset. Otherwise the wallet cheerfully
+    // adds a BNB Smart Chain contract to whatever network happens to be
+    // selected, and the user gets an entry that will never show a balance.
+    Promise.resolve(eth.request({ method: 'eth_chainId' })).then(function (id) {
+      if (String(id).toLowerCase() === '0x38') return;
+      return eth.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x38' }] });
+    }).then(function () {
+      return eth.request({ method: 'wallet_watchAsset', params: {
+        type: 'ERC20',
+        options: { address: '${TOKEN}', symbol: 'wPCN', decimals: 8,
+                   image: 'https://pc.am/brand/wpcn-round-256.png' } } });
+    }).then(function (ok) {
+      // EIP-747 returns false for "the user said no" — that is an answer, not
+      // an error, and it must not be reported as a failure of ours.
+      if (ok === false) say('you declined it in the wallet. Nothing changed.', 'muted');
+      else say('added — look for wPCN in your token list.', 'good');
+      b.disabled = false;
+    }).catch(function (e) {
+      say(e && e.code === 4001
+            ? 'you dismissed it in the wallet. Nothing changed.'
+            : 'the wallet would not add it — use the details above by hand.', 'muted');
+      b.disabled = false;
+    });
+  };
+})();
+</script>`;
 
 const page = (title, active, body) => `<!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -286,7 +343,7 @@ not credit you.</label>
 as a custom token: contract <code>${TOKEN}</code>, symbol wPCN, 8 decimals. It
 trades on <a href="https://pancakeswap.finance/swap?chain=bsc&amp;outputCurrency=${TOKEN}"
 rel="noopener">PancakeSwap</a>. Want PCN back later? The
-<a href="/redeem">redeem page</a> is the same door in the other direction.</p></div>
+<a href="/redeem">redeem page</a> is the same door in the other direction.</p>${ADD_TOKEN}</div>
 
 <h2>The terms</h2><div class="card"><table>
 <tr><th>Limit</th><td>${PER_PERSON} PCN per person · ${TOTAL_ALLOC} wPCN total while the desk is new</td></tr>
@@ -925,6 +982,9 @@ ${anyReady
     so allow some hours.</p>`
  : `<p class="warn">Still confirming. The depth is what protects the desk against
     a chain reorganisation, which is why it is not instant.</p>`}
+<div class="card"><p class="muted" style="margin:0">Your wallet will not show
+wPCN until you add it — no wallet knows this token yet. Contract
+<code>${TOKEN}</code>, symbol wPCN, 8 decimals.</p>${ADD_TOKEN}</div>
 <p class="muted">This page reads the chain live. Reload any time.
 Times are estimates: PCoin blocks average ten minutes but vary a lot.</p>`));
     }
