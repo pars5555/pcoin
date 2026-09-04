@@ -1,13 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="18 18 72 72" width="32" height="32">
   <!-- wPCN round token mark: Wrapped PCoin on BNB Smart Chain.
-       IDENTICAL geometry to site/brand/pcoin-round.svg -- same milled coin, same
+       IDENTICAL geometry to site/brand/pcoin-round.svg — same milled coin, same
        four-point star, same graphite field. The only change is the colour of the
        milled edge, which becomes BNB gold (#F0B90B).
 
        Why that and nothing else. A wrapped asset should read as the SAME coin as
        the thing it wraps, or it stops telling the truth about what it is; WBTC is
-       Bitcoin's mark, not a new one. So the identity carrier -- the star and the
-       coin silhouette -- is untouched, and the only signal added is the chain the
+       Bitcoin's mark, not a new one. So the identity carrier — the star and the
+       coin silhouette — is untouched, and the only signal added is the chain the
        wrapper lives on. The milled ring carries it because it is the one element
        that stays legible at 16px, where a badge or a letter turns to mush. -->
   <circle cx="54" cy="54" r="36" fill="#262B33"/>
