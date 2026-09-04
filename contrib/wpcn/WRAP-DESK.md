@@ -558,6 +558,69 @@ end rather than only by injection.
 
 ---
 
+### 10.10 Getting the token to SHOW UP — the wallet-visibility problem
+
+This is not a footnote. It is the single biggest thing standing between a
+holder and their wPCN, and it has nothing to do with the contract.
+
+**wPCN is on no token list anywhere.** Every wallet, DEX and aggregator builds
+its token picker from lists, so wPCN is invisible in all of them: searching
+"wPCN" in MetaMask or PancakeSwap finds nothing, and the only way in is to paste
+the 42-character contract address by hand. Two consequences, both real:
+
+* People give up. Pasting a contract address is not a step ordinary users
+  complete, and on a phone it is worse.
+* **It trains people to do the dangerous thing.** "Here is the address, paste
+  it into your wallet" is indistinguishable from how a fake-token scam is
+  delivered. Teaching our own users that this is normal is bad practice
+  regardless of whether our address is correct.
+
+It is also why the owner's wPCN keeps *disappearing* from MetaMask on Android:
+a custom-added token is per-device state, and a reinstall, a cache clear or an
+account switch drops it. The coins are untouched — the wallet has merely
+forgotten how to display them.
+
+**What is done about it, in order of how much it helps:**
+
+1. **One-click add on the desk itself (EIP-747), shipped 2026-09-04.**
+   `ADD_TOKEN` in `wrapdesk-server.mjs` renders an *Add wPCN to my wallet*
+   button on `/` and on `/track`'s confirmed state — the moment someone is
+   staring at a wallet that does not show what they just bought. It calls
+   `wallet_watchAsset` with the address, symbol, 8 decimals and the logo. Three
+   things it does deliberately, each easy to get wrong:
+   * **It switches to BSC (`0x38`) BEFORE `watchAsset`.** Otherwise the wallet
+     adds a BNB Smart Chain contract to whatever network happens to be selected,
+     and the user gets a permanent entry that will never show a balance.
+   * **A `false` return means "the user declined", not "we failed".** EIP-747
+     resolves `false` on decline. Reporting that as an error would be a lie
+     about who did what.
+   * **The button starts `hidden`** and is revealed only by script that found an
+     injected provider, with the hand-typed contract details left in place
+     underneath. Most mobile browsers have no provider, and a button that does
+     nothing is worse than no button.
+
+   Tested through the real DOM against a stub provider — call order, the chain
+   switch, 8 decimals not 18, the decline path and the no-wallet path — and the
+   suite then re-run against a deliberately wrong contract address to prove it
+   *fails*. It did, on exactly the two address checks. A suite that has never
+   failed has not been shown to work.
+
+2. **Our own token list**, `https://pc.am/tokens/pcoin.tokenlist.json` —
+   Uniswap-schema, served with `Access-Control-Allow-Origin: *` (scoped to
+   `/tokens/` and `/brand/` in `pc.am.conf`; a list fetched from a browser
+   without CORS fails with nothing but "Error importing list"). Note MetaMask
+   has **no** feature for adding a list URL — that is a DEX capability, not a
+   wallet one. Do not tell users otherwise.
+
+3. **Registry submissions**, the only durable fix, because they are what the
+   wallets actually read. Status lives in `D:\pc.am\PCOIN-LISTING-PROGRESS.md`.
+   Trust Wallet is **not** available to us: its bar is 10,000 holders, 15,000
+   transactions and an audit, against wPCN's 5 holders.
+
+**Do not read a low holder count or a small pool as a failure of the desk.**
+They are what a six-day-old token with $1,333 of liquidity looks like. This work
+is about making the token *findable and safe to add*, not about volume.
+
 ## 11. The keeper — connecting the two prices automatically
 
 `contrib/wpcn/pcoin-wpcn-keeper`, every 10 minutes.
