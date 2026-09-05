@@ -69,6 +69,29 @@ const cli = (args) => new Promise((res, rej) => {
 });
 const cliJson = async (args) => JSON.parse(await cli(args));
 
+// Submit through STDIN, never argv. A block's hex is ~145,000 characters and
+// Linux caps one argv entry at MAX_ARG_STRLEN (131,072), so execFile fails with
+// E2BIG before bitcoin-cli even starts. That destroyed nine blocks on 2026-09-05
+// and stalled the chain for three hours: the pool kept finding blocks, logged
+// "submitblock threw ... spawn E2BIG", and correctly recorded nothing -- so the
+// failure looked like bad luck rather than a broken submit path.
+//
+// bitcoin-cli -stdin takes its arguments from stdin, one per line, with no
+// length limit. Kept separate from cli() so only this one call changes shape.
+const cliStdin = (args) => new Promise((res, rej) => {
+  const p = spawn(CFG.cliCommand[0], [...CFG.cliCommand.slice(1), '-stdin'],
+    { stdio: ['pipe', 'pipe', 'pipe'] });
+  let out = '', err = '';
+  p.stdout.on('data', (d) => { out += d; });
+  p.stderr.on('data', (d) => { err += d; });
+  p.on('error', rej);
+  p.on('close', (code) => code === 0 ? res(out.trim())
+    : rej(new Error((err || `bitcoin-cli exited ${code}`).trim())));
+  p.stdin.on('error', rej);
+  p.stdin.end(args.join('\n') + '\n');
+});
+
+
 // ── the validator, kept warm ────────────────────────────────────────────────
 // Building the RandomX VM costs ~834 ms and each hash ~21.7 ms. One long-lived
 // process, one request at a time, requests queued in order.
@@ -422,7 +445,7 @@ async function handleSubmit(m, params, id) {
     const blockId = Buffer.from(sha256d(header)).reverse().toString('hex');
     log(`BLOCK CANDIDATE at height ${job.height} by ${m.login} -- ${blockId}`);
     try {
-      const res = await cli(['submitblock', blockHex]);
+      const res = await cliStdin(['submitblock', blockHex]);
       if (res === '') {
         log(`BLOCK ACCEPTED ${blockId}`);
         state.blocksFound++;

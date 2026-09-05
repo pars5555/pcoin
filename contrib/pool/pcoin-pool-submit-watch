@@ -1,0 +1,250 @@
+#!/usr/bin/env python3
+"""Watch the one thing that had no watcher: can the pool actually SUBMIT a block?
+
+On 2026-09-05 the pool found seventeen blocks between 09:09 and 11:20 UTC and
+lost every one. Each failure wrote a line to /var/log/pcoin-pool.log --
+"submitblock threw (outcome UNKNOWN, computing no payouts): spawn E2BIG" -- and
+nothing read it. The chain stalled for three hours, 168 miners were paid nothing,
+and the only alert anyone got was pcoin-seed-watch saying the chain looked stale,
+which pointed at the network rather than at the pool.
+
+TWO CHECKS, deliberately different, because each catches what the other misses:
+
+  A  DIRECT: any submitblock that threw, or any block the node REJECTED, since
+     the last run. This is exact and instant -- it is the line that existed all
+     along and that nobody was reading.
+
+  B  STATISTICAL: expected blocks from accumulated share weight versus blocks
+     actually recorded. This catches a submit path that fails SILENTLY -- no
+     exception, no log line, just no blocks -- which the direct check cannot see.
+     The pool ledger stores each share's weight as expected hashes, so summing a
+     window and dividing by the network's block work gives expected blocks
+     directly. At 4+ expected and none found the probability is under 2%, and it
+     climbs fast; the outage reached 9.6.
+
+DOCTRINE, and the reason this file is careful rather than clever:
+  * An unreadable log or database RESOLVES NOTHING. It is never "no failures".
+    Check E reports "cannot verify" and never invents a healthy answer.
+  * Re-alerts are gated on CHANGE. A condition that persists is not new
+    information, and a watcher that repeats itself teaches people to ignore it --
+    which is exactly what happened to pcoin-concentration-watch.
+  * --dry-run must send nothing at all, and says so.
+"""
+import argparse
+import json
+import os
+import re
+import sqlite3
+import subprocess
+import sys
+import time
+
+NOTIFY = os.environ.get("PCOIN_NOTIFY", "/usr/local/bin/pcoin-notify")
+LOG = os.environ.get("POOL_LOG", "/var/log/pcoin-pool.log")
+DB = os.environ.get("POOL_DB", "/opt/pcoin-pool/pool.sqlite")
+STATE = os.environ.get("POOL_WATCH_STATE", "/var/lib/pcoin-monitor/pool-submit-watch.json")
+CLI = os.environ.get("POOL_CLI", "/opt/pcoin/bin/bitcoin-cli")
+DATADIR = os.environ.get("POOL_DATADIR", "-datadir=/var/lib/pcoin")
+# Expected blocks with none found before we call it: 4.0 -> p(silence) < 2%.
+THRESHOLD = float(os.environ.get("POOL_EXPECTED_BLOCKS", "4.0"))
+FAIL_STREAK = int(os.environ.get("POOL_FAIL_STREAK", "3"))
+
+FAILURE = re.compile(r"submitblock threw|block REJECTED by node")
+# The pool died of a V8 heap OOM at 12:13 UTC on 2026-09-05 and nothing said
+# so: systemd restarted it, and the only trace was one line in an unread log.
+CRASH = re.compile(r"FATAL ERROR|JavaScript heap out of memory|Allocation failed")
+
+
+class Unknown(Exception):
+    """Something could not be read. Never collapses into a healthy answer."""
+
+
+def load_state():
+    """Normalise rather than merely parse: a file that exists but lacks a key
+    must not raise on the first real event."""
+    try:
+        s = json.load(open(STATE, encoding="utf-8"))
+        if not isinstance(s, dict):
+            s = {}
+    except Exception:
+        s = {}
+    s.setdefault("log_offset", None)     # None = first run, seed without alerting
+    s.setdefault("last_alert", "")
+    s.setdefault("fails", 0)
+    s.setdefault("restarts", None)   # None = first run: seed, do not alert
+    return s
+
+
+def save_state(s):
+    d = os.path.dirname(STATE)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    tmp = STATE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(s, f, indent=1)
+    os.replace(tmp, STATE)
+
+
+def net_block_work():
+    """Expected hashes for one block at the CURRENT network target, from the
+    node itself. Derived from bits, never from a remembered constant."""
+    try:
+        out = subprocess.run([CLI, DATADIR, "getblocktemplate", '{"rules":["segwit"]}'],
+                             capture_output=True, text=True, timeout=45)
+        if out.returncode != 0:
+            raise Unknown("getblocktemplate failed: %s" % out.stderr.strip()[:100])
+        bits = json.loads(out.stdout)["bits"]
+    except Unknown:
+        raise
+    except Exception as e:
+        raise Unknown("cannot read the network target (%s)" % str(e)[:80])
+    exp, mant = int(bits[:2], 16), int(bits[2:], 16)
+    target = mant << (8 * (exp - 3))
+    return (1 << 256) // target, bits
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dry-run", action="store_true", help="print; notify nobody")
+    ap.add_argument("--force-expected", type=float,
+                    help="TEST ONLY: pretend this many blocks were expected")
+    a = ap.parse_args()
+
+    def notify(subject, body):
+        if a.dry_run:
+            print("--- DRY RUN: would have sent, and did NOT ---")
+            print("SUBJECT: %s" % subject)
+            print(body)
+            return
+        # Reporting must never be able to kill detection (audit finding 13).
+        # Losing the send is bad; losing DETECTION because the send raised is
+        # worse -- the unit then reports "failed", which reads as a broken
+        # script rather than the incident it was raising. Syslog always exists.
+        one_line = " ".join(body.split())[:400]
+        try:
+            subprocess.run(["logger", "-t", "pcoin-pool-submit-watch", "--",
+                            "ALERT: %s -- %s" % (subject, one_line)], timeout=15)
+        except Exception:
+            pass
+        if not os.path.exists(NOTIFY) or not os.access(NOTIFY, os.X_OK):
+            print("NOTIFIER MISSING (%s): alert went to syslog only." % NOTIFY,
+                  file=sys.stderr)
+            print("SUBJECT: %s" % subject, file=sys.stderr)
+            print(body, file=sys.stderr)
+            return
+        try:
+            r = subprocess.run([NOTIFY, subject, body], timeout=60)
+            if r.returncode != 0:
+                print("notifier exited %d; alert in syslog only." % r.returncode,
+                      file=sys.stderr)
+        except Exception as e:
+            print("notifier FAILED (%s); alert in syslog only." % str(e)[:120],
+                  file=sys.stderr)
+
+    st = load_state()
+    alerts = []
+
+    # ---- A: submission failures written since the last run --------------------
+    new_failures = []
+    try:
+        size = os.path.getsize(LOG)
+        start = st["log_offset"]
+        if start is None or start > size:      # first run, or the log was rotated
+            start = size                        # seed; do not alert on history
+        with open(LOG, "r", encoding="utf-8", errors="replace") as f:
+            f.seek(start)
+            chunk = f.read()
+            st["log_offset"] = f.tell()
+        new_failures = [l for l in chunk.splitlines() if FAILURE.search(l)]
+        st["fails"] = 0
+    except Exception as e:
+        st["fails"] += 1
+        print("  UNREADABLE: %s (streak %d) -- resolves nothing" % (str(e)[:90], st["fails"]))
+        if st["fails"] >= FAIL_STREAK and st["last_alert"] != "unreadable":
+            notify("pool submit watch: CANNOT VERIFY",
+                   "Could not read %s for %d consecutive runs.\n%s\n\nThis is not a "
+                   "statement that submissions are fine -- only that they could not be "
+                   "checked." % (LOG, st["fails"], str(e)[:200]))
+            st["last_alert"] = "unreadable"
+        save_state(st)
+        return 0
+
+    # ---- C: did the process die since the last run? ------------------------
+    new_crashes = [l for l in chunk.splitlines() if CRASH.search(l)]
+    if new_crashes:
+        alerts.append("C. THE POOL PROCESS CRASHED. systemd restarts it, so the pool looks healthy afterwards and the only evidence is in the log file. A crash loop stops block submission completely."
+                      + '\n' * 2 + '\n'.join(new_crashes[-3:]))
+
+    # A restart with no crash line still matters: something outside this log
+    # stopped the service. Seeded on the first run so history never alerts.
+    try:
+        out = subprocess.run(["systemctl", "show", "pcoin-pool", "-p", "NRestarts",
+                              "--value"], capture_output=True, text=True, timeout=20)
+        n = int((out.stdout or "").strip() or 0)
+        prev = st["restarts"]
+        if prev is not None and n > prev:
+            alerts.append("C2. pcoin-pool RESTARTED %d time(s) since the last check "
+                          "(NRestarts %d -> %d). It is running now, but it went down."
+                          % (n - prev, prev, n))
+        st["restarts"] = n
+    except Exception as e:
+        # Unknown is not 'no restart'. Say so and resolve nothing.
+        print("  restart count UNAVAILABLE: %s -- resolves nothing" % str(e)[:70])
+
+    if new_failures:
+        alerts.append("A. %d BLOCK SUBMISSION(S) FAILED since the last check. Every one is a "
+                      "block found and thrown away -- coins that do not exist and miners "
+                      "paid nothing.\n\n%s"
+                      % (len(new_failures), "\n".join(new_failures[-5:])))
+
+    # ---- B: work done vs blocks found ----------------------------------------
+    try:
+        work, bits = net_block_work()
+        db = sqlite3.connect("file:%s?mode=ro" % DB, uri=True)
+        cur = db.cursor()
+        last_block = cur.execute("SELECT IFNULL(MAX(found_at),0) FROM blocks").fetchone()[0]
+        since = last_block or (int(time.time() * 1000) - 6 * 3600 * 1000)
+        weight = cur.execute("SELECT IFNULL(SUM(weight),0) FROM shares WHERE at > ?",
+                             (since,)).fetchone()[0] or 0
+        expected = a.force_expected if a.force_expected is not None else weight / work
+        mins = (time.time() * 1000 - since) / 60000.0
+        print("  since the last pool block (%.0f min ago): weight %d, block work %d (bits %s)"
+              % (mins, weight, work, bits))
+        print("  expected blocks from that work: %.2f  (threshold %.1f)" % (expected, THRESHOLD))
+        if expected >= THRESHOLD:
+            alerts.append("B. The pool has done %.1f blocks' worth of work since its last block "
+                          "%.0f minutes ago and found NONE. At %.1f expected the chance of "
+                          "silence is under %.1f%%. The submit path or the block check is "
+                          "probably broken, even though nothing has thrown."
+                          % (expected, mins, expected, 100 * 2.718281828 ** (-expected)))
+    except Unknown as e:
+        print("  statistical check UNAVAILABLE: %s" % e)
+    except Exception as e:
+        print("  statistical check UNAVAILABLE: %s" % str(e)[:90])
+
+    # ---- report ---------------------------------------------------------------
+    if alerts:
+        fp = "|".join(x[:2] for x in alerts)
+        if st["last_alert"] != fp:          # change, not a timer
+            notify("POOL CANNOT SUBMIT BLOCKS", "\n\n".join(alerts))
+            st["last_alert"] = fp
+        else:
+            print("  (same condition as last run -- not re-sending)")
+        for x in alerts:
+            print("  !! " + x.splitlines()[0])
+    else:
+        print("  OK - no failed submissions, and the work/blocks ratio is normal")
+        if st["last_alert"] not in ("", "ok"):
+            notify("pool submit watch: RECOVERED",
+                   "Block submission is working again and the work/blocks ratio is normal.")
+        st["last_alert"] = "ok"
+
+    if not a.dry_run and a.force_expected is None:
+        save_state(st)
+    else:
+        print("  (state not written: dry-run or forced value)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
