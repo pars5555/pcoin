@@ -1,0 +1,303 @@
+#!/usr/bin/env python3
+"""Watch the one number that decides whether wPCN is honest: is the PCN reserve
+still at least as large as the wPCN people can redeem?
+
+The 2026-09-04 audit found this unmonitored. The ratio was computed for display
+on wrapdesk.pc.am/proof and never alarmed on, so a reserve that started draining
+would have been visible to anyone who happened to load a web page and to nobody
+else.
+
+FIVE INDEPENDENT CHECKS. Each is its own alert, because "solvency" failing is not
+one event -- a spend from the core reserve and an unexpected mint are different
+emergencies needing different responses.
+
+  A  the CORE reserve (pool index 0) must never DECREASE. It has held a single
+     UTXO, unspent since height 5765. Any spend at all is an emergency, even one
+     that leaves the ratio above 1.
+  B  total reserve >= wPCN totalSupply. totalSupply is what holders can redeem
+     RIGHT NOW, so this is the invariant that actually protects customers.
+  C  total reserve >= wPCN issuedSupply. The conservative figure the public
+     proof page shows. Breaching C while B holds is a warning, not an emergency.
+  D  wPCN totalSupply must never INCREASE. There has been exactly one mint, in
+     the constructor, and the contract has no mint path. Supply can only fall,
+     via burns. An increase would mean the chain audit was wrong.
+  E  the reads themselves must work.
+
+DOCTRINE, learned the hard way on this project:
+  * A failed or timed-out read RESOLVES NOTHING. It is never a zero balance and
+    never a passing check. Checks A-D are simply NOT EVALUATED unless both sides
+    were read. Only after FAIL_STREAK consecutive failures does E alert, and it
+    says "cannot verify", never "insolvent".
+  * Re-alerts are gated on CHANGE, not on time. pcoin-concentration-watch once
+    sent the same figure 24 times in 8 hours and taught everyone to ignore it.
+  * Settings live in the systemd unit's Environment= lines, so running this by
+    hand silently loses them. If SOLVENCY_RESERVE is unset it says so LOUDLY on
+    stderr before doing anything (runbook 7.14: a bare run of pcoin-wrapdesk-watch
+    once paged the owner with a fabricated 50,000 PCN wrap request).
+  * --dry-run must actually send nothing. It never invokes the notifier at all.
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.request
+
+NOTIFY = os.environ.get("PCOIN_NOTIFY", "/usr/local/bin/pcoin-notify")
+STATE_FILE = os.environ.get("SOLVENCY_STATE", "/var/lib/pcoin-wrapdesk/solvency.json")
+POOL_FILE = os.environ.get("WRAP_POOL", "/opt/wrapdesk/reserve-pool.txt")
+REQ_FILE = os.environ.get("WRAP_REQUESTS", "/var/lib/wrapdesk/requests.json")
+TOKEN = os.environ.get("WPCN_TOKEN", "0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1")
+ISSUED = float(os.environ.get("WPCN_ISSUED", "50000"))
+FAIL_STREAK = int(os.environ.get("SOLVENCY_FAIL_STREAK", "3"))
+
+RESERVE = os.environ.get("SOLVENCY_RESERVE", "")
+if not RESERVE:
+    RESERVE = "pc1q7hhzmdkkx0zjtzj6qkwmuvhlgwfqjrc6j2dk52"
+    sys.stderr.write(
+        "\n*** SOLVENCY_RESERVE is not set. ***\n"
+        "This setting lives in the systemd unit's Environment= lines, so a run by\n"
+        "hand does not inherit it and has fallen back to a COMPILED-IN default.\n"
+        "If that default is not the live reserve address, every number below is\n"
+        "about the wrong wallet. Do not reason about production from this run.\n\n")
+
+EXPLORERS = [e for e in (os.environ.get("SOLVENCY_EXPLORER", ""),
+                         "http://127.0.0.1:8080", "https://explorer.pc.am") if e]
+BSC_RPCS = ["https://bsc-dataseed.binance.org", "https://bsc-dataseed1.defibit.io",
+            "https://bsc.rpc.blxrbdn.com", "https://bsc-rpc.publicnode.com"]
+
+
+class Unknown(Exception):
+    """Raised when something could not be read. Never caught into a number."""
+
+
+def jget(url, timeout=25):
+    req = urllib.request.Request(url, headers={"User-Agent": "pcoin-solvency-watch/1"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.load(r)
+
+
+def addr_balance(addr):
+    """Confirmed mature PCN, plus lifetime sent. Raises Unknown rather than
+    returning 0 -- a zero balance and an unreachable explorer look identical in
+    a number and could not be more different in meaning."""
+    last = None
+    for base in EXPLORERS:
+        try:
+            d = jget("%s/api/address/%s" % (base, addr))
+            c = d["balance"]["confirmed"]
+            lt = d.get("balance", {}).get("lifetime", {})
+            return float(c["mature_pcn"]), float(lt.get("sent_pcn", 0) or 0)
+        except Exception as e:
+            last = "%s: %s" % (base, e)
+    raise Unknown("reserve address %s unreadable (%s)" % (addr, last))
+
+
+def total_supply():
+    last = None
+    for u in BSC_RPCS:
+        try:
+            body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "eth_call",
+                               "params": [{"to": TOKEN, "data": "0x18160ddd"},
+                                          "latest"]}).encode()
+            req = urllib.request.Request(
+                u, data=body, headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=25) as r:
+                d = json.load(r)
+            if "result" in d:
+                return int(d["result"], 16) / 1e8
+            last = str(d.get("error"))[:90]
+        except Exception as e:
+            last = "%s: %s" % (u.split("//")[1][:20], e)
+    raise Unknown("wPCN totalSupply unreadable on every BSC endpoint (%s)" % last)
+
+
+def allocated_addresses():
+    """Deposit addresses the desk has handed out. Unreadable ones are SKIPPED,
+    which can only undercount the surplus -- the safe direction to be wrong in.
+    The core reserve is handled separately and is never allowed to be unknown."""
+    try:
+        pool = {}
+        for line in open(POOL_FILE, encoding="utf-8"):
+            p = line.rstrip("\n").split("\t")
+            if len(p) == 2 and p[0].isdigit():
+                pool[int(p[0])] = p[1]
+        req = json.load(open(REQ_FILE, encoding="utf-8")).get("requests", {})
+        return [pool[v["index"]] for v in req.values()
+                if isinstance(v, dict) and v.get("index") in pool]
+    except Exception:
+        return []
+
+
+def load_state():
+    """Normalise, never merely 'handle unreadable'. A file that parses but lacks
+    a key once killed pcoin-wrapdesk-watch with KeyError on its first real
+    event, so every key is defaulted here rather than assumed present."""
+    try:
+        s = json.load(open(STATE_FILE, encoding="utf-8"))
+        if not isinstance(s, dict):
+            s = {}
+    except Exception:
+        s = {}
+    s.setdefault("core_pcn", None)
+    s.setdefault("core_sent", None)
+    s.setdefault("total_pcn", None)
+    s.setdefault("supply", None)
+    s.setdefault("fails", 0)
+    s.setdefault("last_alert", "")
+    s.setdefault("last_digest_day", "")
+    return s
+
+
+def save_state(s):
+    d = os.path.dirname(STATE_FILE)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(s, f, indent=1)
+    os.replace(tmp, STATE_FILE)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dry-run", action="store_true",
+                    help="evaluate and print; notify nobody, at all")
+    ap.add_argument("--digest", action="store_true",
+                    help="send one healthy summary per UTC day (for a daily timer)")
+    ap.add_argument("--force-supply", type=float,
+                    help="TEST ONLY: pretend totalSupply is this, to prove the alarm fires")
+    ap.add_argument("--force-reserve", type=float,
+                    help="TEST ONLY: pretend the core reserve is this")
+    a = ap.parse_args()
+
+    def notify(subject, body):
+        if a.dry_run:
+            print("\n--- DRY RUN: would have sent this, and did NOT ---")
+            print("SUBJECT: %s\n%s" % (subject, body))
+            return
+        subprocess.run([NOTIFY, subject, body], timeout=60)
+
+    st = load_state()
+    alerts, warns = [], []
+
+    try:
+        core_pcn, core_sent = addr_balance(RESERVE)
+        if a.force_reserve is not None:
+            core_pcn = a.force_reserve
+        alloc = allocated_addresses()
+        extra, skipped = 0.0, 0
+        for ad in alloc:
+            try:
+                b, _ = addr_balance(ad)
+                extra += b
+            except Unknown:
+                skipped += 1
+        total = core_pcn + extra
+        supply = a.force_supply if a.force_supply is not None else total_supply()
+    except Unknown as e:
+        st["fails"] += 1
+        print("  UNREADABLE: %s (streak %d)" % (e, st["fails"]))
+        if st["fails"] >= FAIL_STREAK and st["last_alert"] != "unreadable":
+            notify("wPCN solvency: CANNOT VERIFY",
+                   "Could not read the solvency inputs (%d consecutive attempts).\n%s\n\n"
+                   "This resolves NOTHING. It is not a statement that the reserve is "
+                   "short - only that it could not be checked." % (st["fails"], e))
+            st["last_alert"] = "unreadable"
+        save_state(st)
+        return 0
+
+    st["fails"] = 0
+    ratio_out = total / supply if supply else None
+    ratio_iss = total / ISSUED if ISSUED else None
+
+    print("  core reserve (index 0) : %.8f PCN   (lifetime sent %.8f)" % (core_pcn, core_sent))
+    print("  allocated deposits     : %.8f PCN   (%d addresses, %d unreadable)"
+          % (extra, len(alloc), skipped))
+    print("  TOTAL RESERVE          : %.8f PCN" % total)
+    print("  wPCN totalSupply       : %.8f" % supply)
+    print("  wPCN issuedSupply      : %.8f" % ISSUED)
+    print("  backing vs outstanding : %.4f%%" % (ratio_out * 100 if ratio_out else 0))
+    print("  backing vs issued      : %.4f%%" % (ratio_iss * 100 if ratio_iss else 0))
+
+    # A - the core reserve must never shrink, and must never have spent anything
+    if st["core_pcn"] is not None and core_pcn < st["core_pcn"] - 1e-8:
+        alerts.append("A. THE CORE RESERVE SHRANK: %.8f -> %.8f PCN (-%.8f). "
+                      "That wallet held one UTXO unspent since height 5765. Any "
+                      "spend from it is an emergency."
+                      % (st["core_pcn"], core_pcn, st["core_pcn"] - core_pcn))
+    if core_sent > 0:
+        alerts.append("A. The core reserve has SPENT %.8f PCN over its lifetime. "
+                      "It should never have spent anything." % core_sent)
+
+    # B - the invariant that protects holders
+    if total + 1e-8 < supply:
+        alerts.append("B. UNDER-COLLATERALISED: reserve %.8f PCN is less than "
+                      "redeemable wPCN %.8f (short %.8f). Holders cannot all be paid."
+                      % (total, supply, supply - total))
+
+    # C - the conservative public figure
+    if total + 1e-8 < ISSUED:
+        warns.append("C. Backing has fallen below issuedSupply: %.8f < %.8f. "
+                     "wrapdesk.pc.am/proof will show under 100 percent. Still "
+                     "solvent against outstanding supply." % (total, ISSUED))
+
+    # D - supply can only ever fall
+    if st["supply"] is not None and supply > st["supply"] + 1e-8:
+        alerts.append("D. wPCN totalSupply INCREASED: %.8f -> %.8f (+%.8f). The "
+                      "contract has no mint path and there has been exactly one "
+                      "mint. Verify the token address immediately."
+                      % (st["supply"], supply, supply - st["supply"]))
+
+    body = ("Reserve (core)      %.8f PCN\n"
+            "Reserve (total)     %.8f PCN\n"
+            "wPCN outstanding    %.8f\n"
+            "wPCN issued         %.8f\n"
+            "Backing/outstanding %.4f percent\n"
+            "Backing/issued      %.4f percent\n"
+            "Reserve address     %s\n"
+            % (core_pcn, total, supply, ISSUED,
+               ratio_out * 100 if ratio_out else 0,
+               ratio_iss * 100 if ratio_iss else 0, RESERVE))
+
+    if alerts or warns:
+        sev = "CRITICAL" if alerts else "warning"
+        text = "\n\n".join(alerts + warns) + "\n\n" + body
+        fp = "|".join(x[:2] for x in alerts + warns)
+        if st["last_alert"] != fp:          # re-alert on CHANGE, not on a timer
+            notify("wPCN solvency: %s" % sev, text)
+            st["last_alert"] = fp
+        else:
+            print("  (same condition as the last run - not re-sending)")
+        for x in alerts + warns:
+            print("  !! " + x)
+    else:
+        print("  OK - every invariant holds")
+        if st["last_alert"] not in ("", "ok"):
+            notify("wPCN solvency: RECOVERED",
+                   "Every invariant holds again.\n\n" + body)
+        st["last_alert"] = "ok"
+        day = time.strftime("%Y-%m-%d", time.gmtime())
+        if a.digest and st["last_digest_day"] != day:
+            # The date goes in the BODY, not just the state file. pcoin-notify
+            # dedupes on the message text for REPEAT_HOURS, and a healthy digest
+            # is byte-identical from one day to the next -- so the 2026-09-05
+            # digest was logged "suppressed" and never reached the channel. A
+            # daily heartbeat that silently stops is worse than none, because
+            # its absence is what you would watch for.
+            notify("wPCN solvency: daily check OK",
+                   "%s UTC\n\n%s" % (time.strftime("%Y-%m-%d %H:%M", time.gmtime()), body))
+            st["last_digest_day"] = day
+
+    if not a.dry_run and a.force_supply is None and a.force_reserve is None:
+        st["core_pcn"], st["core_sent"] = core_pcn, core_sent
+        st["total_pcn"], st["supply"] = total, supply
+        save_state(st)
+    else:
+        print("  (state NOT written: dry-run or forced test values)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
