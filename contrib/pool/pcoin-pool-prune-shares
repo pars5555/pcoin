@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# Bound the growth of pool.sqlite by dropping shares nobody can still need.
+#
+# WHY THIS EXISTS: the shares table had no retention of any kind. It held every
+# share since 2026-08-13 -- 7.57 million rows, 2.3 GB, growing by ~513,000 rows
+# (~100 MB) a day. Against 27 GB free that is roughly nine months to a full disk,
+# and a full disk stops the pool AND the node on the same box.
+#
+# WHY 7 DAYS IS SAFE, measured rather than guessed:
+#   * payouts are computed when a block is found, and every one of the 1,725
+#     blocks already has its payout rows. Nothing recomputes an old split.
+#   * the PPLNS window is `windowMultiplier: 2` -- twice a block's work, i.e.
+#     MINUTES of shares, not days.
+#   * the oldest block not yet mature was ~17 hours old when this was written.
+#   * 7 days is therefore several hundred times the window and ten times the
+#     pending-block horizon.
+# The permanent record is the `payouts` table (60k rows), which is never touched.
+#
+# WHY IT DOES NOT VACUUM: auto_vacuum is 0, so deleted pages are not returned to
+# the OS -- but SQLite reuses them, which is what actually matters: the file stops
+# GROWING. A real VACUUM rewrites 2.3 GB under an exclusive lock, and the pool
+# writes ~6 shares a second; blocking that means miners doing real work whose
+# shares are dropped. Growth is the problem, not the current size, so the
+# dangerous half is deliberately not done. Run one by hand in a maintenance
+# window if the file size itself ever matters.
+set -uo pipefail
+
+DB=${DB:-/opt/pcoin-pool/pool.sqlite}
+RETAIN_DAYS=${RETAIN_DAYS:-7}
+BATCH=${BATCH:-50000}
+MAX_BATCHES=${MAX_BATCHES:-400}
+
+say() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*"; }
+
+[ -r "$DB" ] || { say "prune: cannot read $DB -- resolving nothing, no rows touched"; exit 0; }
+
+q() { sqlite3 -cmd '.timeout 15000' "$DB" "$1" 2>/dev/null; }
+
+BEFORE_ROWS=$(q "SELECT COUNT(*) FROM shares;")
+[ -n "$BEFORE_ROWS" ] || { say "prune: cannot count shares -- refusing to delete"; exit 0; }
+
+CUTOFF=$(q "SELECT (strftime('%s','now') - ${RETAIN_DAYS}*86400)*1000;")
+
+# Belt and braces: never delete past the oldest block that is not yet mature,
+# even if it is older than the retention window. A block still in flight is the
+# one case where anything might conceivably want to look at its shares again.
+GUARD=$(q "SELECT IFNULL(MIN(found_at),0) FROM blocks WHERE state NOT IN ('mature','orphaned');")
+if [ -n "$GUARD" ] && [ "$GUARD" -gt 0 ] 2>/dev/null; then
+    GUARD=$((GUARD - 86400000))          # a further day of margin
+    if [ "$GUARD" -lt "$CUTOFF" ]; then
+        say "prune: cutoff pulled back to the oldest in-flight block (minus 1d)"
+        CUTOFF=$GUARD
+    fi
+fi
+
+DOOMED=$(q "SELECT COUNT(*) FROM shares WHERE at < ${CUTOFF};")
+if [ -z "$DOOMED" ] || [ "$DOOMED" -eq 0 ] 2>/dev/null; then
+    say "prune: nothing older than ${RETAIN_DAYS}d (rows=${BEFORE_ROWS}) -- nothing to do"
+    exit 0
+fi
+
+say "prune: ${DOOMED} of ${BEFORE_ROWS} shares are older than ${RETAIN_DAYS}d; deleting in batches of ${BATCH}"
+
+# Batched so each write lock is short. The pool records roughly six shares a
+# second and must not be blocked; a single DELETE of millions of rows would hold
+# the lock for the whole operation.
+n=0
+while [ "$n" -lt "$MAX_BATCHES" ]; do
+    got=$(q "DELETE FROM shares WHERE id IN (SELECT id FROM shares WHERE at < ${CUTOFF} LIMIT ${BATCH}); SELECT changes();")
+    [ -z "$got" ] && { say "prune: a batch failed -- stopping early, $((n*BATCH)) or so removed"; break; }
+    [ "$got" -eq 0 ] 2>/dev/null && break
+    n=$((n+1))
+    sleep 0.4
+done
+
+AFTER_ROWS=$(q "SELECT COUNT(*) FROM shares;")
+say "prune: shares ${BEFORE_ROWS} -> ${AFTER_ROWS} (removed $((BEFORE_ROWS-AFTER_ROWS)), ${n} batches), file $(du -h "$DB" 2>/dev/null | cut -f1), freelist $(q 'PRAGMA freelist_count;') pages reusable"
