@@ -426,14 +426,74 @@ namespace PCoinTray
             return difficulty * HASHES_PER_DIFFICULTY / myHps / 86400.0;
         }
 
-        //! Where solo stops being worth suggesting. Two days is the point at
-        //! which a block stops being part of a weekly rhythm; the H/s floor is
-        //! a second, independent gate on the one-time offer, because a machine
-        //! that waits a week or more per block has a real chance of a month
-        //! with nothing, and that is a bad experience however sound the
-        //! arithmetic behind it was.
-        public const double SOLO_DAYS_MAX = 2.0;
-        public const double SOLO_MIN_HPS = 3000.0;
+        //! TWO thresholds, deliberately separate, because they answer different
+        //! questions and reach different people.
+        //!
+        //! ADVICE_DAYS_MAX drives the recommendation line in the Mining-mode
+        //! panel. That line is shown on EVERY machine, including installs that
+        //! answered the solo question long ago, so moving this number silently
+        //! re-advises the whole fleet. Treat it as a published statement.
+        //!
+        //! OFFER_DAYS_MAX gates the one-time dialog. Moving it changes who gets
+        //! ASKED and nothing else.
+        //!
+        //! They were ONE constant until 2026-09-05, and the coupling was a trap:
+        //! "lower the offer gate a little" also flipped the standing advice from
+        //! "Pool recommended" to "Solo is fine" for every machine in between,
+        //! retroactively and with no dialog. Keep them separate even while they
+        //! hold the same value.
+        public const double ADVICE_DAYS_MAX = 2.0;
+        public const double OFFER_DAYS_MAX = 2.0;
+
+        //! An absolute floor on the offer, and A BACKSTOP ONLY.
+        //!
+        //! It was 3000 H/s, which made it the deciding gate: at difficulty 0.0635
+        //! the days gate binds at ~1578 H/s, so machines between 1578 and 3000
+        //! were told "Solo is fine at your hash rate" by the window and were
+        //! never asked -- a silent band 1.9x wide, and exactly the population the
+        //! pool's block share is made of.
+        //!
+        //! The value matters more than it looks. A floor is INERT while
+        //! difficulty * 2^32 / (OFFER_DAYS_MAX * 86400) exceeds it, and DECISIVE
+        //! below that; the changeover is at difficulty
+        //! SOLO_MIN_HPS * OFFER_DAYS_MAX * 86400 / 2^32. At 1500 that is 0.0603,
+        //! about 5% under where the chain sits -- inside one day's noise, so the
+        //! constant would flip between doing nothing and deciding everything
+        //! week to week. At 1000 it is 0.0402, a further 37% collapse away, which
+        //! is what a backstop should be: it only speaks when the chain has fallen
+        //! so far that a laptop would otherwise be offered solo, and stays silent
+        //! the rest of the time. Do not raise it to "tune" who is offered --
+        //! that is OFFER_DAYS_MAX's job, in the unit the user is actually shown.
+        public const double SOLO_MIN_HPS = 1000.0;
+
+        //! The offer predicate, pure and in one place so it can be tested.
+        //!
+        //! It lived inline in MaybeOfferSolo beside a blocking RPC and a UI
+        //! marshal, so nothing exercised it and the only automated check on the
+        //! rule that decides where block rewards go was a pair of loose
+        //! comparisons on one constant.
+        //!
+        //! Unknown resolves to NO: a difficulty that could not be read is not a
+        //! low difficulty (CLAUDE.md 7.1).
+        public static bool ShouldOfferSolo(double hps, double difficulty)
+        {
+            if (hps < SOLO_MIN_HPS) return false;
+            double days = SoloDaysPerBlock(hps, difficulty);
+            return days > 0 && days <= OFFER_DAYS_MAX;
+        }
+
+        //! Why ShouldOfferSolo said no, for the log. On a fleet machine with no
+        //! desktop this is the only way to find out that nothing happened.
+        public static string WhyNotOffered(double hps, double difficulty)
+        {
+            if (hps < SOLO_MIN_HPS)
+                return string.Format(CultureInfo.InvariantCulture,
+                    "measured {0:0} H/s is below the {1:0} H/s floor", hps, SOLO_MIN_HPS);
+            double days = SoloDaysPerBlock(hps, difficulty);
+            if (days <= 0) return "difficulty is not readable, so nothing is claimed";
+            return string.Format(CultureInfo.InvariantCulture,
+                "{0:0.0} days per block is over the {1:0.0} day gate", days, OFFER_DAYS_MAX);
+        }
 
         public sealed class ModeAdvice
         {
@@ -459,7 +519,7 @@ namespace PCoinTray
             string when = daysPerBlock < 1.0
                 ? string.Format(CultureInfo.InvariantCulture, "about {0:0.0} blocks a day solo", 1.0 / daysPerBlock)
                 : string.Format(CultureInfo.InvariantCulture, "about {0:0} day(s) between blocks solo", daysPerBlock);
-            if (daysPerBlock > SOLO_DAYS_MAX)
+            if (daysPerBlock > ADVICE_DAYS_MAX)
             {
                 a.PreferPool = true;
                 a.Line = "Pool recommended — at your hash rate that is " + when + ", so long dry spells. A pool pays a steady share instead.";
@@ -532,6 +592,9 @@ namespace PCoinTray
         //! Sticky whatever the answer was, exactly as _seedDeclined is: a
         //! machine that has been asked is never asked again.
         bool _soloAsked;
+        //! One log line per sync wait, not one per retry: the recovery branch
+        //! calls StartMining every few seconds and would otherwise fill the log.
+        bool _soloSyncWaitLogged;
         //! A recovery-phrase window is open. Set only around the automatic
         //! wizard, which fires from the same node-ready path that starts
         //! auto-tuning and is therefore the one thing the solo offer can
@@ -1182,6 +1245,27 @@ namespace PCoinTray
                 Cli("startpoolmining \"" + _poolUrl + "\" \"" + _address + "\" " + t);
                 return;
             }
+            // SOLO NEEDS A SYNCED NODE; POOL DOES NOT. A pool miner works on the
+            // block the pool hands it and cannot fork. A solo miner builds on
+            // whatever tip its own node has, so mining before the chain has
+            // caught up builds a competing fork (CLAUDE.md 7.9) -- which is why
+            // install.ps1 has always installed with mining off and said the tray
+            // waits for sync on its own. It did not: nothing on any of the eleven
+            // paths into this function consulted _syncing, and the pool default
+            // was the only thing hiding it. Refusing here is safe and
+            // self-healing: intent stays on, and the "intent is on but the node
+            // is not hashing" branch in Refresh calls this again every few
+            // seconds until the node is ready.
+            if (_syncing)
+            {
+                if (!_soloSyncWaitLogged)
+                {
+                    _soloSyncWaitLogged = true;
+                    Program.Note("solo mining held back: the node is still syncing");
+                }
+                return;
+            }
+            _soloSyncWaitLogged = false;
             Cli("startmining \"" + _address + "\" " + t);
         }
 
@@ -1348,7 +1432,6 @@ namespace PCoinTray
             {
                 if (_soloAsked || _cancelCalibrate) return;
                 if (string.IsNullOrEmpty(_poolUrl)) return;     // already solo: nothing to offer
-                if (measuredHps < Cpu.SOLO_MIN_HPS) return;     // never steer a weak machine to solo
                 double diff = _difficulty;
                 if (diff <= 0)
                 {
@@ -1357,8 +1440,24 @@ namespace PCoinTray
                     // than assume anything about the number that decides this.
                     try { var r = Poll(true); if (r != null) diff = r.Difficulty; } catch { }
                 }
+                // Never put the question to a machine that could not act on the
+                // answer: solo mining on an unsynced node builds a competing
+                // fork (CLAUDE.md 7.9). Not asking is the safe outcome -- the
+                // machine stays on the pool and is asked after the next start.
+                if (_syncing)
+                {
+                    Program.Note("solo offer: not asking, the node is still syncing");
+                    return;
+                }
+                if (!Cpu.ShouldOfferSolo(measuredHps, diff))
+                {
+                    // Say WHY. Three silent returns meant a fleet machine that
+                    // was refused left no trace at all, and the refusal is the
+                    // interesting case.
+                    Program.Note("solo offer: not asking -- " + Cpu.WhyNotOffered(measuredHps, diff));
+                    return;
+                }
                 double days = Cpu.SoloDaysPerBlock(measuredHps, diff);
-                if (days <= 0 || days > Cpu.SOLO_DAYS_MAX) return;
                 _sync.BeginInvoke(new Action(() => AskSolo(measuredHps, days)));
             }
             catch (Exception ex) { Program.Note("solo offer: " + ex.Message); }

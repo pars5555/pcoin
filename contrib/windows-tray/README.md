@@ -162,13 +162,27 @@ from `getmininginfo` survives only as a fallback for the case where
 routinely is not at.) A hash rate or a difficulty that could not be read yields
 0 days, which every caller treats as *not known* -- never as *no wait*.
 
-Once per install, when auto-tuning has just measured a machine at
-`Cpu.SOLO_MIN_HPS` (3,000 H/s) or better **and** the exact arithmetic puts it
-within `Cpu.SOLO_DAYS_MAX` (2 days) of a block, the tray offers solo mining once
-and remembers the answer, whichever it was. Both gates must pass: the floor is
-what keeps a laptop out of a mode where a month with nothing is a real
-possibility, and the days figure is what keeps a fast machine out of it when
-difficulty has climbed.
+**Two thresholds, deliberately separate.** `Cpu.ADVICE_DAYS_MAX` (2 days) is
+the line in the Mining-mode panel, shown on **every** machine including installs
+that answered long ago. `Cpu.OFFER_DAYS_MAX` (2 days) gates the one-time dialog.
+They were one constant until 2026-09-05, and the coupling was a trap: lowering
+"the offer gate" also flipped the standing advice from *Pool recommended* to
+*Solo is fine* on every machine in between, retroactively and with no dialog.
+Keep them separate even while they hold the same value.
+
+Once per install, when auto-tuning has measured a machine and
+`Cpu.ShouldOfferSolo` passes, the tray offers solo mining once and remembers the
+answer, whichever it was. `Cpu.SOLO_MIN_HPS` (1,000 H/s) is a **backstop only**.
+It was 3,000, which made it the deciding gate and opened a silent band: at
+difficulty 0.0635 the days gate binds at ~1,578 H/s, so every machine between
+1,578 and 3,000 was told *"Solo is fine at your hash rate"* by the window and
+was never asked -- a gap 1.9x wide in hash rate, over exactly the population the
+pool's block share is made of. A floor is inert while
+`difficulty x 2^32 / (OFFER_DAYS_MAX x 86400)` exceeds it and decisive below;
+the changeover for 1,000 H/s is difficulty 0.0402, a further 37% collapse from
+today. Do not raise it to tune who is offered -- that is `OFFER_DAYS_MAX`'s job,
+in the unit the user is actually shown. `--selftest` pins all three by value and
+sweeps the invariant that the offer is never made where the window says pool.
 
 That offer exists because a pool finding most of the network's blocks could
 reorganise the chain, and machines big enough to mine alone are the ones paying
@@ -179,8 +193,17 @@ none of them may be relaxed:
   install keeps whatever it already had. There is no third state --
   `StartMining` reads a blank `poolurl` as SOLO, so writing "undecided" there
   would silently move every new install, laptops included.
-- the app never switches mode on its own, and never mentions solo to a machine
-  below the floor.
+- the app never switches mode on its own. Note the window's advice line and the
+  dialog are **not** the same rule: the line goes on days-per-block alone, the
+  dialog additionally requires the floor. That sentence used to read "never
+  mentions solo to a machine below the floor", which the advice line had been
+  contradicting since the day it shipped.
+- **solo never starts on an unsynced node.** `StartMining` refuses the solo
+  branch while `_syncing` and lets the recovery tick retry, because a solo miner
+  builds on its own tip and would fork the chain (CLAUDE.md 7.9). Pool mining has
+  no such constraint -- it works on the block the pool hands it. `install.ps1`
+  claimed the tray already did this; until 2026-09-05 it did not, and the pool
+  default was the only thing hiding it.
 - nothing depends on the dialog being answered, or seen. This app can be
   started into session 0 with no desktop (see above), and an unanswered offer
   leaves the machine exactly as installed.

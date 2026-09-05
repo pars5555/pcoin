@@ -1636,8 +1636,8 @@ namespace PCoinTray
 
             // Exactly at the threshold is still solo: the pool branch is a
             // strict >, so the boundary must not drift into it.
-            double atThreshold = DIFF * Cpu.HASHES_PER_DIFFICULTY / (Cpu.SOLO_DAYS_MAX * 86400.0);
-            ok &= Check(log, "exactly SOLO_DAYS_MAX is not yet a pool machine", "False",
+            double atThreshold = DIFF * Cpu.HASHES_PER_DIFFICULTY / (Cpu.ADVICE_DAYS_MAX * 86400.0);
+            ok &= Check(log, "exactly ADVICE_DAYS_MAX is not yet a pool machine", "False",
                 Cpu.AdviseMode(atThreshold, DIFF, 719000.0).PreferPool.ToString());
 
             // Difficulty is the exact input and the network hash rate is only a
@@ -1656,13 +1656,63 @@ namespace PCoinTray
             ok &= Check(log, "and the fallback disagrees with the exact form, as expected", "True",
                 (Days(fallback.DaysPerBlock) != Days(desktop.DaysPerBlock)).ToString());
 
-            // The floor on the one-time offer is a second, independent gate: a
-            // laptop must fail it even if difficulty ever fell far enough to
-            // make its days-per-block look acceptable.
-            ok &= Check(log, "the offer floor is above a 4-core laptop", "True",
-                (600.0 < Cpu.SOLO_MIN_HPS).ToString());
-            ok &= Check(log, "and below a 16-thread desktop", "True",
-                (Cpu.SOLO_MIN_HPS < 5036.0).ToString());
+            // ---- the two gates, pinned by VALUE ----
+            //
+            // The previous checks here only asserted 600 < floor < 5036, which
+            // is true of 3000 and of 1000 alike -- so the suite printed all-ok
+            // for a change that cut the floor by two thirds. An assertion loose
+            // enough to pass whatever you write is not an assertion.
+            ok &= Check(log, "advice-line gate is 2.0 days", "2.0", Cpu.ADVICE_DAYS_MAX.ToString("0.0", CI));
+            ok &= Check(log, "offer gate is 2.0 days", "2.0", Cpu.OFFER_DAYS_MAX.ToString("0.0", CI));
+            ok &= Check(log, "offer floor is 1000 H/s", "1000", Cpu.SOLO_MIN_HPS.ToString("0", CI));
+
+            // THE INVARIANT THAT MATTERS: the offer must never be made to a
+            // machine the window is telling to stay on the pool. Anything else
+            // is the app arguing with itself. Swept, not spot-checked, because
+            // the failure is a BAND and a spot check walks straight past it.
+            {
+                bool contradiction = false;
+                string worst = "";
+                foreach (double d in new[] { 0.02, 0.0635, 0.11651, 0.5, 2.0 })
+                    for (double h = 200.0; h <= 100000.0; h *= 1.07)
+                    {
+                        if (!Cpu.ShouldOfferSolo(h, d)) continue;
+                        if (Cpu.AdviseMode(h, d, 0).PreferPool)
+                        {
+                            contradiction = true;
+                            worst = string.Format(CI, "{0:0} H/s at difficulty {1}", h, d);
+                        }
+                    }
+                ok &= Check(log, "never offer solo where the window says pool" +
+                    (contradiction ? " (" + worst + ")" : ""), "False", contradiction.ToString());
+            }
+
+            // The reverse gap -- advised but not offered -- is the bug this
+            // change exists to shrink. It cannot be closed at every difficulty
+            // while any absolute floor exists, so pin WHERE it reopens instead
+            // of pretending it is gone. Below this difficulty the floor starts
+            // refusing machines the window is calling fine.
+            ok &= Check(log, "the floor only bites below difficulty 0.0402", "0.0402",
+                (Cpu.SOLO_MIN_HPS * Cpu.OFFER_DAYS_MAX * 86400.0 / Cpu.HASHES_PER_DIFFICULTY).ToString("0.0000", CI));
+            ok &= Check(log, "so at today's difficulty it is inert, not deciding", "True",
+                (DIFF > Cpu.SOLO_MIN_HPS * Cpu.OFFER_DAYS_MAX * 86400.0 / Cpu.HASHES_PER_DIFFICULTY).ToString());
+
+            // ---- the offer predicate itself, which nothing tested before ----
+            ok &= Check(log, "1600 H/s at 0.0635 is offered", "True", Cpu.ShouldOfferSolo(1600.0, 0.0635).ToString());
+            ok &= Check(log, "1500 H/s at 0.0635 is not (2.10 days, over the gate)", "False", Cpu.ShouldOfferSolo(1500.0, 0.0635).ToString());
+            ok &= Check(log, "900 H/s is refused by the floor whatever the chain does", "False", Cpu.ShouldOfferSolo(900.0, 0.0001).ToString());
+            ok &= Check(log, "an unreadable difficulty offers nothing", "False", Cpu.ShouldOfferSolo(50000.0, 0.0).ToString());
+            ok &= Check(log, "a negative difficulty offers nothing", "False", Cpu.ShouldOfferSolo(50000.0, -1.0).ToString());
+            ok &= Check(log, "no hash rate offers nothing", "False", Cpu.ShouldOfferSolo(0.0, DIFF).ToString());
+
+            // The refusal reason is what a fleet machine leaves in its log, so
+            // it has to name the gate that actually refused.
+            ok &= Check(log, "refusal names the floor", "True",
+                Cpu.WhyNotOffered(900.0, DIFF).Contains("floor").ToString());
+            ok &= Check(log, "refusal names the day gate", "True",
+                Cpu.WhyNotOffered(1500.0, 0.0635).Contains("day gate").ToString());
+            ok &= Check(log, "refusal names an unreadable chain", "True",
+                Cpu.WhyNotOffered(50000.0, 0.0).Contains("not readable").ToString());
 
             return ok;
         }
