@@ -1,6 +1,12 @@
 [Unit]
 Description=PCoin wrap desk — what the operator still has to do
 Documentation=https://github.com/pars5555/pcoin/blob/main/contrib/wpcn/WRAP-DESK.md
+# Fires ONLY on a real failure. Exit 1 (action outstanding) and exit 2 are
+# declared clean below, so this never doubles the script's own hourly alerts;
+# what it catches is exit 3 (un-migrated ledger, refusing to run), a traceback,
+# a timeout, or a MemoryMax kill -- every one of which was previously silent,
+# and every one of which means NO wrap is being reported until someone notices.
+OnFailure=pcoin-alert@%n.service
 
 [Service]
 Type=oneshot
@@ -19,9 +25,9 @@ Environment=WRAP_OPENED_AT_HEIGHT=5868
 Environment=WRAP_FEE_PCT=5
 
 # Exit 1 = an action is outstanding. That is the NORMAL state while a wrap is in
-# flight, so this unit is expected to "fail" routinely and must NOT be wired to
-# OnFailure=pcoin-alert@ — the script does its own notifying, hourly, and an
-# alert on top of that would double every message.
+# flight, and the script does its own notifying about it hourly -- so 1 and 2
+# are declared SUCCESS here, which is what lets the OnFailure= above fire only
+# for the failures nobody else reports (see the [Unit] comment).
 Nice=10
 MemoryMax=64M
 TimeoutStartSec=120

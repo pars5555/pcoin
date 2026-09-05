@@ -104,6 +104,32 @@ def load_state():
     for k in ("seen", "nagged", "outstanding"):
         if not isinstance(st.get(k), dict):
             st[k] = {}
+    # REFUSE TO RUN ON AN UN-MIGRATED LEDGER. Keys changed from wrap:<txid> to
+    # wrap:<txid>:<address> on 2026-09-05. An old-format key would simply never
+    # match the new lookup, so every already-released wrap would be reported
+    # again as an ACTION and an operator could pay it twice. That is the exact
+    # opposite of the bug the new key fixes, and silently tolerating the old
+    # format would hide a half-done migration behind a working-looking run.
+    # Refusing loudly is the only outcome that cannot cost money.
+    stale = [k for k in list(st["seen"]) + list(st["nagged"])
+             if k.startswith("wrap:") and k.count(":") == 1]
+    if stale:
+        msg = ("REFUSING TO RUN: %d ledger key(s) are in the old wrap:<txid> format:\n  %s\n"
+               "Migrate them first (verifies each against the chain):\n"
+               "  python3 /usr/local/bin/migrate_wrap_keys.py --apply\n"
+               % (len(stale), "\n  ".join(stale)))
+        sys.stderr.write(msg)
+        # stderr alone reaches nobody: this unit runs from a timer every 15 min,
+        # exit 3 is a plain systemd failure with no OnFailure wiring of its own,
+        # and while it refuses NO wrap is reported -- a new deposit in that window
+        # would sit unannounced indefinitely. So say it where the operator looks.
+        # It repeats every run until fixed, which is correct for this state.
+        if not DRY_RUN:
+            try:
+                notify("wrap desk: REFUSING TO RUN -- un-migrated ledger", msg)
+            except Exception:
+                pass
+        sys.exit(3)
     return st
 
 
@@ -236,7 +262,14 @@ def main() -> int:
             h = it.get("height")
             if not isinstance(h, int) or h <= OPENED_AT_HEIGHT:
                 continue          # pre-dates the desk: reserve funding, not a wrap
-            key = f"wrap:{txid}"
+            # Keyed on (txid, address), never txid alone. One PCoin transaction
+            # can pay several deposit addresses at once -- that is what a batch
+            # payout from an exchange looks like -- and this loop visits each
+            # address in turn. Keyed on txid alone, the first address's release
+            # marked the WHOLE transaction seen and the second customer's PCN
+            # arrived, was skipped in silence, and was never paid. CLAUDE.md 8c
+            # rule 1: every live rail shipped this wrong first, and so did this.
+            key = f"wrap:{txid}:{watch_addr}"
             if st["seen"].get(key, {}).get("released"):
                 continue
             if confs < CONFIRMATIONS:
@@ -262,8 +295,10 @@ def main() -> int:
                 # f-string expression is a syntax error before Python 3.12.
                 pay_to = requester or ("(NO REQUEST ON FILE -- sent straight to "
                                        "the reserve. Find out who before paying.)")
-                st["outstanding"][txid] = {"pcn": amt, "send_wpcn": net,
-                                           "to": requester, "address": watch_addr}
+                # Same composite key as `seen`, so --released's prefix match on
+                # the txid resolves to a key that already carries the address.
+                st["outstanding"][f"{txid}:{watch_addr}"] = {"pcn": amt, "send_wpcn": net,
+                                                             "to": requester, "address": watch_addr}
                 tasks.append((key, "action",
                               f"ACTION: send {net:.2f} wPCN\n"
                               f"{amt:.2f} PCN confirmed ({confs} confs), tx {txid[:16]}...\n"
@@ -276,7 +311,7 @@ def main() -> int:
                               f"proceeds to buy wPCN back from the pool -- but ONLY while "
                               f"the pool trades BELOW price.pc.am.\n"
                               f"WHEN SENT, close it out or this repeats hourly forever:\n"
-                              f"  pcoin-wrapdesk-watch --released {txid} <bsc_txhash>"))
+                              f"  pcoin-wrapdesk-watch --released {txid}:{watch_addr} <bsc_txhash>"))
 
         # accumulate this address's share of the allocation; reported once,
         # after every address has been read, or the figure would be partial.
@@ -413,6 +448,16 @@ if __name__ == "__main__":
                 print(f"  {t}")
             sys.exit(2)
 
+        # The resolved value is now "<txid>:<address>" (taken from outstanding),
+        # never a bare txid. If outstanding was empty and the operator typed a
+        # bare txid, it falls through to here unresolved -- refuse rather than
+        # write an old-format key, which load_state would then refuse on the
+        # next run and which could never match a real deposit again.
+        if ":" not in txid:
+            print(f"REFUSED: {txid!r} has no address part. A released wrap is recorded "
+                  f"as <txid>:<deposit-address>; copy the key from the ACTION alert, "
+                  f"or give a txid prefix that resolves against an outstanding wrap.")
+            sys.exit(2)
         key = f"wrap:{txid}"
         s.setdefault("seen", {}).setdefault(key, {})
         s["seen"][key]["released"] = True

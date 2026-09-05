@@ -377,8 +377,14 @@ def main() -> int:
     allowance = spend_c.functions.allowance(
         acct.address, Web3.to_checksum_address(ROUTER)).call()
     if allowance < amt_in:
+        # Approve EXACTLY this trade, not 2**255. An unlimited allowance means
+        # a compromised or buggy router could drain the keeper's whole USDT
+        # float in one call; an exact one caps the blast radius at a single
+        # trade, and the keeper already worked that way for wPCN. It costs one
+        # extra approve() per trade -- a few cents of gas against the float.
+        # The 2**255 USDT approval this replaced was revoked on 2026-09-05.
         send(w3, acct, spend_c.functions.approve(
-            Web3.to_checksum_address(ROUTER), 2 ** 255).build_transaction(
+            Web3.to_checksum_address(ROUTER), amt_in).build_transaction(
                 {"from": acct.address}), "approve")
 
     r = send(w3, acct, router.functions.swapExactTokensForTokens(

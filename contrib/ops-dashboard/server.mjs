@@ -883,7 +883,14 @@ async function wrapPage() {
     }
 
     for (const i of items) {
-      const rec   = seen['wrap:' + i.txid];
+      // The watcher keys its ledger on (txid, deposit address) since 2026-09-05:
+      // one PCoin tx can pay several deposit addresses, and a txid-only key made
+      // the second customer's deposit vanish. Read the composite key first and
+      // fall back to the old one, so this page is right whichever lands first --
+      // the ledger migration or this deploy. Without the fallback, a migrated
+      // ledger read by the old code showed every PAID wrap as "SEND ... wPCN
+      // owed": a pay-twice prompt on the operator's own screen.
+      const rec   = seen['wrap:' + i.txid + ':' + r.address] || seen['wrap:' + i.txid];
       const done  = !!(rec && rec.released);
       const confs = Number(i.confirmations == null ? 0 : i.confirmations);
       const pcn   = Number(i.received_pcn);
@@ -909,8 +916,9 @@ async function wrapPage() {
     'to send now. ' + pending + ' still confirming.' +
     (unknown ? ' <b>' + unknown + ' address(es) could not be read &mdash; UNKNOWN.</b>' : '') +
     '</p><p class="muted">Release by hand from the inventory wallet, then record it so it ' +
-    'stops being reported:<br><code>pcoin-wrapdesk-watch --released &lt;txid&gt; ' +
-    '&lt;bsc_txhash&gt;</code></p></div>';
+    'stops being reported:<br><code>pcoin-wrapdesk-watch --released &lt;txid&gt;:&lt;deposit-address&gt; ' +
+    '&lt;bsc_txhash&gt;</code><br><small class="muted">The ACTION alert prints the exact ' +
+    '&lt;txid&gt;:&lt;address&gt; to copy; a bare txid prefix still works while it resolves to one wrap.</small></p></div>';
 
   return shell('wrap', 'Wrap desk', 'PCN &rarr; wPCN requests, read live from the chain',
     head + '<div class="card"><table><tr><th>Requester (BSC)</th><th>Deposit address</th>' +
