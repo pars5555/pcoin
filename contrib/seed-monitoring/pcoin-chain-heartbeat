@@ -207,7 +207,24 @@ def build_report(cli, window, hours):
     actual_hours = ((blocks[0]["time"] - blocks[-1]["time"]) / 3600.0) if blocks else 0.0
 
     lines = []
-    lines.append(f"height {tip:,} · {'IBD' if info.get('initialblockdownload') else 'synced'}"
+    # Is the chain actually MOVING? initialblockdownload only says this node has
+    # caught up with its peers -- in a chain-wide stall every node satisfies it, so
+    # deriving "synced" from it alone reported a healthy chain four times through a
+    # three-hour outage on 2026-09-05. The tip timestamp is already in hand.
+    tip_age = (time.time() - blocks[0]["time"]) if blocks else None
+    if info.get("initialblockdownload"):
+        state = "IBD"
+    elif tip_age is None:
+        state = "tip age UNKNOWN"          # unreadable resolves nothing
+    elif tip_age < 0:
+        state = "synced (clock skew)"      # timestamps are not monotonic here
+    elif tip_age > 3600:
+        state = f"STALLED — no block for {int(tip_age // 60)} min"
+    elif tip_age > 1800:
+        state = f"slow — last block {int(tip_age // 60)} min ago"
+    else:
+        state = "synced"
+    lines.append(f"height {tip:,} · {state}"
                  f" · {len(peers)} peers · mempool {mempool.get('size', 0)} tx")
     diff = info.get("difficulty")
     hr = fmt_hashrate(hashps) if hashps is not None else "unknown"

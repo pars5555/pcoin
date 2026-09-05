@@ -20,9 +20,15 @@ set -u
 
 CONTAINER=${CONTAINER:-pcoin-seed}
 STATE=/var/lib/pcoin-seed-watch/state
-STALL_SECONDS=${STALL_SECONDS:-7200}   # 2 h. Target spacing is 600 s and the
-                                       # chain has run past 1200 s, so anything
-                                       # tighter cries wolf.
+STALL_SECONDS=${STALL_SECONDS:-3600}   # 1 h = 6x the 600 s target. Was 7200,
+                                       # which left the chain dead for 2h04m30s
+                                       # on 2026-09-05 before anything said so.
+                                       # Gaps are ~Poisson, so a healthy gap
+                                       # exceeds this about exp(-6) = 0.25% of
+                                       # the time -- rare enough not to train
+                                       # people to ignore it. Do not drop to
+                                       # 1800: that is exp(-3) = 5%, several
+                                       # false alarms a day.
 
 # How to reach the node. NOT every seed runs it in Docker: one runs pcoind
 # natively under systemd, and this script's hardcoded `docker exec` meant the
