@@ -571,7 +571,7 @@ Get-FileHash .\pcoin-win64-miner.zip -Algorithm SHA256</pre>
         It becomes a systemd <code>CPUQuota</code>, which is a hard cap rather than a
         priority hint. Left uncapped the miner sits at a flat 100% of a core on an idle
         box &mdash; exactly the sustained load that earns a fair-use warning on a
-        shared-vCPU plan. Our own two Linux miners run at 20%.
+        shared-vCPU plan. Our own Linux miners run one thread each.
       </div>
     </div>
   </div>
@@ -595,11 +595,11 @@ journalctl -u pcoin-miner -n 40      <span class="c"># why it is or is not minin
   <div class="table-shell">
   <table class="files">
     <tr><th>File</th><th>What it is</th></tr>
-    <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.3.2/pcoin-linux-amd64-miner.deb">pcoin-linux-amd64-miner.deb</a></td><td>Debian/Ubuntu package &mdash; same contents the one-liner installs</td></tr>
-    <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.3.0/pcoin-linux-x86_64-miner.tar.gz">pcoin-linux-x86_64-miner.tar.gz</a></td><td>Plain binaries, any distribution</td></tr>
+    <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.4.4/pcoin-linux-amd64-miner.deb">pcoin-linux-amd64-miner.deb</a></td><td>Debian/Ubuntu package &mdash; same contents the one-liner installs</td></tr>
+    <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.4.4/pcoin-linux-x86_64-miner.tar.gz">pcoin-linux-x86_64-miner.tar.gz</a></td><td>Plain binaries, any distribution</td></tr>
   </table>
   </div>
-  <pre class="cmd"><button class="copy" type="button">copy</button>curl -fsSLO https://github.com/pars5555/pcoin/releases/download/v1.3.2/pcoin-linux-amd64-miner.deb
+  <pre class="cmd"><button class="copy" type="button">copy</button>curl -fsSLO https://github.com/pars5555/pcoin/releases/download/v1.4.4/pcoin-linux-amd64-miner.deb
 curl -fsSL https://pc.am/dl/SHA256SUMS.txt -o SHA256SUMS.txt
 sha256sum --ignore-missing -c SHA256SUMS.txt
 sudo apt install ./pcoin-linux-amd64-miner.deb</pre>
