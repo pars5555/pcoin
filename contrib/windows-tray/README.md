@@ -162,9 +162,13 @@ from `getmininginfo` survives only as a fallback for the case where
 routinely is not at.) A hash rate or a difficulty that could not be read yields
 0 days, which every caller treats as *not known* -- never as *no wait*.
 
-**Two thresholds, deliberately separate.** `Cpu.ADVICE_DAYS_MAX` (2 days) is
-the line in the Mining-mode panel, shown on **every** machine including installs
-that answered long ago. `Cpu.OFFER_DAYS_MAX` (2 days) gates the one-time dialog.
+**Two thresholds, deliberately separate, and they move together.**
+`Cpu.ADVICE_DAYS_MAX` (7 days) is the line in the Mining-mode panel, shown on
+**every** machine including installs that answered long ago.
+`Cpu.OFFER_DAYS_MAX` (7 days) gates the one-time dialog. Raising the offer gate
+*alone* is the mirror of the bug the split was made to fix -- a dialog arguing
+for solo on top of a panel reading *Pool recommended* -- so the self-test asserts
+`OFFER_DAYS_MAX <= ADVICE_DAYS_MAX` and sweeps the invariant behind it.
 They were one constant until 2026-09-05, and the coupling was a trap: lowering
 "the offer gate" also flipped the standing advice from *Pool recommended* to
 *Solo is fine* on every machine in between, retroactively and with no dialog.
@@ -172,16 +176,26 @@ Keep them separate even while they hold the same value.
 
 Once per install, when auto-tuning has measured a machine and
 `Cpu.ShouldOfferSolo` passes, the tray offers solo mining once and remembers the
-answer, whichever it was. `Cpu.SOLO_MIN_HPS` (1,000 H/s) is a **backstop only**.
+answer, whichever it was. `Cpu.SOLO_MIN_HPS` (300 H/s) is a **backstop only**.
 It was 3,000, which made it the deciding gate and opened a silent band: at
 difficulty 0.0635 the days gate binds at ~1,578 H/s, so every machine between
 1,578 and 3,000 was told *"Solo is fine at your hash rate"* by the window and
 was never asked -- a gap 1.9x wide in hash rate, over exactly the population the
 pool's block share is made of. A floor is inert while
 `difficulty x 2^32 / (OFFER_DAYS_MAX x 86400)` exceeds it and decisive below;
-the changeover for 1,000 H/s is difficulty 0.0402, a further 37% collapse from
-today. Do not raise it to tune who is offered -- that is `OFFER_DAYS_MAX`'s job,
-in the unit the user is actually shown. `--selftest` pins all three by value and
+the changeover for 300 H/s is difficulty 0.0422, about 37% under today.
+
+**The floor is not independent of the gate.** Widening the gate narrows the range
+of floors that stay backstops: 1,000 H/s was a comfortable backstop under the old
+2-day gate (changeover 0.0402) and would have been the *deciding* gate under the
+7-day one (changeover 0.1408, roughly twice today's difficulty), silently
+reopening the band the split exists to close. Both moved on 2026-09-05, and if
+you widen the gate again you must re-derive the floor. Do not raise it to tune
+who is offered -- that is `OFFER_DAYS_MAX`'s job, in the unit the user is shown.
+
+Why 7 days: an ordinary 500 H/s desktop is ~6.7 days per block, and the argument
+the 2-day gate rested on -- *a month with nothing is a real possibility* -- is
+not true there. At the gate the chance of a barren 30 days is 1.4%. `--selftest` pins all three by value and
 sweeps the invariant that the offer is never made where the window says pool.
 
 That offer exists because a pool finding most of the network's blocks could

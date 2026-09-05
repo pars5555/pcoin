@@ -1627,7 +1627,12 @@ namespace PCoinTray
 
             var desktop = Cpu.AdviseMode(2518.0, DIFF, 719000.0);
             ok &= Check(log, "2518 H/s: ready", "True", desktop.Ready.ToString());
-            ok &= Check(log, "2518 H/s: 2.30 days, so just past the pool threshold", "True", desktop.PreferPool.ToString());
+            // At the 2-day gate this machine was "Pool recommended" by 0.30 of a
+            // day. The 2026-09-05 widening to 7 days moves it, and every desktop
+            // like it, to the other side -- which is the whole point of the
+            // change, so the assertion is inverted deliberately rather than
+            // deleted. If this ever flips back, the gate moved and nobody said so.
+            ok &= Check(log, "2518 H/s: 2.30 days, comfortably inside the 7-day gate", "False", desktop.PreferPool.ToString());
 
             var big = Cpu.AdviseMode(100000.0, DIFF, 719000.0);
             ok &= Check(log, "100 kH/s: solo", "False", big.PreferPool.ToString());
@@ -1662,9 +1667,15 @@ namespace PCoinTray
             // is true of 3000 and of 1000 alike -- so the suite printed all-ok
             // for a change that cut the floor by two thirds. An assertion loose
             // enough to pass whatever you write is not an assertion.
-            ok &= Check(log, "advice-line gate is 2.0 days", "2.0", Cpu.ADVICE_DAYS_MAX.ToString("0.0", CI));
-            ok &= Check(log, "offer gate is 2.0 days", "2.0", Cpu.OFFER_DAYS_MAX.ToString("0.0", CI));
-            ok &= Check(log, "offer floor is 1000 H/s", "1000", Cpu.SOLO_MIN_HPS.ToString("0", CI));
+            ok &= Check(log, "advice-line gate is 7.0 days", "7.0", Cpu.ADVICE_DAYS_MAX.ToString("0.0", CI));
+            ok &= Check(log, "offer gate is 7.0 days", "7.0", Cpu.OFFER_DAYS_MAX.ToString("0.0", CI));
+            ok &= Check(log, "offer floor is 300 H/s", "300", Cpu.SOLO_MIN_HPS.ToString("0", CI));
+            // The two gates must MOVE TOGETHER. Raising the offer alone is the
+            // mirror of the bug the split was made to fix, and the sweep below
+            // would catch it -- but say so here too, because this is the line
+            // someone edits when they want to "just widen the offer a bit".
+            ok &= Check(log, "the offer gate never exceeds the advice gate", "True",
+                (Cpu.OFFER_DAYS_MAX <= Cpu.ADVICE_DAYS_MAX).ToString());
 
             // THE INVARIANT THAT MATTERS: the offer must never be made to a
             // machine the window is telling to stay on the pool. Anything else
@@ -1692,15 +1703,17 @@ namespace PCoinTray
             // while any absolute floor exists, so pin WHERE it reopens instead
             // of pretending it is gone. Below this difficulty the floor starts
             // refusing machines the window is calling fine.
-            ok &= Check(log, "the floor only bites below difficulty 0.0402", "0.0402",
+            ok &= Check(log, "the floor only bites below difficulty 0.0422", "0.0422",
                 (Cpu.SOLO_MIN_HPS * Cpu.OFFER_DAYS_MAX * 86400.0 / Cpu.HASHES_PER_DIFFICULTY).ToString("0.0000", CI));
             ok &= Check(log, "so at today's difficulty it is inert, not deciding", "True",
                 (DIFF > Cpu.SOLO_MIN_HPS * Cpu.OFFER_DAYS_MAX * 86400.0 / Cpu.HASHES_PER_DIFFICULTY).ToString());
 
             // ---- the offer predicate itself, which nothing tested before ----
+            // The population this gate was widened to reach: an ordinary desktop.
+            ok &= Check(log, "500 H/s at 0.0635 is offered (6.0 days)", "True", Cpu.ShouldOfferSolo(500.0, 0.0635).ToString());
             ok &= Check(log, "1600 H/s at 0.0635 is offered", "True", Cpu.ShouldOfferSolo(1600.0, 0.0635).ToString());
-            ok &= Check(log, "1500 H/s at 0.0635 is not (2.10 days, over the gate)", "False", Cpu.ShouldOfferSolo(1500.0, 0.0635).ToString());
-            ok &= Check(log, "900 H/s is refused by the floor whatever the chain does", "False", Cpu.ShouldOfferSolo(900.0, 0.0001).ToString());
+            ok &= Check(log, "400 H/s at 0.0635 is not (7.9 days, over the gate)", "False", Cpu.ShouldOfferSolo(400.0, 0.0635).ToString());
+            ok &= Check(log, "250 H/s is refused by the floor whatever the chain does", "False", Cpu.ShouldOfferSolo(250.0, 0.0001).ToString());
             ok &= Check(log, "an unreadable difficulty offers nothing", "False", Cpu.ShouldOfferSolo(50000.0, 0.0).ToString());
             ok &= Check(log, "a negative difficulty offers nothing", "False", Cpu.ShouldOfferSolo(50000.0, -1.0).ToString());
             ok &= Check(log, "no hash rate offers nothing", "False", Cpu.ShouldOfferSolo(0.0, DIFF).ToString());
@@ -1708,9 +1721,9 @@ namespace PCoinTray
             // The refusal reason is what a fleet machine leaves in its log, so
             // it has to name the gate that actually refused.
             ok &= Check(log, "refusal names the floor", "True",
-                Cpu.WhyNotOffered(900.0, DIFF).Contains("floor").ToString());
+                Cpu.WhyNotOffered(250.0, DIFF).Contains("floor").ToString());
             ok &= Check(log, "refusal names the day gate", "True",
-                Cpu.WhyNotOffered(1500.0, 0.0635).Contains("day gate").ToString());
+                Cpu.WhyNotOffered(400.0, 0.0635).Contains("day gate").ToString());
             ok &= Check(log, "refusal names an unreadable chain", "True",
                 Cpu.WhyNotOffered(50000.0, 0.0).Contains("not readable").ToString());
 

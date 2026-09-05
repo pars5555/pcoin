@@ -442,8 +442,18 @@ namespace PCoinTray
         //! "Pool recommended" to "Solo is fine" for every machine in between,
         //! retroactively and with no dialog. Keep them separate even while they
         //! hold the same value.
-        public const double ADVICE_DAYS_MAX = 2.0;
-        public const double OFFER_DAYS_MAX = 2.0;
+        //! Both moved from 2.0 to 7.0 on 2026-09-05, together and deliberately.
+        //! Two days was too conservative and it was excluding the population the
+        //! pool's block share is actually made of: an ordinary 500 H/s desktop
+        //! is ~6.7 days per block, and the argument the 2-day gate was built on
+        //! -- "a month with nothing is a real possibility" -- is simply not true
+        //! there. At a 7-day gate the chance of a barren 30 days is 1.4%.
+        //! Raising OFFER alone would have been the mirror of the bug this split
+        //! was made to fix: a dialog arguing for solo on top of a panel reading
+        //! "Pool recommended". They move together or not at all, and the swept
+        //! invariant in the self-test enforces exactly that.
+        public const double ADVICE_DAYS_MAX = 7.0;
+        public const double OFFER_DAYS_MAX = 7.0;
 
         //! An absolute floor on the offer, and A BACKSTOP ONLY.
         //!
@@ -456,15 +466,20 @@ namespace PCoinTray
         //! The value matters more than it looks. A floor is INERT while
         //! difficulty * 2^32 / (OFFER_DAYS_MAX * 86400) exceeds it, and DECISIVE
         //! below that; the changeover is at difficulty
-        //! SOLO_MIN_HPS * OFFER_DAYS_MAX * 86400 / 2^32. At 1500 that is 0.0603,
-        //! about 5% under where the chain sits -- inside one day's noise, so the
-        //! constant would flip between doing nothing and deciding everything
-        //! week to week. At 1000 it is 0.0402, a further 37% collapse away, which
-        //! is what a backstop should be: it only speaks when the chain has fallen
-        //! so far that a laptop would otherwise be offered solo, and stays silent
-        //! the rest of the time. Do not raise it to "tune" who is offered --
-        //! that is OFFER_DAYS_MAX's job, in the unit the user is actually shown.
-        public const double SOLO_MIN_HPS = 1000.0;
+        //! SOLO_MIN_HPS * OFFER_DAYS_MAX * 86400 / 2^32.
+        //!
+        //! The floor is therefore NOT independent of the gate: widening the gate
+        //! narrows the range of floors that stay backstops. At 1000 with the old
+        //! 2-day gate the changeover was 0.0402, a comfortable 37% below the
+        //! chain. Keeping 1000 under the 7-day gate would put it at 0.1408 --
+        //! roughly twice today's difficulty, so the floor would be the deciding
+        //! gate from the moment it shipped and would reopen the silent band this
+        //! whole change exists to close. 300 restores the margin: its changeover
+        //! is 0.0422, about 37% under today, the same distance 1000 had before.
+        //! Do not raise it to "tune" who is offered -- that is OFFER_DAYS_MAX's
+        //! job, in the unit the user is actually shown. If you widen the gate
+        //! again, re-derive this.
+        public const double SOLO_MIN_HPS = 300.0;
 
         //! The offer predicate, pure and in one place so it can be tested.
         //!
