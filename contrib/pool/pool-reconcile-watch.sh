@@ -24,6 +24,15 @@ say() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*"; }
 notify() {
     # A missing config is not a reason to fail silently -- it is a reason to say
     # so in the log, which is the only other place anyone might look.
+    # Preferred path: pcoin-notify, run as root through one narrow sudo rule.
+    # This script runs as pcoin-pool and cannot read the root-owned token file,
+    # which is why every alert it ever raised was logged as NOT sent.
+    if [ -x /usr/local/bin/pcoin-notify ] && sudo -n /usr/local/bin/pcoin-notify --help >/dev/null 2>&1; then
+        if sudo -n /usr/local/bin/pcoin-notify "PCoin pool: reconciliation" "$1"; then
+            say "alert sent via pcoin-notify"; return 0
+        fi
+        say "pcoin-notify failed -- falling back to the direct path"
+    fi
     [ -r "$CONF" ] || { say "cannot read $CONF -- alert NOT sent: $1"; return 0; }
     # shellcheck disable=SC1090
     . "$CONF"
@@ -52,16 +61,34 @@ fi
 # --- a block whose ledger and chain disagree. The one that must never be quiet.
 if printf '%s' "$OUT" | grep -q "DO NOT RECONCILE"; then
     DETAIL=$(printf '%s\n' "$OUT" | sed -n '/RECONCILIATION/,/BALANCES/p' | grep -A4 "FAIL" | head -20)
-    KEY="mismatch:$(printf '%s' "$DETAIL" | md5sum | cut -c1-12)"
+    # Key on SEVERITY, never on a head-truncated body. The old key was the md5
+    # of at most 20 lines, and each failing block emits two -- so past ten
+    # failures the fingerprint froze and the condition could never re-alert,
+    # however much worse it got. It stayed frozen from 2026-08-22 onward.
+    NFAIL=$(printf '%s\n' "$OUT" | grep -c "FAIL")
+    MAXH=$(printf '%s\n' "$OUT" | grep -oE "height [0-9]+" | grep -oE "[0-9]+" | sort -n | tail -1)
+    # Key on WHICH addresses disagree, not how many blocks do. Every block
+    # after 4669 fails, so a count-based key would change every run and alert
+    # every fifteen minutes forever -- worse than the frozen key it replaced.
+    # A new address joining this set is a real miner being misplaid, and that
+    # changes the key and alerts at once.
+    ADDRS=$(printf '%s\n' "$OUT" | sed -n '/RECONCILIATION/,/BALANCES/p' \
+            | grep -oE 'pc1[a-z0-9]+' | sort -u | tr '\n' ',')
+    KEY="mismatch:addrs=$(printf '%s' "${ADDRS:-none}" | md5sum | cut -c1-12)"
     if ! seen "$KEY"; then
         mark "$KEY"
-        say "MISMATCH -- alerting"
+        say "MISMATCH -- alerting (${NFAIL} failing block(s), highest ${MAXH:-unknown}, addresses: ${ADDRS:-none})"
         notify "PCoin pool: A BLOCK DOES NOT RECONCILE.
 The ledger and the chain disagree about what a block paid. Coinbase payouts are
 permanent, so this cannot be corrected by re-sending -- investigate before the
 next block.
 
 $DETAIL"
+    else
+        # Suppress the ALERT on repeat, never the log line. This exit used to
+        # sit outside the guard, so a repeat run wrote nothing at all and the
+        # check looked as though it had not run.
+        say "MISMATCH -- unchanged (${NFAIL} failing, highest ${MAXH:-unknown}, addresses: ${ADDRS:-none}); not re-alerting"
     fi
     exit 1
 fi

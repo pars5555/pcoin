@@ -101,7 +101,16 @@ rule('RECONCILIATION');
 {
   let bad = 0, onChainChecked = 0;
   const unchecked = [];
-  for (const b of blocks) {
+  // Only the most recent blocks are re-checked against the chain. Everything
+  // older is far past coinbase maturity and its outputs cannot change, so
+  // re-reading it every 15 minutes was pure cost that grew with the chain.
+  // --reconcile-all forces the full sweep; the summary always says which ran.
+  const RECONCILE_WINDOW = Number(arg('reconcile-window', 300));
+  const reconcileAll = process.argv.includes('--reconcile-all');
+  const windowStart = reconcileAll ? 0 : Math.max(0, blocks.length - RECONCILE_WINDOW);
+  const skipped = windowStart;
+  const toCheck = blocks.slice(windowStart);
+  for (const b of toCheck) {
     const rows = await store.sql(
       `SELECT miner, amount, weight, window_weight, pot FROM payouts `
       + `WHERE block_height=${b.height} AND block_hash='${b.hash}' ORDER BY miner;`);
@@ -153,7 +162,28 @@ rule('RECONCILIATION');
       const actual = new Map();
       for (const o of raw.tx[0].vout) {
         const a = o.scriptPubKey?.address;
-        if (a) actual.set(a, BigInt(Math.round(o.value * 1e8)));
+        // ACCUMULATE, never overwrite. One address can hold several outputs in
+        // the same coinbase -- the pool's own address always does, once for its
+        // share as a miner and once for the fee -- and set() silently dropped
+        // all but the last, which is why that address never reconciled.
+        if (a) actual.set(a, (actual.get(a) ?? 0n) + BigInt(Math.round(o.value * 1e8)));
+      }
+      // The coinbase also pays the pool fee, which lives in pool_fees and is
+      // NOT in the payouts table. Take it back off the fee address so both
+      // sides describe the same thing: what the MINERS were owed.
+      // The pool address is paid THREE things and the payouts table models one:
+      //   coinbase(pool) = its miner share + the fee + (pot - sum of shares)
+      // The last term is the integer-division remainder from splitPot, swept
+      // into the pool's output and recorded nowhere. It is 6-9 satoshis, and it
+      // is why every block still failed after the fee was accounted for.
+      // Both extras are exact, so subtract them rather than allowing a tolerance.
+      const feeAddr = CFG.poolAddress;
+      const dustRemainder = pot - paid;            // exact, from the stored rows
+      const extra = BigInt(b.fee || 0) + dustRemainder;
+      if (extra > 0n && feeAddr && actual.has(feeAddr)) {
+        const net = actual.get(feeAddr) - extra;
+        if (net > 0n) actual.set(feeAddr, net);
+        else actual.delete(feeAddr);
       }
       const chain = await store.reconcileAgainstChain(b.height, b.hash, actual);
       problems.push(...chain);
@@ -188,7 +218,8 @@ rule('RECONCILIATION');
                     : '\n  every block reconciles to the satoshi');
     // The line the first-block watcher greps for. It must say how many were
     // actually compared against the chain, not merely that nothing complained.
-    console.log(`  ${onChainChecked} of ${blocks.length} verified against the coinbase ON THE CHAIN`);
+    console.log(`  ${onChainChecked} of ${toCheck.length} verified against the coinbase ON THE CHAIN`
+      + (skipped ? ` (window of ${RECONCILE_WINDOW}; ${skipped} older block(s) not re-read -- use --reconcile-all for the full sweep)` : ' (full sweep)'));
     for (const u of unchecked) console.log(`  ${bold('UNCHECKED')} (the node could not be read) ${u}`);
   }
 }
