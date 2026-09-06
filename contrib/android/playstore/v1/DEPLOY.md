@@ -5,10 +5,10 @@
 | | |
 |---|---|
 | Package | `am.pc.pcoinwallet` (the `wallet` product flavour) |
-| Version | 0.2.12 (versionCode 15) — submitted 2026-08-31 |
+| Version | 0.2.14 (versionCode 17) — submitted 2026-09-06 · 0.2.12 (15) live since 2026-09-04 |
 | Bundle | `PCoinWallet-release-0.2.12-vc15.aab` (this folder) |
 | Signing | `signing.properties` at the repo root of `contrib/android`; keystores live on `D:` and on both vault hosts — see `SIGNING.md` |
-| Toolchain | AGP 8.5.1 · Kotlin 2.0.21 · compileSdk/targetSdk 35 · minSdk 24 |
+| Toolchain | AGP 8.5.1 · Kotlin 2.0.21 · compileSdk/targetSdk **36** · minSdk 24 (the floor moves — see SUBMISSION.md trap 5) |
 | Native | `app/src/main/jniLibs/arm64-v8a/libbitcoind.so` + `libbitcoincli.so` — a real PCoin full node, 16 KB-aligned |
 | Privacy policy | https://pc.am/wallet-privacy.html (served from `35.239.156.16:/var/www/pc.am/`) |
 

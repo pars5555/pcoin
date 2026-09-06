@@ -67,8 +67,12 @@ class BootReceiver : BroadcastReceiver() {
         try {
             MinerService.start(context)
         } catch (t: Throwable) {
-            // Android 12+ forbids starting a foreground service from the
-            // background in some states; the app will start it when opened.
+            // NOTE: this catch does NOT cover the Android 12 background-start
+            // refusal, though it was written believing it did. That refusal is
+            // raised inside MinerService.onCreate, in the service's own process
+            // callback, not here -- see MinerService.goForeground, which is
+            // where it is actually handled. This only covers a synchronous
+            // failure of the start call itself.
             Log.w(TAG, "boot start refused: ${t.message}")
         }
     }

@@ -1,6 +1,35 @@
 # PCoin Wallet — release notes
 
-## 0.2.12 (versionCode 15) — submitted 2026-08-31
+## 0.2.14 (versionCode 17) — submitted 2026-09-06
+
+Play copy (en-US):
+
+```
+Fixes a crash: the app could close by itself when Android restarted its node service in the background. It now shuts that service down cleanly and starts it again when you open the app.
+
+Your wallet, your recovery phrase and your saved addresses are untouched by this update.
+```
+
+The bug, in full: from Android 12 a foreground service may not be STARTED while
+the app is in the background, and the refusal is not raised where you would look
+for it. `startForegroundService()` returns normally; the refusal arrives inside
+`MinerService.onCreate` as `ForegroundServiceStartNotAllowedException`, on the
+main thread, where nothing caught it. `onStartCommand` returned `START_STICKY`,
+so Android relaunched the service into the identical refusal. Seen on the
+owner's phone on the LIVE 0.2.12 build: two FATAL EXCEPTIONs 19 s apart, no
+reboot involved.
+
+Two `try`/`catch` blocks were *already* wrapped around the calls that start this
+service, both commented "Android 12 may refuse". **Both are on the wrong side of
+the process boundary and had never caught anything.** The guard now lives in
+`goForeground`, which returns false instead of throwing, and `onStartCommand`
+returns `START_NOT_STICKY` once refused so the relaunch loop cannot form.
+
+**0.2.13 (versionCode 16) exists but never reached a user** — Play rejected it
+for targetSdk 35 (see SUBMISSION.md trap 5), and the code was burned by the
+upload (trap 8), so the same fix shipped as 0.2.14 at targetSdk 36.
+
+## 0.2.12 (versionCode 15) — submitted 2026-08-31, LIVE since 2026-09-04
 
 Play copy (en-US):
 

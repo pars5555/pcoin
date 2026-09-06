@@ -90,10 +90,20 @@ Checks run ~10-15 min, then it goes to Google automatically.
    showing the service running and its notification. Ours:
    https://www.youtube.com/watch?v=sY2qV5UdeWs
 
-5. **targetSdk 35 is mandatory** for new submissions and changes app behaviour:
-   Android draws edge-to-edge and `adjustResize` stops working. Without
-   `padForSystemBars()` the Send button hides under the navigation bar.
-   See `../../app/src/main/java/org/pcoin/miner/SystemInsets.kt`.
+5. **The targetSdk floor MOVES, and Play tells you only at upload.** It was 35
+   for 0.2.12 on 2026-08-31; **eight days later, on 2026-09-06, an upload was
+   rejected with "targets API level 35 and must target at least API level 36".**
+   Nothing warns you in advance and the local build is perfectly happy — the
+   refusal happens in the console, after the bundle is uploaded, which matters
+   because of trap 8 below. **Check the current floor before every build**, bump
+   `compileSdk`/`targetSdk` in `app/build.gradle.kts` and
+   `android.suppressUnsupportedCompileSdk` in `gradle.properties` together
+   (AGP 8.5.1 predates both 35 and 36 and refuses without the suppression).
+
+   Raising it changes app behaviour. targetSdk 35 made Android draw edge-to-edge
+   and silently turned `adjustResize` into a no-op; without `padForSystemBars()`
+   the Send button hides under the navigation bar. See
+   `../../app/src/main/java/org/pcoin/miner/SystemInsets.kt`.
 
 6. **CameraX must be 1.4.x.** 1.3's `libimage_processing_util_jni.so` is
    4 KB-aligned and fails Play's 16 KB page-size check.
@@ -101,3 +111,18 @@ Checks run ~10-15 min, then it goes to Google automatically.
 7. **A saved release cannot be edited.** To change its bundle: Release details
    → Discard release → Create new release → Add from library. Uploaded bundles
    stay in the library, so discarding loses nothing but the notes.
+
+8. **A version code is BURNED THE MOMENT IT IS UPLOADED — even into a draft you
+   then discard.** Re-uploading it returns *"Version code N has already been
+   used. Try another version code."* On 2026-09-06 codes 16 and 17 were both
+   consumed this way in one sitting: 16 by a bundle Play rejected for
+   targetSdk 35, 17 by a re-upload attempt after the draft was discarded. The
+   fix shipped as 17 only because the discarded bundle was still in the
+   **artifact library** — `Add from library`, not `Upload`, is what recovers it.
+   So: never re-upload a file to fix a rejected draft; discard the draft, create
+   a new release, and add the already-uploaded bundle from the library.
+
+9. **"Save" on the preview step does NOT submit.** It saves the release and
+   offers "Go to Publishing overview", where **Submit N changes for review** →
+   a second **Send changes for review** dialog is what actually sends it. Two
+   confirmations, same as the store-listing trap in point 1.

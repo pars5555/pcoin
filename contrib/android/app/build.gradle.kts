@@ -24,12 +24,12 @@ android {
     namespace = "org.pcoin.miner"
     // 35 because Google Play refuses new submissions targeting 34 (checked
     // against the real console error, 2026-08-31). AGP 8.5.1 only *warns*
-    // about compileSdk 35; the suppression is in gradle.properties.
-    compileSdk = 35
+    // about compileSdk 36; the suppression is in gradle.properties.
+    compileSdk = 36
 
     defaultConfig {
         minSdk = 24
-        targetSdk = 35
+        targetSdk = 36
 
         // Deliberately NO ndk.abiFilters here: the prebuilt PCoin binaries only
         // exist for arm64-v8a and filtering must never drop that ABI.
@@ -206,8 +206,21 @@ android {
             // targetSdk 35 made Android draw edge-to-edge and quietly turned
             // `adjustResize` into a no-op, which put the Send button under the
             // navigation bar and the keyboard over the field being typed into.
-            versionCode = 15
-            versionName = "0.2.12"
+            // 0.2.13: targetSdk 36, because Play began refusing 35 on
+            // 2026-09-06 -- 0.2.12 had been accepted at 35 eight days earlier.
+            // And the app no longer dies when Android refuses the node
+            // service a foreground start. From Android 12 that refusal is
+            // raised inside MinerService.onCreate -- not at the call that
+            // starts the service, where two try/catches were already waiting
+            // for it -- so it reached the main thread uncaught and killed the
+            // app, then START_STICKY relaunched it into the same refusal.
+            // Observed on the treasury phone 2026-09-06 on the LIVE Play build.
+            // 0.2.14: same fix as 0.2.13, rebuilt at targetSdk 36. 0.2.13 was
+            // uploaded to a draft at targetSdk 35 before Play rejected it, and
+            // a version code cannot be reused once uploaded -- so 16 is burned
+            // and this is 17. 0.2.13 never reached a user.
+            versionCode = 17
+            versionName = "0.2.14"
 
             buildConfigField("boolean", "MINING", "false")
             // The ONLY genuine collision between the two apps. bitcoind is

@@ -120,6 +120,13 @@ class MinerService : Service() {
     }
     private var powerReceiverRegistered = false
 
+    /**
+     * Android refused to let this service go foreground. See [goForeground].
+     * Read by [onStartCommand] so a START_STICKY relaunch gives up instead of
+     * crashing again.
+     */
+    private var foregroundRefused = false
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -135,12 +142,28 @@ class MinerService : Service() {
         createChannel()
         // startForegroundService() gives us ~5 s to show a notification, so do
         // it before anything that could block.
-        goForeground(buildNotification(MinerState.snapshot))
+        if (!goForeground(buildNotification(MinerState.snapshot))) {
+            // Android refused the foreground start (see goForeground). Stop
+            // rather than continuing: a service that cannot go foreground will
+            // be killed anyway, and acquiring a wake lock we can never release
+            // on a normal path would be worse than doing nothing. onDestroy is
+            // safe here -- `node` is constructed above, and everything else it
+            // touches is nullable or guarded.
+            stopSelf()
+            return
+        }
         acquireWakeLock()
         registerPowerReceiver()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (foregroundRefused) {
+            // onCreate already asked to stop. Returning START_STICKY here would
+            // have Android relaunch us into the identical refusal, which is the
+            // crash loop this guard exists to break.
+            stopSelf()
+            return START_NOT_STICKY
+        }
         when (intent?.action) {
             ACTION_STOP -> {
                 prefs.miningEnabled = false
@@ -848,8 +871,44 @@ class MinerService : Service() {
         mgr.createNotificationChannel(channel)
     }
 
-    private fun goForeground(n: Notification) {
+    /**
+     * Enter the foreground, or report that Android would not let us.
+     *
+     * WHY THIS RETURNS A BOOLEAN RATHER THAN THROWING. From Android 12 a
+     * foreground service may not be STARTED while the app is in the background,
+     * and the refusal does not surface where you would look for it:
+     * `startForegroundService()` returns normally and the process is told to
+     * create the service anyway. It surfaces HERE, inside [onCreate], as
+     * `ForegroundServiceStartNotAllowedException` on the main thread, where
+     * nothing catches it and the app dies.
+     *
+     * Both callers that start this service already wrap the START in a
+     * try/catch — [send] and `BootReceiver` — each with a comment saying
+     * Android 12 may refuse. **Those catches are on the wrong side of the
+     * process boundary and have never caught anything.** This is the right
+     * side.
+     *
+     * Seen on a real phone 2026-09-06: two FATAL EXCEPTIONs 19 s apart, app in
+     * the background, no reboot — `START_STICKY` relaunching the service
+     * straight back into the same refusal. Hence [foregroundRefused], which
+     * stops that loop.
+     *
+     * Losing the background node is not a crisis: every wallet Activity calls
+     * [prepare] on resume, so opening the app brings it back from a foreground
+     * context, which Android does allow.
+     */
+    private fun goForeground(n: Notification): Boolean = try {
         ServiceCompat.startForeground(this, NOTIF_ID, n, foregroundServiceType())
+        true
+    } catch (t: Throwable) {
+        // API 31+ raises ForegroundServiceStartNotAllowedException, but OEM
+        // builds have been seen to raise IllegalStateException or
+        // SecurityException for the same condition, and the class does not
+        // exist below API 31 to catch by name. The response is identical for
+        // all of them, so catch by behaviour rather than by type.
+        Log.w(TAG, "foreground start refused (${t.javaClass.simpleName}); stopping cleanly")
+        foregroundRefused = true
+        false
     }
 
     /**
@@ -1131,6 +1190,10 @@ class MinerService : Service() {
             try {
                 ContextCompat.startForegroundService(context, intent)
             } catch (t: Throwable) {
+                // Synchronous failures only. The Android 12 background-start
+                // refusal is NOT one of them: this call returns normally and
+                // the service is created regardless, then refused in onCreate.
+                // [goForeground] is what handles that.
                 Log.w(TAG, "service start failed: ${t.message}")
             }
         }
