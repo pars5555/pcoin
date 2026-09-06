@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PCoin white paper</title>
+<meta name="description" content="PCoin (PCN): an independent CPU-mineable proof-of-work Layer-1 with Bitcoin's economics. RandomX, LWMA difficulty, 21M cap, no premine. Design, tokenomics, risks and roadmap.">
+
+<style>
+  :root{
+    --bg:#0F1014; --panel:#171922; --edge:#242734; --ink:#ECEDF2; --dim:#9AA0B0;
+    --accent:#8B5CF6; --teal:#2DD4BF; --warn:#FBBF24; --bad:#F87171; --good:#34D399;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme: light){
+    :root{ --bg:#FBFBFD; --panel:#fff; --edge:#E4E6ED; --ink:#14161C; --dim:#5B6172; }
+  }
+  :root[data-theme="dark"]{ --bg:#0F1014; --panel:#171922; --edge:#242734; --ink:#ECEDF2; --dim:#9AA0B0; }
+  :root[data-theme="light"]{ --bg:#FBFBFD; --panel:#fff; --edge:#E4E6ED; --ink:#14161C; --dim:#5B6172; }
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif;
+       -webkit-font-smoothing:antialiased}
+  .wrap{max-width:56rem;margin:0 auto;padding:0 24px}
+  a{color:var(--accent)}
+  code,pre{font-family:var(--mono)}
+  code{background:var(--panel);border:1px solid var(--edge);border-radius:4px;padding:.1em .35em;font-size:.88em}
+  pre{background:var(--panel);border:1px solid var(--edge);border-radius:10px;padding:16px 18px;
+      overflow-x:auto;font-size:13.5px;line-height:1.6}
+  pre code{background:none;border:0;padding:0;font-size:inherit}
+
+  header{border-bottom:1px solid var(--edge);padding:30px 0 26px;margin-bottom:8px}
+  .brand{display:flex;align-items:center;gap:11px;font-weight:700;font-size:19px;text-decoration:none;color:var(--ink)}
+  h1{font-size:clamp(30px,5vw,42px);line-height:1.12;letter-spacing:-.022em;margin:26px 0 12px;text-wrap:balance}
+  .lede{font-size:18px;color:var(--dim);max-width:44rem;margin:0 0 6px}
+  h2{font-size:24px;letter-spacing:-.012em;margin:52px 0 14px;padding-top:14px;border-top:1px solid var(--edge);text-wrap:balance}
+  h3{font-size:17px;margin:30px 0 8px}
+  p,li{color:var(--ink)}
+  li{margin:.3em 0}
+
+  .note{border:1px solid var(--edge);border-left:3px solid var(--accent);background:var(--panel);
+        border-radius:0 10px 10px 0;padding:14px 18px;margin:20px 0}
+  .note.warn{border-left-color:var(--warn)}
+  .note.bad{border-left-color:var(--bad)}
+  .note p:first-child{margin-top:0} .note p:last-child{margin-bottom:0}
+  .note strong{color:var(--ink)}
+
+  table{width:100%;border-collapse:collapse;margin:18px 0;font-size:14.5px;display:block;overflow-x:auto}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--edge);vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;white-space:nowrap}
+  td code{white-space:nowrap}
+
+  .toc{background:var(--panel);border:1px solid var(--edge);border-radius:12px;padding:18px 22px;margin:28px 0}
+  .toc ol{margin:0;padding-left:1.25em;columns:2;column-gap:32px}
+  .toc a{text-decoration:none}
+  .toc a:hover{text-decoration:underline}
+  @media(max-width:640px){ .toc ol{columns:1} }
+
+  footer{border-top:1px solid var(--edge);margin-top:64px;padding:26px 0 60px;color:var(--dim);font-size:14px}
+  .k{color:var(--teal)} .c{color:var(--dim)} .s{color:var(--warn)}
+</style>
+<header>
+  <div class="wrap">
+    <a class="brand" href="https://pc.am">
+      <svg viewBox="18 18 72 72" width="30" height="30" aria-hidden="true"><circle cx="54" cy="54" r="36" fill="#262B33"/><path fill="#fff" fill-rule="evenodd" d="M75,54A21,21 0 1 1 33,54A21,21 0 1 1 75,54ZM54,38.5L57.89,50.11L69.5,54L57.89,57.89L54,69.5L50.11,57.89L38.5,54L50.11,50.11Z"/></svg>
+      PCoin
+    </a>
+  </div>
+</header>
+
+<div class="wrap">
+  <h1>PCoin: a CPU-mineable Layer-1 with Bitcoin's economics</h1>
+  <p class="lede">An independent proof-of-work blockchain. Bitcoin Core's consensus
+  engine, RandomX instead of SHA-256, and a difficulty algorithm that retargets every
+  block. No premine, no ICO, no allocation &mdash; every coin was mined.</p>
+
+  <div class="note">
+    <p><strong>Every figure on this page is checkable, and most are one HTTP request
+    away.</strong> Where a number appears, the endpoint that produces it is named. Where
+    something is a weakness, it is in <a href="#risks">section 10</a> rather than left
+    out. This document describes what exists, not what is hoped for.</p>
+  </div>
+
+  <div class="toc">
+    <ol>
+      <li><a href="#summary">Summary</a></li>
+      <li><a href="#why">Why another chain</a></li>
+      <li><a href="#pow">Proof of work: RandomX</a></li>
+      <li><a href="#lwma">Difficulty: LWMA</a></li>
+      <li><a href="#economics">Economics</a></li>
+      <li><a href="#distribution">Distribution</a></li>
+      <li><a href="#network">Network and software</a></li>
+      <li><a href="#utility">What PCN is used for</a></li>
+      <li><a href="#wpcn">wPCN: the bridge to BNB Chain</a></li>
+      <li><a href="#risks">Risks and honest limits</a></li>
+      <li><a href="#roadmap">Roadmap</a></li>
+      <li><a href="#verify">Verify all of this yourself</a></li>
+    </ol>
+  </div>
+
+  <h2 id="summary">1. Summary</h2>
+  <p>PCoin (ticker <strong>PCN</strong>) is a Layer-1 blockchain with its own genesis
+  block, network magic, ports, address format and UTXO set. It is not a token, not an
+  ERC-20, not a sidechain, and it does not settle on anyone else's chain.</p>
+
+  <p>It is a fork of Bitcoin Core v29.4 with two consensus changes: proof of work is
+  <strong>RandomX</strong> rather than SHA-256, and difficulty is <strong>LWMA</strong>
+  rather than the 2016-block retarget. Everything else &mdash; the 21 million cap, the
+  50 PCN block reward, the 210,000-block halving, the 600-second target spacing, the
+  UTXO model, the script system &mdash; is Bitcoin's, unchanged.</p>
+
+  <table>
+    <tr><th>Property</th><th>Value</th></tr>
+    <tr><td>Ticker</td><td>PCN</td></tr>
+    <tr><td>Genesis</td><td>1 August 2026 &mdash; <em>"PCoin 01/Aug/2026 an independent chain is born"</em></td></tr>
+    <tr><td>Consensus</td><td>Proof of work, RandomX (CPU-oriented, ASIC-resistant)</td></tr>
+    <tr><td>Difficulty</td><td>LWMA, retargeting every block</td></tr>
+    <tr><td>Maximum supply</td><td>21,000,000 PCN</td></tr>
+    <tr><td>Block reward</td><td>50 PCN, halving every 210,000 blocks</td></tr>
+    <tr><td>Target spacing</td><td>600 seconds</td></tr>
+    <tr><td>Address format</td><td>bech32, <code>pc1q&hellip;</code> (native SegWit)</td></tr>
+    <tr><td>Premine / ICO / allocation</td><td>None. See <a href="#distribution">section 6</a></td></tr>
+  </table>
+
+  <h2 id="why">2. Why another chain</h2>
+  <p>Bitcoin's economic design is, in our view, close to correct: a hard cap, a
+  predictable emission curve, and issuance paid only to whoever does the work. Its
+  <em>mining</em> design is the part that aged badly. SHA-256 rewards whoever can buy the
+  most specialised silicon, so mining left ordinary hardware within a few years and has
+  not come back.</p>
+
+  <p>PCoin keeps the economics and replaces the hash function. RandomX is built so that
+  a general-purpose CPU is close to optimal: it executes a randomly generated program
+  against a large dataset, which is exactly the workload a CPU is designed for and
+  exactly the workload an ASIC cannot specialise away profitably. The result is a chain
+  an ordinary laptop can mine.</p>
+
+  <p>That is the entire thesis. There is no novel consensus mechanism here, no new
+  virtual machine, and no claim to have solved a hard problem in distributed systems.
+  PCoin is deliberately conservative: it inherits a codebase that has been attacked
+  continuously since 2009, and changes two things.</p>
+
+  <h2 id="pow">3. Proof of work: RandomX</h2>
+  <p>Implementation: <code>src/crypto/pow_randomx.cpp</code>. The RandomX key is the
+  fixed ASCII string <code>PCoin/RandomX/v1</code> on every network. Rotating that key
+  would be a hard fork and is treated as one.</p>
+
+  <p>Two details matter to anyone integrating:</p>
+  <ul>
+    <li><strong>The proof-of-work hash and the block id are different hashes.</strong>
+    Validity is <code>RandomX(80-byte header) &le; target</code>, read little-endian. But
+    block ids, previous-block links and every hash in the RPC and the explorer are still
+    <strong>double-SHA-256</strong>, exactly as in Bitcoin. Code that conflates the two
+    will be wrong.</li>
+    <li><strong>Light mode only.</strong> The node uses a cache of roughly 256&nbsp;MiB
+    and never allocates the full dataset, so verifying does not carry a multi-gigabyte
+    footprint. Miners wanting full-dataset speed use a dedicated miner.</li>
+  </ul>
+
+  <p>Mining is available three ways: the node's own multithreaded CPU miner
+  (<code>startmining</code> over RPC), the public pool at
+  <a href="https://pool.pc.am">pool.pc.am</a>, and third-party miners &mdash;
+  <strong>SRBMiner-Multi 3.5.6+</strong> mines PCoin as algorithm
+  <code>randompcn</code>.</p>
+
+  <h2 id="lwma">4. Difficulty: LWMA</h2>
+  <p>Bitcoin retargets every 2016 blocks, roughly fortnightly. On a chain with a small
+  and volatile hashrate that is far too slow: a miner arriving with a large rig produces
+  blocks in seconds until the next retarget, and a miner leaving strands the chain at a
+  difficulty nobody can meet.</p>
+
+  <p>PCoin uses <strong>LWMA</strong> &mdash; a linearly weighted moving average over a
+  60-block window &mdash; and retargets <strong>every block</strong>. It activated at
+  height 2800, and the transition happened with no chain split.</p>
+
+  <p>Three properties of the implementation are deliberate and documented in the source,
+  because each protects against a specific attack or failure:</p>
+  <ul>
+    <li>Solvetimes are measured against a <strong>running maximum</strong> of window
+    timestamps, not raw parent timestamps. Consensus only requires that a timestamp
+    exceed the median of the last eleven blocks, so raw solvetimes would let a miner
+    backdate its own blocks for a permanent difficulty discount. Simulated, that attack
+    produced 1.31&times; the intended emission at one seventh of the hashrate.</li>
+    <li>The division happens <strong>inside</strong> the accumulation loop, before the
+    multiply. The textbook formulation overflows silently at PCoin's 2<sup>244</sup>
+    proof-of-work limit.</li>
+    <li>An <strong>explicit, exact overflow guard</strong>, derived independently of the
+    multiplication it protects, falls back deterministically rather than wrapping.</li>
+  </ul>
+
+  <p>Clamps are asymmetric on purpose: difficulty may rise at most 3&times; per block
+  but fall up to 12&times;, so the chain recovers quickly when hashrate leaves and
+  cannot be ramped as quickly when it arrives.</p>
+
+  <h2 id="economics">5. Economics</h2>
+  <p>Identical to Bitcoin's, deliberately: 50 PCN per block, halving every 210,000
+  blocks, converging on 21,000,000 PCN. At 600-second spacing the first halving falls
+  roughly four years after genesis.</p>
+
+  <p>Supply is <strong>computed from the UTXO set</strong>, not from height &times;
+  subsidy. Two consequences, both surprising the first time:</p>
+  <ul>
+    <li>The genesis output is <strong>excluded</strong>. As in Bitcoin it is unspendable
+    by consensus and never enters the UTXO set, so true supply sits exactly one block
+    reward below what multiplying gives you.</li>
+    <li><strong>Immature coinbase is included.</strong> Coins mined within the last 100
+    blocks exist and are owned; they are simply not yet spendable. They are reported on
+    their own line so that anyone whose definition differs can subtract them.</li>
+  </ul>
+
+  <p>Live figures are machine-readable at
+  <a href="https://explorer.pc.am/api/supply"><code>explorer.pc.am/api/supply</code></a>,
+  with bare-number endpoints at <code>/api/supply/total</code>,
+  <code>/api/supply/circulating</code> and <code>/api/supply/max</code>.</p>
+
+  <h2 id="distribution">6. Distribution</h2>
+  <div class="note">
+    <p><strong>There was no distribution event, because there was nothing to
+    distribute.</strong> No premine. No ICO or IEO. No private sale, seed round or
+    strategic allocation. No founder, team or advisor allocation. No vesting schedule,
+    because nothing is vesting. No treasury carve-out.</p>
+    <p>All PCN in existence was produced by mining, block by block, from block 1
+    onwards &mdash; and the block 0 reward is unspendable, as in Bitcoin.</p>
+  </div>
+
+  <p>This is not a claim that requires trust. The chain is public and the issuance rule
+  is in the source. Every coin traces to a coinbase transaction; there is no other way
+  for PCN to come into existence. Anyone can walk the chain and check.</p>
+
+  <p>Circulating supply therefore equals total supply. There is no locked, reserved or
+  otherwise non-circulating tranche to deduct.</p>
+
+  <h2 id="network">7. Network and software</h2>
+  <table>
+    <tr><th>Component</th><th>Where</th></tr>
+    <tr><td>Full node (Windows, Linux, Android)</td><td><a href="https://pc.am/download/">pc.am/download</a></td></tr>
+    <tr><td>Source</td><td><a href="https://github.com/pars5555/pcoin">github.com/pars5555/pcoin</a></td></tr>
+    <tr><td>Block explorer</td><td><a href="https://explorer.pc.am">explorer.pc.am</a>, plus two independent instances</td></tr>
+    <tr><td>Mining pool</td><td><a href="https://pool.pc.am">pool.pc.am</a> &mdash; Miningcore API at <code>/api/pools</code></td></tr>
+    <tr><td>Integration guide</td><td><a href="https://docs.pc.am">docs.pc.am</a></td></tr>
+    <tr><td>Wallet</td><td>BIP39 twelve words, BIP84 <code>m/84'/9444'/0'</code>, <code>pc1q&hellip;</code> addresses</td></tr>
+  </table>
+
+  <p>Peer discovery follows Bitcoin's order: <code>peers.dat</code>, then the DNS seed,
+  then fixed seeds compiled into the node, then <code>addr</code> gossip. A node that
+  has run before needs no seed at all.</p>
+
+  <h2 id="utility">8. What PCN is used for</h2>
+  <p>PCN is spendable today. Six independent products accept it and credit the payer
+  automatically once the deposit confirms:</p>
+
+  <table>
+    <tr><th>Service</th><th>What it is</th></tr>
+    <tr><td><a href="https://webai.pc.am">webai.pc.am</a></td><td>An AI assistant inside the browser: reads the page you are on, works across tabs, fills forms</td></tr>
+    <tr><td>webbuilderbot</td><td>A Telegram bot that builds websites</td></tr>
+    <tr><td><a href="https://aicontrol.pc.am">aicontrol.pc.am</a></td><td>Remote control and automation platform</td></tr>
+    <tr><td><a href="https://3dmodels.pc.am">3dmodels.pc.am</a></td><td>AI 3D model generation</td></tr>
+    <tr><td>3dmodel.oonak.ai</td><td>AI 3D model generation</td></tr>
+    <tr><td><a href="https://checker.pc.am">checker.pc.am</a></td><td>Card checking service</td></tr>
+  </table>
+
+  <p>Each issues a permanent per-user <code>pc1q&hellip;</code> deposit address, watches
+  it, and credits the user's balance at the rate published at the moment the deposit
+  confirms &mdash; recording that rate on the transaction so it can be audited later.
+  None of them holds a private key: the deposit-watching design is custody-free by
+  construction, which is why a breach of any of those web servers cannot move funds. The
+  full specification is at <a href="https://docs.pc.am">docs.pc.am</a>.</p>
+
+  <p>A miner can therefore pay for their own AI usage with what their CPU earned, which
+  is the shape of utility we were aiming for: the coin acquired somewhere to be spent
+  before it acquired a market.</p>
+
+  <h2 id="wpcn">9. wPCN: the bridge to BNB Chain</h2>
+  <p>PCN is a native coin on its own chain, so it cannot be traded directly on an
+  Ethereum-style decentralised exchange. <strong>wPCN</strong> is a BEP-20 token on BNB
+  Smart Chain, backed 1:1 by PCN held in a public reserve.</p>
+
+  <table>
+    <tr><th>Property</th><th>Value</th></tr>
+    <tr><td>Contract</td><td><code>0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1</code></td></tr>
+    <tr><td>Decimals</td><td>8 (not 18)</td></tr>
+    <tr><td>Supply</td><td>Fixed, minted once at deployment</td></tr>
+    <tr><td>Privileges</td><td>No owner, no mint, no pause, no blacklist, no transfer fee, no proxy</td></tr>
+    <tr><td>Redemption</td><td><code>redeem()</code>, permissionless, at any time</td></tr>
+  </table>
+
+  <p>The contract is verified on BscScan and cannot be changed by anyone, ourselves
+  included. Wrapping is a deposit to the reserve; redeeming burns wPCN and releases the
+  matching PCN. Both directions are public and auditable on their respective chains.</p>
+
+  <h2 id="risks">10. Risks and honest limits</h2>
+  <div class="note bad">
+    <p><strong>This section exists because a white paper without one is
+    marketing.</strong> Everything here is a real weakness of PCoin as it stands
+    today.</p>
+  </div>
+
+  <h3>The chain is young</h3>
+  <p>Genesis was 1 August 2026. A chain measured in weeks has no track record, and its
+  accumulated proof of work is correspondingly small. Treat it as what it is.</p>
+
+  <h3>Hashrate is concentrated</h3>
+  <p>Most of the network's hashrate currently mines through
+  <a href="https://pool.pc.am">pool.pc.am</a>, which we operate. A pool holding a
+  majority of hashrate could in principle reorganise the chain. We publish the figure
+  rather than obscure it &mdash; both the pool's hashrate and the network's are in the
+  pool's public API, so anyone can compute the share at any moment &mdash; and an
+  automated monitor alerts on it. But the honest statement is that
+  <strong>decentralisation of mining is a goal, not a present fact</strong>. More
+  independent miners and more pools is the fix, and anyone is free to run either.</p>
+
+  <h3>Liquidity is thin</h3>
+  <p>The wPCN/USDT pool on PancakeSwap holds a small amount of liquidity and trades
+  rarely. A modest order moves the price substantially. Nobody should assume they can
+  exit a position of any size at the quoted price.</p>
+
+  <h3>No third-party security audit</h3>
+  <p>Neither the consensus changes nor the wPCN contract has been audited by an external
+  firm. The consensus code inherits Bitcoin Core's, which is heavily reviewed, and our
+  own changes are covered by unit tests, a fuzz target and an independent reference
+  implementation of the difficulty algorithm &mdash; but that is our testing, not an
+  independent audit. An audit of the wPCN contract is on the <a href="#roadmap">roadmap</a>.</p>
+
+  <h3>Bootstrapping still depends on us</h3>
+  <p>The DNS seed and the fixed seeds compiled into the node are ours. If all of them
+  disappeared, existing nodes would keep running and mining &mdash; they remember their
+  peers &mdash; but <em>new</em> nodes would struggle to find the network without being
+  handed a peer address manually. Community-run seeds are the fix, and they are the
+  first item on the roadmap.</p>
+
+  <h3>One deliberately unfixed bug</h3>
+  <p>Blocks 2016&ndash;2799 were produced under a difficulty calculation that overflows.
+  Every node computed the same wrong answer, so consensus held, and those blocks are
+  valid only under that arithmetic. Correcting it would orphan real work, so the legacy
+  path is deliberately preserved and documented in the source; new blocks use the
+  checked LWMA path. We mention it because anyone auditing <code>src/pow.cpp</code> will
+  find it, and should know that we know.</p>
+
+  <h2 id="roadmap">11. Roadmap</h2>
+  <p>Dates are commitments, so they are kept deliberately few. Anything not listed here
+  is not promised.</p>
+
+  <h3>Delivered</h3>
+  <table>
+    <tr><th>When</th><th>What</th></tr>
+    <tr><td>Aug 2026</td><td>Mainnet launch, RandomX proof of work, no premine</td></tr>
+    <tr><td>Aug 2026</td><td>LWMA activation at height 2800, with no chain split</td></tr>
+    <tr><td>Aug 2026</td><td>Block explorer, public mining pool, Windows / Linux / Android wallets</td></tr>
+    <tr><td>Aug 2026</td><td>Android wallet published on Google Play</td></tr>
+    <tr><td>Aug&ndash;Sep 2026</td><td>Six independent services accepting PCN in production</td></tr>
+    <tr><td>Aug 2026</td><td>wPCN 1:1 wrapper and its PancakeSwap market</td></tr>
+  </table>
+
+  <h3>Q4 2026</h3>
+  <ul>
+    <li><strong>Community-run DNS seeds</strong>, so that bootstrapping no longer depends
+    on infrastructure we control. This is the most important item on this list.</li>
+    <li><strong>Price and supply data on public trackers</strong>, so that PCN can be
+    valued without trusting our own oracle.</li>
+    <li><strong>Mining documentation for third-party miners and pool operators</strong>,
+    lowering the barrier to mining outside our pool.</li>
+  </ul>
+
+  <h3>Q1 2027</h3>
+  <ul>
+    <li><strong>An independent security audit of the wPCN contract</strong> by an
+    external firm, published in full including anything it finds.</li>
+    <li><strong>Pool concentration below 50%</strong> of network hashrate. This depends
+    on independent miners and other operators, so it is a target we work towards rather
+    than one we can unilaterally deliver &mdash; we will publish the figure either
+    way.</li>
+    <li><strong>Deeper wPCN liquidity.</strong></li>
+  </ul>
+
+  <h3>Q2 2027</h3>
+  <ul>
+    <li><strong>A market beyond the single DEX pair</strong>, subject to listing
+    requirements that are not entirely within our control.</li>
+    <li><strong>More merchants accepting PCN</strong>, with the integration guide and
+    reference implementations kept current.</li>
+  </ul>
+
+  <h2 id="verify">12. Verify all of this yourself</h2>
+  <p>Nothing above requires taking our word for it.</p>
+  <table>
+    <tr><th>Claim</th><th>Check it</th></tr>
+    <tr><td>Chain state, height, difficulty</td><td><code>explorer.pc.am/api/status</code></td></tr>
+    <tr><td>Supply, and that circulating equals total</td><td><code>explorer.pc.am/api/supply</code></td></tr>
+    <tr><td>Who holds what</td><td><a href="https://explorer.pc.am/addresses">explorer.pc.am/addresses</a></td></tr>
+    <tr><td>Hashrate, miner count, pool share</td><td><code>pool.pc.am/api/pools</code></td></tr>
+    <tr><td>Consensus rules as implemented</td><td><code>src/pow.cpp</code>, <code>src/crypto/pow_randomx.cpp</code></td></tr>
+    <tr><td>That there is no premine</td><td>Walk the chain from block 0; every coin is a coinbase output</td></tr>
+    <tr><td>wPCN contract and reserve</td><td>BscScan, contract <code>0x290A&hellip;95F1</code></td></tr>
+  </table>
+
+  <p>The node is the authority. Everything else on this page, our own explorer included,
+  is a convenience built on top of it. Run your own and check.</p>
+
+  <footer>
+    <p><a href="https://pc.am">pc.am</a> &middot;
+       <a href="https://pc.am/download/">download</a> &middot;
+       <a href="https://explorer.pc.am">explorer</a> &middot;
+       <a href="https://docs.pc.am">docs</a> &middot;
+       <a href="https://github.com/pars5555/pcoin">source</a> &middot;
+       <a href="https://t.me/PCoinPCN">Telegram</a></p>
+    <p>PCN is a proof-of-work currency, not an investment product. Nothing here is
+    financial advice or a solicitation. Read <a href="#risks">section 10</a> before doing
+    anything that costs you money.</p>
+  </footer>
+</div>
+</html>

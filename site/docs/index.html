@@ -76,8 +76,8 @@
   them, and the rules that stop you crediting money that is not there.</p>
 
   <div class="note">
-    <p><strong>Five production integrations follow this guide</strong> — AiControl,
-    checker.pc.am, webbuilderbot, 3dmodels.pc.am and 3dmodel.oonak.ai. Every rule below exists because it was got
+    <p><strong>Six production integrations follow this guide</strong> — AiControl,
+    checker.pc.am, webbuilderbot, 3dmodels.pc.am, 3dmodel.oonak.ai and webai.pc.am. Every rule below exists because it was got
     wrong once, usually expensively. Where a rule looks paranoid, the reason is
     stated so you can judge it yourself.</p>
   </div>
@@ -120,7 +120,7 @@
     <p><strong>There is nothing to "collect".</strong> Every user's deposit address is
     a child of one account key, so all your deposits are already in a single wallet.
     Your balance is a sum over the pool, not a transaction anybody has to make. This
-    is why no sweep code exists in any of the five integrations — see §12.</p>
+    is why no sweep code exists in any of the six integrations — see §12.</p>
   </div>
 
   <div class="note bad">
@@ -384,10 +384,10 @@ node pcoin-seed-vault.mjs new --system myapp</code></pre>
     <tr><td>minimum deposit</td><td>your call</td><td>ignore dust rather than write a row per satoshi</td></tr>
   </table>
 
-  <p>Four of the five production integrations run <strong>6 confirmations</strong> — about an
-  hour at the 600&nbsp;s target, less when the chain runs fast; the fifth runs 3 and instead
-  corroborates every deposit above $0.05 against a second, independent explorer. Make it
-  a config value,
+  <p>All six production integrations run <strong>3 confirmations</strong> — about half an
+  hour at the 600&nbsp;s target, less when the chain runs fast. Several also corroborate
+  every deposit above $0.05 against a second, independent explorer, which is the better
+  defence at a shallow depth. Make it a config value,
   not a constant, and raise it for large amounts. Pair a low value with a per-user
   monthly cap: the cap is what bounds your loss between reviews.</p>
 
@@ -459,7 +459,7 @@ node pcoin-seed-vault.mjs new --system myapp</code></pre>
   <div class="note bad">
     <p><strong>Key the ledger on <code>(txid, address)</code> — never on
     <code>(txid, vout)</code>.</strong> This is the single most expensive mistake
-    made in these integrations: every one live at the time it was found — four of today's five —
+    made in these integrations: every one live at the time it was found — four of the five that existed then —
     had shipped it.</p>
   </div>
 
@@ -831,7 +831,8 @@ bitcoin-cli unloadwallet sweep-tmp</code></pre>
     <p><a href="https://pc.am">pc.am</a> ·
        <a href="https://pc.am/download/">download</a> ·
        <a href="https://explorer.pc.am">explorer</a> ·
-       <a href="https://github.com/pars5555/pcoin">source</a> ·
+       <a href="https://pc.am/whitepaper/">white paper</a> ·
+           <a href="https://github.com/pars5555/pcoin">source</a> ·
        <a href="https://t.me/PCoinPCN">Telegram</a></p>
     <p>Questions are welcome on Telegram. Ask before you invent — most of the rules
     here were learned the expensive way.</p>
