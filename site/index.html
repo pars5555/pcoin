@@ -647,7 +647,11 @@
               it was meant to reduce. We publish the pool’s hashrate and the network’s at
               <a href="https://pool.pc.am/api/pools" rel="noopener">pool.pc.am/api/pools</a>, so its share is
               checkable rather than claimed, and we would rather see a second pool run by somebody
-              else than grow this one.
+              else than grow this one. The pool&rsquo;s full source is in this project&rsquo;s
+              repository, and there is a guide to running one:
+              <a href="https://github.com/pars5555/pcoin/blob/main/contrib/pool/RUNNING-A-POOL.md" rel="noopener">RUNNING-A-POOL.md</a>.
+              We mean that literally &mdash; nothing is held back, and a second pool helps us
+              more than it costs us.
             </p>
           </div>
         </div>
@@ -721,6 +725,31 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
         <p style="margin:8px 0 0;font-size:.93em;opacity:.85">CPU only, like everything else on this chain. SRBMiner charges its own <b>0.85% developer fee</b> on this
         algorithm, which goes to its author and not to us, on top of the pool&#39;s 2%. It is third-party software: take it only from its GitHub releases
         page and check the published checksum. Verified 2 September 2026 &mdash; connects, receives work and has shares accepted.</p>
+      </div>
+
+      <div class="honest-box" style="max-width:100%;margin-top:22px">
+        <b>Or mine solo. No pool, no fee, no operator, no counterparty.</b>
+        <p style="margin:10px 0 0">
+          Solo is the <b>default</b>, and it is what every install does unless you tell it otherwise.
+          The miner is built into the node, it pays your address straight out of the coinbase, and
+          nobody stands between you and the block you found &mdash; no fee, and nothing to trust.
+        </p>
+        <pre style="margin:10px 0 0;padding:12px 14px;overflow-x:auto;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid var(--line-soft)"><code>Windows  &amp; &quot;$P\bitcoin-cli.exe&quot; -datadir=&quot;$P\data&quot; startmining &quot;&lt;your pc1q&hellip; address&gt;&quot; 4
+Linux    pcoin-cli startmining &quot;&lt;your pc1q&hellip; address&gt;&quot; 4</code></pre>
+        <p style="margin:10px 0 0">
+          The last number is threads; <code>0</code> means every core. <code>stopmining</code> stops it.
+          There is nothing to add to any config file &mdash; leaving <code>poolurl</code> out <i>is</i> solo.
+        </p>
+        <p style="margin:10px 0 0">
+          <b>The one real cost is variance.</b> Solo pays whole blocks, rarely, instead of small amounts
+          often. A few threads may wait a long time and then receive 50 PCN at once. That is the entire
+          trade: a pool does not earn you more, it smooths the timing and charges for doing so.
+        </p>
+        <p style="margin:10px 0 0">
+          <b>Your node must be synced first.</b> Unlike pool mining, solo builds on the chain your own
+          node has verified. Mining on an unsynced node is worse than slow: what it finds is built on a
+          chain nobody else has, and is thrown away.
+        </p>
       </div>
 
       <div class="split" style="margin-top:22px">
