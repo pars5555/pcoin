@@ -96,3 +96,40 @@ The short version: run it yourself, in your own terminal, offline if you can.
 Not over SSH, not through an assistant. The twelve words appear on screen once
 and the passphrase is typed rather than passed as an argument, specifically so
 neither can end up in a transcript, a shell history or a log.
+
+## What lives on the vault hosts, and what does not
+
+Audited and changed 2026-09-06. Before that date both hosts held **25 MB of
+plaintext against 7.5 MB of encrypted bundle** -- and the plaintext was the same
+material the bundle contained: `PCOIN-SECRETS.md`, the custody runbook, `pc.key`,
+the Android release keystore, `wallet-backups/` including files named
+`*-SEED-*.txt`, and a tar.gz of **every private SSH key in the estate**.
+
+Encryption sitting beside the plaintext it encrypts is decoration. A root breach
+of either host yielded everything regardless, and because the SSH archive opened
+the other vault too, one breach was two.
+
+**What a vault host holds now:**
+
+| kept | why it is safe there |
+|---|---|
+| `pcoin-bundle.enc.json` | scrypt(N=2^17) + AES-256-GCM under a passphrase recorded nowhere |
+| `*-seed.enc.json` | same, one per system |
+| `*-xpub.txt` | public. Sees every deposit, cannot spend a satoshi |
+| `RECOVERY.md`, `pcoin-vault-bundle.mjs` | instructions and the tool, no secrets |
+
+**What is deliberately NOT there:** any plaintext secret. The only unencrypted
+copies live on the workstation, which is not internet-facing.
+
+Three payload entries were missing entirely and so existed on those hosts *only*
+in the clear -- `PCOIN-WPCN-RUNBOOK.md`, `ssh-keys/`, and a phone `wallet.dat`
+that may have no recovery phrase behind it. All three are in the bundle now.
+
+**The order this was done in matters, and is the order to repeat it in:** pack,
+distribute, pull the host's own copy back, decrypt and re-hash it, and only then
+delete anything. Two files turned out to exist *only* on vault 1 and were pulled
+to `D:\pc.amault-only-recovered\` before the sweep -- deleting the only copy
+of something is not a cleanup.
+
+Vault 2 is an `rsync --delete` pull mirror of vault 1 at 04:17 UTC, so vault 1 is
+the one to change; vault 2 follows.
