@@ -610,6 +610,31 @@ namespace PCoinTray
         //! One log line per sync wait, not one per retry: the recovery branch
         //! calls StartMining every few seconds and would otherwise fill the log.
         bool _soloSyncWaitLogged;
+        //! Auto-tune was skipped because solo could not start. Without this the
+        //! machine would never be tuned at all: Calibrate runs once, at start.
+        bool _calibDeferred;
+
+        /**
+         * Is it unsafe to start SOLO mining right now?
+         *
+         * UNKNOWN IS NOT "NO", and getting that wrong cost a real machine. On a
+         * fresh solo install the tray began mining at height 16 of 6,806 and
+         * found three blocks on its own fork before the first chain read landed,
+         * because `_syncing` is a bool that starts FALSE and is only assigned on
+         * a FULL poll. "We have not looked yet" read as "not syncing"
+         * (CLAUDE.md 7.1). `_haveChainInfo` is the flag that distinguishes them.
+         *
+         * A second reason this must not lean on one field: on PCoin the node's
+         * own `initialblockdownload` CANNOT be trusted. IBD is gated on
+         * nMinimumChainWork, which this chain sets to 0, so it reported FALSE at
+         * height 32 of 6,806 -- and `verificationprogress` returned 1.0 at the
+         * same moment because chainTxData is zeroed. The only honest signal is
+         * headers-minus-blocks, which is what Reading.Syncing is built from.
+         */
+        bool SoloBlockedBySync()
+        {
+            return !_haveChainInfo || _syncing;
+        }
         //! A recovery-phrase window is open. Set only around the automatic
         //! wizard, which fires from the same node-ready path that starts
         //! auto-tuning and is therefore the one thing the solo offer can
@@ -1271,12 +1296,14 @@ namespace PCoinTray
             // self-healing: intent stays on, and the "intent is on but the node
             // is not hashing" branch in Refresh calls this again every few
             // seconds until the node is ready.
-            if (_syncing)
+            if (SoloBlockedBySync())
             {
                 if (!_soloSyncWaitLogged)
                 {
                     _soloSyncWaitLogged = true;
-                    Program.Note("solo mining held back: the node is still syncing");
+                    Program.Note(_haveChainInfo
+                        ? "solo mining held back: the node is still syncing"
+                        : "solo mining held back: the chain has not been read yet");
                 }
                 return;
             }
@@ -1303,6 +1330,23 @@ namespace PCoinTray
             // the earlier "non-HT has nothing to tune" was wrong, it just under-
             // provisioned those machines to 50%. Calibrate() centres its sweep on
             // Recommend() when that is known (HT) and on all cores otherwise.
+            // A SOLO MACHINE CANNOT BE BENCHMARKED WHILE IT IS SYNCING. The sweep
+            // starts mining at each candidate thread count and samples the rate;
+            // with solo held back every sample is zero, so the tune reads
+            // "1:0 3:0 4:0 5:0 6:0 -> best 6 (0 H/s)" and settles on nothing.
+            // That is measured, not hypothetical -- it is what a fresh solo
+            // install produced. Defer, and let the recovery tick start it once
+            // the chain is current.
+            if (string.IsNullOrEmpty(_poolUrl) && SoloBlockedBySync())
+            {
+                if (!_calibDeferred)
+                {
+                    _calibDeferred = true;
+                    Program.Note("auto-tune deferred: solo cannot mine until the chain is current");
+                }
+                return;
+            }
+            _calibDeferred = false;
             if (_fastMode && _cores > 1)
             {
                 var t = new Thread(Calibrate) { IsBackground = true };
@@ -1459,9 +1503,9 @@ namespace PCoinTray
                 // answer: solo mining on an unsynced node builds a competing
                 // fork (CLAUDE.md 7.9). Not asking is the safe outcome -- the
                 // machine stays on the pool and is asked after the next start.
-                if (_syncing)
+                if (SoloBlockedBySync())
                 {
-                    Program.Note("solo offer: not asking, the node is still syncing");
+                    Program.Note("solo offer: not asking, the node is not known to be current");
                     return;
                 }
                 if (!Cpu.ShouldOfferSolo(measuredHps, diff))
@@ -2366,6 +2410,18 @@ namespace PCoinTray
             }
             else if (mining && _threads > 0)
             {
+                // THE GUARD IN StartMining IS NOT ENOUGH ON ITS OWN: it only
+                // decides whether to BEGIN. A node that falls behind afterwards
+                // -- a long stall, a reorg, a restart into a stale tip -- would
+                // keep a solo miner building on it. Re-check every tick and stop
+                // rather than carry on; the branch above restarts it when the
+                // chain is current again.
+                if (string.IsNullOrEmpty(_poolUrl) && SoloBlockedBySync())
+                {
+                    Program.Note("solo mining stopped: the node is no longer current");
+                    var st = new Thread(() => Cli("stopmining")) { IsBackground = true };
+                    st.Start();
+                }
                 _icon.Icon = _iconMining;
                 // A pool problem while the node is still hashing is the quiet
                 // failure worth surfacing: the miner is busy, and none of it is
@@ -2389,9 +2445,21 @@ namespace PCoinTray
                 _icon.Text = "PCoin Miner - starting";
                 if (_nodeUp && !string.IsNullOrEmpty(_address))
                 {
-                    int want = ThreadsFor(_percent);
-                    var t = new Thread(() => StartMining(want)) { IsBackground = true };
-                    t.Start();
+                    // The deferred tune, once solo is actually possible. Checked
+                    // here because Calibrate only ever runs at start, so without
+                    // this a machine that booted mid-sync is never tuned.
+                    if (_calibDeferred && !_calibrating && !SoloBlockedBySync())
+                    {
+                        _calibDeferred = false;
+                        Program.Note("auto-tune resuming: the chain is current");
+                        BeginCalibrationOrMine();
+                    }
+                    else
+                    {
+                        int want = ThreadsFor(_percent);
+                        var t = new Thread(() => StartMining(want)) { IsBackground = true };
+                        t.Start();
+                    }
                 }
             }
             else
