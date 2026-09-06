@@ -613,6 +613,10 @@ namespace PCoinTray
         //! Auto-tune was skipped because solo could not start. Without this the
         //! machine would never be tuned at all: Calibrate runs once, at start.
         bool _calibDeferred;
+        //! Consecutive FULL polls that said the chain is current. Solo needs a
+        //! run of them, not one.
+        int _syncOkPolls;
+        const int SYNC_OK_POLLS_REQUIRED = 3;
 
         /**
          * Is it unsafe to start SOLO mining right now?
@@ -631,9 +635,21 @@ namespace PCoinTray
          * same moment because chainTxData is zeroed. The only honest signal is
          * headers-minus-blocks, which is what Reading.Syncing is built from.
          */
+        //! ONE "caught up" READING IS NOT CAUGHT UP. During initial sync the node
+        //! fetches headers in batches, so blocks repeatedly draws level with the
+        //! headers it has SO FAR and `headers - blocks` dips to zero between
+        //! batches. Measured on a fresh install: the miner started and stopped
+        //! four times in ninety seconds, and each of those blips was solo mining
+        //! on a tip thousands of blocks behind -- the exact thing this guard
+        //! exists to stop, leaking through in slices.
+        //!
+        //! So the "current" side needs a run of agreeing polls, while the
+        //! "behind" side takes effect on the first one. Asymmetric on purpose:
+        //! being slow to start costs a few seconds, being quick to start costs
+        //! work on a doomed fork.
         bool SoloBlockedBySync()
         {
-            return !_haveChainInfo || _syncing;
+            return !_haveChainInfo || _syncing || _syncOkPolls < SYNC_OK_POLLS_REQUIRED;
         }
         //! A recovery-phrase window is open. Set only around the automatic
         //! wizard, which fires from the same node-ready path that starts
@@ -2380,6 +2396,9 @@ namespace PCoinTray
                 _headers = r.Headers;
                 _progress = r.Progress;
                 _syncing = r.Syncing;
+                // Count up on agreement, reset to zero on a single disagreement.
+                if (r.Syncing) _syncOkPolls = 0;
+                else if (_syncOkPolls < SYNC_OK_POLLS_REQUIRED) _syncOkPolls++;
                 _difficulty = r.Difficulty;
                 _networkHps = r.NetworkHashps;
                 _peers = r.Peers;
