@@ -163,13 +163,23 @@ export function buildSignedTx({ inputs, outputs, priv, pub, script }) {
   for (let i = 0; i < inputs.length; i++) {
     const pre = bip143Preimage({ inputs, outputs, index: i, value: inputs[i].value, script });
     const h = hash256(pre);
+    // prehash:false is LOAD-BEARING. @noble/curves v2 HASHES the message before
+    // signing unless told not to, so passing an already-computed sighash makes
+    // it sign sha256(sighash) -- a perfectly valid signature over the wrong
+    // thing. Bitcoin then rejects the input with NULLFAIL:
+    //
+    //   mempool-script-verify-flag-failed
+    //   (Signature must be zero for failed CHECK(MULTI)SIG operation)
+    //
+    // The self-check below did not catch it, because verify() defaults the same
+    // way and so agreed with the bug. Only an independent verifier found it --
+    // which is exactly why testmempoolaccept against a real node is part of the
+    // procedure and not a nicety.
+    //
     // lowS: a high-S signature is valid secp256k1 but non-standard on the
     // network, so it would relay nowhere and look like a mystery.
-    const sig = secp256k1.sign(h, priv, { lowS: true, format: 'der' });
-    // Verify before assembling. A signature that does not check out here can
-    // only produce a transaction that burns a fee and fails, or worse sits in
-    // a mempool looking like it worked.
-    if (!secp256k1.verify(sig, h, pub, { format: 'der' }))
+    const sig = secp256k1.sign(h, priv, { lowS: true, format: 'der', prehash: false });
+    if (!secp256k1.verify(sig, h, pub, { format: 'der', prehash: false }))
       throw new Error(`signature ${i} failed self-verification -- refusing to continue`);
     witnesses.push([derSig(sig), Buffer.from(pub)]);
   }
@@ -395,6 +405,22 @@ export async function selftest() {
   const sig = secp256k1.sign(h, priv, { lowS: true, format: 'der' });
   t('signature verifies against its own key', secp256k1.verify(sig, h, pub, { format: 'der' }));
   t('signature is DER (0x30 header)', sig[0] === 0x30, sig[0]);
+
+
+  // 6. The bug the self-check above could NOT see, kept as a regression test.
+  //
+  //    A signature must be over the sighash ITSELF. @noble/curves v2 hashes the
+  //    message first unless told not to, and verify() defaults the same way --
+  //    so the two agreed with each other while every input was rejected by
+  //    consensus with NULLFAIL. If signing the digest ever equals signing
+  //    sha256(digest) again, prehash has crept back on.
+  const { createHash: ch } = await import('node:crypto');
+  const dg = ch('sha256').update('prehash probe').digest();
+  const sigRaw = Buffer.from(secp256k1.sign(dg, priv,
+    { lowS: true, format: 'compact', prehash: false })).toString('hex');
+  const sigDefault = Buffer.from(secp256k1.sign(dg, priv,
+    { lowS: true, format: 'compact' })).toString('hex');
+  t('signs the sighash itself, not sha256(sighash)', sigRaw !== sigDefault);
 
   console.log(`\n  ${ok} passed, ${bad} failed\n`);
   return bad === 0;
