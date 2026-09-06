@@ -287,7 +287,20 @@ node pcoin-seed-vault.mjs new --system myapp</code></pre>
     <tr><td><code>GET /api/address/{addr}/txs</code></td><td>transactions — see the shape trap below</td></tr>
     <tr><td><code>GET /api/tx/{txid}</code></td><td>authoritative height, <code>block_hash</code> and <code>is_coinbase</code></td></tr>
     <tr><td><code>POST /api/addresses</code></td><td>batch, up to 500 — the intended polling path</td></tr>
+    <tr><td><code>GET /api/supply</code></td><td>max, total, circulating and immature supply</td></tr>
+    <tr><td><code>GET /api/supply/{max|total|circulating|immature}</code></td><td>the same figures one at a time, as a bare number in <code>text/plain</code></td></tr>
   </table>
+
+    <p id="supply-note">Two things about supply that are not obvious and get asked every time.
+    It is computed from the <strong>UTXO set</strong>, not from height &times; subsidy, so the
+    <strong>genesis output is excluded</strong> &mdash; it is unspendable by consensus and never
+    enters the set, exactly as in Bitcoin, which is why the figure is one block reward below
+    what multiplying gives you. And <strong>immature coinbase is included</strong> in
+    <code>total</code> and <code>circulating</code>: those coins exist and are owned, they are
+    simply not spendable for 100 blocks yet. It is reported on its own line so you can subtract
+    it if your definition differs &mdash; we will not make that choice silently on your behalf.
+    <code>circulating</code> equals <code>total</code> because PCoin had no premine, no founder
+    allocation and no vesting.</p>
 
   <h3>Do not use node RPC</h3>
   <p>Two concrete reasons, both of which have cost real time:</p>
