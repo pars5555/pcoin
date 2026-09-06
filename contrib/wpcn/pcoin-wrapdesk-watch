@@ -246,7 +246,7 @@ def main() -> int:
     released_wpcn = 0.0
     unknown_released = 0
     for _k, _v in (st.get("seen") or {}).items():
-        if isinstance(_v, dict) and _v.get("released"):
+        if isinstance(_v, dict) and _v.get("released") and not _v.get("refunded"):
             try:
                 _amt = float(_v.get("send_wpcn") or 0)
             except (TypeError, ValueError):
@@ -306,7 +306,13 @@ def main() -> int:
             # arrived, was skipped in silence, and was never paid. CLAUDE.md 8c
             # rule 1: every live rail shipped this wrong first, and so did this.
             key = f"wrap:{txid}:{watch_addr}"
-            if st["seen"].get(key, {}).get("released"):
+            # A REFUNDED deposit is closed too, but it is not a release.
+            #
+            # The PCN went back to the sender and no wPCN was ever issued against it, so
+            # recording it as `released` would silence the alert correctly and corrupt the
+            # allocation at the same time -- the ceiling below counts released deposits as
+            # wPCN that went out. It is its own state.
+            if st["seen"].get(key, {}).get("released") or st["seen"].get(key, {}).get("refunded"):
                 continue
             if confs < CONFIRMATIONS:
                 tasks.append((key, "info",
@@ -364,9 +370,12 @@ def main() -> int:
                                   "REASON: %s.\n"
                                   "The PCN is safe in the reserve and nothing is lost by waiting. "
                                   "Decide deliberately -- raise the limit, refund the excess, or "
-                                  "pay it and record why. Do not just follow the number above."
+                                  "pay it and record why. Do not just follow the number above.\n"
+                                  "WHEN REFUNDED, close it out or this repeats hourly forever:\n"
+                                  "  pcoin-wrapdesk-watch --refunded %s:%s <pcoin_txid>"
                                   % (amt, txid[:16], net,
-                                     requester or "(no request on file)", breach)))
+                                     requester or "(no request on file)", breach,
+                                     txid, watch_addr)))
                     per_addr_wpcn[watch_addr] = prior_addr + net
                     continue
                 per_addr_wpcn[watch_addr] = prior_addr + net
@@ -498,6 +507,38 @@ if __name__ == "__main__":
     # hour forever, including after it is paid. That is how pcoin-concentration
     # -watch taught everyone to ignore the channel, and an alert nobody reads is
     # worse than no alert, because it looks like coverage.
+    # --refunded closes a deposit that was PAID BACK rather than wrapped.
+    #
+    # Over-limit deposits are returned, not wrapped -- the desk's own FAQ has always
+    # said so. But the watcher reads RECEIVE history, not the current balance, so
+    # sending the PCN back does not make the deposit stop appearing: it would be
+    # re-reported every hour forever, exactly like an unpaid one. Refunding without
+    # this leaves five permanent alerts behind.
+    #
+    # Deliberately not --released. That marks wPCN as issued, which would then count
+    # against the allocation ceiling for tokens that were never minted.
+    if len(sys.argv) >= 3 and sys.argv[1] == "--refunded":
+        s = load_state()
+        txid = sys.argv[2]
+        if txid.startswith("wrap:"):
+            txid = txid[5:]
+        if ":" not in txid:
+            print(f"REFUSED: {txid!r} has no address part. Use <txid>:<deposit-address>, "
+                  f"copied from the WITHHELD alert.")
+            sys.exit(2)
+        key = f"wrap:{txid}"
+        s.setdefault("seen", {}).setdefault(key, {})
+        s["seen"][key]["refunded"] = True
+        s["seen"][key]["at"] = int(time.time())
+        s["seen"][key]["refund_txid"] = sys.argv[3] if len(sys.argv) > 3 else None
+        save_state(s)
+        print(f"marked refunded: {key}")
+        if len(sys.argv) <= 3:
+            print("NOTE: no PCoin txid recorded. Re-run with it so the refund stays "
+                  "checkable against the chain later.")
+        sys.exit(0)
+
+
     if len(sys.argv) >= 3 and sys.argv[1] == "--released":
         s = load_state()
         txid = sys.argv[2]
