@@ -34,7 +34,7 @@
 //   node wrapdesk-withdraw.mjs --index 3 --to pc1q... \
 //        --utxo <txid>:<vout> [--utxo ...] [--fee-rate 2] [--broadcast]
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { createDecipheriv, scryptSync, createHash } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import * as bip39 from '@scure/bip39';
@@ -326,6 +326,20 @@ async function main() {
   console.log(`\n    txid would be ${tx.txid}`);
   console.log(`\n  ── verify on a node before sending ─────────────────────────`);
   console.log(`    bitcoin-cli testmempoolaccept '["${tx.hex}"]'`);
+
+  // --out writes the SIGNED hex to a file. It is not secret -- a broadcast
+  // transaction is public by definition -- and writing it lets the signing and
+  // the broadcasting be separate acts with a node validating in between. That
+  // validation is not a nicety: it is what caught a signature that verified
+  // against its own key and was rejected by every node on the network.
+  const outFile = arg('--out');
+  if (outFile) {
+    writeFileSync(outFile, tx.hex + '
+');
+    console.log(`
+  signed hex written to ${outFile}`);
+    console.log('  VALIDATE with testmempoolaccept before broadcasting.');
+  }
 
   if (!has('--broadcast')) {
     console.log(`\n  DRY RUN. Nothing was sent. Re-run with --broadcast to send.\n`);
