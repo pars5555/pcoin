@@ -65,6 +65,16 @@ const PAYLOAD = [
   'pc.crt',
   'pc.key',
   'wallet-backups',           // includes the retired plaintext SEED files
+  // Added 2026-09-06, after an audit found all three sitting on the vault
+  // hosts in the CLEAR, beside the encrypted bundle that was supposed to be
+  // protecting them. Encryption next to the plaintext it encrypts is
+  // decoration: a root breach of either host yielded everything anyway.
+  'PCOIN-WPCN-RUNBOOK.md',    // wallets, hosts and procedures for wPCN
+  'ssh-keys',                 // EVERY private SSH key in the estate
+  // A phone wallet.dat may have NO recovery phrase behind it, in which case
+  // the file is the coins. Path is relative to --root, and this one lives
+  // under vault-mirror/ rather than at the top level.
+  'vault-mirror/phone-wallets',
 ];
 
 const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
