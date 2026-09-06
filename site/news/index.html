@@ -107,6 +107,32 @@
   <main>
 
     <article class="entry">
+      <div class="meta"><time>2026-09-04</time><span class="tag infra">Android</span></div>
+      <h2>The wallet is on Google Play, and switching to it erases the old one</h2>
+      <p><b>PCoin Wallet is published on Google Play</b> &mdash;
+      <a href="https://play.google.com/store/apps/details?id=am.pc.pcoinwallet">play.google.com/store/apps/details?id=am.pc.pcoinwallet</a>,
+      available in 177 countries. It is the same app we have shipped as an <code>.apk</code>: a full
+      node on the phone, twelve words, receive by QR, send with a Normal / Fast / Very fast fee
+      choice and the real fee shown before you commit, full history, and a private address book you
+      can export to a file and import back. Play keeps it updated, which the direct download never
+      did.</p>
+      <p><b>If you already run the .apk, read this before you install from Play.</b> Google signs
+      store builds with its own key, and Android refuses to install an app over one signed by a
+      different key. So Play cannot upgrade the <code>.apk</code> and the <code>.apk</code> cannot
+      upgrade Play: the switch <em>requires an uninstall</em>, and an uninstall erases app-private
+      storage &mdash; your wallet and your saved addresses with it. There is no migration and no way
+      around it; the two builds are, to Android, unrelated apps.</p>
+      <p><b>Before you switch:</b> write your twelve words on paper and check them, and open the
+      address book and use <em>Export to a file</em>. Then install from Play, restore the twelve
+      words, and use <em>Import from a file</em> to get the names back. Pick one of the two routes
+      afterwards and stay on it.</p>
+      <p>We are writing this from experience rather than theory: the first person to make the switch
+      was us, and the address book went with it. The coins were never at risk &mdash; the phrase was
+      on paper &mdash; but a list of ten saved payees vanished with no warning shown anywhere, which
+      is the sort of thing you only find out by doing it.</p>
+    </article>
+
+    <article class="entry">
       <div class="meta"><time>2026-09-03</time><span class="tag infra">Windows</span></div>
       <h2>A separate wallet app for Windows, and an uninstaller bug that deleted wallets</h2>
       <p><b>PCoin Wallet is now its own Windows application.</b> It runs its own node and never

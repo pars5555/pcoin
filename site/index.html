@@ -1077,8 +1077,9 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
 
         <div class="dl-card">
           <h3>Android &mdash; wallet</h3>
-          <p class="dl-sub">Balance, send, receive by QR, history. Carries a full node; no mining.</p>
-          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/download/v1.2.8/pcoin-android-wallet.apk" rel="noopener">Wallet (.apk)</a>
+          <p class="dl-sub">Balance, send, receive by QR, history. Carries a full node; no mining. On Google Play since 4 September 2026.</p>
+          <a class="btn btn-primary dl-btn" href="https://play.google.com/store/apps/details?id=am.pc.pcoinwallet" rel="noopener">Get it on Google Play</a>
+          <a class="dl-alt" href="https://github.com/pars5555/pcoin/releases/download/v1.2.8/pcoin-android-wallet.apk" rel="noopener">or the .apk</a>
           <a class="dl-alt" href="#android-note">read this first</a>
         </div>
       </div>
@@ -1101,7 +1102,7 @@ Windows  C:\PCoin\pcoin-tray.cfg   poolurl=pool.pc.am:3333</code></pre>
         app-private storage, so <b>uninstalling the app destroys that wallet</b>. Write your twelve-word
         recovery phrase down before you remove or replace it. Android also refuses to install over an
         app signed with a different key, so if you are running an earlier build from source you must
-        uninstall first &mdash; with the same consequence.
+        uninstall first &mdash; with the same consequence. <b>That includes moving to the Google Play version</b>: Google signs store builds with its own key, so Play cannot upgrade an APK from here &mdash; Android makes you uninstall, and that erases the wallet and the saved addresses. Write your twelve words down and export your address book <i>before</i> you switch.
         <br><br>
         <b>Check what you downloaded.</b> Every file's SHA-256 is published at
         <a href="https://pc.am/dl/SHA256SUMS.txt">pc.am/dl/SHA256SUMS.txt</a> and alongside the
