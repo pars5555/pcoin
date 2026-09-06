@@ -135,11 +135,26 @@ AGE=$(( NOW - ${TIPTIME:-$NOW} ))
 [ "$AGE" -lt 0 ] && AGE=0
 
 PREV_HEIGHT=0
+ALERTED_HEIGHT=0
 [ -f "$STATE" ] && PREV_HEIGHT=$(cut -d' ' -f1 "$STATE" 2>/dev/null || echo 0)
-echo "$HEIGHT $NOW" > "$STATE"
+# Third field: the height we have ALREADY alerted a stall for. Older state
+# files have only two fields, so an empty read means "never alerted".
+[ -f "$STATE" ] && ALERTED_HEIGHT=$(cut -d' ' -f3 "$STATE" 2>/dev/null || echo 0)
+[ -n "$ALERTED_HEIGHT" ] || ALERTED_HEIGHT=0
+# Clear the marker as soon as the chain moves, so the NEXT stall speaks again.
+[ "$HEIGHT" != "$PREV_HEIGHT" ] && ALERTED_HEIGHT=0
+echo "$HEIGHT $NOW $ALERTED_HEIGHT" > "$STATE"
 
 if [ "$AGE" -gt "$STALL_SECONDS" ] && [ "$HEIGHT" = "$PREV_HEIGHT" ]; then
-  fail "chain stalled: height $HEIGHT unchanged and tip is ${AGE}s old (limit ${STALL_SECONDS}s), $PEERS peers"
+    if [ "$ALERTED_HEIGHT" != "$HEIGHT" ]; then
+        echo "$HEIGHT $NOW $HEIGHT" > "$STATE"
+        fail "chain stalled: height $HEIGHT unchanged and tip is ${AGE}s old (limit ${STALL_SECONDS}s), $PEERS peers"
+    fi
+    # Same stall, already reported. Say so in the log and exit clean: the unit
+    # has OnFailure wired, so a non-zero exit here would re-raise the same
+    # incident every twelve minutes until it cleared.
+    say "still stalled at height $HEIGHT (tip ${AGE}s old) -- already alerted, not repeating"
+    exit 0
 fi
 
 # The seed's actual job. RPC health says nothing about whether the P2P port
