@@ -31,6 +31,13 @@ from .store import IndexUnavailable
 MAX_BODY_BYTES = 1_000_000        # a 400 000-byte transaction is 800 000 hex chars
 DRAIN_LIMIT = 4 * 1024 * 1024     # how much of an oversized body we will discard
 JSON_CONTENT_TYPE = "application/json; charset=utf-8"
+PLAIN_CONTENT_TYPE = "text/plain; charset=utf-8"
+# A route that must answer as text/plain rather than JSON says so by returning
+# {PLAIN_KEY: "<body>"}. `handle()` returns (status, dict) to two different HTTP
+# handlers and is called directly by tests, so widening that to "dict or str"
+# would put the burden of telling them apart on every caller. One reserved key
+# keeps the contract single-shaped; both handlers check for it in one place.
+PLAIN_KEY = "__plain_text__"
 MEMPOOL_PAGE = 100                # default txids/entries per /api/mempool page
 MAX_MEMPOOL_PAGE = 1000
 # One thread per connection with no ceiling is a denial of service that costs a
@@ -145,6 +152,21 @@ class ApiApplication:
             return 200, svc.tip()
         if rest == ["fees"]:
             return 200, svc.fees()
+        if rest == ["supply"]:
+            return 200, svc.supply()
+        if len(rest) == 2 and rest[0] == "supply":
+            # The scalar forms exist because a listing site's fetcher reads the
+            # whole body as one number. `PLAIN_KEY` carries that intent through
+            # the (status, dict) contract `handle()` owes both this package's
+            # HTTP handler and pcoin_explorer's, neither of which can be handed
+            # a bare string without changing what every other route returns.
+            field = {"max": "max_supply", "total": "total_supply",
+                     "circulating": "circulating_supply",
+                     "immature": "immature"}.get(rest[1])
+            if field is None:
+                raise ApiError(404, "not_found",
+                               "supply has max, total, circulating and immature")
+            return 200, {PLAIN_KEY: svc.supply()[field]}
         if rest == ["mempool"]:
             return 200, self.mempool(query)
         if rest == ["search"]:
@@ -288,6 +310,10 @@ class ApiApplication:
                 "GET /api/status": "chain tip, index height, how far behind the "
                                    "index is, node and mempool state",
                 "GET /api/tip": "just the tip block",
+                "GET /api/supply": "max, total, circulating and immature supply",
+                "GET /api/supply/{max|total|circulating|immature}":
+                    "the same figures one at a time, as a bare number in "
+                    "text/plain, which is the shape listing sites fetch",
                 "GET /api/blocks?limit=&before_height=": "recent blocks",
                 "GET /api/block/{height|hash}?limit=&offset=": "one block",
                 "GET /api/block/{height|hash}/txs?limit=&offset=":
@@ -357,9 +383,9 @@ class _Handler(BaseHTTPRequestHandler):
         parts = [p.strip() for p in forwarded.split(",") if p.strip()]
         return parts[len(parts) - 1] if parts else peer
 
-    def _headers(self, status, body_len, extra=None):
+    def _headers(self, status, body_len, extra=None, content_type=JSON_CONTENT_TYPE):
         self.send_response(status)
-        self.send_header("Content-Type", JSON_CONTENT_TYPE)
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(body_len))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -372,6 +398,12 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _respond(self, status, payload, *, head=False):
+        if isinstance(payload, dict) and PLAIN_KEY in payload:
+            body = ("%s\n" % payload[PLAIN_KEY]).encode("utf-8")
+            self._headers(status, len(body), None, PLAIN_CONTENT_TYPE)
+            if not head:
+                self.wfile.write(body)
+            return
         body = dumps(payload)
         extra = {}
         if status == 429:

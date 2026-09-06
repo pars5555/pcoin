@@ -209,6 +209,60 @@ class Service:
             block["truncated_detail"] = mem.get("truncated_detail")
         return block
 
+    # -- supply ----------------------------------------------------------
+    # Listing sites -- CoinGecko, CoinMarketCap and the trackers that follow
+    # them -- ask for supply at its own stable URL, and several will only read a
+    # bare number. That is why this is a separate endpoint rather than a pointer
+    # at `chain.supply_pcn` in /api/status: the consumer is a fetcher with no
+    # JSON path configured, and a listing is rejected for the shape of the
+    # answer as readily as for the answer.
+    #
+    # `supply_sat` is the summed value of the UTXO set, not height * subsidy.
+    # Two consequences worth stating, because both are asked about:
+    #   - the genesis output is absent, exactly as in Bitcoin: it is unspendable
+    #     by consensus and so never enters the UTXO set. tests/test_index.py
+    #     pins this, and tests/regtest_e2e.py reconciles the whole figure
+    #     against the node's own `gettxoutsetinfo.total_amount`.
+    #   - immature coinbase IS included. Those coins exist and are owned; they
+    #     are merely not yet spendable, so they are reported as their own line
+    #     rather than deducted, and a consumer that wants the stricter figure
+    #     can subtract it. Deciding that silently for them would be a policy
+    #     choice disguised as arithmetic.
+    MAX_SUPPLY_SAT = 21_000_000 * 100_000_000
+
+    def supply(self):
+        with self.store.snapshot() as conn:
+            stats = queries.chain_stats(conn)
+            imm = queries.immature_supply(conn)
+        total_sat = int(stats["supply_sat"])
+        immature_sat = int(imm["immature_sat"])
+        # The bare `max_supply` / `total_supply` / `circulating_supply` keys are
+        # the fixed-point strings, because that is the name and the shape a
+        # listing site reads. The `_sat` / `_pcn` twins alongside them are this
+        # API's own convention and are what our code should use.
+        out = {
+            "height": stats.get("height"),
+            "max_supply": from_sat(self.MAX_SUPPLY_SAT),
+            "total_supply": from_sat(total_sat),
+            "circulating_supply": from_sat(total_sat),
+            "immature": from_sat(immature_sat),
+            "immature_utxo_count": imm["immature_utxo_count"],
+            "coinbase_maturity_blocks": COINBASE_MATURITY,
+        }
+        money(out, "max_supply", self.MAX_SUPPLY_SAT)
+        money(out, "total_supply", total_sat)
+        money(out, "circulating_supply", total_sat)
+        money(out, "immature", immature_sat)
+        # circulating == total is a claim, not a default, so it is stated: PCoin
+        # had no premine, no founder allocation and no lockup -- every coin was
+        # mined, and the treasury's holdings are ordinary spendable coins with no
+        # more claim to being "non-circulating" than any other miner's.
+        out["note"] = ("circulating equals total: no premine, no founder "
+                       "allocation, no locked or vested supply. Genesis is "
+                       "unspendable and excluded. Immature coinbase is included "
+                       "and reported separately.")
+        return out
+
     # -- status ----------------------------------------------------------
     def status(self, *, broadcast_state=None, server=None):
         snap = self.node.snapshot()

@@ -309,6 +309,17 @@ class Router:
                 "code": "api_failed",
                 "message": "the mounted API raised %s" % type(exc).__name__,
                 "detail": str(exc)}}, cors)
+        # A route may ask to be rendered as text rather than JSON -- the scalar
+        # /api/supply/* forms do, because a listing site's fetcher reads the
+        # whole body as one number. Honoured here as well as in pcoin_api's own
+        # handler, or the same URL would answer differently depending on which
+        # of the two servers took the request. The import is local because
+        # pcoin_api is a mounted optional dependency, and this branch cannot be
+        # reached unless it is already mounted.
+        if isinstance(payload, dict):
+            from pcoin_api.server import PLAIN_KEY
+            if PLAIN_KEY in payload:
+                return self._plain(status, "%s\n" % payload[PLAIN_KEY])
         return self._json(status, payload, cors)
 
     def _search(self, ctx, q):

@@ -21,6 +21,7 @@ from . import helpers  # noqa: F401  (sets sys.path)
 from .apiharness import Env
 from .fakechain import COIN, FakeChain
 from .fakenode import FakeNode
+from pcoin_indexer.amounts import from_sat
 
 MINER = "ADDRMINER"
 BOB = "ADDRBOB"
@@ -785,3 +786,62 @@ class WithoutANodeTests(unittest.TestCase):
 
 if __name__ == "__main__":                                   # pragma: no cover
     unittest.main()
+
+
+class SupplyTests(ApiTestCase):
+    """Supply is what a listing site reads, and it is read by a machine.
+
+    The fixture is 122 blocks (0..121) at 50 PCN. 122 * 50 is 6100, and the
+    endpoint must report 6050, because the genesis output is unspendable and
+    never enters the UTXO set. That 50 PCN difference is the whole reason this
+    is computed from the UTXO set rather than from height * subsidy.
+    """
+
+    def test_supply_document(self):
+        body, _ = self.get("/api/supply")
+        self.assertEqual(body["max_supply"], "21000000.00000000")
+        self.assertEqual(body["max_supply_sat"], 21_000_000 * 100_000_000)
+        self.assertEqual(body["total_supply"], "6050.00000000")
+        self.assertEqual(body["total_supply_sat"], 605_000_000_000)
+        # No premine and no lockup, so these are the same number. Asserted rather
+        # than assumed: if a treasury carve-out is ever introduced they diverge,
+        # and this test is where that decision has to be made deliberately.
+        self.assertEqual(body["circulating_supply"], body["total_supply"])
+        self.assertEqual(body["circulating_supply_sat"], body["total_supply_sat"])
+        self.assertEqual(body["height"], 121)
+        self.assertEqual(body["coinbase_maturity_blocks"], 100)
+
+    def test_immature_is_included_in_total_and_reported_separately(self):
+        body, _ = self.get("/api/supply")
+        # Coinbase maturity is 100, so everything mined above height 22 is still
+        # immature at tip 121. Those coins exist and are counted in total supply;
+        # a consumer wanting the stricter figure subtracts this line itself.
+        self.assertGreater(body["immature_sat"], 0)
+        self.assertLess(body["immature_sat"], body["total_supply_sat"])
+        self.assertEqual(body["immature"], from_sat(body["immature_sat"]))
+        self.assertEqual(body["immature_utxo_count"],
+                         body["immature_sat"] // 5_000_000_000)
+
+    def test_supply_agrees_with_status(self):
+        supply, _ = self.get("/api/supply")
+        status, _ = self.get("/api/status")
+        self.assertEqual(supply["total_supply_sat"], status["chain"]["supply_sat"])
+
+    def test_scalar_forms_are_bare_numbers_in_text_plain(self):
+        # A listing fetcher reads the whole body as one number: no JSON, no
+        # quotes, no envelope. Asserted on raw bytes, because the harness's
+        # json.loads() would happily turn "6050.00000000\n" into a float and
+        # hide both the content type and the lost precision.
+        for path, expected in (("/api/supply/total", b"6050.00000000\n"),
+                               ("/api/supply/circulating", b"6050.00000000\n"),
+                               ("/api/supply/max", b"21000000.00000000\n")):
+            status, headers, data = self.env.request("GET", path)
+            self.assertEqual(status, 200, path)
+            self.assertEqual(data, expected, path)
+            self.assertEqual(headers.get("Content-Type"), "text/plain; charset=utf-8")
+
+    def test_unknown_supply_field_is_404_not_a_number(self):
+        # Answering a field we do not have with "0" would be the §7.1 mistake in
+        # its purest form: an unanswerable question rendered as a definite figure.
+        status, _, _ = self.env.request("GET", "/api/supply/treasury")
+        self.assertEqual(status, 404)

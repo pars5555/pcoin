@@ -267,6 +267,24 @@ def search(conn, term):
     return None
 
 
+def immature_supply(conn, *, maturity=COINBASE_MATURITY):
+    """Chain-wide coinbase that exists but is not yet spendable.
+
+    The same predicate `address_summary` uses, without the address filter, so the
+    two can never disagree about what "immature" means. `unspendable=0` matters
+    here for the same reason it does there: the genesis output is not part of
+    supply at all, and must not reappear as immature supply.
+    """
+    tip = tip_height(conn)
+    row = conn.execute(
+        "SELECT COALESCE(SUM(value),0) v, COUNT(*) n FROM outputs"
+        " WHERE spent_height IS NULL AND is_coinbase=1"
+        "   AND unspendable=0 AND maturity_height > ?",
+        (tip + 1,)).fetchone()
+    return {"immature_sat": row["v"], "immature_utxo_count": row["n"],
+            "as_of_height": tip, "maturity": maturity}
+
+
 def chain_stats(conn):
     tip = tip_height(conn)
     b = _row(conn.execute("SELECT * FROM blocks WHERE height=?", (tip,)).fetchone())
