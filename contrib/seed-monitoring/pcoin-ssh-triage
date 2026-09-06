@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# ═══════════════════════════════════════════════════════════════════════════
+# pcoin-ssh-triage — "is SSH broken, or am I banned?"
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# WHY THIS EXISTS
+# A fail2ban ban and a dead sshd are indistinguishable from one vantage point.
+# Both answer a TCP connect and then close it, so both look like:
+#
+#     kex_exchange_identification: read: Connection reset by peer
+#     Connection reset by 1.2.3.4 port 22
+#
+# On 2026-09-06 that ambiguity cost hours. The workstation had been banned for
+# connecting too often; the symptom read as server-side failure; and the real
+# fault -- /etc/passwd overwritten with 17 bytes of `attacker-payload` -- was
+# reasoned about from the wrong premise for most of an incident.
+#
+# The distinction cannot be made from the machine that is blocked. It needs a
+# SECOND vantage point, and that is the whole idea here: try from somewhere
+# else, and check whether the host serves anything at all.
+#
+#   ./pcoin-ssh-triage <host> [ssh-user] [key]
+#
+# Exit codes: 0 reachable · 1 you are blocked · 2 sshd broken · 3 host down
+#
+set -uo pipefail
+HOST="${1:?usage: pcoin-ssh-triage <host> [user] [key]}"
+USER_="${2:-root}"
+KEY="${3:-$HOME/.ssh/id_ed25519}"
+
+# Vantage points to try from, in order. Any host that is NOT the target.
+RELAYS="178.105.3.51 152.53.171.190 178.105.178.27 202.61.252.202 167.233.206.186"
+
+say() { printf '  %s\n' "$*"; }
+ssh_try() { timeout 20 ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no \
+                    -o IdentitiesOnly=yes -i "$3" "$2@$1" 'echo __OK__' 2>&1; }
+
+say "target: $USER_@$HOST"
+say ""
+
+# ── 1. from here ───────────────────────────────────────────────────────────
+LOCAL=$(ssh_try "$HOST" "$USER_" "$KEY")
+if printf '%s' "$LOCAL" | grep -q __OK__; then
+  say "SSH from this machine: OK"
+  say ""
+  say "VERDICT: reachable. Nothing to triage."
+  exit 0
+fi
+say "SSH from this machine: FAILED"
+say "  $(printf '%s' "$LOCAL" | grep -viE '^warning|post-quantum|store now|openssh.com' | tail -1)"
+
+# ── 2. is the host alive at all? ───────────────────────────────────────────
+# A host that serves HTTP is running; only its SSH is in question. This is what
+# separates "the machine is down" from "something about SSH".
+ALIVE=no
+for port in 443 80; do
+  if timeout 8 bash -c "cat < /dev/null > /dev/tcp/$HOST/$port" 2>/dev/null; then
+    ALIVE=yes; say "port $port: open (the machine is up and serving)"; break
+  fi
+done
+[ "$ALIVE" = no ] && say "ports 80/443: closed"
+
+# ── 3. from somewhere else ─────────────────────────────────────────────────
+# The decisive test. If another host gets in, SSH is fine and the problem is
+# THIS machine's address -- almost always a fail2ban ban.
+REMOTE_OK=no; TRIED=""
+for R in $RELAYS; do
+  [ "$R" = "$HOST" ] && continue
+  OUT=$(timeout 30 ssh -o BatchMode=yes -o ConnectTimeout=8 -o IdentitiesOnly=yes \
+          -i "$HOME/.ssh/id_ed25519" "root@$R" \
+          "timeout 15 ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no $USER_@$HOST 'echo __OK__' 2>&1 | tail -1" 2>/dev/null)
+  [ -z "$OUT" ] && continue
+  TRIED="$R"
+  if printf '%s' "$OUT" | grep -q __OK__; then REMOTE_OK=yes; fi
+  say "via $R: $(printf '%s' "$OUT" | tail -1)"
+  break
+done
+[ -z "$TRIED" ] && say "no relay host was reachable to test from"
+
+# ── verdict ────────────────────────────────────────────────────────────────
+say ""
+if [ "$REMOTE_OK" = yes ]; then
+  say "VERDICT: YOU ARE BLOCKED, the server is fine."
+  say "  SSH works from $TRIED but not from here, so this machine's address is"
+  say "  banned. Check your current IP -- it may have changed:"
+  say "      curl -s https://api.ipify.org"
+  say "  Then, from a host that still has access:"
+  say "      fail2ban-client set sshd unbanip <your-ip>"
+  exit 1
+fi
+if [ -z "$TRIED" ]; then
+  say "VERDICT: UNKNOWN. No second vantage point answered, so this cannot be"
+  say "  decided from here. That is not the same as the server being broken."
+  exit 2
+fi
+if [ "$ALIVE" = yes ]; then
+  say "VERDICT: SSHD IS BROKEN, and the machine is otherwise healthy."
+  say "  It refuses every source, but still serves HTTP -- so the box is up and"
+  say "  something about authentication or sshd itself is wrong. Reaching it"
+  say "  needs the provider console, or rescue mode."
+  say "  Worth checking first: /etc/passwd, /etc/shadow and /etc/group, and"
+  say "  whether the disk is full. All four break every login at once."
+  exit 2
+fi
+say "VERDICT: HOST IS DOWN. No SSH from anywhere and no HTTP. Check the"
+say "  provider console for power state before assuming a software fault."
+exit 3
