@@ -874,6 +874,16 @@ createServer(async (req, res) => {
           be <code>0x</code> followed by 40 hex characters.</p>`));
       if (!(amount > 0))
         return send(400, home(`<p class="err">Enter how much PCN you want to wrap.</p>`));
+        // An amount over the cap used to be ACCEPTED, clamped in silence, and then
+        // echoed back as "You send 9999 PCN / You receive 237.50 wPCN" -- an
+        // instruction to send ten times what the desk will wrap, with no mention that
+        // the rest comes back. The form has said "(max 250)" all along; it just was
+        // not enforced. Refuse it here, where the person can still change it, rather
+        // than after they have parted with the coins.
+        if (amount > PER_PERSON)
+          return send(400, home(`<p class="err">${n2(amount)} PCN is more than one person
+            may wrap. The limit is <b>${PER_PERSON} PCN</b>, across every deposit you
+            make &mdash; not per deposit. Enter ${PER_PERSON} or less.</p>`));
 
       const st = load();
       const key = bsc.toLowerCase();
@@ -905,6 +915,10 @@ reusable. Send to it any time.</p>
 <tr><th>Sent to</th><td><code>${esc(r.bsc)}</code></td></tr>
 <tr><th>Ready after</th><td>${CONFIRMATIONS} confirmations (~${WAIT_H} hours)</td></tr>
 </table></div>
+<p class="warn"><b>The ${PER_PERSON} PCN limit is for you in total</b>, across every
+deposit to this address &mdash; not per deposit. Send more than that and the
+excess is returned, not wrapped. <a href="/status?addr=${esc(r.address)}">Your
+tracking page</a> shows how much of your limit is left.</p>
 <p class="warn"><b>Save this address.</b> It is how you track your wrap, and how we
 know the PCN is yours. It does not matter which wallet or address you send
 from — the deposit address alone identifies you.</p>
