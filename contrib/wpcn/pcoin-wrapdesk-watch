@@ -408,7 +408,15 @@ def main() -> int:
             h = it.get("height")
             a = float(it.get("received_pcn") or 0)
             if isinstance(h, int) and h > OPENED_AT_HEIGHT and a > 0:
-                used_total += min(a, PER_PERSON) * (1 - FEE_PCT / 100.0)
+                # A REFUNDED deposit issued nothing, so it consumes no allocation.
+                # Counting it did the opposite of what an allocation ceiling is for: after
+                # five over-limit deposits were returned, this still read "1862.00 of 1500
+                # used, THE ALLOCATION IS EXHAUSTED" -- and the send ceiling reads the same
+                # idea, so the desk would have refused the next genuine customer on the
+                # strength of money it had already given back.
+                _k = f"wrap:{it.get('txid','?')}:{watch_addr}"
+                if not (st["seen"].get(_k, {}) or {}).get("refunded"):
+                    used_total += min(a, PER_PERSON) * (1 - FEE_PCT / 100.0)
 
     if used_total > 0:
         left = TOTAL_ALLOC - used_total
