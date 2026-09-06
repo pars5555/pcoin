@@ -23,6 +23,7 @@ It is a tool, not a framework: one request, one reply, no session state. That
 is enough to read a page and fill a form, and it cannot wedge itself.
 """
 import json
+import os
 import sys
 import urllib.request
 
@@ -101,6 +102,83 @@ def main(argv):
         with urllib.request.urlopen(BASE + "/json/close/" + t["id"], timeout=10) as r:
             print(r.read().decode())
         return
+    if cmd == "type":
+        # Input.insertText delivers text the way a real keystroke arrives.
+        # document.execCommand('insertText') does NOT survive a Draft.js editor
+        # (x.com): multi-line text comes back with the lines re-ordered and URLs
+        # split mid-string. Focus the field with `eval` first.
+        t = pick(argv[2])
+        text = argv[3] if len(argv) > 3 else sys.stdin.read()
+        msg = call(t, "Input.insertText", {"text": text})
+        print("inserted %d chars: %s" % (len(text),
+              "ok" if not msg.get("error") else msg["error"]))
+        return
+
+    if cmd == "click":
+        # A real, trusted mouse event at page coordinates. Some React cards
+        # ignore a dispatched MouseEvent (they listen on pointer events with
+        # capture, or check isTrusted), so scripted .click() silently does
+        # nothing -- which looks exactly like a page that failed to load.
+        # Pass x,y from an `eval` that returns getBoundingClientRect centres.
+        t = pick(argv[2])
+        x, y = float(argv[3]), float(argv[4])
+        for kind in ("mousePressed", "mouseReleased"):
+            call(t, "Input.dispatchMouseEvent",
+                 {"type": kind, "x": x, "y": y, "button": "left",
+                  "clickCount": 1, "buttons": 1 if kind == "mousePressed" else 0})
+        print("clicked at %g,%g" % (x, y))
+        return
+
+    if cmd == "shot":
+        # When the DOM does not explain what a page is doing, look at it
+        # (CLAUDE.md 8). Writes a PNG; no domain needs enabling for this.
+        import base64
+        t = pick(argv[2])
+        out = argv[3] if len(argv) > 3 else "shot.png"
+        msg = call(t, "Page.captureScreenshot", {"format": "png"}, timeout=60)
+        data = ((msg.get("result") or {}).get("data"))
+        if not data:
+            print("no image: %s" % msg.get("error") or msg)
+            return
+        with open(out, "wb") as fh:
+            fh.write(base64.b64decode(data))
+        print("wrote %s (%d bytes)" % (out, len(base64.b64decode(data))))
+        return
+
+    if cmd == "upload":
+        # Set a file input's files. A file chooser cannot be driven from script,
+        # so this is the only way to satisfy a required upload.
+        #
+        # Both calls MUST share one websocket: a remote objectId is scoped to the
+        # connection that produced it, and this client otherwise opens a fresh
+        # connection per call -- which fails with "Could not find object with
+        # given id", a message that reads like a bad selector and is not.
+        t = pick(argv[2])
+        selector, path = argv[3], os.path.abspath(argv[4])
+        if not os.path.exists(path):
+            sys.exit("no such file: %s" % path)
+        ws = websocket.create_connection(t["webSocketDebuggerUrl"], timeout=45,
+                                         suppress_origin=True)
+        try:
+            def send(i, method, params):
+                ws.send(json.dumps({"id": i, "method": method, "params": params}))
+                while True:
+                    m = json.loads(ws.recv())
+                    if m.get("id") == i:
+                        return m
+            r1 = send(1, "Runtime.evaluate",
+                      {"expression": "document.querySelector(%r)" % selector,
+                       "returnByValue": False})
+            obj = (((r1.get("result") or {}).get("result")) or {}).get("objectId")
+            if not obj:
+                sys.exit("selector matched nothing: %s" % selector)
+            r2 = send(2, "DOM.setFileInputFiles", {"files": [path], "objectId": obj})
+            print("uploaded %s -> %s%s" % (os.path.basename(path), selector,
+                  "" if not r2.get("error") else "  ERROR: %s" % r2["error"]))
+        finally:
+            ws.close()
+        return
+
     if cmd == "eval":
         out = evaluate(pick(argv[2]), argv[3])
         print(json.dumps(out.get("error") or out.get("value"), indent=2,
