@@ -334,10 +334,8 @@ async function main() {
   // against its own key and was rejected by every node on the network.
   const outFile = arg('--out');
   if (outFile) {
-    writeFileSync(outFile, tx.hex + '
-');
-    console.log(`
-  signed hex written to ${outFile}`);
+    writeFileSync(outFile, tx.hex + '\n');
+    console.log(`\nsigned hex written to ${outFile}`);
     console.log('  VALIDATE with testmempoolaccept before broadcasting.');
   }
 
