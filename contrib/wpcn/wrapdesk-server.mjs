@@ -938,6 +938,33 @@ your deposit has arrived. This does <b>not</b> mean it has not.</p>
 sent it, it can take a few minutes to appear.</p>
 <p class="muted">This page reads the chain live — reload any time.</p>`));
 
+      // THE CAP IS PER PERSON, ACROSS EVERY DEPOSIT -- not per deposit.
+      //
+      // This block used to compute `min(deposit, PER_PERSON)` for each card
+      // independently, so somebody who sent 250 six times saw six cards each
+      // promising 237.50 wPCN: 1425 in total, against an entitlement of 237.50.
+      // They were not misreading the page. The page said it. On 2026-09-06 exactly
+      // that happened, and the operator alert had the same fault, so nothing
+      // contradicted it.
+      //
+      // Allocation is oldest-first, which is both the fair order and the one a
+      // customer can predict: the deposit that arrived first is the one that counts.
+      const capPcn = PER_PERSON;
+      const ordered = items.slice().sort((a, b) =>
+        (a.pending ? 1 : 0) - (b.pending ? 1 : 0) || (b.confirmations - a.confirmations));
+      let allowanceUsed = 0;
+      for (const it of ordered) {
+        const room = Math.max(0, capPcn - allowanceUsed);
+        it.eligiblePcn = Math.min(it.pcn, room);
+        it.refundPcn = it.pcn - it.eligiblePcn;
+        it.wpcn = it.eligiblePcn * (1 - FEE_PCT / 100);
+        allowanceUsed += it.eligiblePcn;
+      }
+      const totalIn = items.reduce((a, b) => a + b.pcn, 0);
+      const totalWpcn = items.reduce((a, b) => a + b.wpcn, 0);
+      const totalRefund = items.reduce((a, b) => a + b.refundPcn, 0);
+      const roomLeft = Math.max(0, capPcn - allowanceUsed);
+
       const rows = items.map((i) => {
         const pct = i.pending ? 0
           : Math.max(0, Math.min(100, i.confirmations / CONFIRMATIONS * 100));
@@ -959,14 +986,14 @@ sent it, it can take a few minutes to appear.</p>
           <div style="display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap">
             <div><div class="muted">Received</div><div class="big">${n8(i.pcn)} PCN</div></div>
             <div><div class="muted">You get</div><div class="big">${
-              n8(Math.min(i.pcn, PER_PERSON) * (1 - FEE_PCT / 100))} wPCN</div></div>
+              n8(i.wpcn)} wPCN</div></div>
             <div><div class="muted">Status</div><div style="padding-top:.35rem">
               <span class="pill">${eta}</span></div></div>
           </div>
           <div class="bar"><i style="width:${pct}%"></i></div>
           <p class="muted" style="margin:.2rem 0 0">${state}</p>
-          ${i.pcn > PER_PERSON ? `<p class="warn">Above the ${PER_PERSON} PCN cap —
-            ${n2(i.pcn - PER_PERSON)} PCN will be returned.</p>` : ''}
+          ${i.refundPcn > 0 ? `<p class="warn">Over your ${PER_PERSON} PCN limit by
+            ${n2(i.refundPcn)} PCN — that part is returned, not wrapped.</p>` : ''}
           <p class="muted" style="margin:.45rem 0 0">
             <a href="https://explorer.pc.am/tx/${esc(i.txid)}">${esc(i.txid.slice(0, 24))}…</a></p>
         </div>`;
@@ -976,6 +1003,38 @@ sent it, it can take a few minutes to appear.</p>
       return send(200, page('Your wrap status', '/track', `
 <h1>Your wrap</h1>
 <p class="lead">Deposits to <code>${esc(addr)}</code></p>
+<div class="card">
+  <h2 style="margin:0 0 .6rem">Your allowance</h2>
+  <div style="display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+    <div><div class="muted">Limit, one person</div><div class="big">${n2(capPcn)} PCN</div></div>
+    <div><div class="muted">Used</div><div class="big">${n2(allowanceUsed)} PCN</div></div>
+    <div><div class="muted">Still available</div><div class="big">${n2(roomLeft)} PCN</div></div>
+  </div>
+  <div class="bar" style="margin-top:.6rem"><i style="width:${
+    Math.max(0, Math.min(100, allowanceUsed / capPcn * 100))}%"></i></div>
+  ${roomLeft <= 0
+    ? `<p class="warn" style="margin:.6rem 0 0"><b>Your limit is fully used.</b>
+       Anything further you send to this address is <b>returned, not wrapped</b>.
+       Please do not send more.</p>`
+    : `<p class="muted" style="margin:.6rem 0 0">You may still send up to
+       <b>${n2(roomLeft)} PCN</b> to this address. Beyond that it is returned.</p>`}
+</div>
+
+<div class="card">
+  <h2 style="margin:0 0 .6rem">Totals across every deposit</h2>
+  <div style="display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+    <div><div class="muted">PCN received</div><div class="big">${n8(totalIn)}</div></div>
+    <div><div class="muted">wPCN you get</div><div class="big">${n8(totalWpcn)}</div></div>
+    <div><div class="muted">PCN returned</div><div class="big">${n8(totalRefund)}</div></div>
+  </div>
+  <p class="muted" style="margin:.6rem 0 0">${items.length} deposit${
+    items.length === 1 ? '' : 's'} to this address. The ${FEE_PCT}% fee is taken in
+  wPCN not sent, never in PCN kept back — so the reserve always holds at least
+  what the tokens claim.${totalRefund > 0
+    ? ` <b>${n2(totalRefund)} PCN is over your limit and will be returned to the
+      wallet it came from.</b>`
+    : ''}</p>
+</div>
 ${rows}
 ${anyReady
  ? `<p class="ok">Confirmed. Your wPCN is queued for release — a person sends it,
