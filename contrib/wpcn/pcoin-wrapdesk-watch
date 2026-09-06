@@ -420,9 +420,32 @@ def main() -> int:
 
     if used_total > 0:
         left = TOTAL_ALLOC - used_total
-        tasks.append(("allocation", "action" if left <= 0 else "info",
+        # TWO figures, and the operator needs the smaller one to plan against.
+        #
+        #   used_total     rebuilt from the chain each run: what actually went out
+        #                  and stayed out. Refunds are excluded, which is the point --
+        #                  see above, where returned money once read as EXHAUSTED and
+        #                  would have refused a real customer.
+        #
+        #   released_wpcn  what the SEND GATE below actually tests. A release recorded
+        #                  before send_wpcn existed has an unknown amount, and unknown
+        #                  is charged the maximum a release could have been, so this
+        #                  is always >= used_total.
+        #
+        # Reporting only the first told the operator 825.50 left while the gate would
+        # refuse past ~360. Neither number is wrong; showing only one of them was.
+        gate_left = TOTAL_ALLOC - released_wpcn
+        gap = ""
+        if released_wpcn > used_total + 0.01:
+            gap = ("\n  The send gate is stricter: %.2f used, %.2f left,"
+                   " because %d earlier release(s) predate the amount being recorded"
+                   " and are charged at the maximum. PLAN AGAINST THAT NUMBER -- it is"
+                   " the one that refuses."
+                   % (released_wpcn, gate_left, unknown_released))
+        tasks.append(("allocation",
+                      "action" if (left <= 0 or gate_left <= 0) else "info",
                       f"Allocation: {used_total:.2f} of {TOTAL_ALLOC:.0f} wPCN used, "
-                      f"{left:.2f} left."
+                      f"{left:.2f} left." + gap
                       + ("\n*** THE ALLOCATION IS EXHAUSTED. Do not wrap more "
                          "without deciding deliberately to raise it. ***"
                          if left <= 0 else "")))
