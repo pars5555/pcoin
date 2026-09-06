@@ -39,6 +39,18 @@ NAG_SECONDS = int(os.environ.get("NAG_SECONDS", 3600))      # hourly, per the ow
 CONFIRMATIONS = int(os.environ.get("WRAP_CONFIRMATIONS", 100))
 PER_PERSON = float(os.environ.get("WRAP_PER_PERSON", 250))
 TOTAL_ALLOC = float(os.environ.get("WRAP_TOTAL_ALLOC", 1500))
+# A HARD CEILING ON ONE INSTRUCTION, independent of every calculation above it.
+#
+# The per-person limit is applied to a SINGLE DEPOSIT, so six deposits of exactly
+# 250 never trip it and produce six separate 237.50 instructions -- 1425 wPCN to
+# one party against a stated entitlement of 237.50. That happened, live, on
+# 2026-09-06, and the same run ALSO printed "THE ALLOCATION IS EXHAUSTED"
+# without suppressing a single one of the six sends.
+#
+# This number is not derived from the request. It is the largest amount this
+# script may ever tell a human to send. If a calculation produces more, the
+# calculation is wrong and the instruction is withheld.
+MAX_SEND = float(os.environ.get("WRAP_MAX_SEND", PER_PERSON))
 
 # The wrap fee, taken in wPCN withheld rather than PCN returned.
 #
@@ -227,6 +239,30 @@ def main() -> int:
               "explicitly.", file=sys.stderr)
 
     used_total = 0.0        # allocation consumed, summed across ALL addresses
+    # What has ALREADY gone out, read from the ledger rather than recomputed, plus
+    # what this run has instructed. A send is only instructed if it fits inside
+    # TOTAL_ALLOC once both are counted -- otherwise the desk re-promises the same
+    # allocation once per run, forever.
+    released_wpcn = 0.0
+    unknown_released = 0
+    for _k, _v in (st.get("seen") or {}).items():
+        if isinstance(_v, dict) and _v.get("released"):
+            try:
+                _amt = float(_v.get("send_wpcn") or 0)
+            except (TypeError, ValueError):
+                _amt = 0.0
+            if _amt > 0:
+                released_wpcn += _amt
+            else:
+                # A release recorded before this field existed. Its amount is NOT
+                # zero, it is UNKNOWN -- and counting unknown as zero makes the
+                # allocation ceiling read as more headroom than the desk has, which
+                # is the one direction a safety limit must never err in. Charge it
+                # the maximum a single release could have been.
+                unknown_released += 1
+                released_wpcn += PER_PERSON * (1 - FEE_PCT / 100.0)
+    pledged_wpcn = 0.0      # instructed by THIS run
+    per_addr_wpcn = {}      # cumulative per depositor, across all their deposits
     # Rebuilt from the chain every run, never accumulated -- it is what
     # --released resolves an abbreviated txid against.
     st["outstanding"] = {}
@@ -291,6 +327,50 @@ def main() -> int:
                 # backing moves ABOVE 1:1 -- the only direction it may ever move.
                 fee = eligible * FEE_PCT / 100.0
                 net = eligible - fee
+                # ---- THE CEILING. Three independent checks; any one withholds the instruction.
+                # None of them trusts the arithmetic above.
+                #
+                #   1. per DEPOSITOR, not per deposit -- `eligible` caps a single payment, which
+                #      is what splitting 1500 into six 250s walked straight past.
+                #   2. against the WHOLE desk allocation, counting what already went out.
+                #   3. an absolute ceiling on any single instruction, derived from nothing.
+                #
+                # A breach does not quietly reduce the amount and send anyway: paying a customer
+                # less than they expect without saying so is its own incident. It withholds the
+                # instruction and names the limit, because deciding to exceed one belongs to a
+                # person who can see the whole picture.
+                prior_addr = per_addr_wpcn.get(watch_addr, 0.0)
+                hard_cap = PER_PERSON * (1 - FEE_PCT / 100.0)
+                breach = None
+                if prior_addr + net > hard_cap + 1e-9:
+                    breach = ("this depositor would reach %.2f wPCN across their deposits, over "
+                              "the %.2f a single person may receive (%.0f PCN less the %.0f%% fee)"
+                              % (prior_addr + net, hard_cap, PER_PERSON, FEE_PCT))
+                elif released_wpcn + pledged_wpcn + net > TOTAL_ALLOC + 1e-9:
+                    breach = ("the desk would reach %.2f wPCN against a %.0f wPCN allocation "
+                              "(%.2f already sent, %.2f pending earlier in this run)"
+                              % (released_wpcn + pledged_wpcn + net, TOTAL_ALLOC,
+                                 released_wpcn, pledged_wpcn))
+                elif net > MAX_SEND + 1e-9:
+                    breach = ("%.2f wPCN exceeds the %.2f ceiling on any single instruction"
+                              % (net, MAX_SEND))
+
+                if breach:
+                    tasks.append((key, "action",
+                                  "WITHHELD -- do NOT send wPCN for this deposit\n"
+                                  "%.2f PCN, tx %s...\n"
+                                  "  would send : %.2f wPCN\n"
+                                  "  TO         : %s\n"
+                                  "REASON: %s.\n"
+                                  "The PCN is safe in the reserve and nothing is lost by waiting. "
+                                  "Decide deliberately -- raise the limit, refund the excess, or "
+                                  "pay it and record why. Do not just follow the number above."
+                                  % (amt, txid[:16], net,
+                                     requester or "(no request on file)", breach)))
+                    per_addr_wpcn[watch_addr] = prior_addr + net
+                    continue
+                per_addr_wpcn[watch_addr] = prior_addr + net
+                pledged_wpcn += net
                 # Computed outside the f-string: nesting quotes inside an
                 # f-string expression is a syntax error before Python 3.12.
                 pay_to = requester or ("(NO REQUEST ON FILE -- sent straight to "
@@ -463,6 +543,19 @@ if __name__ == "__main__":
         s["seen"][key]["released"] = True
         s["seen"][key]["at"] = int(time.time())
         s["seen"][key]["bsc_txhash"] = sys.argv[3] if len(sys.argv) > 3 else None
+        # Also record the AMOUNT that went out. Without it the allocation ceiling has
+        # no idea what the desk has already committed, and a missing figure is read as
+        # the maximum rather than as zero -- correct, but needlessly pessimistic once
+        # the real number is knowable. `outstanding` is rebuilt from the chain each run
+        # and is keyed exactly like this, so the figure comes from the same place the
+        # operator was told to send.
+        _out = (s.get("outstanding") or {}).get(txid) or {}
+        try:
+            _sent = float(_out.get("send_wpcn") or 0)
+        except (TypeError, ValueError):
+            _sent = 0.0
+        if _sent > 0:
+            s["seen"][key]["send_wpcn"] = _sent
         save_state(s)
         print(f"marked released: {key}")
         if len(sys.argv) <= 3:
