@@ -34,9 +34,10 @@
 
 import { createServer } from 'node:http';
 import { createHash, randomBytes, scryptSync, timingSafeEqual, createHmac } from 'node:crypto';
-import { readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { readFileSync, existsSync, writeFileSync, renameSync } from 'node:fs';
 import { clientIp, ipLabel } from './clientip.mjs';
 import { totpValid, newSecret } from './totp.mjs';
+import { execFileSync } from 'node:child_process';
 
 const CONFIG = '/opt/pcoin-ops/config.json';
 const STATE  = '/opt/pcoin-ops/state.json';
@@ -363,6 +364,7 @@ const NAV = [
   ['Money',    [['./fleet', 'fleet', 'Fleet balances'],
                 ['./payments', 'payments', 'Payment rails'],
                 ['./wrap', 'wrap', 'Wrap desk']]],
+  ['Account',  [['./security', 'security', 'Two-factor auth']]],
 ];
 
 function shell(active, title, sub, inner) {
@@ -835,6 +837,98 @@ function body(req) {
   });
 }
 
+
+/* -- two-factor setup --------------------------------------------------------
+ * Enrol, re-enrol and disable TOTP from the browser, so nobody has to SSH to
+ * the box and hand-edit config.json to do it.
+ *
+ * THE ORDER IS THE WHOLE POINT. A new secret is held in memory only and is NOT
+ * written to the config until a code generated from it has been verified.
+ * Writing first and verifying afterwards is how an operator locks themselves
+ * out of the dashboard that shows every balance in the estate.
+ *
+ * The QR is produced by qrencode reading stdin, never a command-line argument:
+ * argv is world-readable through ps and the argument here is a live TOTP secret.
+ */
+let pending = null;                          // { secret, uri, at }
+const PENDING_TTL = 10 * 60e3;
+
+function qrSvgFor(uri) {
+  try {
+    const svg = execFileSync('qrencode', ['-t', 'SVG', '-m', '1', '-o', '-'],
+      { input: uri, encoding: 'utf8', timeout: 5000 });
+    return svg.replace(/^<\?xml[^>]*\?>\s*/, '').replace(/<!DOCTYPE[^>]*>\s*/, '');
+  } catch {
+    return null;                             // no QR is fine; the secret is shown too
+  }
+}
+
+const groupSecret = (sec) => (sec.match(/.{1,4}/g) || []).join(' ');
+
+function securityPage(msg, err) {
+  const on = !!cfg.totpSecret;
+  const note = err
+    ? '<div class="card" style="border-color:#7f1d1d"><b>' + esc(err) + '</b></div>'
+    : msg ? '<div class="card" style="border-color:#14532d"><b>' + esc(msg) + '</b></div>' : '';
+
+  if (pending && Date.now() - pending.at > PENDING_TTL) pending = null;
+
+  let body;
+  if (pending) {
+    const svg = qrSvgFor(pending.uri);
+    body =
+      '<div class="card"><h3>Scan this, then confirm</h3>' +
+      '<p class="muted">Nothing is saved until you enter a working code below. Close this page ' +
+      'without confirming and the current setting is untouched.</p>' +
+      '<div style="background:#fff;display:inline-block;padding:10px;border-radius:8px">' +
+      (svg || '<p style="color:#000;margin:0">QR unavailable &mdash; type the secret instead</p>') +
+      '</div>' +
+      '<p class="muted" style="margin-top:12px">Or type it in by hand:</p>' +
+      '<p><code style="font-size:15px;letter-spacing:1px">' + esc(groupSecret(pending.secret)) + '</code></p>' +
+      '<form method="POST" action="./security" style="margin-top:14px">' +
+      '<input type="hidden" name="action" value="confirm">' +
+      '<label>6-digit code from your app' +
+      '<input name="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" ' +
+      'autocomplete="one-time-code" required></label>' +
+      '<button type="submit">Confirm and turn on</button></form>' +
+      '<form method="POST" action="./security" style="margin-top:8px">' +
+      '<input type="hidden" name="action" value="cancel">' +
+      '<button type="submit">Cancel</button></form></div>';
+  } else if (on) {
+    body =
+      '<div class="card"><h3>Two-factor is <b>ON</b></h3>' +
+      '<p class="muted">Sign-in needs your password and a 6-digit code.</p>' +
+      '<form method="POST" action="./security">' +
+      '<input type="hidden" name="action" value="start">' +
+      '<button type="submit">Re-enrol (new secret and QR)</button></form></div>' +
+      '<div class="card"><h3>Turn it off</h3>' +
+      '<p class="muted">Sign-in drops back to password only. Enter a current code to prove it is you.</p>' +
+      '<form method="POST" action="./security">' +
+      '<input type="hidden" name="action" value="disable">' +
+      '<label>Current 6-digit code' +
+      '<input name="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" required></label>' +
+      '<button type="submit">Turn off two-factor</button></form></div>';
+  } else {
+    body =
+      '<div class="card"><h3>Two-factor is <b>OFF</b></h3>' +
+      '<p class="muted">Sign-in is password only. This page shows every balance in the estate, ' +
+      'so a stolen password is currently enough on its own.</p>' +
+      '<form method="POST" action="./security">' +
+      '<input type="hidden" name="action" value="start">' +
+      '<button type="submit">Set up two-factor</button></form></div>';
+  }
+  return shell('security', 'Two-factor auth', 'Enrol or remove the second factor', note + body);
+}
+
+function saveTotpSecret(secret) {
+  const raw = JSON.parse(readFileSync(CONFIG, 'utf8'));
+  if (secret) raw.totpSecret = secret; else delete raw.totpSecret;
+  const tmp = CONFIG + '.tmp';
+  writeFileSync(tmp, JSON.stringify(raw, null, 2) + '\n', { mode: 0o600 });
+  renameSync(tmp, CONFIG);                   // atomic: never a half-written config
+  cfg.totpSecret = secret || undefined;      // live, so no restart is needed
+}
+
 createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const path = url.pathname.replace(/^\/admin/, '') || '/';
@@ -1005,6 +1099,37 @@ async function wrapPage() {
     if (path === '/fleet')    return send(200, 'text/html', await moneyPage(url, false));
     if (path === '/payments') return send(200, 'text/html', await moneyPage(url, true));
     if (path === '/wrap')     return send(200, 'text/html', await wrapPage());
+
+    if (path === '/security' && req.method === 'POST') {
+      const f = new URLSearchParams(await body(req));
+      const action = f.get('action');
+      if (action === 'start') {
+        pending = { ...newSecret('explorer.pc.am admin', 'PCoin explorer'), at: Date.now() };
+        return send(200, 'text/html', securityPage(null, null));
+      }
+      if (action === 'cancel') {
+        pending = null;
+        return send(200, 'text/html', securityPage('Setup cancelled. Nothing changed.', null));
+      }
+      if (action === 'confirm') {
+        if (!pending) return send(200, 'text/html', securityPage(null, 'Setup expired. Start again.'));
+        if (!totpValid(pending.secret, (f.get('code') || '').trim()))
+          return send(200, 'text/html', securityPage(null, 'That code did not match. Nothing was saved.'));
+        saveTotpSecret(pending.secret);
+        pending = null;
+        return send(200, 'text/html',
+          securityPage('Two-factor is on. Your next sign-in will ask for a code.', null));
+      }
+      if (action === 'disable') {
+        if (!cfg.totpSecret) return send(200, 'text/html', securityPage('Already off.', null));
+        if (!totpValid(cfg.totpSecret, (f.get('code') || '').trim()))
+          return send(200, 'text/html', securityPage(null, 'That code did not match. Two-factor is still on.'));
+        saveTotpSecret(null);
+        return send(200, 'text/html', securityPage('Two-factor is off. Sign-in is password only.', null));
+      }
+      return send(200, 'text/html', securityPage(null, 'Unknown action.'));
+    }
+    if (path === '/security') return send(200, 'text/html', securityPage(null, null));
     if (path === '/blocks')   return send(200, 'text/html', await blocksPage(url));
     if (path === '/address')  return send(200, 'text/html', await addressPage(url));
 
