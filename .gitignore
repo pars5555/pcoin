@@ -106,3 +106,6 @@ replay_pid*.log
 # It stays on disk here on purpose -- Claude Code loads it from the project root,
 # so ignoring it keeps every session's context while keeping it out of git.
 CLAUDE.md
+
+# Security audit report (names hosts, ports, firewall rules — team-shared, never public).
+/security-audit.md
