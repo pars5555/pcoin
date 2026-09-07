@@ -5,6 +5,7 @@
   "scrypt": { "N": 32768, "r": 8, "p": 1, "maxmem": 100663296 },
   "sessionSecret": "REPLACE - 32 random bytes, hex",
   "collectorToken": "REPLACE - the bearer the seed collector posts with",
+  "totpSecret": "OPTIONAL but recommended - output of `node server.mjs --gen-totp`; absent = password only",
 
   "fleet": {
     "pc1q…": "DESKTOP-EXAMPLE",

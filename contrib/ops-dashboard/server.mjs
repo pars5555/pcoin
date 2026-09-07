@@ -35,6 +35,8 @@
 import { createServer } from 'node:http';
 import { createHash, randomBytes, scryptSync, timingSafeEqual, createHmac } from 'node:crypto';
 import { readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { clientIp, ipLabel } from './clientip.mjs';
+import { totpValid, newSecret } from './totp.mjs';
 
 const CONFIG = '/opt/pcoin-ops/config.json';
 const STATE  = '/opt/pcoin-ops/state.json';
@@ -43,7 +45,25 @@ const EXPLORER = 'http://127.0.0.1:8080/api';   // the explorer runs on this box
 const GATE = 2800;
 const PER  = 25;                                 // rows per page, everywhere
 
+// `node server.mjs --gen-totp` prints a fresh secret for config.json and exits
+// without touching anything. Handled before the config is read so it works on
+// a box that has no config yet.
+if (process.argv.includes('--gen-totp')) {
+  const { secret, uri } = newSecret();
+  console.log(`Add to ${CONFIG}:\n  "totpSecret": "${secret}"\n\nAuthenticator URI (or type the secret in by hand):\n  ${uri}\n\nThen: systemctl restart pcoin-ops`);
+  process.exit(0);
+}
+
 const cfg = JSON.parse(readFileSync(CONFIG, 'utf8'));
+
+// Second factor. Password-only until the operator enrols, and that state is
+// announced on every start rather than silently accepted: the previous
+// deployment had no second factor at all, so this is never a regression, but
+// it must not quietly become the permanent state either.
+if (!cfg.totpSecret) {
+  console.warn('[ops] WARNING: no "totpSecret" in config.json -- login is PASSWORD ONLY. ' +
+               'Run `node server.mjs --gen-totp` and enrol.');
+}
 
 // Addresses we know are ours. Anything else is reported as "not in your
 // records" -- never as "a stranger", because only the owner can tell the
@@ -80,6 +100,12 @@ function verify(cookie) {
 
 // Login throttle. Without it, a 12-character password is still guessable at a
 // few thousand attempts a second over HTTP.
+//
+// Keyed on clientIp(): CF-Connecting-IP only when the request demonstrably came
+// through Cloudflare, else the real peer. This used to key on the FIRST
+// X-Forwarded-For entry, which the client writes -- so a guesser could reset
+// their own lockout on every attempt by varying one header. An unknown address
+// gets its own bucket rather than a fabricated one.
 const attempts = new Map();
 function throttled(ip) {
   const a = attempts.get(ip);
@@ -387,6 +413,7 @@ function loginPage(err) {
     ${err ? `<p class="bad" style="font-size:13px">${esc(err)}</p>` : ''}
     <label class="muted">User<input name="u" autocomplete="username" autofocus></label>
     <label class="muted">Password<input name="p" type="password" autocomplete="current-password"></label>
+    ${cfg.totpSecret ? `<label class="muted">Authenticator code<input name="c" inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code" maxlength="6"></label>` : ''}
     <button type="submit">Sign in</button>
   </form></div>`);
 }
@@ -811,7 +838,7 @@ function body(req) {
 createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const path = url.pathname.replace(/^\/admin/, '') || '/';
-  const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress;
+  const ip = ipLabel(clientIp(req));
   const send = (code, type, payload, extra = {}) => {
     res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store',
       'X-Frame-Options': 'DENY', 'X-Content-Type-Options': 'nosniff',
@@ -947,7 +974,11 @@ async function wrapPage() {
     if (path === '/login' && req.method === 'POST') {
       if (throttled(ip)) return send(429, 'text/html', loginPage('Too many attempts. Wait 15 minutes.'));
       const f = new URLSearchParams(await body(req));
-      if (f.get('u') === cfg.user && checkPw(f.get('p') || '')) {
+      // Evaluate every factor before deciding, so the response does not say
+      // which one was wrong; the password check is the constant-time one.
+      const pwOk = f.get('u') === cfg.user && checkPw(f.get('p') || '');
+      const codeOk = cfg.totpSecret ? totpValid(cfg.totpSecret, f.get('c')) : true;
+      if (pwOk && codeOk) {
         attempts.delete(ip);
         const tok = sign(`${randomBytes(9).toString('hex')}|${Date.now() + 12 * 3600e3}`);
         return send(302, 'text/html', '', {
@@ -956,7 +987,8 @@ async function wrapPage() {
         });
       }
       noteFail(ip);
-      return send(401, 'text/html', loginPage('Wrong user or password.'));
+      return send(401, 'text/html', loginPage(cfg.totpSecret ? 'Wrong user, password or code.'
+                                                             : 'Wrong user or password.'));
     }
 
     if (!authed) return send(200, 'text/html', loginPage(null));

@@ -99,6 +99,31 @@ repo** — it holds the scrypt password hash, the session secret and the collect
 bearer token, plus your address labels. See `config.example.json` for the shape.
 `state.json` is runtime data written by the collector; also not tracked.
 
+**Second factor.** Login is scrypt password + a six-digit TOTP code once
+`totpSecret` is present in `config.json`. Enrol with
+
+```
+node /opt/pcoin-ops/server.mjs --gen-totp     # prints the secret and an otpauth URI
+```
+
+paste the secret into `config.json`, add it to your authenticator (scan the URI
+or type the secret), then `systemctl restart pcoin-ops`. Until the key exists
+the panel is **password only** and says so in the journal on every start —
+deliberately, so a deploy can never lock you out before you have enrolled. The
+code is checked with the same RFC 6238 implementation the market admin uses
+(`totp.mjs`), so one authenticator entry per panel.
+
+**Who is asking.** The login throttle and the audit rows key on
+`clientip.mjs` — a copy of `contrib/market/clientip.mjs`, which is canonical;
+keep the two identical. It trusts `CF-Connecting-IP` only when the request
+demonstrably came through Cloudflare and otherwise uses the real peer. The
+previous version read the first `X-Forwarded-For` entry, which the client
+writes, so a guesser could reset their own lockout on every attempt.
+
+The service runs as the unprivileged `pcoin-ops` user (drop-in
+`/etc/systemd/system/pcoin-ops.service.d/10-hardening.conf`); `/opt/pcoin-ops`
+is owned by it and is the only writable path.
+
 `fleet` is a plain `{ address: label }` map and drives two things: the "mine"
 flag in the miner census, and the balances table. Prefix a label with
 `PAYMENT - ` to mark an integration's deposit address rather than one of your
