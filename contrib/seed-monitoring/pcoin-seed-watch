@@ -20,15 +20,41 @@ set -u
 
 CONTAINER=${CONTAINER:-pcoin-seed}
 STATE=/var/lib/pcoin-seed-watch/state
-STALL_SECONDS=${STALL_SECONDS:-3600}   # 1 h = 6x the 600 s target. Was 7200,
-                                       # which left the chain dead for 2h04m30s
-                                       # on 2026-09-05 before anything said so.
-                                       # Gaps are ~Poisson, so a healthy gap
-                                       # exceeds this about exp(-6) = 0.25% of
-                                       # the time -- rare enough not to train
-                                       # people to ignore it. Do not drop to
-                                       # 1800: that is exp(-3) = 5%, several
-                                       # false alarms a day.
+STALL_SECONDS=${STALL_SECONDS:-5400}   # 90 min. MEASURED, not modelled -- see
+                                       # below. Was 7200, which left the chain
+                                       # dead for 2h04m30s on 2026-09-05 before
+                                       # anything said so; then 3600, which cried
+                                       # wolf about once a day.
+                                       #
+                                       # The old comment predicted a healthy gap
+                                       # would exceed 3600 s about exp(-6)=0.25%
+                                       # of the time. That is the right maths for
+                                       # a Poisson process of constant rate, and
+                                       # the wrong model for this chain: hashrate
+                                       # moves, so the gaps are a MIXTURE of
+                                       # Poissons and the tail is much fatter
+                                       # than a single rate predicts.
+                                       #
+                                       # Measured over every LWMA-era gap
+                                       # (heights 2800-6877, n=4074, mean 591 s
+                                       # against the 600 s target):
+                                       #     45 min  1.694%   2.44 alerts/day
+                                       #     60 min  0.663%   0.95 alerts/day
+                                       #     90 min  0.196%   0.28 alerts/day
+                                       #    120 min  0.025%   0.04 alerts/day
+                                       # Longest healthy gaps seen: 187, 115,
+                                       # 114, 105, 103, 96 minutes.
+                                       #
+                                       # 90 min costs 30 min of notice on a real
+                                       # stall and still beats the 7200 that
+                                       # caused the 2026-09-05 incident by 34
+                                       # min, while cutting false alarms 3.4x.
+                                       # Do not drop to 1800: that is 4.96%,
+                                       # seven false alarms a day.
+                                       #
+                                       # REDO THE MEASUREMENT rather than
+                                       # arguing from exp(-x) if you change this:
+                                       #   sqlite3 -readonly                                        #     /var/lib/pcoin-explorer/pcoin-index.sqlite                                        #     'SELECT height,time FROM blocks WHERE height>=2800'
 
 # How to reach the node. NOT every seed runs it in Docker: one runs pcoind
 # natively under systemd, and this script's hardcoded `docker exec` meant the
