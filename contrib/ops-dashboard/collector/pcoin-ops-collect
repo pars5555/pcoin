@@ -17,16 +17,42 @@ TOKEN="$(cat "$TOKEN_FILE")"
 
 CLI="docker exec pcoin-seed bitcoin-cli"
 
-PEERS="$($CLI getpeerinfo 2>/dev/null || echo '[]')"
-TIPS="$($CLI getchaintips  2>/dev/null || echo '[]')"
-MEMPOOL="$($CLI getmempoolinfo 2>/dev/null || echo '{}')"
+# The RPC output goes to FILES, and python reads the files.
+#
+# It used to travel in the environment, which broke silently once the seed got
+# well connected: Linux caps a single environment string at 128 KiB
+# (MAX_ARG_STRLEN), getpeerinfo crossed 280 KiB at ~68 connections, and execve
+# returned E2BIG -- "Argument list too long". The dashboard's network panel then
+# froze for thirteen days without a word, because the cron line discarded
+# stderr. A pipe has no such limit; do not put bulk JSON back in the environment.
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
 
-PAYLOAD="$(PEERS="$PEERS" TIPS="$TIPS" MEMPOOL="$MEMPOOL" python3 - <<'PY'
+fetch() {                      # fetch <basename> <fallback-json> <rpc...>
+  local out="$TMP/$1" fallback="$2"; shift 2
+  if $CLI "$@" > "$out" 2>/dev/null && [ -s "$out" ]; then return 0; fi
+  printf '%s' "$fallback" > "$out"
+}
+
+fetch peers.json   '[]' getpeerinfo
+fetch tips.json    '[]' getchaintips
+fetch mempool.json '{}' getmempoolinfo
+
+PAYLOAD="$(OPS_TMP="$TMP" python3 - <<'PY'
 import json, os, collections, datetime
 
-peers = json.loads(os.environ["PEERS"] or "[]")
-tips  = json.loads(os.environ["TIPS"]  or "[]")
-mp    = json.loads(os.environ["MEMPOOL"] or "{}")
+_tmp = os.environ["OPS_TMP"]
+
+def _load(name, default):
+    try:
+        with open(os.path.join(_tmp, name), encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return default
+
+peers = _load("peers.json", [])
+tips  = _load("tips.json", [])
+mp    = _load("mempool.json", {})
 
 by = collections.defaultdict(lambda: {"connections": 0, "height": None, "inbound": 0, "outbound": 0})
 for p in peers:
@@ -66,6 +92,10 @@ print(json.dumps({
 }))
 PY
 )"
+
+# An empty payload means the block above failed. Posting it would replace a good
+# snapshot with nothing and still read as a success on the dashboard.
+[ -n "$PAYLOAD" ] || { echo "collector produced no payload; refusing to post" >&2; exit 1; }
 
 curl -sf --max-time 25 -X POST "$ENDPOINT" \
      -H "Authorization: Bearer $TOKEN" \

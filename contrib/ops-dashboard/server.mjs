@@ -966,6 +966,18 @@ function wrapRead(f) {
   try { return JSON.parse(readFileSync(f, 'utf8')); } catch { return null; }
 }
 
+
+// A bare address answers nobody's "who is this". These make every identifier on
+// the wrap page one click from the record that identifies it -- BscScan for the
+// requester, our own explorer for the deposit address and the funding tx.
+const bscLink = a => '<a href="https://bscscan.com/address/' + esc(a) +
+  '" target="_blank" rel="noopener"><code>' + esc(a) + '</code></a>';
+const pcnLink = a => '<a href="https://explorer.pc.am/address/' + esc(a) +
+  '" target="_blank" rel="noopener"><code>' + esc(a) + '</code></a>';
+const txLink  = t => '<a href="https://explorer.pc.am/tx/' + esc(t) +
+  '" target="_blank" rel="noopener"><code style="font-size:.8em">' +
+  esc(String(t).slice(0, 16)) + '&hellip;</code></a>';
+
 async function wrapPage() {
   const reqs  = wrapRead(WRAP_REQUESTS);
   const state = wrapRead(WRAP_STATE) || {};
@@ -988,8 +1000,8 @@ async function wrapPage() {
 
     if (info === null) {
       unknown++;
-      rows.push('<tr><td><code>' + esc(r.bsc) + '</code></td><td><code>' +
-        esc(r.address) + '</code></td><td colspan="4"><b>UNKNOWN</b> &mdash; ' +
+      rows.push('<tr><td>' + bscLink(r.bsc) + '</td><td>' +
+          pcnLink(r.address) + '</td><td colspan="4"><b>UNKNOWN</b> &mdash; ' +
         'explorer unreadable, this is not "no deposit"</td></tr>');
       continue;
     }
@@ -998,8 +1010,8 @@ async function wrapPage() {
       .filter(function (i) { return Number(i.received_pcn) > 0; });
 
     if (!items.length) {
-      rows.push('<tr><td><code>' + esc(r.bsc) + '</code></td><td><code>' +
-        esc(r.address) + '</code></td><td colspan="4" class="muted">no deposit yet</td></tr>');
+      rows.push('<tr><td>' + bscLink(r.bsc) + '</td><td>' +
+          pcnLink(r.address) + '</td><td colspan="4" class="muted">no deposit yet</td></tr>');
       continue;
     }
 
@@ -1025,11 +1037,10 @@ async function wrapPage() {
       const over = pcn > WRAP_PER_PERSON
         ? '<br><small>over the ' + WRAP_PER_PERSON + ' cap &mdash; return ' +
           (pcn - WRAP_PER_PERSON).toFixed(2) + ' PCN</small>' : '';
-      rows.push('<tr><td><code>' + esc(r.bsc) + '</code></td><td><code>' +
-        esc(r.address) + '</code></td><td>' + pcn.toFixed(2) + ' PCN' + over +
+      rows.push('<tr><td>' + bscLink(r.bsc) + '</td><td>' +
+          pcnLink(r.address) + '</td><td>' + pcn.toFixed(2) + ' PCN' + over +
         '</td><td>' + net.toFixed(2) + ' wPCN</td><td>' + status +
-        '</td><td><code style="font-size:.8em">' + esc(String(i.txid).slice(0, 16)) +
-        '&hellip;</code></td></tr>');
+        '</td><td>' + txLink(i.txid) + '</td></tr>');
     }
   }
 
