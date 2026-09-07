@@ -57,7 +57,7 @@ function die(m) {
 // dependencies" when the packages were installed and only the wordlist subpath
 // had moved between major versions -- an error that sends the reader to
 // reinstall something already present.
-let bip39, wordlist, HDKey, bech32;
+let bip39, wordlist, HDKey, bech32, keccak256, secp;
 
 async function need(spec, take) {
   try {
@@ -80,14 +80,49 @@ wordlist = await (async () => {
 })();
 HDKey = await need('@scure/bip32', (m) => m.HDKey);
 bech32 = await need('@scure/base', (m) => m.bech32);
+keccak256 = await need('@noble/hashes/sha3.js', (m) => m.keccak_256);
+secp = await need('@noble/curves/secp256k1.js', (m) => m.secp256k1);
 
 const ACCOUNT_PATH = "m/84'/9444'/0'";
 const HRP = 'pc';
+
+// -- EVM (BNB Smart Chain) --------------------------------------------------
+// Added 2026-09-08 for the wPCN payment address. Same twelve words, same
+// encrypted blob, same verify path: ONE custody procedure, not two.
+//
+// The coin type is 60', Ethereum's, NOT 9444'. Every EVM chain shares 60'
+// because an address is a function of the key alone -- BSC and Ethereum derive
+// byte-identically, which is what you want here: the same words restore the
+// same address in MetaMask with no custom path to remember.
+//
+// The address is the last 20 bytes of keccak256 over the UNCOMPRESSED public
+// key with its 0x04 tag stripped. Strip the wrong byte and you get a
+// valid-LOOKING address nobody can ever spend from, so the selftest pins a
+// published vector rather than trusting this comment.
+const ACCOUNT_PATH_EVM = "m/44'/60'/0'";
 
 // ── derivation ─────────────────────────────────────────────────────────────
 function accountFromMnemonic(mnemonic, passphrase = '') {
   const seed = bip39.mnemonicToSeedSync(mnemonic, passphrase);
   return HDKey.fromMasterSeed(seed).derive(ACCOUNT_PATH);
+}
+
+/** The EVM account key. Only its public side is ever written to a file. */
+function evmAccountFromMnemonic(mnemonic, passphrase = '') {
+  const seed = bip39.mnemonicToSeedSync(mnemonic, passphrase);
+  return HDKey.fromMasterSeed(seed).derive(ACCOUNT_PATH_EVM);
+}
+
+/** EIP-55 checksummed address #index from an ACCOUNT xpub. No key material. */
+function evmAddressFromXpub(xpub, index) {
+  const child = HDKey.fromExtendedKey(xpub).deriveChild(0).deriveChild(index);
+  const uncompressed = secp.Point.fromBytes(child.publicKey).toBytes(false);
+  const hex = Buffer.from(keccak256(uncompressed.slice(1))).toString('hex').slice(-40);
+  // EIP-55: uppercase each hex digit whose matching hash nibble is >= 8.
+  const h = Buffer.from(keccak256(Buffer.from(hex, 'utf8'))).toString('hex');
+  let out = '0x';
+  for (let i = 0; i < 40; i++) out += parseInt(h[i], 16) >= 8 ? hex[i].toUpperCase() : hex[i];
+  return out;
 }
 
 /** Receive address #index from an ACCOUNT xpub. Non-hardened: no key material. */
@@ -148,10 +183,15 @@ function ask(question, { hidden = false } = {}) {
 }
 
 // ── commands ───────────────────────────────────────────────────────────────
-async function cmdNew(system) {
+async function cmdNew(system, chain = 'pcn') {
   if (!system) die('--system <name> is required, e.g. --system webbuilderbot');
-  const xpubFile = system + '-xpub.txt';
-  const blobFile = system + '-seed.enc.json';
+  if (chain !== 'pcn' && chain !== 'evm') die("--chain must be 'pcn' or 'evm'");
+  const evm = chain === 'evm';
+  // Distinct filenames per chain, so one system can hold both without either
+  // silently overwriting the other -- and so a glob for *-seed.enc.json still
+  // finds every blob there is.
+  const xpubFile = evm ? system + '-evm-address.txt' : system + '-xpub.txt';
+  const blobFile = evm ? system + '-evm-seed.enc.json' : system + '-seed.enc.json';
   for (const f of [xpubFile, blobFile]) {
     // Never silently replace a wallet file. Overwriting one that already holds
     // coins is unrecoverable.
@@ -159,9 +199,9 @@ async function cmdNew(system) {
   }
 
   const mnemonic = bip39.generateMnemonic(wordlist, 128); // 128 bits -> 12 words
-  const acct = accountFromMnemonic(mnemonic);
+  const acct = evm ? evmAccountFromMnemonic(mnemonic) : accountFromMnemonic(mnemonic);
   const xpub = acct.publicExtendedKey;
-  const addr0 = addressFromXpub(xpub, 0);
+  const addr0 = evm ? evmAddressFromXpub(xpub, 0) : addressFromXpub(xpub, 0);
 
   console.log('\n' + '='.repeat(68));
   console.log('  ' + system + ' - WRITE THESE TWELVE WORDS ON PAPER, NOW');
@@ -225,7 +265,8 @@ async function cmdNew(system) {
 
   const blob = encrypt(mnemonic, pass);
   blob.system = system;
-  blob.path = ACCOUNT_PATH;
+  blob.chain = chain;
+  blob.path = evm ? ACCOUNT_PATH_EVM : ACCOUNT_PATH;
   blob.xpub = xpub;          // public, and lets verify/restore prove the match
   blob.address0 = addr0;
   blob.created = new Date().toISOString().slice(0, 10);
@@ -300,9 +341,16 @@ async function cmdVerify(file) {
   catch { die('Wrong passphrase, or the file is damaged.'); }
 
   // The real test: does the decrypted phrase reproduce the recorded xpub?
-  const acct = accountFromMnemonic(mnemonic);
+  //
+  // The chain comes from the BLOB, never from a flag. An EVM blob checked with
+  // PCN derivation would report a perfectly good backup as broken, which is the
+  // one wrong answer this command must never give. Blobs written before
+  // 2026-09-08 have no chain field and are all PCN.
+  const isEvm = (blob.chain || 'pcn') === 'evm';
+  const acct = isEvm ? evmAccountFromMnemonic(mnemonic) : accountFromMnemonic(mnemonic);
   const xpubOk = acct.publicExtendedKey === blob.xpub;
-  const addr = addressFromXpub(acct.publicExtendedKey, 0);
+  const addr = isEvm ? evmAddressFromXpub(acct.publicExtendedKey, 0)
+                     : addressFromXpub(acct.publicExtendedKey, 0);
   const addrOk = addr === blob.address0;
   console.log('\n  decrypts        : yes');
   console.log('  xpub matches    : ' + (xpubOk ? 'yes' : 'NO'));
@@ -338,8 +386,18 @@ async function cmdIdentify(file) {
         '  Nothing about the phrase is shown, so re-read it from the paper.');
   }
 
+  // No blob here -- the operator typed a phrase -- so show BOTH derivations
+  // rather than guessing which chain they meant.
   const xpub = accountFromMnemonic(phrase).publicExtendedKey;
   const addr0 = addressFromXpub(xpub, 0);
+  const evmXpub = evmAccountFromMnemonic(phrase).publicExtendedKey;
+  const evmAddr0 = evmAddressFromXpub(evmXpub, 0);
+
+  // Both derivations, because the operator typed a phrase and no blob said
+  // which chain they meant. Guessing one and printing it as THE address is
+  // how somebody funds the wrong chain.
+  console.log('\n  PCN  ' + ACCOUNT_PATH + '      -> ' + addr0);
+  console.log('  EVM  ' + ACCOUNT_PATH_EVM + '/0/0 -> ' + evmAddr0);
 
   console.log('\n  Account path : ' + ACCOUNT_PATH);
   console.log('  Address #0   : ' + addr0);
@@ -423,6 +481,28 @@ function selftest() {
   t('index 1 differs from index 0', addressFromXpub(acct.publicExtendedKey, 1) !== a, true);
   t('re-derivation is deterministic', accountFromMnemonic(BURN).publicExtendedKey, acct.publicExtendedKey);
 
+  // -- EVM, pinned to a PUBLISHED vector -------------------------------------
+  // This is the whole reason the EVM path is trustworthy. m/44'/60'/0'/0/0 of
+  // the standard all-'abandon' phrase is a number thousands of wallets agree
+  // on, so if this line passes, our derivation matches MetaMask, Trust and
+  // every other EVM wallet. Self-consistency would prove nothing: a stripped
+  // 0x04 tag or a missed EIP-55 pass still yields a plausible 40-hex address
+  // that simply belongs to nobody.
+  const evmAcct = evmAccountFromMnemonic(BURN);
+  t('published EVM address #0', evmAddressFromXpub(evmAcct.publicExtendedKey, 0),
+    '0x9858EfFD232B4033E47d90003D41EC34EcaEda94');
+  t('EVM address is EIP-55 mixed case, not all lower',
+    evmAddressFromXpub(evmAcct.publicExtendedKey, 0) !==
+    evmAddressFromXpub(evmAcct.publicExtendedKey, 0).toLowerCase(), true);
+  t('EVM index 1 differs from index 0',
+    evmAddressFromXpub(evmAcct.publicExtendedKey, 1) !==
+    evmAddressFromXpub(evmAcct.publicExtendedKey, 0), true);
+  t('EVM account path is coin type 60, not 9444', ACCOUNT_PATH_EVM, "m/44'/60'/0'");
+  t('EVM xpub is watch-only',
+    HDKey.fromExtendedKey(evmAcct.publicExtendedKey).privateKey, null);
+  t('the two chains derive different keys from one phrase',
+    evmAcct.publicExtendedKey !== acct.publicExtendedKey, true);
+
   console.log(fail ? '\n  ' + fail + ' FAILED\n' : '\n  ALL CHECKS PASSED\n');
   process.exit(fail ? 1 : 0);
 }
@@ -433,7 +513,7 @@ const flag = (n) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : u
 const cmd = argv[0];
 
 if (argv.includes('--selftest')) selftest();
-else if (cmd === 'new') await cmdNew(flag('--system'));
+else if (cmd === 'new') await cmdNew(flag('--system'), flag('--chain') || 'pcn');
 else if (cmd === 'pool') await cmdPool(flag('--system'), flag('--count'), flag('--start'));
 else if (cmd === 'verify') await cmdVerify(flag('--file'));
 else if (cmd === 'identify') await cmdIdentify(flag('--file'));

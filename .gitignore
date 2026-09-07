@@ -56,6 +56,7 @@ contrib/windows-tray/build.log
 # deposit history is nobody else's business.
 *-seed.enc.json
 *-xpub.txt
+*-evm-address.txt
 # Anything else this project encrypts, by shape rather than by name. The rule
 # above is `*-seed.enc.json`, which did NOT match pcoin-bundle.enc.json — a
 # 9.5 MB blob holding the release keystore, the TLS private key, every wallet

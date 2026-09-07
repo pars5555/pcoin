@@ -30,6 +30,38 @@ money moved, they restore the phrase offline, sweep, and broadcast.
 |---|---|---|
 | `<system>-xpub.txt` | the server | no — watch only |
 | `<system>-seed.enc.json` | both vault hosts | only with the passphrase |
+| `<system>-evm-address.txt` | the server | no — it is just an address |
+| `<system>-evm-seed.enc.json` | both vault hosts | only with the passphrase |
+
+### EVM addresses (BNB Smart Chain), added 2026-09-08
+
+`new --chain evm` produces a BSC/Ethereum address from the same twelve-word
+scheme, the same encrypted blob and the same `verify` path. It exists for the
+wPCN payment address that `contrib/wpcn-pay` is paid into.
+
+```
+node pcoin-seed-vault.mjs new --system wpcn-pay --chain evm
+```
+
+Three things about it that matter:
+
+* **The coin type is 60', not 9444'.** Every EVM chain shares 60' because an
+  address is a function of the key alone, so BSC and Ethereum derive
+  byte-identically. That is deliberate: the same words restore the same address
+  in MetaMask with no custom path to remember.
+* **The blob records its chain**, and `verify` reads the chain from the blob
+  rather than a flag. Checking an EVM blob with PCN derivation would report a
+  perfectly good backup as broken, which is the one wrong answer `verify` must
+  never give. Blobs written before this date have no `chain` field and are PCN.
+* **`identify` prints BOTH derivations** for a typed phrase, because with no
+  blob to consult there is nothing to say which chain was meant, and printing
+  one as *the* address is how somebody funds the wrong chain.
+
+The selftest pins `m/44'/60'/0'/0/0` of the standard all-`abandon` phrase to
+`0x9858EfFD232B4033E47d90003D41EC34EcaEda94` — a number thousands of wallets
+agree on. Self-consistency would prove nothing here: a mis-stripped `0x04` tag
+or a skipped EIP-55 pass still yields a plausible 40-hex address that simply
+belongs to nobody.
 
 Both patterns are in the repo's `.gitignore`, because `new` writes into the
 current directory and a run started inside a clone would otherwise leave a
