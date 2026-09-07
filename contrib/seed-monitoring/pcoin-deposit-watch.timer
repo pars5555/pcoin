@@ -1,0 +1,20 @@
+[Unit]
+Description=Run the PCN deposit watcher health check every 5 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+
+# Five minutes against a 15-minute staleness threshold means a stopped watcher
+# is noticed within one threshold rather than one interval, and it is well
+# inside the six-hour stuck-deposit window. Money that is not being credited
+# should not wait an hour to be mentioned.
+
+# Spread the runs. Several of these checks were installed on the same afternoon
+# across hosts, and in lockstep a single transient network blip fails all of
+# them in the same second and reads as an estate-wide outage.
+RandomizedDelaySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target

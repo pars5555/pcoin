@@ -38,13 +38,29 @@ the failure is silent in exactly the way this table exists to prevent.
 | `aicontrol` | the webbuilderbot host | same host | MySQL `pcoin_watcher_heartbeat` |
 | `3dmodels.pc.am` | the webbuilderbot host | same host | log mtime + docker db |
 | `3dmodel.oonak.ai` | its own host | same host | log mtime + `deposits.json` |
+| `webai` | the webai host (GCE `rba`) | same host | MySQL `pcoin_watcher_heartbeat` |
 
 Host addresses are in `D:\pc.am\PCOIN-SERVERS.md` (off-repo). The rails sit behind
 Cloudflare, so their origin addresses are deliberately not written down here.
 
-Five rails, all assigned as of 2026-08-29. Before that date only `checker` was
-actually being checked, on the one host that ran the script; the rest lived on
-machines it could not read and vanished silently.
+Six rails, all assigned. Five as of 2026-08-29; `webai` added 2026-09-06. Before
+2026-08-29 only `checker` was actually being checked, on the one host that ran
+the script; the rest lived on machines it could not read and vanished silently.
+
+`webai` runs alone on its own host, which already carried `pcoin-notify` and the
+fork and seed watchers but not this one -- so its deposits were watched by
+nobody until the script and a narrowed `/etc/pcoin-deposit-watch.conf`
+(`RAILS_EXPECTED="webai"`) were installed there. Its watcher lives inside a
+Docker container, so the database heartbeat is the only pulse visible from the
+host.
+
+One trap that rail hit, worth knowing if another Node rail is added: its
+heartbeat wrote `at` in **milliseconds** while this script computes
+`age = $(date +%s) - at`. The age came out around -1.8e12, which is never
+greater than `STALE_SECONDS`, so the staleness alert could not fire at all and a
+dead watcher would have read as healthy forever. The rail now writes seconds,
+and its block additionally alerts if `at` is ever far in the future rather than
+silently passing.
 
 If a rail appears in no host's list it is watched by nobody and nothing will
 say so -- the coverage report can only speak about rails it was told to expect.

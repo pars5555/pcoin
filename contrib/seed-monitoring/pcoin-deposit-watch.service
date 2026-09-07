@@ -1,0 +1,32 @@
+[Unit]
+Description=PCN deposit watcher health check
+Documentation=https://github.com/pars5555/pcoin/blob/main/contrib/seed-monitoring/README.md
+
+# Wire the detector to the notifier HERE, in the tracked unit, exactly as
+# pcoin-seed-watch.service and pcoin-fork-watch.service do. A drop-in that lives
+# only on the host is a drop-in that the next install forgets, and a monitor
+# whose own failures are silent is the failure it exists to prevent.
+#
+# Note this fires when the SCRIPT breaks, not when it finds a problem. A found
+# problem is an alert through pcoin-notify and still exits 0, deliberately: cron
+# mail stacked on top of a Telegram alert is how an alert channel becomes noise.
+OnFailure=pcoin-alert@%n.service
+
+[Service]
+Type=oneshot
+
+# Each host declares the rails it can actually see. Without this file the script
+# falls back to the full estate list and correctly reports every rail it cannot
+# read as unmonitored, which on a single-rail host is one true alert and five
+# useless ones.
+EnvironmentFile=-/etc/default/pcoin-deposit-watch
+ExecStart=/usr/local/bin/pcoin-deposit-watch
+
+# The check must never be the thing that loads the box.
+Nice=10
+MemoryMax=64M
+CPUQuota=10%
+
+# Generous because the script talks to MySQL several times per rail. It is
+# oneshot, so overrunning would stack runs rather than skip them.
+TimeoutStartSec=120

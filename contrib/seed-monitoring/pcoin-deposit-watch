@@ -94,7 +94,7 @@ alert() {   # alert <subject> <body>
 # each one declares the rails it is RESPONSIBLE for and the union is what
 # covers the estate. That union is written down in this directory's README --
 # a per-host list nobody adds up is how a rail ends up owned by nobody.
-RAILS_EXPECTED="${RAILS_EXPECTED:-checker webbuilderbot aicontrol 3dmodels.pc.am 3dmodel.oonak.ai portrait2video}"
+RAILS_EXPECTED="${RAILS_EXPECTED:-checker webbuilderbot aicontrol 3dmodels.pc.am 3dmodel.oonak.ai portrait2video webai}"
 RAILS_SEEN=""
 seen_rail() { RAILS_SEEN="$RAILS_SEEN $1"; }
 
@@ -267,6 +267,64 @@ if [ -r "$AIC" ]; then
                   "aicontrol's watcher is ticking but its last tick threw: $err. Running-and-failing is a different fault from stopped."
         fi
         check_deposits "aicontrol" "$u" "$p" "$db" pcn_deposits first_seen_at
+    fi
+    unset u p db
+fi
+
+# ---------------------------------------------------------------- webai -----
+# webai.pc.am. Same shape as aicontrol: Node, MySQL on the host, an in-process
+# watcher writing settings.pcoin_watcher_heartbeat. Runs in Docker, so the
+# heartbeat is the only pulse visible from outside the container.
+WEBAI=/var/www/webai-server/.env
+if [ -r "$WEBAI" ]; then
+    seen_rail webai
+    u=$(grep -E '^DB_USER=' "$WEBAI" | head -1 | cut -d= -f2-)
+    p=$(grep -E '^DB_PASS=' "$WEBAI" | head -1 | cut -d= -f2-)
+    db=$(grep -E '^DB_NAME=' "$WEBAI" | head -1 | cut -d= -f2-)
+    if [ -n "${u:-}" ]; then
+        hb=$(mysql_q "$u" "$p" "$db" \
+            "SELECT value FROM settings WHERE \`key\`='pcoin_watcher_heartbeat';")
+        last=$(printf '%s' "$hb" | python3 -c "import json,sys;print(json.load(sys.stdin).get('at',''))" 2>/dev/null)
+        okflag=$(printf '%s' "$hb" | python3 -c "import json,sys;print(json.load(sys.stdin).get('ok'))" 2>/dev/null)
+        err=$(printf '%s' "$hb" | python3 -c "import json,sys;print(json.load(sys.stdin).get('last_error') or '')" 2>/dev/null)
+        skipped=$(printf '%s' "$hb" | python3 -c "import json,sys;print(','.join(json.load(sys.stdin).get('summary',{}).get('skipped',[])))" 2>/dev/null)
+        age=""; [ -n "$last" ] && age=$((now - last))
+
+        # `at` is UNIX SECONDS here. It was milliseconds until 2026-09-06, which
+        # made age about -1.8e12 -- never greater than STALE_SECONDS, so the
+        # staleness alert could not fire and a dead watcher read as healthy.
+        # If age is wildly negative the unit has regressed; say so rather than
+        # silently passing, because that is the failure mode being guarded.
+        if [ -n "$age" ] && [ "$age" -lt -86400 ]; then
+            alert "PCN monitor BROKEN: webai" \
+                  "webai's heartbeat 'at' is $last, which is $((0 - age)) s in the future. It is almost certainly milliseconds instead of seconds, and while that is true the staleness check CANNOT fire. Treat webai as unmonitored until fixed."
+        else
+            check_heartbeat "webai" "$age" "In-process setInterval in docker container 'webai' -- 'docker compose restart' in /var/www/webai-server revives it."
+        fi
+
+        if [ "$okflag" = "False" ]; then
+            alert "PCN watcher ERRORING: webai" \
+                  "webai's watcher is ticking but its last tick threw: $err. Running-and-failing is a different fault from stopped."
+        fi
+
+        # A deliberately-off rail is not a crash, but it is also not fine once
+        # users hold addresses: their deposits land and are never credited.
+        # Before any address is issued the rail simply has not launched, and
+        # alerting every five minutes about that is how people learn to ignore
+        # this channel. So the pool decides which it is.
+        case ",$skipped," in
+            *,disabled,*)
+                issued=$(mysql_q "$u" "$p" "$db" "SELECT COUNT(*) FROM pcn_addresses WHERE user_id IS NOT NULL;")
+                if [ -n "$issued" ] && [ "$issued" -gt 0 ]; then
+                    alert "PCN watcher DISABLED: webai" \
+                          "webai's watcher reports itself disabled while $issued user(s) already hold a deposit address. Anything they send is landing on chain and is NOT being credited. Re-enable it in the admin Payments page, or take webai out of RAILS_EXPECTED."
+                else
+                    log "webai: watcher disabled and no address issued yet -- rail not launched, not a fault"
+                fi
+                ;;
+        esac
+
+        check_deposits "webai" "$u" "$p" "$db" pcn_deposits first_seen_at
     fi
     unset u p db
 fi
