@@ -1,0 +1,56 @@
+# Cloudflare-only guard for PROXIED hostnames.
+#
+# WHAT IT FIXES
+# A hostname behind Cloudflare is only protected while traffic actually goes
+# through Cloudflare. The origin still answers its own IP, so anyone who knows
+# the address can set a Host header and skip the WAF, the edge rate limiting,
+# the bot management and the DDoS absorption entirely. The 2026-09-07 audit
+# found this open on both shared web hosts (finding H1) for the market, the
+# price oracle, the explorer and the wrap desk.
+#
+# HOW TO USE IT
+#   1. Put this file at /etc/caddy/snippets/cf_only.caddy
+#   2. Add `import /etc/caddy/snippets/*.caddy` at top level, after the global
+#      options block and before the first site block
+#   3. Add `import cf_only` as the FIRST line inside each PROXIED site block
+#
+# APPLY IT PER SITE, NEVER GLOBALLY. On these hosts several names are direct on
+# purpose and must keep answering the whole internet:
+#   pool.pc.am       miners reach stratum on :3333 at this address, and its cert
+#                    is Let's Encrypt, so it needs direct reachability for both
+#                    mining and ACME renewal. Guarding it breaks mining.
+#   electrum1.pc.am  wallet clients connect directly
+#   wrapdesk.pc.am   not proxied at time of writing
+#   *.aicontrol.pc.am  a co-tenant project's services
+#
+# TWO TRAPS THIS FILE ALREADY ACCOUNTS FOR
+#
+# 1. It is a `handle`, not a bare `respond`. A site that groups its routes in
+#    handle blocks makes them mutually exclusive, and a bare respond loses to
+#    them -- the guard then returns 200 to a direct probe while looking
+#    perfectly configured. That happened on the pool host and was caught only
+#    because the fix was probed rather than assumed. Because `import cf_only` is
+#    the first line of the block, this handle is evaluated first.
+#
+# 2. Check how the site gets its certificate before guarding it. These sites use
+#    a manual Cloudflare Origin CA cert, so no ACME challenge reaches port 443.
+#    A site using Let's Encrypt over TLS-ALPN-01 would stop renewing, and would
+#    fail silently roughly 90 days later.
+#
+# VERIFY, DO NOT ASSUME. After reloading, all three must hold:
+#   curl -sI https://<host>/                                    -> 200  (via CF)
+#   curl -k -sI --resolve <host>:443:<origin> https://<host>/   -> 403  (direct)
+#   every deliberately-direct hostname on the box                -> unchanged
+#
+# 127.0.0.1/8 and ::1 are allowed so on-box health checks keep working.
+# Refresh the ranges with:
+#   curl -s https://www.cloudflare.com/ips-v4 https://www.cloudflare.com/ips-v6
+# Last refreshed: 2026-09-07
+(cf_only) {
+	@not_cf not remote_ip 127.0.0.1/8 ::1 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+	handle @not_cf {
+		respond "direct-to-origin blocked; use the public hostname" 403 {
+			close
+		}
+	}
+}
