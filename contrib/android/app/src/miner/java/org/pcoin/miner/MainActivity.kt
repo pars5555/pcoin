@@ -366,6 +366,19 @@ class MainActivity : AppCompatActivity() {
                 walletBannerActions.visibility = View.VISIBLE
                 walletDismissBtn.visibility = View.GONE
             }
+            // A payout address with no wallet behind it is a CHOICE, not a gap.
+            //
+            // This app only pool-mines, and a pool pays each miner directly in
+            // the coinbase, so someone can point us at a wallet they hold
+            // elsewhere and keep every key off this phone. There is then no
+            // phrase here by design, nothing on the device to lose, and nothing
+            // a phrase could recover. Telling that user to create one would be
+            // nagging them to undo the safer setup, forever, since the banner
+            // reappears until a wallet exists.
+            prefs.payoutIsExternal -> {
+                walletBanner.visibility = View.GONE
+                walletBannerActions.visibility = View.GONE
+            }
             !hasPhrase && !prefs.phrasePromptDismissed -> {
                 walletBanner.setText(R.string.wallet_no_phrase_banner)
                 walletSetupBtn.setText(R.string.wallet_create_phrase)

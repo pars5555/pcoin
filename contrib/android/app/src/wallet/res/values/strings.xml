@@ -82,6 +82,7 @@
       a wallet on this phone", which is a promise this build does not keep: there
       is no miner in it.
     -->
+    <string name="setup_title">Set up your wallet</string>
     <string name="setup_intro">This app holds PCoin on this phone. A 12-word recovery phrase is the only way to get your coins back if the phone is lost, reset, or the app is uninstalled.</string>
     <string name="done_created">Your wallet is set up. Coins sent to this address are yours:\n\n%1$s\n\nThis address comes from your recovery phrase, so those words bring it back on any device.</string>
     <string name="done_restored">Your wallet has been restored. Your address is:\n\n%1$s\n\n%2$s</string>

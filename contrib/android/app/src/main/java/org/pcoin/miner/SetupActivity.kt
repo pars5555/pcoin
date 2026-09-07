@@ -89,6 +89,7 @@ class SetupActivity : AppCompatActivity() {
     private lateinit var stepShow: View
     private lateinit var stepConfirm: View
     private lateinit var stepRestore: View
+    private lateinit var stepAddress: View
     private lateinit var stepProgress: View
     private lateinit var stepDone: View
 
@@ -97,6 +98,9 @@ class SetupActivity : AppCompatActivity() {
     private lateinit var restoreGrid: LinearLayout
     private lateinit var restoreStatus: TextView
     private lateinit var restoreButton: Button
+    private lateinit var addressInput: EditText
+    private lateinit var addressStatus: TextView
+    private lateinit var addressButton: Button
     private lateinit var confirmButton: Button
     private lateinit var confirmError: TextView
     private lateinit var progressText: TextView
@@ -144,6 +148,7 @@ class SetupActivity : AppCompatActivity() {
         stepShow = findViewById(R.id.step_show)
         stepConfirm = findViewById(R.id.step_confirm)
         stepRestore = findViewById(R.id.step_restore)
+        stepAddress = findViewById(R.id.step_address)
         stepProgress = findViewById(R.id.step_progress)
         stepDone = findViewById(R.id.step_done)
 
@@ -152,6 +157,9 @@ class SetupActivity : AppCompatActivity() {
         restoreGrid = findViewById(R.id.restore_grid)
         restoreStatus = findViewById(R.id.restore_status)
         restoreButton = findViewById(R.id.restore_button)
+        addressInput = findViewById(R.id.address_input)
+        addressStatus = findViewById(R.id.address_status)
+        addressButton = findViewById(R.id.address_button)
         confirmButton = findViewById(R.id.confirm_button)
         confirmError = findViewById(R.id.confirm_error)
         progressText = findViewById(R.id.progress_text)
@@ -161,6 +169,16 @@ class SetupActivity : AppCompatActivity() {
 
         findViewById<Button>(R.id.choice_create).setOnClickListener { startCreate() }
         findViewById<Button>(R.id.choice_restore).setOnClickListener { startRestore() }
+        // Mining-only. This screen is shared with the wallet flavour, where
+        // "point mining at an address elsewhere" is not a setup path at all --
+        // that app exists to HOLD coins on this phone, so an install of it with
+        // no wallet would be an app with nothing to do.
+        val addressChoice = findViewById<Button>(R.id.choice_address)
+        if (BuildConfig.MINING) {
+            addressChoice.setOnClickListener { startAddressOnly() }
+        } else {
+            addressChoice.visibility = View.GONE
+        }
         findViewById<Button>(R.id.show_continue).setOnClickListener { startConfirm() }
         findViewById<Button>(R.id.show_skip).setOnClickListener {
             storeAndInstall(restored = false, confirmed = false)
@@ -168,6 +186,7 @@ class SetupActivity : AppCompatActivity() {
         confirmButton.setOnClickListener { checkConfirmation() }
         findViewById<Button>(R.id.confirm_back).setOnClickListener { showStep(stepShow) }
         restoreButton.setOnClickListener { submitRestore() }
+        addressButton.setOnClickListener { submitAddress() }
         findViewById<Button>(R.id.done_button).setOnClickListener { finishSetup() }
         findViewById<Button>(R.id.resume_finish).setOnClickListener { resumeInstall() }
         findViewById<Button>(R.id.resume_view).setOnClickListener {
@@ -798,7 +817,8 @@ class SetupActivity : AppCompatActivity() {
 
     private fun showStep(step: View) {
         for (v in listOf(
-            stepChoice, stepResume, stepShow, stepConfirm, stepRestore, stepProgress, stepDone,
+            stepChoice, stepResume, stepShow, stepConfirm, stepRestore, stepAddress,
+            stepProgress, stepDone,
         )) {
             v.visibility = if (v === step) View.VISIBLE else View.GONE
         }
@@ -857,6 +877,101 @@ class SetupActivity : AppCompatActivity() {
             findViewById<Button>(R.id.progress_back).visibility = View.GONE
             clearPhrase()
             showStep(if (setupIncomplete()) stepResume else stepChoice)
+        }
+    }
+
+    /**
+     * Payout to an address this phone holds no key for.
+     *
+     * The app only pool-mines, and a pool pays every miner directly in the
+     * coinbase of each block it finds, so the address is an identity at the
+     * pool rather than something we spend from. startpoolmining takes a bare
+     * string and the mining gate only asks that a payout address is non-blank.
+     * A wallet was never a requirement of mining -- it was a requirement of
+     * this screen, which until now could only reach a payout address by
+     * creating or restoring one. That put a spendable key on phones that had
+     * no use for it, and forced a second wallet on anyone who already had one.
+     */
+    private fun startAddressOnly() {
+        addressStatus.text = ""
+        addressInput.setText("")
+        showStep(stepAddress)
+    }
+
+    /**
+     * THE NODE DECIDES, NOT A REGEX.
+     *
+     * A mistyped address with a good checksum is still somebody else's address,
+     * and every block reward would go there permanently with no way back. So
+     * the address is either confirmed valid by validateaddress or it is not
+     * used, and what gets stored is the node's own re-encoding rather than what
+     * was typed.
+     *
+     * validateaddress is node-level, so it answers with no wallet loaded, which
+     * is exactly the situation here.
+     *
+     * A call that FAILED is not a rejection and not an acceptance (7.1). It
+     * leaves the field as it was and asks the user to try again, because
+     * accepting an unchecked address on trust is how money goes to a key nobody
+     * has.
+     */
+    private fun submitAddress() {
+        val typed = addressInput.text.toString().trim()
+        if (typed.isEmpty()) {
+            addressStatus.text = getString(R.string.address_empty)
+            return
+        }
+        addressButton.isEnabled = false
+        addressStatus.text = getString(R.string.address_checking)
+
+        thread(name = "pcoin-address-check", isDaemon = false) {
+            val rpc = RpcClient(NativeBinaries.dataDir(this))
+            var canonical: String? = null
+            var reachable = true
+            try {
+                awaitNode(rpc)
+                val v = rpc.call("validateaddress", org.json.JSONArray().put(typed))
+                    as? org.json.JSONObject
+                if (v == null) {
+                    // An answer we cannot read is not an answer. Treat it the
+                    // same as not being able to ask.
+                    reachable = false
+                } else if (v.optBoolean("isvalid", false)) {
+                    // The node re-encodes what it was given; store THAT. Case and
+                    // encoding differences are then impossible to carry forward.
+                    canonical = v.optString("address", typed).takeIf { it.isNotBlank() } ?: typed
+                }
+            } catch (t: Throwable) {
+                // Could not ask. That resolves nothing either way.
+                Log.w(TAG, "validateaddress failed: " + Redact.text(t))
+                reachable = false
+            }
+
+            val addr = canonical
+            ui.post {
+                addressButton.isEnabled = true
+                when {
+                    !reachable -> addressStatus.text = getString(R.string.address_unreachable)
+                    addr == null -> addressStatus.text = getString(R.string.address_invalid)
+                    else -> {
+                        // Order matters. payoutIsExternal is written FIRST so no
+                        // reader can ever see a payout address without also seeing
+                        // that no wallet backs it -- that pair is what stops
+                        // getaddressinfo being aimed at a wallet which does not
+                        // exist and answering a confident "not mine".
+                        prefs.payoutIsExternal = true
+                        prefs.payoutAddress = addr
+                        // "Wallet ready" is the heading for the create/restore
+                        // paths and would be a plain lie here: no wallet was
+                        // made and none exists.
+                        findViewById<TextView>(R.id.done_title)
+                            .setText(R.string.done_title_address)
+                        doneText.text = getString(R.string.main_external_payout)
+                        storageNote.text = addr
+                        showStep(stepDone)
+                    }
+                }
+            }
         }
     }
 

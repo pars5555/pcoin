@@ -47,11 +47,22 @@
 
     <!-- ===================== recovery phrase / setup ====================== -->
 
-    <string name="setup_title">Set up your wallet</string>
-    <string name="setup_intro">PCoin pays your mining rewards into a wallet on this phone. A 12-word recovery phrase is the only way to get that money back if the phone is lost, reset, or the app is uninstalled.</string>
+    <string name="setup_title">Set up mining</string>
+    <string name="setup_intro">Mining rewards are paid straight to an address. Make a wallet here and this phone holds the keys — write down the recovery phrase, because it is the only way back if the phone is lost, reset, or the app is uninstalled. Or point mining at an address you already have, and keep every key off this phone.</string>
     <string name="setup_create">Create a new wallet</string>
     <string name="setup_24_words">Advanced: use 24 words instead of 12</string>
     <string name="setup_restore">I already have a recovery phrase</string>
+    <string name="setup_address">Mine to an address I already have</string>
+    <string name="address_title">Where should rewards be paid?</string>
+    <string name="address_intro">Paste a PCoin address starting pc1. The pool pays every block straight to it, so this phone never holds a key and there is nothing on it worth stealing. You will not be able to see a balance or spend from here — use the wallet that owns the address.</string>
+    <string name="address_hint">pc1…</string>
+    <string name="address_continue">Check and use this address</string>
+    <string name="address_checking">Asking the node to check that address…</string>
+    <string name="address_invalid">The node says that is not a valid PCoin address. Check it and try again.</string>
+    <string name="address_unreachable">Could not reach the node to check that address. Not accepting it on trust — try again in a moment.</string>
+    <string name="address_empty">Enter an address first.</string>
+    <string name="main_external_payout">Rewards go to an address you supplied. This phone holds no wallet and no key.</string>
+    <string name="main_view_on_explorer">View this address on the explorer</string>
 
     <string name="show_title">Write these words down</string>
     <string name="show_warning">Write these words on paper, in this order, and keep the paper somewhere safe. This is the ONLY way to recover your coins. Anyone who sees these words can take your coins. Nobody — not this app, not the PCoin network — can recover them for you.</string>
@@ -89,6 +100,7 @@
     <string name="setup_failed">Setup did not finish: %1$s\n\nNothing has been changed. Your coins, if you had any, are untouched. You can try again.</string>
 
     <string name="done_title">Wallet ready</string>
+    <string name="done_title_address">Ready to mine</string>
     <string name="done_created">Your wallet is set up and your mining rewards will be paid to:\n\n%1$s\n\nThis address comes from your recovery phrase, so those words bring it back on any device.</string>
     <!--
       The scan result is stated, not implied. A single mistyped word that happens

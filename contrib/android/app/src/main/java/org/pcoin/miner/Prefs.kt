@@ -99,6 +99,29 @@ class Prefs(context: Context) {
         }
 
     /**
+     * True when [payoutAddress] belongs to a wallet this phone does not have.
+     *
+     * The app only pool-mines, and a pool pays each miner directly in the
+     * coinbase of the blocks it finds, so the payout address is an identity at
+     * the pool rather than a key we hold. A miner who already has a wallet
+     * elsewhere can therefore give us just the address and keep every key off
+     * this device.
+     *
+     * Nothing may ask a local wallet about such an address. getaddressinfo is
+     * wallet-scoped and would answer a confident "not mine" (7.1), and the
+     * forward engine has nothing to sweep because no coin ever lands here.
+     * Written with commit(), like the address itself: it decides whether this
+     * install has a wallet at all, and losing it would make a keyless phone
+     * look like a broken one.
+     */
+    var payoutIsExternal: Boolean
+        get() = sp.getBoolean(KEY_PAYOUT_EXTERNAL, false)
+        @Suppress("ApplySharedPref")
+        set(value) {
+            sp.edit().putBoolean(KEY_PAYOUT_EXTERNAL, value).commit()
+        }
+
+    /**
      * The pool to mine for, as `host:port`. Blank means SOLO, but blank is NOT
      * the default: [poolUrl] falls back to [DEFAULT_POOL] when the key is
      * absent, so a fresh install mines to the POOL. Only a value explicitly
@@ -440,6 +463,7 @@ class Prefs(context: Context) {
         private const val KEY_THERMAL = "thermal_limit"
         private const val KEY_ON_BATTERY = "mine_on_battery"
         private const val KEY_PAYOUT_WALLET = "payout_wallet"
+        private const val KEY_PAYOUT_EXTERNAL = "payout_is_external"
         private const val KEY_POOL_URL = "pool_url"
         // New installs mine to the pool by default (see poolUrl()).
         const val DEFAULT_POOL = "pool.pc.am:3333"

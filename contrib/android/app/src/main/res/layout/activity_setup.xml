@@ -61,6 +61,26 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="20dp"
                 android:text="@string/setup_restore" />
+
+            <!--
+              Third path: no wallet at all.
+
+              This app only pool-mines, and a pool pays every miner directly in
+              the coinbase of each block it finds. The address is an identity at
+              the pool, not a key we hold — startpoolmining takes a bare string
+              and no wallet is involved. So a miner who already has a wallet
+              elsewhere had no reason to make a second one here, and until this
+              existed the only way to set a payout address was to create or
+              restore a wallet and derive one, which put a spendable key on a
+              phone that had no use for it.
+            -->
+
+            <Button
+                android:id="@+id/choice_address"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:text="@string/setup_address" />
         </LinearLayout>
 
         <!-- ============================ resume ============================ -->
@@ -232,6 +252,57 @@
 
         <!-- ============================ restore =========================== -->
 
+        <!-- ========================= own address ========================= -->
+
+        <LinearLayout
+            android:id="@+id/step_address"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/address_title"
+                android:textSize="22sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="@string/address_intro"
+                android:textSize="14sp" />
+
+            <EditText
+                android:id="@+id/address_input"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="18dp"
+                android:autofillHints=""
+                android:hint="@string/address_hint"
+                android:inputType="textNoSuggestions|textVisiblePassword"
+                android:maxLines="2"
+                android:textSize="15sp" />
+
+            <TextView
+                android:id="@+id/address_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:textSize="14sp" />
+
+            <Button
+                android:id="@+id/address_button"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="@string/address_continue" />
+        </LinearLayout>
+
+        <!-- =========================== restore =========================== -->
+
         <LinearLayout
             android:id="@+id/step_restore"
             android:layout_width="match_parent"
@@ -370,6 +441,7 @@
             android:visibility="gone">
 
             <TextView
+                android:id="@+id/done_title"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="@string/done_title"
