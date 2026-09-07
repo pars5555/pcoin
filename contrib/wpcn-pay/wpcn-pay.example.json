@@ -1,0 +1,40 @@
+{
+  "_comment": "Copy to /etc/pcoin/wpcn-pay.json, chmod 600. Every field below is required; the service refuses to start rather than guess one.",
+
+  "token":            "0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1",
+  "_token":           "The wPCN BEP-20 contract on BNB Smart Chain.",
+
+  "payTo":            "0x0000000000000000000000000000000000000000",
+  "_payTo":           "The address customers send wPCN to. Use a DEDICATED address, not the inventory wallet -- revenue and float must not share a balance, or you cannot tell what you have sold.",
+
+  "decimals":         8,
+  "_decimals":        "wPCN is 8 decimals, NOT the 18 that almost every BEP-20 uses. Getting this wrong misprices by 10^10.",
+
+  "minConfirmations": 15,
+  "_minConfirmations":"BSC finalises in roughly 15 blocks (~45s). This is not the PCN rails' 3 -- different chain, different risk.",
+
+  "bonusPercent":     10,
+  "_bonusPercent":    "Extra credit for paying in wPCN rather than PCN. This is the demand lever: it is why somebody buys wPCN on PancakeSwap instead of only selling it.",
+
+  "rpcUrls": [
+    "https://bsc-dataseed.binance.org/",
+    "https://bsc-dataseed1.defibit.io/",
+    "https://bsc-dataseed1.ninicoin.io/",
+    "https://rpc.ankr.com/bsc"
+  ],
+  "_rpcUrls":         "Tried in order. Public endpoints rate-limit; more than one is not optional. An exhausted list is an error, never an empty answer.",
+
+  "priceUrl":         "https://price.pc.am",
+  "dbPath":           "/var/lib/pcoin-wpcn-pay/claims.db",
+  "port":             8791,
+  "bind":             "127.0.0.1",
+  "_bind":            "Loopback. Put it behind the web server you already run; do not publish this port. Three services on 116.203.221.42 were reachable from the internet for exactly this reason.",
+
+  "clients": {
+    "REPLACE-WITH-A-LONG-RANDOM-STRING-1": "checker.pc.am",
+    "REPLACE-WITH-A-LONG-RANDOM-STRING-2": "webbuilderbot",
+    "REPLACE-WITH-A-LONG-RANDOM-STRING-3": "aicontrol.pc.am",
+    "REPLACE-WITH-A-LONG-RANDOM-STRING-4": "webai.pc.am"
+  },
+  "_clients":         "Bearer token -> project name. The name is written onto every claim, so the ledger says which project banked which payment. Generate with: openssl rand -hex 32"
+}

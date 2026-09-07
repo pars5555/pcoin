@@ -649,10 +649,17 @@ createServer(async (req, res) => {
               'PCN is not exchange traded; its wrapped form wPCN trades in a small PancakeSwap ' +
               'pool that a keeper holds to THIS rate, so that pool follows this feed and must ' +
               'not be read as a price. ' +
+              // Both directions, deliberately. This field used to end by telling
+              // holders their way out was to sell the pool -- a public API field,
+              // read by every integrator, advertising only the exit. The pool is
+              // thin enough that saying so shaped behaviour: wrap, dump, and the
+              // keeper buys it back out of a small float. State the round trip.
+              'The two forms convert both ways: PCN becomes wPCN at ' +
+              'https://wrapdesk.pc.am, and wPCN becomes PCN through the token ' +
+              "contract's redeem(). " +
               (st.buybackOpen
                 ? 'Buying PCN back is a separate constant-product curve at a much lower price.'
-                : 'This service is not buying PCN back at present; the way out is to wrap PCN ' +
-                  'into wPCN at https://wrapdesk.pc.am and sell that pool.'),
+                : 'This service is not buying PCN back at present.'),
         role: ROLE,
         // A consumer can tell a fresh price from a remembered one. Both are
         // usable; only one is current, and pretending otherwise is how a stale

@@ -1,0 +1,28 @@
+[Unit]
+Description=PCoin wPCN payment verifier
+Documentation=https://github.com/pars5555/pcoin/tree/main/contrib/wpcn-pay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pcoinpay
+Group=pcoinpay
+Environment=WPCN_PAY_CONFIG=/etc/pcoin/wpcn-pay.json
+ExecStart=/usr/bin/node /opt/pcoin-wpcn-pay/server.mjs
+Restart=always
+RestartSec=5
+
+# This process reads a config with project bearer tokens in it and writes a
+# financial ledger. It needs no more than that.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/pcoin-wpcn-pay
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target
