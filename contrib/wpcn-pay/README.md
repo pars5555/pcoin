@@ -99,6 +99,25 @@ from a check that passes*.
 
 ---
 
+## How the ledger is stored
+
+One JSON file per claim, named `<txhash>-<logIndex>.json`, in `dbDir`.
+
+The uniqueness guarantee is the **filesystem's**: `writeFileSync` with flag
+`'wx'` is an `O_CREAT|O_EXCL` create, which either makes the file or throws
+`EEXIST`, atomically, with no read-then-write window. Two projects racing on the
+same hash, or one project retrying after a lost response, both aim at the same
+filename and exactly one wins. The record is `fsync`ed before the caller is told
+it happened, because a credit that is not on disk when the process dies is a
+credit the customer can claim twice.
+
+This deliberately does **not** use `node:sqlite`. That API is still flagged
+experimental and prints a warning on every start; a financial ledger should not
+be one node upgrade away from behaving differently. It also confined the service
+to hosts running node >= 22.5 — two of five — which is an absurd constraint for
+an append-only set of small records. A directory of files is greppable, backs up
+with `rsync`, and needs no dependency at all.
+
 ## Install
 
 ```bash

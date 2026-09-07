@@ -42,8 +42,8 @@
 //      enough", never "nothing has ever gone wrong".
 
 import { createServer } from 'node:http';
-import { readFileSync, existsSync } from 'node:fs';
-import { DatabaseSync } from 'node:sqlite';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, renameSync, openSync, closeSync, fsyncSync } from 'node:fs';
+import { join } from 'node:path';
 
 const CONFIG = process.env.WPCN_PAY_CONFIG || '/etc/pcoin/wpcn-pay.json';
 
@@ -51,7 +51,11 @@ if (!existsSync(CONFIG)) {
   console.error(`no config at ${CONFIG}`);
   process.exit(1);
 }
-const cfg = JSON.parse(readFileSync(CONFIG, 'utf8'));
+// stripBom: a config edited on Windows arrives with a UTF-8 byte-order mark,
+// and JSON.parse rejects it with "Unexpected token" pointing at character one --
+// which reads like a corrupt file, not an encoding. Cost a debugging round on
+// 2026-09-08. PowerShell's `Set-Content -Encoding utf8` writes one by default.
+const cfg = JSON.parse(readFileSync(CONFIG, 'utf8').replace(/^\uFEFF/, ''));
 
 // ---------------------------------------------------------------------------
 // Configuration, and refusing to run on a guess.
@@ -70,7 +74,7 @@ const MIN_CONF   = cfg.minConfirmations;
 const BONUS_PCT  = cfg.bonusPercent;                      // the wPCN discount
 const RPCS       = cfg.rpcUrls || [];
 const PRICE_URL  = cfg.priceUrl || 'https://price.pc.am';
-const DB_PATH    = cfg.dbPath   || '/var/lib/pcoin-wpcn-pay/claims.db';
+const DB_DIR     = cfg.dbDir    || '/var/lib/pcoin-wpcn-pay/claims';
 const CLIENTS    = cfg.clients  || {};                    // token -> project name
 const PORT       = cfg.port     || 8791;
 const BIND       = cfg.bind     || '127.0.0.1';
@@ -93,43 +97,55 @@ if (missing.length) {
 const TRANSFER_TOPIC =
   '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 
-// ---------------------------------------------------------------------------
-// Ledger. The unique index is the whole anti-double-credit mechanism: two
-// projects racing on the same hash, or one project retrying a lost response,
-// both land on the same row rather than banking it twice.
-// ---------------------------------------------------------------------------
-const db = new DatabaseSync(DB_PATH);
-db.exec(`
-  CREATE TABLE IF NOT EXISTS claims (
-    txhash            TEXT    NOT NULL,
-    log_index         INTEGER NOT NULL,
-    block_number      INTEGER NOT NULL,
-    block_hash        TEXT    NOT NULL,
-    payer             TEXT    NOT NULL,
-    wpcn_raw          TEXT    NOT NULL,   -- exact on-chain integer, as text
-    wpcn              REAL    NOT NULL,
-    credited_rate_usd REAL    NOT NULL,   -- rule 2: stamped, never re-derived
-    bonus_pct         REAL    NOT NULL,
-    usd_credited      REAL    NOT NULL,
-    project           TEXT    NOT NULL,
-    user_ref          TEXT    NOT NULL,
-    at                INTEGER NOT NULL,
-    PRIMARY KEY (txhash, log_index)       -- rule 1
-  );
-  CREATE INDEX IF NOT EXISTS claims_project ON claims (project, at);
-  CREATE INDEX IF NOT EXISTS claims_user    ON claims (project, user_ref);
-`);
+// Ledger. One JSON file per claim, named for its (txhash, logIndex).
+//
+// The uniqueness guarantee is the FILESYSTEM's: writeFileSync with flag 'wx'
+// is an O_CREAT|O_EXCL create, which either makes the file or throws EEXIST,
+// atomically, with no read-then-write window. Two projects racing on the same
+// hash, or one project retrying after a lost response, both land on the same
+// name and exactly one wins. That is the whole anti-double-credit mechanism.
+//
+// Deliberately NOT node:sqlite. That API is still flagged experimental and
+// prints a warning on every start; a financial ledger should not be one node
+// upgrade away from behaving differently. It also confined this service to the
+// two hosts running node >= 22.5, which is a silly constraint for something
+// that needs an append-only set of small records. A directory of files is
+// greppable, backs up with rsync, and needs no dependency at all.
+mkdirSync(DB_DIR, { recursive: true });
 
-const qFind   = db.prepare('SELECT * FROM claims WHERE txhash = ? AND log_index = ?');
-const qByUser = db.prepare(
-  'SELECT * FROM claims WHERE project = ? AND user_ref = ? ORDER BY at DESC LIMIT 50');
-const qInsert = db.prepare(`
-  INSERT INTO claims (txhash, log_index, block_number, block_hash, payer, wpcn_raw,
-                      wpcn, credited_rate_usd, bonus_pct, usd_credited, project,
-                      user_ref, at)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+const claimPath = (txhash, logIndex) => join(DB_DIR, txhash + '-' + logIndex + '.json');
 
-// ---------------------------------------------------------------------------
+function readClaim(txhash, logIndex) {
+  try { return JSON.parse(readFileSync(claimPath(txhash, logIndex), 'utf8')); }
+  catch { return null; }
+}
+
+/** Returns false if this claim already existed. Never overwrites. */
+function insertClaim(rec) {
+  const p = claimPath(rec.txhash, rec.log_index);
+  try {
+    writeFileSync(p, JSON.stringify(rec, null, 2) + '\n', { flag: 'wx', mode: 0o640 });
+  } catch (e) {
+    if (e.code === 'EEXIST') return false;
+    throw e;
+  }
+  // A credit that is not on disk when the process dies is a credit the customer
+  // can claim twice. fsync before we tell anyone it happened.
+  const fd = openSync(p, 'r'); try { fsyncSync(fd); } finally { closeSync(fd); }
+  return true;
+}
+
+function claimsFor(project, userRef) {
+  return readdirSync(DB_DIR)
+    .filter(f => f.endsWith('.json'))
+    .map(f => { try { return JSON.parse(readFileSync(join(DB_DIR, f), 'utf8')); } catch { return null; } })
+    .filter(c => c && c.project === project && c.user_ref === userRef)
+    .sort((a, b) => b.at - a.at)
+    .slice(0, 50);
+}
+
+const claimCount = () => readdirSync(DB_DIR).filter(f => f.endsWith('.json')).length;
+
 // RPC. Every public BSC endpoint rate-limits, so try them in turn -- but an
 // exhausted list THROWS. It must never return a shape that reads like "no
 // transfer found", because that is the difference between "we could not look"
@@ -232,7 +248,7 @@ async function verify(txhash, project, userRef) {
   for (const log of transfers) {
     const logIndex = Number(hexToBig(log.logIndex));
 
-    const already = qFind.get(txhash, logIndex);
+    const already = readClaim(txhash, logIndex);
     if (already) {
       // Idempotent by construction. A retry after a lost response, or a second
       // project trying the same hash, both land here instead of double-crediting.
@@ -258,9 +274,36 @@ async function verify(txhash, project, userRef) {
     const rate = await usdRate();
     const usd  = wpcn * rate * (1 + BONUS_PCT / 100);
 
-    qInsert.run(txhash, logIndex, blockNo, String(receipt.blockHash).toLowerCase(),
-                addrFromTopic(log.topics[1]), raw.toString(), wpcn, rate,
-                BONUS_PCT, usd, project, String(userRef), Math.floor(Date.now() / 1000));
+    const rec = {
+      txhash, log_index: logIndex,
+      block_number: blockNo,
+      block_hash: String(receipt.blockHash).toLowerCase(),
+      payer: addrFromTopic(log.topics[1]),
+      wpcn_raw: raw.toString(),
+      wpcn,
+      credited_rate_usd: rate,       // rule 2: stamped once, never recomputed
+      bonus_pct: BONUS_PCT,
+      usd_credited: usd,
+      project, user_ref: String(userRef),
+      at: Math.floor(Date.now() / 1000),
+    };
+
+    // Lost the race. Somebody claimed this between our read above and here --
+    // two projects submitting the same hash at once. Report it as claimed
+    // rather than crediting, and re-read to say who got it.
+    if (!insertClaim(rec)) {
+      const won = readClaim(txhash, logIndex);
+      results.push({
+        state: 'already_claimed',
+        txhash, logIndex,
+        wpcn: won && won.wpcn,
+        usd: won && won.usd_credited,
+        project: won && won.project,
+        user_ref: won && won.user_ref,
+        yours: !!won && won.project === project && won.user_ref === String(userRef),
+      });
+      continue;
+    }
 
     results.push({
       state: 'credited',
@@ -314,7 +357,7 @@ createServer(async (req, res) => {
       // Deliberately NOT a chain call: a health endpoint that depends on a
       // third party goes red when the third party hiccups, and then nobody
       // trusts it. It answers "this process is up and its ledger is writable".
-      const n = db.prepare('SELECT COUNT(*) AS n FROM claims').get().n;
+      const n = claimCount();
       return send(200, { ok: true, claims: n, payTo: PAY_TO, bonusPercent: BONUS_PCT,
                          minConfirmations: MIN_CONF });
     }
@@ -345,7 +388,7 @@ createServer(async (req, res) => {
     if (url.pathname === '/claims' && req.method === 'GET') {
       const userRef = url.searchParams.get('user_ref');
       if (!userRef) return send(400, { ok: false, error: 'user_ref is required' });
-      return send(200, { ok: true, project, claims: qByUser.all(project, userRef) });
+      return send(200, { ok: true, project, claims: claimsFor(project, userRef) });
     }
 
     return send(404, { ok: false, error: 'no such endpoint' });

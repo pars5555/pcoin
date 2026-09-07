@@ -25,7 +25,7 @@
   "_rpcUrls":         "Tried in order. Public endpoints rate-limit; more than one is not optional. An exhausted list is an error, never an empty answer.",
 
   "priceUrl":         "https://price.pc.am",
-  "dbPath":           "/var/lib/pcoin-wpcn-pay/claims.db",
+  "dbDir":             "/var/lib/pcoin-wpcn-pay/claims",
   "port":             8791,
   "bind":             "127.0.0.1",
   "_bind":            "Loopback. Put it behind the web server you already run; do not publish this port. Three services on 116.203.221.42 were reachable from the internet for exactly this reason.",
