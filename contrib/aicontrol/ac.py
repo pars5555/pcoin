@@ -133,7 +133,7 @@ def main(a):
     elif cmd == "tools":
         res = api("/devices/%s/execute" % dev, {"command": "list_tools", "data": {}})
         tools = (res.get("result") or {}).get("tools") or []
-        pat = a[4] if len(a) > 4 else ""
+        pat = a[3] if len(a) > 3 else ""
         for t in tools:
             if not pat or pat.lower() in t["name"].lower():
                 print("%-32s %s" % (t["name"], (t.get("description") or "")[:90]))
