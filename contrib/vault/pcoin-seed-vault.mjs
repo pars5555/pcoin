@@ -177,13 +177,36 @@ async function cmdNew(system) {
   console.log('  a chat message.\n');
 
   await ask('  Written down? Press Enter to continue. ');
+  // console.clear() only wipes the visible screen. On Windows Terminal, and on
+  // most xterm-compatible emulators, the words stay in the scrollback where a
+  // later select-all still finds them. ESC[3J clears that buffer too, which is
+  // the difference between 'off the screen' and 'gone'.
   console.clear();
-  console.log('  Screen cleared.\n');
+  process.stdout.write('\x1b[3J');
+  console.log('  Screen and scrollback cleared.\n');
 
   // Prove the paper copy is right BEFORE anything depends on it.
+  //
+  // Typed BLIND, like the passphrase. Echoing the words here undid the whole
+  // point of the console.clear() above: it put them straight back on screen,
+  // where they sit in the scrollback for the rest of the session. That is not
+  // theoretical -- two wallets were burned in one sitting by an operator
+  // pasting this block to show progress, because the words were sitting in it.
+  // A phrase that is never rendered cannot be copied by accident.
+  //
+  // Three attempts rather than one abort, because blind-typing twelve words
+  // produces typos, and an operator who has to restart from scratch is an
+  // operator tempted to photograph the screen instead.
   console.log('  Now type the words back, from the paper, to prove the copy is good.');
-  const check = (await ask('  Twelve words: ')).trim().replace(/\s+/g, ' ').toLowerCase();
-  if (check !== mnemonic) {
+  console.log('  Your typing is hidden, exactly like a passphrase.');
+  let verified = false;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const check = (await ask('  Twelve words: ', { hidden: true }))
+      .trim().replace(/\s+/g, ' ').toLowerCase();
+    if (check === mnemonic) { verified = true; break; }
+    if (attempt < 3) console.log('  That does not match. Read from the paper and try again.\n');
+  }
+  if (!verified) {
     die('Those words do not match what was generated. Nothing was written.\n' +
         '  Run this again and copy more carefully - a backup that has not been\n' +
         '  verified is not a backup.');
@@ -291,6 +314,51 @@ async function cmdVerify(file) {
   if (!xpubOk || !addrOk) process.exit(1);
 }
 
+/**
+ * Which wallet is this paper?
+ *
+ * Three papers from three runs look identical, and destroying the wrong two
+ * loses the live wallet. `restore` answers the question but prints the phrase
+ * in clear, which is the exposure this tool exists to avoid.
+ *
+ * This takes the phrase blind and prints only what it derives. The words are
+ * never rendered, so the output is safe to paste anywhere.
+ */
+async function cmdIdentify(file) {
+  console.log('\n  Type a phrase from paper. Your typing is hidden, and the phrase is');
+  console.log('  never printed back - only the address it derives.\n');
+
+  const phrase = (await ask('  Twelve words: ', { hidden: true }))
+    .trim().replace(/\s+/g, ' ').toLowerCase();
+
+  if (!phrase) die('Nothing entered.');
+  if (phrase.split(' ').length !== 12) die('That is not twelve words.');
+  if (!bip39.validateMnemonic(phrase, wordlist)) {
+    die('That is not a valid BIP39 phrase - check for a mistyped word.\n' +
+        '  Nothing about the phrase is shown, so re-read it from the paper.');
+  }
+
+  const xpub = accountFromMnemonic(phrase).publicExtendedKey;
+  const addr0 = addressFromXpub(xpub, 0);
+
+  console.log('\n  Account path : ' + ACCOUNT_PATH);
+  console.log('  Address #0   : ' + addr0);
+  console.log('  xpub         : ' + xpub.slice(0, 14) + '...' + xpub.slice(-6));
+
+  if (file) {
+    if (!existsSync(file)) die(file + ' not found');
+    const blob = JSON.parse(readFileSync(file, 'utf8'));
+    const match = blob.xpub === xpub;
+    console.log('\n  ' + (match ? 'MATCH' : 'DOES NOT MATCH') + ' ' + file +
+                '  (system ' + blob.system + ', address #0 ' + blob.address0 + ')');
+    if (!match) {
+      console.log('  This paper is NOT the wallet in that file. Do not destroy the other papers.');
+      process.exitCode = 1;
+    }
+  }
+  console.log('');
+}
+
 async function cmdRestore(file) {
   if (!file || !existsSync(file)) die('--file <blob.json> is required');
   const blob = JSON.parse(readFileSync(file, 'utf8'));
@@ -368,6 +436,7 @@ if (argv.includes('--selftest')) selftest();
 else if (cmd === 'new') await cmdNew(flag('--system'));
 else if (cmd === 'pool') await cmdPool(flag('--system'), flag('--count'), flag('--start'));
 else if (cmd === 'verify') await cmdVerify(flag('--file'));
+else if (cmd === 'identify') await cmdIdentify(flag('--file'));
 else if (cmd === 'restore') await cmdRestore(flag('--file'));
 else {
   console.log('\n  pcoin-seed-vault - create and back up a system\'s PCN wallet\n');
@@ -375,7 +444,8 @@ else {
   console.log('    node pcoin-seed-vault.mjs new     --system <name>');
   console.log('    node pcoin-seed-vault.mjs pool    --system <name> --count 1000 [--start 0]');
   console.log('    node pcoin-seed-vault.mjs verify  --file <name>-seed.enc.json');
-  console.log('    node pcoin-seed-vault.mjs restore --file <name>-seed.enc.json\n');
+  console.log('    node pcoin-seed-vault.mjs identify [--file <name>-seed.enc.json]');
+  console.log('    node pcoin-seed-vault.mjs restore  --file <name>-seed.enc.json\n');
   console.log('  Run "new" yourself, in your own terminal. The twelve words show once');
   console.log('  and the passphrase is typed, so neither reaches a log or transcript.');
   console.log('  "pool" needs only the xpub and can safely run anywhere.\n');
