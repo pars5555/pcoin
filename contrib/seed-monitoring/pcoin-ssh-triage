@@ -29,7 +29,28 @@ USER_="${2:-root}"
 KEY="${3:-$HOME/.ssh/id_ed25519}"
 
 # Vantage points to try from, in order. Any host that is NOT the target.
-RELAYS="178.105.3.51 152.53.171.190 178.105.178.27 202.61.252.202 167.233.206.186"
+#
+# THE LIST LIVES IN A CONFIG FILE, NOT HERE. This repository is public, and two
+# of the addresses that used to sit on this line were the Cloudflare ORIGINS of
+# payment rails (3dmodel.oonak.ai and portrait2video). Publishing an origin IP
+# is precisely what lets someone skip the WAF, the rate limiting and the DDoS
+# absorption and hit the box directly -- the same class of exposure the audit
+# raised as H1. contrib/seed-monitoring/README.md already promises that rail
+# origins are "deliberately not written down here"; this line broke that promise.
+#
+# The committed default therefore contains nothing. Put the real list in
+# /etc/pcoin/ssh-triage.conf (mode 600, root), the same way every other watcher
+# on these hosts takes its configuration:
+#
+#     RELAYS="a.b.c.d e.f.g.h"
+#
+# Note that git history cannot be un-published: the two origins are still in it,
+# so rotating those addresses (or putting a Cloudflare-only firewall rule in
+# front of them) is the actual remediation. Removing them here only stops the
+# leak getting wider.
+RELAYS_CONF="${RELAYS_CONF:-/etc/pcoin/ssh-triage.conf}"
+[ -r "$RELAYS_CONF" ] && . "$RELAYS_CONF"
+RELAYS="${RELAYS:-}"
 
 say() { printf '  %s\n' "$*"; }
 ssh_try() { timeout 20 ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no \
@@ -64,6 +85,11 @@ done
 # The decisive test. If another host gets in, SSH is fine and the problem is
 # THIS machine's address -- almost always a fail2ban ban.
 REMOTE_OK=no; TRIED=""
+if [ -z "${RELAYS// /}" ]; then
+  say "no relays configured -- set RELAYS in $RELAYS_CONF to test from a second"
+  say "vantage point. Skipping that stage; this run only proves reachability"
+  say "FROM THIS MACHINE, which cannot tell a dead host from a local network fault."
+fi
 for R in $RELAYS; do
   [ "$R" = "$HOST" ] && continue
   OUT=$(timeout 30 ssh -o BatchMode=yes -o ConnectTimeout=8 -o IdentitiesOnly=yes \

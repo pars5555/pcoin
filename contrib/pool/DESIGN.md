@@ -165,7 +165,7 @@ Everything below this heading describes a pool that holds miners' coins in a
 wallet and sends them later. **It no longer works that way, and the reason is
 worth keeping.**
 
-Option A above put a spending key on `178.105.178.27` — a box that also runs the
+Option A above put a spending key on the pool host — a box that also runs the
 market, the explorer and pcnearner. The owner's instinct was to keep the key off
 it, and the design that satisfies that instinct completely is to **pay miners
 directly in the coinbase of each block the pool finds**: one output per miner,
@@ -354,7 +354,7 @@ week of shares is how a pool loses its operator's money rather than its users'.
 | question | decision |
 |---|---|
 | **Fee** | **2%** — published on the pool page. Normal, and honest about it. |
-| **Host** | **178.105.178.27** — PCoin-dedicated, already runs the market and pcnearner. Not a seed: validating shares is sustained CPU work and a seed's job is bootstrapping. |
+| **Host** | A PCoin-dedicated box, not a seed: validating shares is sustained CPU work and a seed's job is bootstrapping. The address is deliberately not written here — see the note below. |
 | **Launch** | **Fleet-only for one week**, then public. The payout path gets exercised against coins the owner already holds before it ever touches a stranger's. |
 
 Consequences worth writing down now, so they are not rediscovered:
@@ -375,7 +375,9 @@ Consequences worth writing down now, so they are not rediscovered:
 1. **Fee?** 0% buys goodwill at launch and costs a rounding error at this size.
    1–2% is normal. It should be published either way.
 2. **Which host?** Not a seed — validating shares is CPU work and a seed's job
-   is bootstrapping. `178.105.178.27` is PCoin-dedicated and already runs the
-   market and pcnearner.
+   is bootstrapping. We run it on a PCoin-dedicated box that already carries
+   other project services; the address is kept with the infrastructure notes
+   rather than here, because a public repo naming a host and everything on
+   it is a free map for whoever is deciding where to point a flood.
 3. **Public or fleet-only first?** Running it with your own miners for a week
    before announcing exercises the payout path with money you own.
