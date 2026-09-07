@@ -197,6 +197,7 @@ def main():
                       "paid nothing.\n\n%s"
                       % (len(new_failures), "\n".join(new_failures[-5:])))
 
+    submit_broken = False
     # ---- B: work done vs blocks found ----------------------------------------
     try:
         work, bits = net_block_work()
@@ -211,11 +212,30 @@ def main():
         print("  since the last pool block (%.0f min ago): weight %d, block work %d (bits %s)"
               % (mins, weight, work, bits))
         print("  expected blocks from that work: %.2f  (threshold %.1f)" % (expected, THRESHOLD))
-        if expected >= THRESHOLD:
+        # Every share clearing the network target is flagged is_block=1 as it is
+        # stored, BEFORE any submission is attempted. That one column separates the
+        # two causes the old wording ran together:
+        #   found > 0  -> a block existed and never reached the blocks table. The
+        #                 submit path really is broken and coins are being lost.
+        #   found == 0 -> nothing was found, so the submit path is not implicated.
+        # Claiming "cannot submit" without checking this sent a real investigation
+        # down the wrong road for an hour while the pool was verifiably healthy.
+        found = cur.execute("SELECT COUNT(*) FROM shares WHERE is_block=1 AND at > ?",
+                            (since,)).fetchone()[0] or 0
+        print("  shares flagged is_block since then: %d" % found)
+        if found:
+            submit_broken = True
+            alerts.append("B. %d SHARE(S) CLEARED THE NETWORK TARGET since the last recorded "
+                          "block %.0f minutes ago and none is in the blocks table. The block "
+                          "was found and never reached the chain -- that is the submit path, "
+                          "and every one is coins thrown away." % (found, mins))
+        elif expected >= THRESHOLD:
             alerts.append("B. The pool has done %.1f blocks' worth of work since its last block "
                           "%.0f minutes ago and found NONE. At %.1f expected the chance of "
-                          "silence is under %.1f%%. The submit path or the block check is "
-                          "probably broken, even though nothing has thrown."
+                          "silence is about %.1f%%. NOTHING WAS FOUND -- no share cleared the "
+                          "network target -- so the submit path is NOT implicated. Look at "
+                          "whether hashrate left, or whether shares are checked against the "
+                          "right target."
                           % (expected, mins, expected, 100 * 2.718281828 ** (-expected)))
     except Unknown as e:
         print("  statistical check UNAVAILABLE: %s" % e)
@@ -226,7 +246,8 @@ def main():
     if alerts:
         fp = "|".join(x[:2] for x in alerts)
         if st["last_alert"] != fp:          # change, not a timer
-            notify("POOL CANNOT SUBMIT BLOCKS", "\n\n".join(alerts))
+            notify("POOL CANNOT SUBMIT BLOCKS" if (new_failures or submit_broken)
+                   else "POOL IS FINDING NO BLOCKS", "\n\n".join(alerts))
             st["last_alert"] = fp
         else:
             print("  (same condition as last run -- not re-sending)")
