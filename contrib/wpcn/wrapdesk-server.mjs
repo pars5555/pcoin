@@ -52,6 +52,9 @@ import { dirname } from 'node:path';
 const PORT       = Number(process.env.WRAPDESK_PORT || 8791);
 const POOL_FILE  = process.env.WRAPDESK_POOL  || '/opt/wrapdesk/reserve-pool.txt';
 const STATE_FILE = process.env.WRAPDESK_STATE || '/var/lib/wrapdesk/requests.json';
+// pcoin-wrapdesk-watch's ledger. READ-ONLY here, and its absence is tolerated:
+// this desk must keep taking requests if the watcher has not run yet.
+const WATCH_STATE = process.env.WRAPDESK_WATCH_STATE || '/var/lib/pcoin-wrapdesk/state.json';
 const EXPLORER   = process.env.WRAPDESK_EXPLORER || 'https://explorer.pc.am';
 
 const FEE_PCT       = Number(process.env.WRAP_FEE_PCT || 5);
@@ -948,10 +951,33 @@ createServer(async (req, res) => {
       // Measured in wPCN RELEASED, which is what the page promises: a request
       // for more than PER_PERSON is clamped, and the fee never leaves the desk.
       // A refunded deposit consumes nothing.
+      // A REFUNDED deposit consumes no allocation -- the PCN went back and no
+      // wPCN was ever issued. requests.json cannot tell us that: its `released`
+      // field is written null and never updated, and the real ledger belongs to
+      // pcoin-wrapdesk-watch, which keys on wrap:<txid>:<deposit address>.
+      // Reading the wrong one of those two files is exactly the mistake this
+      // comment exists to stop somebody repeating.
+      //
+      // Unreadable watcher state falls back to counting everything. That
+      // over-counts, which refuses too EARLY -- the safe direction for a cap.
+      const refundedAddrs = (() => {
+        try {
+          const seen = JSON.parse(readFileSync(WATCH_STATE, 'utf8')).seen || {};
+          const released = new Set(), refunded = new Set();
+          for (const [k, v] of Object.entries(seen)) {
+            const addr = k.split(':')[2];           // wrap:<txid>:<address>
+            if (!addr) continue;
+            if (v && v.released) released.add(addr);
+            else if (v && v.refunded) refunded.add(addr);
+          }
+          for (const a of released) refunded.delete(a);   // released wins
+          return refunded;
+        } catch { return new Set(); }
+      })();
       const wpcnFor = (a) =>
         Math.min(Number(a) || 0, PER_PERSON) * (1 - FEE_PCT / 100);
       const committed = Object.entries(st.requests || {})
-        .filter(([k, x]) => k !== key && !x.refunded)
+        .filter(([k, x]) => k !== key && !x.refunded && !refundedAddrs.has(x.address))
         .reduce((sum, [, x]) => sum + wpcnFor(x.amount), 0);
       const headroom = TOTAL_ALLOC - committed;
       if (wpcnFor(amount) > headroom + 1e-8) {
