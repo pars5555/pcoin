@@ -141,7 +141,35 @@ function claimsFor(project, userRef) {
     .map(f => { try { return JSON.parse(readFileSync(join(DB_DIR, f), 'utf8')); } catch { return null; } })
     .filter(c => c && c.project === project && c.user_ref === userRef)
     .sort((a, b) => b.at - a.at)
-    .slice(0, 50);
+    .slice(0, 50)
+    .map(claimWireShape);
+}
+
+// The stored record and the /verify reply had grown DIFFERENT NAMES for the
+// same three fields, and /claims returned the stored record verbatim:
+//
+//            log index    amount         rate
+//   /verify  logIndex     usd            rate_usd
+//   /claims  log_index    usd_credited   credited_rate_usd
+//
+// Two endpoints of one service disagreeing about what to call a log index is a
+// defect in this service, not in the clients that read it. It was found by an
+// integrator whose heal path read the /verify names off a /claims row and got
+// undefined for all three — a heal that would have failed even with a correct
+// HTTP client, and would have failed SILENTLY, because "no amount here" and
+// "amount is zero" look alike once a number goes missing.
+//
+// Fixed additively: every /claims row now carries BOTH spellings. Adding names
+// cannot break a reader; renaming would have broken the one integrator who had
+// already coded to the stored names. The stored file is untouched — it is the
+// ledger, and its shape is not an API.
+function claimWireShape(c) {
+  return {
+    ...c,
+    logIndex: c.log_index,
+    usd: c.usd_credited,
+    rate_usd: c.credited_rate_usd,
+  };
 }
 
 const claimCount = () => readdirSync(DB_DIR).filter(f => f.endsWith('.json')).length;

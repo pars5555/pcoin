@@ -253,6 +253,26 @@ no row. If you cannot read the claim record either, return `unreadable` — neve
 > transaction. If yours can credit a balance without writing the row, this heal
 > path double-credits. Check that before copying it.
 
+> **The two endpoints name the same three fields differently, and `GET /claims`
+> now returns BOTH spellings.** This was a defect in the verifier, found on
+> 2026-09-08 by an integrator whose heal path read the `/verify` names off a
+> `/claims` row and got `undefined` for all three — a heal that would have
+> failed even with a correct HTTP client, and failed *silently*, because a
+> number that goes missing and a number that is zero look alike by the time they
+> reach a balance.
+>
+> | | log index | amount | rate |
+> |---|---|---|---|
+> | `/verify` → `transfers[]` | `logIndex` | `usd` | `rate_usd` |
+> | `/claims` → `claims[]` (stored names) | `log_index` | `usd_credited` | `credited_rate_usd` |
+>
+> Every `/claims` row now carries all six keys, so either reading works. Adding
+> names cannot break a reader; renaming would have broken the integrator who had
+> already coded to the stored names. **Accept both anyway** — normalise on the
+> way in, and if a row for your hash is unreadable return `unreadable`, never a
+> guess. Your own stub is not evidence here: a test double agrees with whatever
+> shape you assumed, which is exactly how this stayed hidden.
+
 **Refuse a zero conversion rate.** If your own `credits_per_usd` (or whatever
 turns USD into your product's units) is missing or `<= 0`, you would credit
 nothing and report success. That is rule 3 pointed at your own config instead of
