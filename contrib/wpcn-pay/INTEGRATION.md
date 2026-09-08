@@ -235,7 +235,59 @@ That fourth item is the one that separates a working integration from one that
 will eventually tell a paying customer they did not pay. Test it deliberately —
 *a check that cannot fire is indistinguishable from a check that passes.*
 
-## 9. Questions
+## 9. What the first integration got right — copy these
+
+checker.pc.am shipped first, on 2026-09-08. Reviewing it turned up four things
+this brief did not ask for and should have. Do them.
+
+**Handle `already_claimed` with `yours=true` and no local row.** That state means
+the verifier banked the payment to *your* user and *your* write was then lost —
+the database went away between their answer and your commit. Refusing forever
+costs a paying customer their money. Re-read the claim from `GET /claims`, which
+carries the stamped rate, and credit from that, through the same unique key.
+Only when **every** log in the reply is yours, and only when you genuinely hold
+no row. If you cannot read the claim record either, return `unreadable` — never
+"already credited".
+
+> This is only safe because the balance and the row commit in **one**
+> transaction. If yours can credit a balance without writing the row, this heal
+> path double-credits. Check that before copying it.
+
+**Refuse a zero conversion rate.** If your own `credits_per_usd` (or whatever
+turns USD into your product's units) is missing or `<= 0`, you would credit
+nothing and report success. That is rule 3 pointed at your own config instead of
+at the network. Log it and refuse.
+
+**Lock the user row.** `SELECT ... FOR UPDATE` on the balance row, inside the
+same transaction as the insert. Two requests for one user arriving together is
+not exotic — it is what a customer does when the first page seems slow.
+
+**A `credited` reply you cannot read is not a credit.** If `state` is `credited`
+but `usd_total` is zero or the `transfers` array is unusable, write nothing and
+return `unreadable`. The verifier has still banked it to you, so the customer's
+retry lands in the heal path above and gets the full record.
+
+Two more worth copying:
+
+* The client was taken **verbatim**, with a namespace line and a comment saying
+  *"fix bugs upstream and re-copy; do not edit here"*. That is the entire point
+  of a shared client.
+* The destructive test carries **two independent guards** — an explicit
+  `..._IS_DISPOSABLE=yes` environment variable *and* a count of real users in the
+  target database — with a comment explaining that either one alone fails open.
+
+Its live run against the real verifier is the bar to clear:
+
+```
+wrong token                  -> unreadable
+dead port                    -> unreadable
+wrong endpoint (an HTML page) -> unreadable    <- not "no payment"
+malformed hash               -> bad_request
+nonexistent hash             -> pending        <- asserted NOT no_payment
+rows written during all of the above: 0
+```
+
+## 10. Questions
 
 Read `contrib/wpcn-pay/README.md` for the verifier's own design and the test
 results it shipped with. Anything else, ask the owner.
