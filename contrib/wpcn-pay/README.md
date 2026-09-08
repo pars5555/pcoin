@@ -131,7 +131,7 @@ sudoedit /etc/pcoin/wpcn-pay.json          # set payTo and generate the client t
 
 sudo install -m 644 pcoin-wpcn-pay.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now pcoin-wpcn-pay
-curl -s http://127.0.0.1:8791/health
+curl -s http://127.0.0.1:8792/health
 ```
 
 Generate each project token with `openssl rand -hex 32`. The service **refuses
@@ -183,7 +183,7 @@ response is to ask again.
 // The whole integration. Note what is NOT here: no `?? 0`, no `@`, no cast of
 // a failed call into a number. Each of those turns "unknown" into an answer.
 function wpcn_verify(string $txhash, string $userRef): array {
-    $ch = curl_init('http://127.0.0.1:8791/verify');
+    $ch = curl_init('http://127.0.0.1:8792/verify');
     curl_setopt_array($ch, [
         CURLOPT_POST           => true,
         CURLOPT_RETURNTRANSFER => true,

@@ -26,7 +26,8 @@
 
   "priceUrl":         "https://price.pc.am",
   "dbDir":             "/var/lib/pcoin-wpcn-pay/claims",
-  "port":             8791,
+  "port":             8792,
+  "_port":            "NOT 8791 -- that is wrapdesk.pc.am on 178.105.3.51, and binding over it would take the wrap desk down. Check with `ss -lnt` before choosing.",
   "bind":             "127.0.0.1",
   "_bind":            "Loopback. Put it behind the web server you already run; do not publish this port. Three services on 116.203.221.42 were reachable from the internet for exactly this reason.",
 

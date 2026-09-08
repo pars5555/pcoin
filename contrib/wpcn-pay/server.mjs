@@ -76,7 +76,7 @@ const RPCS       = cfg.rpcUrls || [];
 const PRICE_URL  = cfg.priceUrl || 'https://price.pc.am';
 const DB_DIR     = cfg.dbDir    || '/var/lib/pcoin-wpcn-pay/claims';
 const CLIENTS    = cfg.clients  || {};                    // token -> project name
-const PORT       = cfg.port     || 8791;
+const PORT       = cfg.port     || 8792;
 const BIND       = cfg.bind     || '127.0.0.1';
 
 const missing = [];
