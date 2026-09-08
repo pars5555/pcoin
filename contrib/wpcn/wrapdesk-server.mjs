@@ -887,6 +887,39 @@ createServer(async (req, res) => {
 
       const st = load();
       const key = bsc.toLowerCase();
+
+      // ── the total allocation has to REFUSE, not just appear on the page ──
+      //
+      // TOTAL_ALLOC was advertised in two places ("N wPCN total while the desk
+      // is new") and checked in none. PER_PERSON was enforced; the total never
+      // was, so the desk would have kept handing out deposit addresses forever
+      // while promising a ceiling it did not keep. That is the same defect the
+      // comment forty lines above describes for PER_PERSON — a limit the form
+      // stated and the code ignored — and this file is where it was fixed once
+      // already.
+      //
+      // Measured in wPCN RELEASED, which is what the page promises: a request
+      // for more than PER_PERSON is clamped, and the fee never leaves the desk.
+      // A refunded deposit consumes nothing.
+      const wpcnFor = (a) =>
+        Math.min(Number(a) || 0, PER_PERSON) * (1 - FEE_PCT / 100);
+      const committed = Object.entries(st.requests || {})
+        .filter(([k, x]) => k !== key && !x.refunded)
+        .reduce((sum, [, x]) => sum + wpcnFor(x.amount), 0);
+      const headroom = TOTAL_ALLOC - committed;
+      if (wpcnFor(amount) > headroom + 1e-8) {
+        const maxPcn = Math.floor(headroom / (1 - FEE_PCT / 100) * 100) / 100;
+        return send(503, home(headroom <= 0
+          ? `<p class="err">The desk has allocated its full <b>${TOTAL_ALLOC} wPCN</b>
+             and is not taking new wrap requests right now. Nothing is wrong with
+             your request — the limit exists because the PancakeSwap pool is
+             small, and it will rise. Please check back, or get in touch.</p>`
+          : `<p class="err">That would take the desk past its <b>${TOTAL_ALLOC} wPCN</b>
+             total allocation. There is <b>${n2(headroom)} wPCN</b> left, so the
+             most you can wrap right now is <b>${n2(maxPcn)} PCN</b>. The limit
+             exists because the PancakeSwap pool is small, and it will rise.</p>`));
+      }
+
       let r = st.requests[key];
       if (!r) {
         if (tooMany(ip))
