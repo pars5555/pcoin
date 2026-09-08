@@ -280,16 +280,18 @@ async function verify(txhash, project, userRef) {
     if (already) {
       // Idempotent by construction. A retry after a lost response, or a second
       // project trying the same hash, both land here instead of double-crediting.
-      results.push({
-        state: 'already_claimed',
-        txhash, logIndex,
-        wpcn: already.wpcn,
-        usd: already.usd_credited,
-        project: already.project,
-        user_ref: already.user_ref,
-        at: already.at,
-        yours: already.project === project && already.user_ref === String(userRef),
-      });
+      // A claim that is NOT yours tells you one thing and one thing only:
+      // do not credit it. Who banked it, which of THEIR customers it belongs
+      // to and what it was worth are another tenant's business -- and
+      // user_ref is a customer identifier. Answer the question that was asked;
+      // do not narrate someone else's ledger.
+      const mine = already.project === project && already.user_ref === String(userRef);
+      results.push(mine
+        ? { state: 'already_claimed', txhash, logIndex,
+            wpcn: already.wpcn, usd: already.usd_credited,
+            project: already.project, user_ref: already.user_ref,
+            at: already.at, yours: true }
+        : { state: 'already_claimed', txhash, logIndex, yours: false });
       continue;
     }
 
@@ -321,15 +323,13 @@ async function verify(txhash, project, userRef) {
     // rather than crediting, and re-read to say who got it.
     if (!insertClaim(rec)) {
       const won = readClaim(txhash, logIndex);
-      results.push({
-        state: 'already_claimed',
-        txhash, logIndex,
-        wpcn: won && won.wpcn,
-        usd: won && won.usd_credited,
-        project: won && won.project,
-        user_ref: won && won.user_ref,
-        yours: !!won && won.project === project && won.user_ref === String(userRef),
-      });
+      // Same rule as above: a foreign claim gets the refusal, not the record.
+      const mineToo = !!won && won.project === project && won.user_ref === String(userRef);
+      results.push(mineToo
+        ? { state: 'already_claimed', txhash, logIndex,
+            wpcn: won.wpcn, usd: won.usd_credited,
+            project: won.project, user_ref: won.user_ref, yours: true }
+        : { state: 'already_claimed', txhash, logIndex, yours: false });
       continue;
     }
 
