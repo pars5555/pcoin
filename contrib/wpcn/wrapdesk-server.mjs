@@ -875,9 +875,40 @@ we fail to send wPCN. There is no smart contract enforcing our side of a wrap â€
 it is a person doing it. That is why the amounts are capped low, why the reserve
 is public, and why we would rather you tested with a small amount first.</p></div>`);
 
-const body = (req) => new Promise((res) => {
-  let d = ''; req.on('data', (c) => { d += c; if (d.length > 4096) req.destroy(); });
-  req.on('end', () => res(d));
+// The cap must clear an hCaptcha response token, which is a few KB and can run
+// past 8 KB on some flows. It was 4096, which was ample for a form that posted
+// only an address and an amount -- and turned into a hard outage the day the
+// captcha field was added: over the limit the socket was destroyed, the promise
+// never settled, the handler hung, and the proxy answered 502 with an empty
+// body. Every real user who solved the captcha got a broken page, and NOTHING
+// was logged, because destroying a socket is not an error anyone reports.
+//
+// Two changes, and the second matters as much as the first: reject rather than
+// die in silence, so the handler's catch renders a page that says something and
+// the reason reaches the log.
+//
+// This is the same shape as the collector that broke by GROWING (CLAUDE.md
+// 7.15): nothing was wrong with the limit until the thing it measured got
+// bigger.
+const MAX_BODY = 64 * 1024;
+const HARD_BODY = 10 * 1024 * 1024;
+const body = (req) => new Promise((res, rej) => {
+  let d = '', n = 0, over = false;
+  req.on('data', (c) => {
+    n += c.length;
+    // Over the cap: STOP STORING, but keep draining. Destroying the socket here
+    // is what produced the empty 502 -- the rejection reached the handler's
+    // catch, and the catch then wrote an error page into a socket that no
+    // longer existed. Draining costs nothing and lets the user be told why.
+    if (n > MAX_BODY) { over = true;
+      if (n > HARD_BODY) { rej(new Error('request body over ' + HARD_BODY + ' bytes; dropped')); req.destroy(); }
+      return; }
+    d += c;
+  });
+  req.on('end', () => over
+    ? rej(new Error('request body over ' + MAX_BODY + ' bytes'))
+    : res(d));
+  req.on('error', rej);
 });
 
 createServer(async (req, res) => {
