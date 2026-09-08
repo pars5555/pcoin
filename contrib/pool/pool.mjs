@@ -143,6 +143,9 @@ const state = {
   jobSeq: 0,
   miners: new Map(),    // session id -> miner
   payout: null,         // the coinbase output set for the current template
+  payoutHeld: false,    // true when that set cannot be paid out of state.tpl
+                        // (see refreshTemplate): serve no jobs rather than
+                        // mispay or build an invalid coinbase
   net: null,            // last good node reading, for the public API
   accepted: 0,          // this process's counters; the ledger lives in SQLite
   blocksFound: 0,
@@ -152,8 +155,17 @@ const state = {
 const shareTargetFor = (m) => scaleTarget(state.netTarget, m.diffFactor);
 
 function makeJob(miner) {
+  // Read the template and the payout set ONCE, together. They are published as
+  // a pair by refreshTemplate; taking two separate reads here would reintroduce
+  // the tear that this pairing exists to prevent.
   const t = state.tpl;
+  const payout = state.payout;
   if (!t) return null;
+  // The payout set does not fit this template. Serving anything now would either
+  // build an invalid coinbase or -- via the "no payout set" fallback below --
+  // quietly pay the pool every satoshi. Hold instead; the next successful
+  // refresh clears it.
+  if (state.payoutHeld) return null;
   // Per-miner extranonce: it changes the coinbase, hence the txid, hence the
   // merkle root, hence the header. Without it every miner grinds the same work
   // and the pool pays several people for one search.
@@ -166,7 +178,7 @@ function makeJob(miner) {
     // extranonce in the scriptSig differs -- so whichever miner solves it, the
     // block pays the same people the same amounts. This is what replaces a
     // wallet, a private key and a send path.
-    pays: state.payout ? state.payout.outputs : null,
+    pays: payout ? payout.outputs : null,
     extranonce,
     witnessCommitment: t.default_witness_commitment,
   });
@@ -192,7 +204,7 @@ function makeJob(miner) {
     // Pinned to the job, because the coinbase this miner is hashing pays THIS
     // set. A later template may pay a different one; the block that gets
     // submitted must be recorded as paying what it actually pays.
-    payout: state.payout,
+    payout,
     seen: new Set(),
     miner: miner.id,
   };
@@ -227,20 +239,34 @@ async function refreshTemplate() {
   try {
     const t = await cliJson(['getblocktemplate', '{"rules":["segwit"]}']);
     const changed = !state.tpl || state.tpl.previousblockhash !== t.previousblockhash;
-    state.tpl = t;
-    state.netTarget = bitsToTarget(t.bits);
+    const netTarget = bitsToTarget(t.bits);
 
     // Recompute who this template would pay. Done here, once per refresh, so
     // every job built from it carries the same outputs -- and so the window is
     // as fresh as the template is.
     //
+    // BUILT INTO LOCALS, PUBLISHED TOGETHER. state.tpl used to be assigned here,
+    // BEFORE the await below, so for the duration of that await state.tpl was
+    // the new template while state.payout still belonged to the old one. Node
+    // is single-threaded but an await yields, and a miner's socket data event
+    // lands in exactly that gap -- makeJob then built a coinbase paying the old
+    // set out of the new template's value.
+    //
+    // Invisible until 2026-09-08, because coinbasevalue never changed: the chain
+    // carried nothing but coinbases, so every template was worth exactly the
+    // subsidy and a stale payout set still summed correctly. The first
+    // fee-paying transaction (a 141-satoshi market delivery) made the two
+    // templates differ, and the pool died with "coinbase pays 5000000141 but
+    // only 5000000000 is available" -- taking 87 miners down with it.
+    //
     // A FAILURE HERE MUST NOT PAY THE POOL EVERYTHING. If the window cannot be
     // read, the honest thing is to keep the previous payout set rather than
     // build a coinbase that quietly pays the pool address alone: an unreadable
     // ledger is not "nobody is owed anything".
+    let payout = null, payoutErr = null;
     try {
-      const win = await store.currentWindow(state.netTarget.toString('hex'));
-      state.payout = buildPayoutOutputs({
+      const win = await store.currentWindow(netTarget.toString('hex'));
+      payout = buildPayoutOutputs({
         value: t.coinbasevalue,
         feeBasisPoints: CFG.feeBasisPoints,
         entries: win.entries,
@@ -248,17 +274,39 @@ async function refreshTemplate() {
         poolScript: state.script,
         dustLimit: BigInt(CFG.dustLimit ?? 294),
       });
+    } catch (e) {
+      payoutErr = e;
+    }
+
+    // Publish. No await between these three, so no job can ever see a template
+    // and a payout set that were built for different blocks.
+    state.tpl = t;
+    state.netTarget = netTarget;
+    if (payout) {
+      state.payout = payout;
+      state.payoutHeld = false;
       // NOTE: buildPayoutOutputs already returns windowWeight for the LIVE set
       // -- the miners actually being paid, after dust exclusion. Overwriting it
       // with the full window would store a divisor that does not reproduce the
       // amounts, and every reconciliation afterwards would disagree with a
       // ledger that was in fact correct.
-      for (const d of state.payout.dropped) {
+      for (const d of payout.dropped) {
         log(`payout: ${d.miner.slice(0, 14)}… would get ${d.wouldHave} sat, under the dust limit — `
           + 'left in the window to accumulate, not lost');
       }
-    } catch (e) {
-      log(`payout set NOT rebuilt (${e.message.slice(0, 120)}); keeping the previous one`);
+    } else {
+      log(`payout set NOT rebuilt (${payoutErr.message.slice(0, 120)}); keeping the previous one`);
+      // Keeping it is only honest while it still FITS. The previous set was
+      // sized against a different template; if that template was worth more,
+      // its outputs cannot be paid out of this one and every coinbase built
+      // from the pair is invalid. Hold jobs rather than mispay or crash.
+      const owed = (state.payout ? state.payout.outputs : [])
+        .reduce((a, o) => a + BigInt(o.value), 0n);
+      if (owed > BigInt(t.coinbasevalue)) {
+        state.payoutHeld = true;
+        log(`the kept payout set pays ${owed} but this template allows only ${t.coinbasevalue} — `
+          + 'HOLDING jobs until the window can be read again');
+      }
     }
 
     // Retune miners on a TIMER as well as on submit.
