@@ -12,9 +12,16 @@
 //
 // Two things about the receive card are deliberate and must survive edits:
 //
-//  * The QR encodes the BARE address, not a pcoin: URI. Nothing in this
-//    ecosystem parses BIP21 yet, and a scanner that shows the raw text shows
-//    something a person can compare against the text underneath.
+//  * The QR encodes the BARE address, not a pcoin: URI. Both apps now READ a
+//    URI - PaymentUri accepts pcoin:, pcn: and bitcoin:, with an optional
+//    ?amount= - but what is WRITTEN here stays bare on purpose: a scanner that
+//    shows the raw text then shows something a person can compare, character
+//    for character, against the address printed underneath it. A URI wrapper
+//    would put a prefix and a query string in the way of that comparison, and
+//    it is the comparison that catches a swapped address.
+//    (This note used to say nothing in the ecosystem parsed BIP21. That was
+//    true when it was written and is not any more; the conclusion survives for
+//    a different reason than the one it was first given.)
 //  * The QR is always black on white, whatever the theme, with a four-module
 //    quiet zone drawn as part of the image. A dark-mode QR with inverted
 //    colours is unreadable to a good many scanners, and a code butted against
@@ -78,7 +85,7 @@ namespace PCoinTray
         const int QR_TARGET_PX = 216;
         const int QR_QUIET = 4;
 
-        readonly Action _onSend, _onHistory, _onBook, _onPhrase, _onSetup, _onFolder, _onClose;
+        readonly Action _onSend, _onHistory, _onBook, _onPhrase, _onSetup, _onFolder, _onSettings, _onClose;
 
         readonly Ellipse _statePip = new Ellipse { Width = 10, Height = 10, Margin = new Thickness(0, 4, 8, 0), VerticalAlignment = VerticalAlignment.Top };
         readonly TextBlock _state = new TextBlock();
@@ -107,7 +114,7 @@ namespace PCoinTray
         bool _allowClose;
 
         public WalletWindow(Action onSend, Action onHistory, Action onBook, Action onPhrase,
-                            Action onSetup, Action onFolder, Action onClose)
+                            Action onSetup, Action onFolder, Action onSettings, Action onClose)
         {
             _onSend = onSend;
             _onHistory = onHistory;
@@ -115,6 +122,7 @@ namespace PCoinTray
             _onPhrase = onPhrase;
             _onSetup = onSetup;
             _onFolder = onFolder;
+            _onSettings = onSettings;
             _onClose = onClose;
 
             Title = "PCoin Wallet";
@@ -418,6 +426,11 @@ namespace PCoinTray
             StyleButton(folder, false);
             folder.Click += (s, e) => _onFolder();
             row2.Children.Add(folder);
+
+            var settings = new Button { Content = "Settings...", Padding = new Thickness(12, 6, 12, 6), FontSize = 12, Margin = new Thickness(8, 0, 0, 0), Cursor = Cursors.Hand };
+            StyleButton(settings, false);
+            settings.Click += (s, e) => _onSettings();
+            row2.Children.Add(settings);
             stack.Children.Add(row2);
 
             return Panel(stack);

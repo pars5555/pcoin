@@ -2313,6 +2313,93 @@ namespace PCoinTray
             return page;
         }
 
+        /**
+         * One transaction in full, including the addresses that funded it.
+         *
+         * HOW THE OTHER SIDE IS RESOLVED WITHOUT txindex, which is the whole
+         * trick. This app's node runs no transaction index - only the seed does
+         * (CLAUDE.md section 5) - so `getrawtransaction <txid>` fails outright:
+         * "No such mempool transaction. Use -txindex or provide a block hash".
+         * The escape is in that error message. `gettransaction` is
+         * wallet-scoped and answers for OUR transactions, and it returns the
+         * blockhash; handing that back as the third argument lets the node find
+         * the transaction in one block instead of an index. Verbosity 2 then
+         * decorates every input with its `prevout`, address included.
+         *
+         * One targeted call, and only when a row is actually opened - the list
+         * itself still costs exactly one listtransactions.
+         *
+         * A failure of the SECOND call is not fatal: the amounts and status
+         * from the first are already known and true, and losing the counterparty
+         * is a smaller loss than showing nothing at all. It is reported as an
+         * UnresolvedReason, never as an empty list, because an empty list reads
+         * as "nobody" and that is a different claim from "I could not ask"
+         * (CLAUDE.md 7.1).
+         */
+        public TxDetails GetTxDetails(string wallet, string txid)
+        {
+            var t = Json.Obj(Call(wallet, "gettransaction",
+                "[" + Json.Quote(txid) + "]", RPC_TIMEOUT_MS));
+            if (t == null) throw new RpcFailure("the node did not answer gettransaction", null, true);
+
+            var d = new TxDetails { Txid = txid };
+            double? conf = Json.Number(t, "confirmations");
+            d.Confirmations = conf.HasValue ? (long)conf.Value : 0L;
+            double? height = Json.Number(t, "blockheight");
+            d.BlockHeight = height.HasValue ? (long)height.Value : -1L;
+            double? time = Json.Number(t, "time");
+            d.TimeSec = time.HasValue ? (long)time.Value : 0L;
+            double? fee = Json.Number(t, "fee");
+            d.FeeSat = fee.HasValue ? Math.Abs(ForwardPolicy.ToSat(fee.Value)) : 0L;
+
+            string blockHash = Json.Str(t, "blockhash");
+            if (string.IsNullOrEmpty(blockHash)) blockHash = null;
+
+            // A coinbase is named by its category, not by a flag on the parent.
+            bool isCoinbase = false;
+            var details = Json.Arr(Json.Field(t, "details"));
+            if (details != null)
+                foreach (var row in details)
+                {
+                    string c = Json.Str(row, "category");
+                    if (c == "generate" || c == "immature") { isCoinbase = true; break; }
+                }
+
+            d.UnresolvedReason = TxParties.UnresolvableReason(
+                (int)d.Confirmations, blockHash != null, isCoinbase);
+            if (d.UnresolvedReason != null || blockHash == null) return d;
+
+            Dictionary<string, object> raw = null;
+            try
+            {
+                raw = Json.Obj(Call(wallet, "getrawtransaction",
+                    "[" + Json.Quote(txid) + ",2," + Json.Quote(blockHash) + "]", RPC_TIMEOUT_MS));
+            }
+            catch (RpcFailure) { raw = null; }
+            if (raw == null)
+            {
+                d.UnresolvedReason = "the node could not read that transaction";
+                return d;
+            }
+
+            var vin = Json.Arr(Json.Field(raw, "vin"));
+            if (vin != null)
+                foreach (var v in vin)
+                {
+                    // A coinbase input has no prevout at all; nothing to resolve.
+                    string a = Json.Str(Json.Field(Json.Field(v, "prevout"), "scriptPubKey"), "address");
+                    if (!string.IsNullOrEmpty(a)) d.InputAddresses.Add(a);
+                }
+            var vout = Json.Arr(Json.Field(raw, "vout"));
+            if (vout != null)
+                foreach (var v in vout)
+                {
+                    string a = Json.Str(Json.Field(v, "scriptPubKey"), "address");
+                    if (!string.IsNullOrEmpty(a)) d.OutputAddresses.Add(a);
+                }
+            return d;
+        }
+
         // ---------------------------------------------------------- small helpers
 
         string Wallet()

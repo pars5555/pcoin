@@ -180,7 +180,7 @@ if (-not $Purge) {
         $p = Join-Path $InstallDir $f
         if (Test-Path $p) { $walletItems += $p }
     }
-    foreach ($f in @('pcoin-addressbook.json', 'pcoin-wallet.cfg')) {
+    foreach ($f in @('pcoin-addressbook.json', 'pcoin-wallet.cfg', 'pcoin-wallet-settings.json')) {
         $p = Join-Path $InstallDir $f
         if (Test-Path $p) { $otherItems += $p }
     }

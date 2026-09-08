@@ -104,6 +104,7 @@ namespace PCoinTray
             b.UseVisualStyleBackColor = false;
         }
 
+
         public static string Kind(HistoryKind k)
         {
             switch (k)
@@ -180,6 +181,7 @@ namespace PCoinTray
         readonly string _wallet;
         readonly AddressBookStore _book;
         readonly string _ownAddress;
+        readonly WalletSettings _settings;
 
         readonly Panel _compose = new Panel();
         readonly Panel _review = new Panel();
@@ -213,13 +215,20 @@ namespace PCoinTray
         readonly Button _saveName;
         string _sentTo = "";
 
-        public SendForm(ForwardEngine engine, string wallet, AddressBookStore book, string ownAddress)
+        public SendForm(ForwardEngine engine, string wallet, AddressBookStore book, string ownAddress,
+                        WalletSettings settings, string prefillAddress)
         {
             _engine = engine;
             _wallet = wallet;
             _book = book;
             _ownAddress = ownAddress ?? "";
+            _settings = settings;
             _entries = _book.Load();
+            // The saved preference decides where the screen STARTS. Changing it
+            // here changes only this payment; Settings is the only place that
+            // writes it back, so an experiment on one send cannot silently
+            // become the standing choice.
+            if (_settings != null) _tier = _settings.DefaultFeeTier();
 
             Text = "PCoin Wallet - send";
             FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -343,7 +352,8 @@ namespace PCoinTray
             var done = WalletUi.Button(_result, "Done", 460, 418, 100);
             done.Click += (s, e) => Close();
 
-            SetTier(ForwardPolicy.FeeTier.NORMAL);
+            SetTier(_tier);
+            if (!string.IsNullOrEmpty(prefillAddress)) _addr.Text = prefillAddress;
             ShowCompose();
         }
 
@@ -381,12 +391,41 @@ namespace PCoinTray
 
         void UpdateAddressNote()
         {
+            string linkNote = TakeAmountFromLink(_addr.Text);
             string a = ForwardPolicy.NormalizeAddress(_addr.Text);
-            if (a.Length < AddressBook.LOOKS_LIKE_ADDRESS) { _addrNote.Text = ""; return; }
+            if (a.Length < AddressBook.LOOKS_LIKE_ADDRESS) { _addrNote.Text = linkNote; return; }
             if (string.Equals(a, _ownAddress, StringComparison.Ordinal)) { _addrNote.Text = "This is your own receive address."; return; }
             string name = AddressBook.LabelFor(_entries, a);
-            _addrNote.Text = name != null ? "Address book: " + name : "Not in your address book.";
+            string note = name != null ? "Address book: " + name : "Not in your address book.";
+            _addrNote.Text = linkNote.Length > 0 ? note + "  " + linkNote : note;
         }
+
+        /**
+         * A pasted or scanned payment link may name an amount as well as an
+         * address. Take it ONLY into an empty box.
+         *
+         * Overwriting a figure the person has already typed would change what
+         * they are about to pay without asking, and the review screen would
+         * then show a number they never entered. When both exist, the typed one
+         * wins and the note says the link disagreed - a visible conflict rather
+         * than a silent substitution.
+         */
+        string TakeAmountFromLink(string raw)
+        {
+            var t = PaymentUri.Parse(raw);
+            if (t == null || !t.HasAmount) return "";
+            if (_sendMax) return "The link names an amount; \"send everything\" is on.";
+            if (_amount.Text.Trim().Length == 0)
+            {
+                _amount.Text = Amounts.ToPlainString(t.AmountSat);
+                UpdateAmountNote();
+                return "Amount taken from the payment link.";
+            }
+            long typed;
+            if (Amounts.Parse(_amount.Text, out typed) == Amounts.Reason.OK && typed == t.AmountSat) return "";
+            return "The link asks for " + WalletUi.Coins(t.AmountSat) + "; your amount is kept.";
+        }
+
 
         void UpdateAmountNote()
         {
@@ -532,21 +571,36 @@ namespace PCoinTray
         readonly AddressBookStore _book;
         readonly Func<bool> _trustworthy;
 
+        /** Which directions the list shows. Mined coins count as arriving. */
+        enum Filter { ALL, SENT, RECEIVED }
+
         readonly ListView _list = new ListView();
         readonly Label _status;
         readonly Label _count;
         readonly Button _more;
+        readonly TextBox _search = new TextBox();
+        readonly List<Button> _filterBtns = new List<Button>();
         readonly List<HistoryEntry> _loaded = new List<HistoryEntry>();
         List<AddressBookEntry> _entries = new List<AddressBookEntry>();
+        Filter _filter = Filter.ALL;
+        /** Lower-cased and trimmed. Empty means no search. */
+        string _query = "";
         int _pages;
         bool _reachedEnd;
 
-        public HistoryForm(ForwardEngine engine, string wallet, AddressBookStore book, Func<bool> trustworthy)
+        /** Set when a row's detail asked to pay someone. Read by the caller. */
+        public string PayTo = "";
+
+        readonly string _ownAddress;
+
+        public HistoryForm(ForwardEngine engine, string wallet, AddressBookStore book, Func<bool> trustworthy,
+                           string ownAddress)
         {
             _engine = engine;
             _wallet = wallet;
             _book = book;
             _trustworthy = trustworthy;
+            _ownAddress = ownAddress ?? "";
 
             Text = "PCoin Wallet - history";
             FormBorderStyle = FormBorderStyle.Sizable;
@@ -556,13 +610,45 @@ namespace PCoinTray
             MinimumSize = new Size(600, 320);
             Font = new Font("Segoe UI", 9f);
 
+            // ---- search and direction filters ----
+            //
+            // Both narrow the rows ALREADY LOADED and never re-ask the node.
+            // A filter that re-queried would page differently under each
+            // setting, and "Load more" would then mean different things
+            // depending on what was typed.
+            WalletUi.Text(this, "Search", 12, 16, 50, 20, false);
+            _search.Name = "search";
+            _search.Location = new Point(58, 13);
+            _search.Size = new Size(240, 24);
+            _search.TextChanged += (s, e) =>
+            {
+                _query = (_search.Text ?? "").Trim().ToLowerInvariant();
+                ApplyFilters();
+            };
+            Controls.Add(_search);
+            var hint = WalletUi.Text(this, "address, name or transaction id", 304, 16, 210, 20, false);
+            hint.ForeColor = Color.FromArgb(120, 120, 135);
+
+            int fx = ClientSize.Width - 246;
+            foreach (Filter f in new[] { Filter.ALL, Filter.SENT, Filter.RECEIVED })
+            {
+                var cap = f;
+                var b = WalletUi.Button(this, f == Filter.ALL ? "All" : (f == Filter.SENT ? "Sent" : "Received"), fx, 12, 78);
+                b.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+                b.Tag = cap;
+                b.Click += (s, e) => SetFilter(cap);
+                _filterBtns.Add(b);
+                fx += 80;
+            }
+            MarkFilterButtons();
+
             _list.Name = "history";
             _list.View = View.Details;
             _list.FullRowSelect = true;
             _list.MultiSelect = false;
             _list.HideSelection = false;
-            _list.Location = new Point(12, 12);
-            _list.Size = new Size(ClientSize.Width - 24, ClientSize.Height - 70);
+            _list.Location = new Point(12, 48);
+            _list.Size = new Size(ClientSize.Width - 24, ClientSize.Height - 106);
             _list.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
             _list.Columns.Add("When", 125);
             _list.Columns.Add("Type", 110);
@@ -572,9 +658,15 @@ namespace PCoinTray
             _list.DoubleClick += (s, e) => OpenSelected();
             Controls.Add(_list);
 
-            _count = WalletUi.Text(this, "", 12, ClientSize.Height - 48, 360, 20, false);
+            // Both footer labels stop short of the buttons at Width-342. They
+            // are added to the form BEFORE the buttons, and in WinForms an
+            // earlier control has the higher z-order, so a label that reaches
+            // under a button DRAWS OVER IT: "Refresh" came out with its top
+            // half sliced off. The gutter is what keeps them apart.
+            const int FOOTER_LABEL_W = 398;      // 760 - 342 - 12 - 8
+            _count = WalletUi.Text(this, "", 12, ClientSize.Height - 48, FOOTER_LABEL_W, 20, false);
             _count.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
-            _status = WalletUi.Text(this, "", 12, ClientSize.Height - 28, 500, 22, false);
+            _status = WalletUi.Text(this, "", 12, ClientSize.Height - 28, FOOTER_LABEL_W, 22, false);
             _status.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             _status.ForeColor = Color.FromArgb(180, 30, 30);
 
@@ -635,15 +727,77 @@ namespace PCoinTray
             Draw();
         }
 
+        void SetFilter(Filter f)
+        {
+            if (_filter == f) return;
+            _filter = f;
+            MarkFilterButtons();
+            ApplyFilters();
+        }
+
+        void MarkFilterButtons()
+        {
+            foreach (var b in _filterBtns) WalletUi.StyleTier(b, (Filter)b.Tag == _filter);
+        }
+
+        /**
+         * The book is reloaded before matching, because searching covers the
+         * NAME saved for an address and a rename made on the address-book
+         * screen would otherwise not be searchable until this window was
+         * reopened.
+         */
+        void ApplyFilters()
+        {
+            _entries = _book.Load();
+            Draw();
+        }
+
+        /**
+         * Does this row survive the current filter and search?
+         *
+         * Searching covers the transaction id, the counterparty address and the
+         * name saved for that address - the three things someone actually
+         * remembers a payment by. Matching is a plain case-insensitive
+         * substring: an address and a txid are both long strings where a
+         * fragment is what a person has to hand, and anything cleverer would
+         * surprise more often than it helped.
+         */
+        bool Matches(HistoryEntry e)
+        {
+            bool dirOk;
+            switch (_filter)
+            {
+                case Filter.SENT: dirOk = e.Kind == HistoryKind.SENT; break;
+                // Mined and maturing coins are money arriving. Excluding them
+                // from "received" would make a block reward invisible under
+                // every filter except All, which is a hiding place, not a
+                // filter.
+                case Filter.RECEIVED:
+                    dirOk = e.Kind == HistoryKind.RECEIVED || e.Kind == HistoryKind.MINED ||
+                            e.Kind == HistoryKind.MATURING;
+                    break;
+                default: dirOk = true; break;
+            }
+            if (!dirOk) return false;
+            if (_query.Length == 0) return true;
+            if ((e.Txid ?? "").ToLowerInvariant().Contains(_query)) return true;
+            if ((e.Address ?? "").ToLowerInvariant().Contains(_query)) return true;
+            string name = AddressBook.LabelFor(_entries, e.Address);
+            return name != null && name.ToLowerInvariant().Contains(_query);
+        }
+
         void Draw()
         {
             // The book is read once per draw, not once per row.
             _entries = _book.Load();
             bool trust = _trustworthy();
+            int shown = 0;
             _list.BeginUpdate();
             _list.Items.Clear();
             foreach (var e in _loaded)
             {
+                if (!Matches(e)) continue;
+                shown++;
                 string sign = e.Kind == HistoryKind.SENT ? "-" : "+";
                 var item = new ListViewItem(WalletUi.When(e.TimeSec));
                 item.SubItems.Add(WalletUi.Kind(e.Kind));
@@ -657,9 +811,19 @@ namespace PCoinTray
             }
             _list.EndUpdate();
             _more.Enabled = !_reachedEnd;
+            bool narrowed = _query.Length > 0 || _filter != Filter.ALL;
             if (_loaded.Count == 0)
             {
                 _count.Text = trust ? "No transactions yet." : "Nothing to show yet - the node is still catching up.";
+            }
+            else if (narrowed)
+            {
+                // Say what was searched, not just how many matched. A count on
+                // its own reads as "this is all you have" when it means "this
+                // is all that matched what is typed", and the difference
+                // matters when the rest of the history has not been loaded yet.
+                _count.Text = shown + " of " + _loaded.Count + " loaded rows match" +
+                    (_reachedEnd ? "." : " - load more to search further back.");
             }
             else
             {
@@ -705,24 +869,59 @@ namespace PCoinTray
             if (_list.SelectedItems.Count == 0) return;
             var e = _list.SelectedItems[0].Tag as HistoryEntry;
             if (e == null) return;
-            using (var f = new TxDetailForm(e, AddressBook.LabelFor(_entries, e.Address), StatusLine(e, _trustworthy())))
+            using (var f = new TxDetailForm(e, _entries, StatusLine(e, _trustworthy()),
+                                           _engine, _wallet, _ownAddress))
             {
                 f.ShowDialog(this);
+                if (!string.IsNullOrEmpty(f.PayTo))
+                {
+                    PayTo = f.PayTo;
+                    Close();
+                }
             }
         }
     }
 
+    /**
+     * One transaction, including who was on the other side.
+     *
+     * THE OTHER SIDE IS TWO DIFFERENT QUESTIONS, and answering them the same way
+     * is the mistake this screen exists to avoid:
+     *
+     *   A SEND's destination is already known exactly - listtransactions puts it
+     *   in `address` - so it needs NO block lookup and works while the payment
+     *   is still unconfirmed. Gating it on a confirmation the destination never
+     *   depended on would hide "Pay again" behind a wait, and would tell someone
+     *   their own outgoing payment's origin was unknown, which is not even the
+     *   question being asked.
+     *
+     *   A RECEIVE has no such field, because there is no sender in the protocol.
+     *   Its INPUTS are the closest thing, they need the block, and there may be
+     *   several of them. They are shown as a list of inputs and never collapsed
+     *   into one confident "From".
+     */
     class TxDetailForm : Form
     {
-        public TxDetailForm(HistoryEntry e, string name, string status)
+        /** Set when the person pressed pay next to an address. */
+        public string PayTo = "";
+
+        readonly ListView _parties = new ListView();
+        readonly Label _partyStatus;
+        readonly Button _pay;
+        Button _copyAddr;
+
+        public TxDetailForm(HistoryEntry e, List<AddressBookEntry> entries, string status,
+                            ForwardEngine engine, string wallet, string ownAddress)
         {
             Text = "PCoin Wallet - transaction";
-            FormBorderStyle = FormBorderStyle.FixedDialog;
+            FormBorderStyle = FormBorderStyle.Sizable;
             StartPosition = FormStartPosition.CenterParent;
             MaximizeBox = MinimizeBox = false;
-            ClientSize = new Size(560, 300);
+            ClientSize = new Size(600, 420);
+            MinimumSize = new Size(520, 380);
             Font = new Font("Segoe UI", 9f);
 
+            string name = AddressBook.LabelFor(entries, e.Address);
             var sb = new StringBuilder();
             sb.Append(WalletUi.Kind(e.Kind)).Append("  ").Append(e.Kind == HistoryKind.SENT ? "-" : "+").Append(WalletUi.Coins(e.AmountSat)).Append("\r\n");
             sb.Append("Status:  ").Append(status).Append("\r\n");
@@ -740,7 +939,8 @@ namespace PCoinTray
             var box = new TextBox
             {
                 Location = new Point(16, 16),
-                Size = new Size(528, 224),
+                Size = new Size(ClientSize.Width - 32, 118),
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
                 Multiline = true,
                 ReadOnly = true,
                 ScrollBars = ScrollBars.Vertical,
@@ -748,11 +948,138 @@ namespace PCoinTray
                 Text = sb.ToString()
             };
             Controls.Add(box);
-            var copy = WalletUi.Button(this, "Copy transaction id", 16, 254, 160);
+
+            _partyStatus = WalletUi.Text(this, "Reading...", 16, 144, ClientSize.Width - 32, 20, false);
+            _partyStatus.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+
+            _parties.View = View.Details;
+            _parties.FullRowSelect = true;
+            _parties.MultiSelect = false;
+            _parties.HideSelection = false;
+            _parties.Location = new Point(16, 168);
+            _parties.Size = new Size(ClientSize.Width - 32, ClientSize.Height - 232);
+            _parties.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+            _parties.Columns.Add("Name", 150);
+            _parties.Columns.Add("Address", 380);
+            _parties.SelectedIndexChanged += (s, ev) =>
+            {
+                bool any = _parties.SelectedItems.Count > 0;
+                _pay.Enabled = any;
+                if (_copyAddr != null) _copyAddr.Enabled = any;
+            };
+            _parties.DoubleClick += (s, ev) => Pay();
+            Controls.Add(_parties);
+
+            var copy = WalletUi.Button(this, "Copy transaction id", 16, ClientSize.Height - 46, 160);
+            copy.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             copy.Click += (s, ev) => { try { Clipboard.SetText(e.Txid); copy.Text = "Copied"; } catch { } };
-            var close = Ui.Button(this, "Close", 444, 254, 100, DialogResult.OK);
-            AcceptButton = close;
+
+            var copyAddr = WalletUi.Button(this, "Copy address", 186, ClientSize.Height - 46, 120);
+            copyAddr.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            copyAddr.Enabled = false;
+            copyAddr.Click += (s, ev) =>
+            {
+                if (_parties.SelectedItems.Count == 0) return;
+                try { Clipboard.SetText((string)_parties.SelectedItems[0].Tag); copyAddr.Text = "Copied"; } catch { }
+            };
+            _copyAddr = copyAddr;
+
+            _pay = WalletUi.Button(this, e.Kind == HistoryKind.SENT ? "Pay again" : "Pay this address",
+                                   316, ClientSize.Height - 46, 150);
+            _pay.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            _pay.Enabled = false;
+            _pay.Click += (s, ev) => Pay();
+
+            var close = Ui.Button(this, "Close", ClientSize.Width - 116, ClientSize.Height - 46, 100, DialogResult.OK);
+            close.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
             CancelButton = close;
+
+            Shown += (s, ev) =>
+            {
+                // A read-only multiline TextBox selects its whole contents when
+                // it takes focus, so the summary opened as a wall of blue.
+                // Put the caret at the start and give focus to the list.
+                box.SelectionStart = 0;
+                box.SelectionLength = 0;
+                ActiveControl = _parties;
+                LoadParties(e, entries, engine, wallet, ownAddress);
+            };
+        }
+
+        void Pay()
+        {
+            if (_parties.SelectedItems.Count == 0) return;
+            PayTo = (string)_parties.SelectedItems[0].Tag;
+            // Fills the compose field and nothing more: validateaddress still
+            // runs and the review step still shows what the node built.
+            DialogResult = DialogResult.OK;
+            Close();
+        }
+
+        void LoadParties(HistoryEntry e, List<AddressBookEntry> entries,
+                         ForwardEngine engine, string wallet, string ownAddress)
+        {
+            bool sent = e.Kind == HistoryKind.SENT;
+            List<string> payable;
+
+            if (sent)
+            {
+                // No node call at all - see the class comment.
+                payable = TxParties.Payable(new List<string> { e.Address }, new List<string>());
+            }
+            else
+            {
+                TxDetails d = null;
+                Exception failed = null;
+                var ex = BusyForm.Run("Reading the transaction...", () =>
+                {
+                    try { d = engine.GetTxDetails(wallet, e.Txid); }
+                    catch (Exception inner) { failed = inner; }
+                });
+                if (ex != null || failed != null || d == null)
+                {
+                    // "I could not ask" is not "nobody paid you".
+                    Exception why = ex ?? failed;
+                    _partyStatus.Text = "Could not read who paid this" +
+                        (why != null ? ": " + RpcClient.Sanitize(why.Message) : ".");
+                    return;
+                }
+                if (d.UnresolvedReason != null)
+                {
+                    _partyStatus.Text = "Who paid this cannot be shown - " + d.UnresolvedReason + ".";
+                    return;
+                }
+                var mine = new List<string>();
+                if (!string.IsNullOrEmpty(ownAddress)) mine.Add(ownAddress);
+                payable = TxParties.Payable(d.InputAddresses, mine);
+            }
+
+            if (payable.Count == 0)
+            {
+                _partyStatus.Text = sent
+                    ? "This payment went to more than one place, so there is no single destination to show."
+                    : "No address on the other side could be identified.";
+                return;
+            }
+
+            _partyStatus.Text = sent
+                ? "Paid to"
+                : (payable.Count == 1
+                    ? "Funded by this address - which is not necessarily the sender's own:"
+                    : "Funded by these " + payable.Count + " addresses - not necessarily the sender's own:");
+
+            _parties.BeginUpdate();
+            _parties.Items.Clear();
+            foreach (string addr in payable)
+            {
+                string nm = AddressBook.LabelFor(entries, addr);
+                var item = new ListViewItem(nm ?? "");
+                item.SubItems.Add(addr);
+                item.Tag = addr;
+                _parties.Items.Add(item);
+            }
+            _parties.EndUpdate();
+            if (_parties.Items.Count > 0) _parties.Items[0].Selected = true;
         }
     }
 

@@ -23,6 +23,25 @@
 //   * Versions 1..10. Version 10 at ECC M holds 213 bytes, far past anything
 //     this app will ever show.
 //
+// KNOWN DEFECT, LATENT: VERSIONS 7 AND ABOVE ARE NOT VALID QR CODES.
+// From version 7 the spec adds an 18-bit VERSION INFORMATION word in two 6x3
+// blocks, next to the top-right and bottom-left finders. DrawFunctionPatterns
+// below neither reserves nor writes them, so DrawCodewords fills those 36
+// modules with payload and no conforming reader can decode the symbol.
+//
+// Measured 2026-09-08 with a spec-correct decoder: 62, 84 and 106 characters
+// (versions 4, 5 and 6) decode; 110 and 160 characters (versions 7 and 9) do
+// not.
+//
+// Nothing reaches it. The only caller is the wallet's receive card, which
+// encodes a 42-character address - version 3 - and Encode() refuses anything
+// over version 10 outright. The golden vectors in SeedSelfTest are versions
+// 1, 3, 4 and 6, all below the boundary, which is why this went unnoticed.
+// Fixing it means reserving both blocks in DrawFunctionPatterns and writing
+// the BCH(18,6) word (generator 0x1F25); it changes no symbol at version 6 or
+// below, so no existing output moves. Until then, do NOT raise the version
+// ceiling and do NOT feed this encoder a longer string expecting it to work.
+//
 // Not supported, and not needed: kanji/numeric/alphanumeric modes, structured
 // append, ECI. Encode() returns null rather than guessing if the text does not
 // fit, and callers must handle that - a QR that silently encodes the wrong

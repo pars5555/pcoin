@@ -65,6 +65,8 @@ rem ship. Embedding needs nothing shipped alongside it.
   AddressBook.cs ^
   AddressBookStore.cs ^
   QrCode.cs ^
+  PaymentUri.cs ^
+  TxParties.cs ^
   Bip39Wordlist.cs
 
 if errorlevel 1 exit /b 1

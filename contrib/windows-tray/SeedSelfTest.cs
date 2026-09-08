@@ -681,8 +681,214 @@ namespace PCoinTray
             ok &= RunAddressBook(log);
             ok &= RunHistoryRows(log);
             ok &= RunQr(log);
+            ok &= RunPaymentUri(log);
+            ok &= RunTxParties(log);
+#if PCOIN_WALLET
+            ok &= RunWalletSettings(log);
+#endif
             return ok;
         }
+
+        // ------------------------------------------------------ payment URIs
+
+        //! The parse, flattened to one comparable string. "(none)" is a real
+        //! answer and must never render as an address or as a zero amount.
+        static string Uri(string raw)
+        {
+            var t = PaymentUri.Parse(raw);
+            if (t == null) return "(none)";
+            return t.Address + (t.HasAmount ? " @" + t.AmountSat.ToString(CI) : " @none");
+        }
+
+        static bool RunPaymentUri(List<string> log)
+        {
+            bool ok = true;
+            Log(log, "--- payment uris ---");
+            const string A = "pc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
+
+            ok &= Check(log, "bare address", A + " @none", Uri(A));
+            ok &= Check(log, "surrounding whitespace", A + " @none", Uri("  " + A + "\r\n"));
+            ok &= Check(log, "pcoin: scheme", A + " @none", Uri("pcoin:" + A));
+            ok &= Check(log, "PCN: scheme", A + " @none", Uri("PCN:" + A));
+            ok &= Check(log, "bitcoin: scheme", A + " @none", Uri("bitcoin:" + A));
+            ok &= Check(log, "mixed-case scheme", A + " @none", Uri("PCoIn:" + A));
+            ok &= Check(log, "empty authority pcoin://", A + " @none", Uri("pcoin://" + A));
+
+            // The whole point of accepting upper case: QR alphanumeric mode.
+            ok &= Check(log, "all-caps bech32 folds down", A + " @none", Uri(A.ToUpperInvariant()));
+            ok &= Check(log, "all-caps scheme and address", A + " @none",
+                        Uri("PCOIN:" + A.ToUpperInvariant()));
+
+            ok &= Check(log, "amount in coins becomes satoshis", A + " @150000000",
+                        Uri("pcoin:" + A + "?amount=1.5"));
+            ok &= Check(log, "amount among other params", A + " @100000000",
+                        Uri("pcoin:" + A + "?label=Bob&amount=1&message=hi"));
+            ok &= Check(log, "amount key is case-insensitive", A + " @100000000",
+                        Uri("pcoin:" + A + "?AMOUNT=1"));
+            // An unreadable amount must not take the address down with it.
+            ok &= Check(log, "unreadable amount leaves the address, states no amount", A + " @none",
+                        Uri("pcoin:" + A + "?amount=abc"));
+            ok &= Check(log, "amount=0 is not an amount", A + " @none",
+                        Uri("pcoin:" + A + "?amount=0"));
+            ok &= Check(log, "query with no amount", A + " @none",
+                        Uri("pcoin:" + A + "?label=Bob"));
+
+            // Not payments. Each must be "(none)", never a malformed address:
+            // the two send the user looking for different things.
+            ok &= Check(log, "null", "(none)", Uri(null));
+            ok &= Check(log, "empty", "(none)", Uri(""));
+            ok &= Check(log, "too short to be an address", "(none)", Uri("pc1qshort"));
+            ok &= Check(log, "a sentence is not a payment", "(none)",
+                        Uri("please send me some coins"));
+            // A URL is the case that actually turns up on a poster, and it is
+            // long enough to clear the length gate. Only the shape rule stops
+            // it, so both a short and a LONG one are checked.
+            ok &= Check(log, "a short URL is not a payment", "(none)", Uri("https://pc.am/"));
+            ok &= Check(log, "a long URL is not a payment", "(none)",
+                        Uri("https://pc.am/download/windows/wallet"));
+            ok &= Check(log, "an email address is not a payment", "(none)",
+                        Uri("somebody.long@example-domain.com"));
+            // The shape rule must not be able to reject a real address. These
+            // are the two encodings this chain uses.
+            ok &= Check(log, "bech32 survives the shape rule", A + " @none", Uri(A));
+            ok &= Check(log, "base58 survives the shape rule", "PPBQWA1B2C3D4E5F6G7H8JKLM @none",
+                        Uri("PPBQWA1B2C3D4E5F6G7H8JKLM"));
+
+            // NormalizeAddress shares the scheme rules but NOT the length gate:
+            // it has to hand short input back so the field can show it and
+            // CheckAddress can name the problem.
+            ok &= Check(log, "NormalizeAddress keeps a short string", "pc1qshort",
+                        ForwardPolicy.NormalizeAddress("pcoin:pc1qshort"));
+            ok &= Check(log, "NormalizeAddress strips pcn:", A,
+                        ForwardPolicy.NormalizeAddress("pcn:" + A));
+            ok &= Check(log, "NormalizeAddress strips //", A,
+                        ForwardPolicy.NormalizeAddress("pcoin://" + A));
+            // Base58 is case-SENSITIVE. Folding one would silently make a
+            // different address that still looks valid.
+            ok &= Check(log, "base58 uppercase is left alone", "PPBQWA1B2C3D4E5F6G7H8J",
+                        ForwardPolicy.NormalizeAddress("PPBQWA1B2C3D4E5F6G7H8J"));
+            return ok;
+        }
+
+        // -------------------------------------------------------- tx parties
+
+        static string Parties(List<string> addrs, params string[] mine)
+        {
+            var l = TxParties.Counterparties(addrs, new List<string>(mine));
+            return l.Count == 0 ? "(empty)" : string.Join(",", l.ToArray());
+        }
+
+        static List<string> Addrs(params string[] a) { return new List<string>(a); }
+
+        static bool RunTxParties(List<string> log)
+        {
+            bool ok = true;
+            Log(log, "--- tx parties ---");
+            const string MINE = "pc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
+            const string THEM1 = "pc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3";
+            const string THEM2 = "pc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
+
+            ok &= Check(log, "our own change is not a counterparty", THEM1,
+                        Parties(Addrs(THEM1, MINE), MINE));
+            ok &= Check(log, "order is preserved, not sorted", THEM2 + "," + THEM1,
+                        Parties(Addrs(THEM2, THEM1)));
+            ok &= Check(log, "duplicates collapse", THEM1, Parties(Addrs(THEM1, THEM1)));
+            // Case folding must reach the "is it mine" test, or an uppercase
+            // spelling of our own address renders as a stranger who paid us.
+            ok &= Check(log, "an uppercase spelling of ours is still ours", "(empty)",
+                        Parties(Addrs(MINE.ToUpperInvariant()), MINE));
+            ok &= Check(log, "blank entries are dropped", THEM1,
+                        Parties(Addrs("", "   ", THEM1)));
+            ok &= Check(log, "paying only ourselves has no counterparty", "(empty)",
+                        Parties(Addrs(MINE), MINE));
+
+            // Payable is a display filter, never a judgement of validity.
+            var pay = TxParties.Payable(Addrs("pc1qshort", THEM1), new List<string>());
+            ok &= Check(log, "payable drops a stub too short to be an address", THEM1,
+                        pay.Count == 1 ? pay[0] : "(" + pay.Count + ")");
+
+            // The reasons. Each is a true sentence about a healthy state, not
+            // an error, and coinbase wins over confirmation count.
+            ok &= Check(log, "unconfirmed has no block to ask about", "not in a block yet",
+                        Or(TxParties.UnresolvableReason(0, false, false)));
+            ok &= Check(log, "confirmed but no blockhash is still unresolvable", "not in a block yet",
+                        Or(TxParties.UnresolvableReason(6, false, false)));
+            ok &= Check(log, "a coinbase has no sender at any depth", "newly mined coins have no sender",
+                        Or(TxParties.UnresolvableReason(200, true, true)));
+            ok &= Check(log, "one confirmation in a block resolves", "(null)",
+                        Or(TxParties.UnresolvableReason(1, true, false)));
+            return ok;
+        }
+
+
+#if PCOIN_WALLET
+        // --------------------------------------------------- wallet settings
+
+        static bool RunWalletSettings(List<string> log)
+        {
+            bool ok = true;
+            Log(log, "--- wallet settings ---");
+            string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
+                "pcoin-selftest-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                System.IO.Directory.CreateDirectory(dir);
+                var s = new WalletSettings(dir);
+
+                // No file at all is the first-run case, and it must be the
+                // cheapest tier rather than whatever happens to be first.
+                ok &= Check(log, "no file yet: Normal", "NORMAL", s.DefaultFeeTier().Name);
+
+                s.SetDefaultFeeTier(ForwardPolicy.FeeTier.VERY_FAST);
+                ok &= Check(log, "written tier survives a reload", "VERY_FAST",
+                            new WalletSettings(dir).DefaultFeeTier().Name);
+
+                // Stored by NAME, never by position: a reordered tier list must
+                // not silently promote Normal to Very fast.
+                string raw = System.IO.File.ReadAllText(System.IO.Path.Combine(dir, WalletSettings.FILE));
+                ok &= Check(log, "stored as the tier name", "True",
+                            raw.Contains("VERY_FAST").ToString());
+
+                // An unknown name falls DOWN to the cheapest, never up. The
+                // safe direction for a fee nobody can read is less money.
+                System.IO.File.WriteAllText(System.IO.Path.Combine(dir, WalletSettings.FILE),
+                    "{\"v\":\"1\",\"feeTier\":\"LUDICROUS\"}");
+                ok &= Check(log, "an unknown tier name falls to Normal", "NORMAL",
+                            new WalletSettings(dir).DefaultFeeTier().Name);
+
+                // A file this app cannot parse must not be rewritten with
+                // defaults - that would destroy the evidence along with the
+                // setting (CLAUDE.md 7.1).
+                string keep = "{ this is not json";
+                System.IO.File.WriteAllText(System.IO.Path.Combine(dir, WalletSettings.FILE), keep);
+                var bad = new WalletSettings(dir);
+                ok &= Check(log, "unreadable file still yields Normal", "NORMAL", bad.DefaultFeeTier().Name);
+                ok &= Check(log, "unreadable file is reported as unreadable", "True",
+                            bad.LastLoadUnreadable.ToString());
+                ok &= Check(log, "unreadable file is left on disk untouched", keep,
+                            System.IO.File.ReadAllText(System.IO.Path.Combine(dir, WalletSettings.FILE)));
+
+                // Unknown keys survive a write, so a downgrade cannot silently
+                // drop a setting a later version added.
+                System.IO.File.WriteAllText(System.IO.Path.Combine(dir, WalletSettings.FILE),
+                    "{\"v\":\"1\",\"feeTier\":\"FAST\",\"somethingNewer\":\"keep me\"}");
+                var s2 = new WalletSettings(dir);
+                s2.SetDefaultFeeTier(ForwardPolicy.FeeTier.NORMAL);
+                string after = System.IO.File.ReadAllText(System.IO.Path.Combine(dir, WalletSettings.FILE));
+                ok &= Check(log, "an unknown key survives a write", "True", after.Contains("keep me").ToString());
+                ok &= Check(log, "the written tier is the new one", "NORMAL", new WalletSettings(dir).DefaultFeeTier().Name);
+            }
+            catch (Exception ex)
+            {
+                ok &= Check(log, "wallet settings ran without throwing", "ok", ex.GetType().Name);
+            }
+            finally
+            {
+                try { System.IO.Directory.Delete(dir, true); } catch { }
+            }
+            return ok;
+        }
+#endif
 
         // ---------------------------------------------------------- amounts
 

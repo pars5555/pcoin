@@ -54,6 +54,10 @@ if not exist "%FW%\WPF\PresentationFramework.dll" (
   AddressBook.cs ^
   AddressBookStore.cs ^
   QrCode.cs ^
+  PaymentUri.cs ^
+  TxParties.cs ^
+  WalletSettingsForm.cs ^
+  WalletSettings.cs ^
   Bip39Wordlist.cs
 
 if errorlevel 1 exit /b 1

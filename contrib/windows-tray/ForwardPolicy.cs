@@ -347,6 +347,31 @@ namespace PCoinTray
         public int RawCount;
     }
 
+    /**
+     * Everything one transaction can say about itself, including who was on the
+     * other side. Filled by ForwardEngine.GetTxDetails.
+     *
+     * UnresolvedReason is null when the other side is known. It is a sentence
+     * fragment for the UI, NEVER an error: "not in a block yet" is a true
+     * statement about a perfectly healthy pending payment, and rendering it in
+     * red would frighten someone about nothing.
+     *
+     * BlockHeight is -1 when unknown, not 0 - height 0 is genesis, a real
+     * block, so a zero default would claim every pending payment was mined at
+     * the beginning of the chain.
+     */
+    class TxDetails
+    {
+        public string Txid = "";
+        public long Confirmations;
+        public long BlockHeight = -1;
+        public long TimeSec;
+        public long FeeSat;
+        public List<string> InputAddresses = new List<string>();
+        public List<string> OutputAddresses = new List<string>();
+        public string UnresolvedReason;
+    }
+
     class AddressFacts
     {
         public bool IsValid;
@@ -1131,19 +1156,32 @@ namespace PCoinTray
         // -------------------------------------------------------- address entry
 
         /**
-         * Strips the things people actually paste: surrounding whitespace, and a
-         * `pcoin:` URI prefix with any query string a wallet appended to it.
-         * Then folds an all-uppercase bech32 address to lower case.
+         * Strips the things people actually paste: surrounding whitespace, a
+         * payment-URI scheme with any query string a wallet appended to it, and
+         * an empty `//` authority. Then folds an all-uppercase bech32 address to
+         * lower case.
+         *
+         * The scheme list and its case-insensitive matching live in PaymentUri,
+         * which both this and the QR reader go through, so a spelling accepted
+         * from a scanned code is accepted from the clipboard too. This function
+         * deliberately does NOT apply PaymentUri's minimum length: it normalises
+         * whatever was typed so the field can show it and CheckAddress can
+         * reject it by name. PaymentUri.Parse answers the different question of
+         * whether a whole string is a payment at all.
          */
         public static string NormalizeAddress(string raw)
         {
             if (raw == null) return "";
-            string s = raw.Trim();
-            if (s.StartsWith("pcoin:", StringComparison.Ordinal)) s = s.Substring(6);
-            else if (s.StartsWith("PCOIN:", StringComparison.Ordinal)) s = s.Substring(6);
+            string s = PaymentUri.StripScheme(raw);
             int q = s.IndexOf('?');
             if (q >= 0) s = s.Substring(0, q);
-            s = s.Trim();
+            return FoldUppercaseBech32(s.Trim());
+        }
+
+        /** IsUppercaseBech32's fold, exposed for PaymentUri. */
+        public static string FoldUppercaseBech32(string s)
+        {
+            if (s == null) return "";
             return IsUppercaseBech32(s) ? s.ToLowerInvariant() : s;
         }
 

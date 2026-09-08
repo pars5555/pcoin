@@ -293,6 +293,7 @@ namespace PCoinTray
         readonly ForwardStore _store;
         readonly ForwardEngine _engine;
         readonly AddressBookStore _book;
+        readonly WalletSettings _settings;
         readonly Form _sync = new Form();   // never shown; used to get onto the UI thread
         readonly ManualResetEvent _stop = new ManualResetEvent(false);
 
@@ -322,6 +323,7 @@ namespace PCoinTray
             _store = new ForwardStore(_dir);
             _engine = new ForwardEngine(_rpc, _store, () => SeedWallet.HD_WALLET, null, null);
             _book = new AddressBookStore(_dir);
+            _settings = new WalletSettings(_dir);
             _phrase = LoadPhrase();
 
             var force = _sync.Handle;   // realise the handle so BeginInvoke works
@@ -421,6 +423,7 @@ namespace PCoinTray
                 () => OnRecoveryPhrase(),
                 () => OnSetup(),
                 () => { try { Process.Start("explorer.exe", _dir); } catch { } },
+                () => OnSettings(),
                 () => Quit());
             _window.Show();
             _window.Apply(Snapshot());
@@ -755,7 +758,20 @@ namespace PCoinTray
                 return;
             }
             WarnIfBookUnreadable();
-            using (var f = new SendForm(_engine, _phrase.Wallet, _book, _phrase.Address0))
+            OpenSend("");
+        }
+
+        /**
+         * The send screen, optionally pre-filled with an address.
+         *
+         * The pre-fill only reaches the compose field: it is validated, priced
+         * and reviewed exactly like something typed by hand, because "this
+         * address came from your own history" is not evidence that it is the
+         * address you want to pay today.
+         */
+        void OpenSend(string prefillAddress)
+        {
+            using (var f = new SendForm(_engine, _phrase.Wallet, _book, _phrase.Address0, _settings, prefillAddress))
             {
                 f.ShowDialog();
             }
@@ -773,7 +789,22 @@ namespace PCoinTray
                                 "PCoin Wallet", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
-            using (var f = new HistoryForm(_engine, _phrase.Wallet, _book, BalanceTrustworthy))
+            string payTo;
+            using (var f = new HistoryForm(_engine, _phrase.Wallet, _book, BalanceTrustworthy, _phrase.Address0))
+            {
+                f.ShowDialog();
+                payTo = f.PayTo;
+            }
+            // History closed asking to pay someone. Opened here rather than
+            // from inside the history window so the send dialog is not stacked
+            // three modals deep behind a list nobody can see.
+            if (!string.IsNullOrEmpty(payTo)) OpenSend(payTo);
+        }
+
+        void OnSettings()
+        {
+            using (var f = new WalletSettingsForm(_settings, _dir, _datadir,
+                                                  _phrase != null ? _phrase.Wallet : SeedWallet.HD_WALLET))
             {
                 f.ShowDialog();
             }
