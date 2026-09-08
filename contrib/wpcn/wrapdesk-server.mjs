@@ -59,6 +59,40 @@ const PER_PERSON    = Number(process.env.WRAP_PER_PERSON || 250);
 const TOTAL_ALLOC   = Number(process.env.WRAP_TOTAL_ALLOC || 1500);
 const CONFIRMATIONS = Number(process.env.WRAP_CONFIRMATIONS || 100);
 
+// ── hCaptcha ────────────────────────────────────────────────────────────────
+// The desk takes no login: it asks for a BSC address and hands back a deposit
+// address. The PER_PERSON limit is keyed on the address typed into the form,
+// and BSC addresses are free and infinite, so that limit is farmable by anyone
+// with a loop. TOTAL_ALLOC is the real ceiling; this raises the cost of
+// approaching it from "nothing" to "a human per address".
+//
+// Both unset  -> the check is skipped and startup says so LOUDLY. A desk that
+//                silently stopped checking would look identical to one that is.
+// Configured  -> a missing or rejected token REFUSES, and so does an hCaptcha
+//                API we could not reach. Failing open would make the whole
+//                control decorative the moment their API had a bad minute, and
+//                "we could not check" is not "you passed" (§7.1).
+const HCAPTCHA_SITEKEY = process.env.HCAPTCHA_SITEKEY || '';
+const HCAPTCHA_SECRET  = process.env.HCAPTCHA_SECRET  || '';
+const HCAPTCHA_ON = Boolean(HCAPTCHA_SITEKEY && HCAPTCHA_SECRET);
+
+async function hcaptchaVerdict(token, ip) {
+  if (!token) return { ok: false, why: 'missing' };
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(), 10_000);
+  try {
+    const body = new URLSearchParams({ secret: HCAPTCHA_SECRET, response: token });
+    if (ip) body.set('remoteip', ip);
+    const r = await fetch('https://api.hcaptcha.com/siteverify',
+      { method: 'POST', body, signal: c.signal });
+    if (!r.ok) return { ok: false, why: 'unreachable' };
+    const j = await r.json();
+    return j.success ? { ok: true } : { ok: false, why: 'rejected' };
+  } catch {
+    return { ok: false, why: 'unreachable' };   // never 'rejected' -- we did not ask
+  } finally { clearTimeout(t); }
+}
+
 const RESERVE = process.env.WRAP_RESERVE || 'pc1q7hhzmdkkx0zjtzj6qkwmuvhlgwfqjrc6j2dk52';
 const TOKEN   = process.env.WPCN_TOKEN   || '0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1';
 const ISSUED  = Number(process.env.WPCN_ISSUED || 50000);
@@ -290,7 +324,7 @@ const ADD_TOKEN = `<p id="addtok" hidden style="margin:.75rem 0 0">
 
 const page = (title, active, body) => `<!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${esc(title)}</title><style>${CSS}</style></head><body>
+<title>${esc(title)}</title><style>${CSS}</style>${HCAPTCHA_ON ? '<script src="https://js.hcaptcha.com/1/api.js" async defer></script>' : ''}</head><body>
 <header><div class="wrap"><b>PCoin wrap desk</b><nav>${
  NAV.map(([h, l]) => `<a href="${h}"${h === active ? ' class="on"' : ''}>${l}</a>`).join('')
 }</nav></div></header>
@@ -329,6 +363,7 @@ not credit you.</label>
 <label>How much PCN do you want to wrap? (max ${PER_PERSON})</label>
 <input name="amount" type="number" step="0.00000001" min="0.00000001"
  max="${PER_PERSON}" placeholder="e.g. 100" required>
+${HCAPTCHA_ON ? `<div class="h-captcha" data-sitekey="${HCAPTCHA_SITEKEY}" data-theme="dark" style="margin:.9rem 0"></div>` : ''}
 <button type="submit">Get my deposit address</button>
 </form></div>
 
@@ -885,6 +920,18 @@ createServer(async (req, res) => {
             may wrap. The limit is <b>${PER_PERSON} PCN</b>, across every deposit you
             make &mdash; not per deposit. Enter ${PER_PERSON} or less.</p>`));
 
+      if (HCAPTCHA_ON) {
+        const v = await hcaptchaVerdict(f.get('h-captcha-response'), ip);
+        if (!v.ok) {
+          return send(v.why === 'unreachable' ? 503 : 400, home(v.why === 'unreachable'
+            ? `<p class="err">We could not reach the anti-bot check just now, so this
+               request was not accepted. Nothing is wrong with your details &mdash;
+               please try again in a minute.</p>`
+            : `<p class="err">Please complete the &ldquo;I am human&rdquo; check and
+               submit again.</p>`));
+        }
+      }
+
       const st = load();
       const key = bsc.toLowerCase();
 
@@ -1106,4 +1153,12 @@ Times are estimates: PCoin blocks average ten minutes but vary a lot.</p>`));
 }).listen(PORT, '127.0.0.1', () => {
   console.log(`wrapdesk on 127.0.0.1:${PORT}, ${pool.length} addresses, ` +
               `fee ${FEE_PCT}%, cap ${PER_PERSON}/person`);
+  console.log(`  allocation ${TOTAL_ALLOC} wPCN total, enforced`);
+  // Say which state we are in, every start. "The captcha is on" must never be
+  // something anyone infers from the config file they think they deployed.
+  if (HCAPTCHA_ON) console.log('  hCaptcha ON');
+  else console.warn('[wrapdesk] WARNING: hCaptcha is OFF -- HCAPTCHA_SITEKEY and ' +
+                    'HCAPTCHA_SECRET are not both set. The per-person limit is keyed on ' +
+                    'a BSC address, which is free to generate, so nothing but the total ' +
+                    'allocation is stopping automated farming.');
 });
