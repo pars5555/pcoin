@@ -257,3 +257,48 @@ needs reversing is not.
 * **No user balances.** Each project keeps its own. This service owns only the
   claim ledger, which is what stops two projects banking one payment.
 * **No key, no custody, no outbound transaction.** Ever.
+
+---
+
+## Rollout status — 2026-09-08
+
+All six PCoin services that accept PCN now hold a verifier token, and every one
+of them authenticates: `GET /claims?user_ref=…` returns `{"ok":true,"project":
+"<name>","claims":[]}`, while an invalid token returns 401. That 401 is what
+makes *accepted* distinguishable from merely *reachable*, and it is the check to
+run before believing any report — including one from the project itself.
+
+| service | rail armed? |
+|---|---|
+| `checker.pc.am` | yes |
+| `webbuilderbot` | yes |
+| `3dmodels.pc.am` | yes |
+| `3dmodel.oonak.ai` | yes |
+| `aicontrol.pc.am` | token installed, `enabled` still false |
+| `webai.pc.am` | token installed, `enabled` still false |
+
+**`wpcn_payments` is 0 rows everywhere.** Nothing has been paid in wPCN yet, so
+the two checks that need a real payment are still owed on every rail: that the
+rate lands *stamped on the row* (`credited_rate_usd`), and that submitting the
+same hash twice credits exactly once — verified by reading the **balance**, not
+the reply message.
+
+### Two things worth carrying forward
+
+**Every one of these rails shipped a `claims()` that could never work**, because
+they all vendored the same broken client (fixed in `891bac4`: the PHP copy set
+`CURLOPT_POSTFIELDS` unconditionally, which switches curl to POST even when the
+body is null and which `CURLOPT_POST => false` does not undo; both copies then
+demanded a `state` field that a `/claims` reply does not carry). One mistake,
+copied six times — the same shape as the `blocks_unwound` gate that stopped
+every PCN rail for three and a half days. **A shared client is a shared bug, and
+vendoring means upstream fixes do not reach you either.** The projects that
+handled this best added an assertion against *what their copy actually puts on
+the wire* — one stood up a loopback HTTP server and checked the request line —
+and then proved it fires by restoring the old client and watching it go red.
+
+**It failed safe, which is why nobody saw it.** A broken `claims()` refuses
+rather than double-credits, so the rails looked quiet instead of wrong. It would
+have surfaced at the worst moment: the heal path that returns a customer's money
+after a lost write could never heal, and the token-install probe would have
+rejected a perfectly valid token while blaming the token.
