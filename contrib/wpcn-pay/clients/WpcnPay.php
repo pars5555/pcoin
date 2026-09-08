@@ -57,10 +57,17 @@ final class WpcnPay
         return $this->post('/verify', ['txhash' => $txhash, 'user_ref' => $userRef]);
     }
 
-    /** Every claim banked to this project for one user. Read-only. */
+    /**
+     * Every claim banked to this project for one user. Read-only.
+     *
+     * Returns ['ok' => true, 'project' => …, 'claims' => [...]] on success, or
+     * ['state' => 'unreadable', …] if we could not get an answer. It does NOT
+     * return a verify-shaped reply, because /claims carries no 'state' — see
+     * the shape note on request().
+     */
     public function claims(string $userRef): array
     {
-        return $this->get('/claims?user_ref=' . rawurlencode($userRef));
+        return $this->get('/claims?user_ref=' . rawurlencode($userRef), 'claims');
     }
 
     /**
@@ -98,29 +105,57 @@ final class WpcnPay
 
     private function post(string $path, array $body): array
     {
-        return $this->request($path, json_encode($body, JSON_THROW_ON_ERROR));
+        return $this->request($path, json_encode($body, JSON_THROW_ON_ERROR), 'verify');
     }
 
-    private function get(string $path): array
+    private function get(string $path, string $shape = 'verify'): array
     {
-        return $this->request($path, null);
+        return $this->request($path, null, $shape);
     }
 
-    private function request(string $path, ?string $body): array
+    /**
+     * @param string $shape which endpoint's reply we are validating.
+     *
+     * THIS USED TO BE ONE RULE FOR BOTH, AND IT WAS WRONG. /verify answers with
+     * a top-level 'state'; /claims answers ['ok', 'project', 'claims'] and has
+     * no 'state' at all. Demanding one turned every SUCCESSFUL /claims call
+     * into 'unreadable' — which silently disabled the heal path in
+     * INTEGRATION.md §9, the one that returns a customer's money after our own
+     * write was lost. It failed safe (refused rather than double-credited), so
+     * nothing broke loudly; it simply could never work. Found by the webai and
+     * 3dmodel teams on 2026-09-08, both by reading the code rather than
+     * trusting it.
+     */
+    private function request(string $path, ?string $body, string $shape = 'verify'): array
     {
         $ch = curl_init($this->endpoint . $path);
         $headers = ['Authorization: Bearer ' . $this->token, 'Accept: application/json'];
         if ($body !== null) {
             $headers[] = 'Content-Type: application/json';
         }
-        curl_setopt_array($ch, [
+        $opts = [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT        => $this->timeoutS,
             CURLOPT_CONNECTTIMEOUT => 15,
             CURLOPT_HTTPHEADER     => $headers,
-            CURLOPT_POST           => $body !== null,
-            CURLOPT_POSTFIELDS     => $body,
-        ]);
+        ];
+        // CURLOPT_POSTFIELDS is set ONLY when there is a body.
+        //
+        // Setting it at all — even to null — switches curl to POST, and
+        // CURLOPT_POST => false does not undo that. This client therefore sent
+        // "POST /claims" for its whole life, which the verifier answers with
+        // 404 "no such endpoint". Combined with the reply-shape bug fixed
+        // above, GET /claims could never succeed, and the heal path in
+        // INTEGRATION.md §9 was unreachable in every PHP integration.
+        // Confirmed by dumping CURLINFO_HEADER_OUT rather than by reasoning
+        // about the flags.
+        if ($body !== null) {
+            $opts[CURLOPT_POST]       = true;
+            $opts[CURLOPT_POSTFIELDS] = $body;
+        } else {
+            $opts[CURLOPT_HTTPGET] = true;
+        }
+        curl_setopt_array($ch, $opts);
         $raw  = curl_exec($ch);
         $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $err  = curl_error($ch);
@@ -133,16 +168,22 @@ final class WpcnPay
             return ['state' => self::UNREADABLE, 'message' => $err ?: 'transport failed'];
         }
         $j = json_decode((string) $raw, true);
-        // A body we cannot parse is not an answer either. In particular it is not
-        // an empty result set, which is how a proxy error page becomes "no payment".
-        if (!is_array($j) || !isset($j['state'])) {
-            return ['state' => self::UNREADABLE, 'message' => 'unparseable reply (HTTP ' . $code . ')'];
-        }
+
         // 401/403/404 mean the CALLER is misconfigured, which is a deployment bug,
         // not a customer's failed payment. Surface it as unreadable so nothing is
-        // resolved, and log it loudly on your side.
+        // resolved, and log it loudly on your side. Checked BEFORE the shape test
+        // so a rejection reports why, instead of arriving as a vague "unparseable".
         if ($code === 401 || $code === 403 || $code === 404) {
             return ['state' => self::UNREADABLE, 'message' => 'verifier rejected this client (HTTP ' . $code . ')'];
+        }
+
+        // A body we cannot parse is not an answer either. In particular it is not
+        // an empty result set, which is how a proxy error page becomes "no payment".
+        $wellFormed = $shape === 'claims'
+            ? (is_array($j) && ($j['ok'] ?? null) === true && isset($j['claims']) && is_array($j['claims']))
+            : (is_array($j) && isset($j['state']) && is_string($j['state']));
+        if (!$wellFormed) {
+            return ['state' => self::UNREADABLE, 'message' => 'unparseable reply (HTTP ' . $code . ')'];
         }
         return $j;
     }

@@ -54,12 +54,29 @@ export class WpcnPay {
     return this.#request('/verify', { txhash, user_ref: String(userRef) });
   }
 
-  /** Every claim banked to this project for one user. Read-only. */
+  /**
+   * Every claim banked to this project for one user. Read-only.
+   *
+   * Returns { ok: true, project, claims: [...] } on success, or an object with
+   * state 'unreadable' if we could not get an answer. It does NOT return a
+   * verify-shaped reply, because /claims has no 'state' -- see the shape note
+   * in #request.
+   */
   claims(userRef) {
-    return this.#request('/claims?user_ref=' + encodeURIComponent(String(userRef)), null);
+    return this.#request('/claims?user_ref=' + encodeURIComponent(String(userRef)), null, 'claims');
   }
 
-  async #request(path, body) {
+  // shape: which endpoint's reply we are validating.
+  //
+  // THIS USED TO BE ONE RULE FOR BOTH, AND IT WAS WRONG. /verify answers with a
+  // top-level 'state'; /claims answers { ok, project, claims: [] } and has no
+  // 'state' at all. Demanding one turned every SUCCESSFUL /claims call into
+  // 'unreadable' -- which silently disabled the heal path in INTEGRATION.md 9,
+  // the one that returns a customer's money after our own write was lost. It
+  // failed safe (refused rather than double-credited), so nothing broke loudly;
+  // it just could never work. Found by the webai and 3dmodel teams on
+  // 2026-09-08, both reading the code rather than trusting it.
+  async #request(path, body, shape = 'verify') {
     let res;
     try {
       res = await fetch(this.endpoint + path, {
@@ -80,15 +97,21 @@ export class WpcnPay {
     let j = null;
     try { j = await res.json(); } catch { /* fall through */ }
 
-    // A body we cannot parse is not an answer either. In particular it is not an
-    // empty result, which is how a proxy error page becomes "no payment".
-    if (!j || typeof j.state !== 'string') {
-      return { state: STATE.UNREADABLE, message: `unparseable reply (HTTP ${res.status})` };
-    }
     // 401/403/404 mean the CALLER is misconfigured -- a deployment bug, not a
     // customer's failed payment. Resolve nothing, and log it loudly your side.
+    // Checked BEFORE the shape test, so a rejection reports why rather than
+    // arriving as a vague "unparseable".
     if ([401, 403, 404].includes(res.status)) {
       return { state: STATE.UNREADABLE, message: `verifier rejected this client (HTTP ${res.status})` };
+    }
+
+    // A body we cannot parse is not an answer either. In particular it is not an
+    // empty result, which is how a proxy error page becomes "no payment".
+    const wellFormed = shape === 'claims'
+      ? (j && j.ok === true && Array.isArray(j.claims))
+      : (j && typeof j.state === 'string');
+    if (!wellFormed) {
+      return { state: STATE.UNREADABLE, message: `unparseable reply (HTTP ${res.status})` };
     }
     return j;
   }
