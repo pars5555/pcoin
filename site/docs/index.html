@@ -98,6 +98,7 @@
       <li><a href="#sweep">Getting the money out</a></li>
       <li><a href="#testing">Testing before you go live</a></li>
       <li><a href="#checklist">Go-live checklist</a></li>
+      <li><a href="#wpcn">Accepting wPCN (BEP-20)</a></li>
     </ol>
   </div>
 
@@ -377,14 +378,14 @@ node pcoin-seed-vault.mjs new --system myapp</code></pre>
 
   <table>
     <tr><th>Gate</th><th>Value</th><th>Why</th></tr>
-    <tr><td>confirmations</td><td><strong>6</strong></td><td>reorgs of a block or two are routine on a chain this small; the explorer counts them</td></tr>
+    <tr><td>confirmations</td><td><strong>3</strong></td><td>reorgs of a block or two are routine on a chain this small; the explorer counts them</td></tr>
     <tr><td>deposit height</td><td>&ge; 2800</td><td>below it difficulty is frozen</td></tr>
     <tr><td>coinbase maturity</td><td>100</td><td>mined output, not spendable sooner</td></tr>
     <tr><td>index health</td><td><code>index.stale == false</code> and <code>blocks_behind == 0</code></td><td><code>blocks_unwound</code> and <code>reorg_count</code> are lifetime counters, not health &mdash; they only ever grow</td></tr>
     <tr><td>minimum deposit</td><td>your call</td><td>ignore dust rather than write a row per satoshi</td></tr>
   </table>
 
-  <p>All three production integrations run <strong>3 confirmations</strong> — about half an
+  <p>All six production integrations run <strong>3 confirmations</strong> — about half an
   hour at the 600&nbsp;s target, less when the chain runs fast. Several also corroborate
   every deposit above $0.05 against a second, independent explorer, which is the better
   defence at a shallow depth. Make it a config value,
@@ -812,7 +813,106 @@ bitcoin-cli unloadwallet sweep-tmp</code></pre>
     <li>Tested against the <strong>live</strong> chain, including a real end-to-end credit</li>
   </ul>
 
-  <h2>Chain reference</h2>
+  <h2 id="wpcn">15. Accepting wPCN, the BEP-20 wrapper</h2>
+    <p>Everything above is about <strong>PCN</strong> on its own chain. <strong>wPCN</strong>
+    is the same coin wrapped as a BEP-20 token on BNB Smart Chain, backed 1:1 by PCN
+    in a public reserve. Taking it is a second, much smaller integration, and it does
+    <em>not</em> reuse the deposit-address model above.</p>
+
+    <p><strong>Paying in wPCN earns 10% more credit than the same value in PCN.</strong>
+    That is deliberate: to get the bonus a customer has to buy wPCN on PancakeSwap, which
+    is demand the token does not otherwise have.</p>
+
+    <h3>Why a transaction hash, not an address per customer</h3>
+    <p>This is the first question everyone asks, so: we tried, and the chain will not
+    support it.</p>
+    <table>
+      <tr><th></th><th>PCN (above)</th><th>wPCN on BSC</th></tr>
+      <tr><td>tell payers apart</td><td>one address each</td><td><strong>BEP-20 has no memo field</strong></td></tr>
+      <tr><td>move funds out</td><td>free</td><td>every address needs <strong>BNB for gas first</strong></td></tr>
+      <tr><td>watch for deposits</td><td>explorer index</td><td><code>eth_getLogs</code>, which public BSC RPCs <strong>refuse</strong></td></tr>
+    </table>
+    <p>Measured 2026-09-08 against <code>bsc-dataseed.binance.org</code>, filtered to the
+    wPCN contract alone, <strong>every</strong> range was rejected &mdash; including a
+    single block:</p>
+<pre>span 1 block     -&gt; ERROR: limit exceeded
+span 50 blocks   -&gt; ERROR: limit exceeded
+span 500 blocks  -&gt; ERROR: limit exceeded
+span 5000 blocks -&gt; ERROR: limit exceeded</pre>
+    <p>So address-watching on BSC means a paid RPC subscription or your own node, and
+    per-customer addresses mean funding thousands of them with BNB before a single
+    payment can be swept. <code>eth_getTransactionReceipt</code> for one hash is still
+    free everywhere. The customer pastes the hash instead: one extra form field removes
+    the gas problem, the sweeping problem and the indexing problem together.</p>
+
+    <h3>The verifier</h3>
+    <p>You do not talk to BNB Smart Chain yourself. One shared service does, and it owns
+    the claim ledger &mdash; so a transaction hash can be banked exactly once across every
+    integration, and you never have to ask whether somebody else already took it.</p>
+<pre>POST https://wpcnpay.pc.am/verify
+Authorization: Bearer &lt;your token&gt;
+Content-Type: application/json
+
+{ "txhash": "0x&64 hex&", "user_ref": "&lt;your user id&gt;" }</pre>
+    <table>
+      <tr><th>HTTP</th><th><code>state</code></th><th>What you do</th></tr>
+      <tr><td>200</td><td><code>credited</code></td><td>credit <code>usd_total</code>, once</td></tr>
+      <tr><td>200</td><td><code>already_claimed</code></td><td>credit <strong>nothing</strong>; <code>yours</code> says if it was you</td></tr>
+      <tr><td>200</td><td><code>pending</code></td><td>not on chain yet &mdash; let them retry</td></tr>
+      <tr><td>200</td><td><code>confirming</code></td><td>seen, too shallow; show the count</td></tr>
+      <tr><td>200</td><td><code>no_payment</code></td><td>real transaction, paid us nothing</td></tr>
+      <tr><td>200</td><td><code>reverted</code></td><td>failed on chain</td></tr>
+      <tr><td>200</td><td><code>reorged</code></td><td>block no longer canonical &mdash; do not credit</td></tr>
+      <tr><td>400</td><td><code>bad_request</code></td><td>malformed hash</td></tr>
+      <tr><td>401</td><td>&mdash;</td><td>your token is wrong. A <em>deployment</em> bug, not a payment failure</td></tr>
+      <tr><td><strong>503</strong></td><td><code>unreadable</code></td><td><strong>we could not look.</strong> Resolve nothing</td></tr>
+    </table>
+    <p>Section 6 applies here unchanged, and this is where it bites hardest:
+    <code>unreadable</code> does not mean &ldquo;you did not pay&rdquo;. It means the
+    question is unanswered. Telling a paying customer &ldquo;no payment found&rdquo;
+    because a network call failed is how you convince someone they were robbed.</p>
+
+    <h3>What changes in your ledger</h3>
+    <p>The <code>(txid, address)</code> rule from section 7 becomes
+    <strong><code>(txhash, log_index)</code></strong>. Not the hash alone: one BSC
+    transaction can carry several <code>Transfer</code> logs, and keying on the hash
+    silently <em>drops</em> the second rather than erroring &mdash; the same shape as the
+    <code>(txid, vout)</code> bug every early PCN integration shipped.</p>
+<pre>UNIQUE KEY `uniq_claim` (`txhash`, `log_index`)</pre>
+    <p>Insert that row and credit the balance <strong>in one transaction</strong>, with
+    <code>SELECT & FOR UPDATE</code> on the balance row. If the insert hits the unique key
+    you have already credited it: credit nothing and report success. Stamp
+    <code>credited_rate_usd</code> exactly as in section 7 &mdash; the verifier returns the
+    rate it used, and that is the one to store.</p>
+
+    <h3>Two things a wallet will get wrong unprompted</h3>
+    <ul>
+      <li><strong>Network: BNB Smart Chain (BEP-20).</strong> Say it loudly on the payment
+      page. wPCN sent on Ethereum or Tron is gone.</li>
+      <li><strong>wPCN has 8 decimals</strong>, not the 18 that almost every BEP-20 uses.
+      Anything that guesses will be wrong by a factor of 10<sup>10</sup>.</li>
+    </ul>
+    <p>Read the payment address from <code>GET https://wpcnpay.pc.am/health</code> rather
+    than hardcoding it, so it can be rotated without redeploying every integration.</p>
+
+    <h3>Before you go live</h3>
+    <p>The section 13 discipline applies, plus one test nobody runs unless told to:
+    <strong>make the verifier unreachable</strong> &mdash; block it, or point the client at
+    a dead port &mdash; and prove your page says &ldquo;could not check, try again&rdquo;
+    and writes nothing. A working reference integration clears this bar:</p>
+<pre>wrong token                   -&gt; unreadable
+dead port                     -&gt; unreadable
+wrong endpoint (an HTML page) -&gt; unreadable    &lt;- not "no payment"
+malformed hash                -&gt; bad_request
+nonexistent hash              -&gt; pending       &lt;- NOT no_payment
+rows written during all of the above: 0</pre>
+    <p>The full implementation brief, and drop-in PHP and Node clients you should copy
+    rather than reimplement, are in
+    <a href="https://github.com/pars5555/pcoin/tree/main/contrib/wpcn-pay">contrib/wpcn-pay</a>.
+    Ask us for a project token.</p>
+
+    <h2>Chain reference</h2>
+
   <table>
     <tr><th>Item</th><th>Value</th></tr>
     <tr><td>Proof of work</td><td>RandomX (CPU)</td></tr>
