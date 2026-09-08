@@ -204,10 +204,27 @@ for target in $TARGETS; do
   [ "$changed" = "0" ] && continue
 
   # ---- verify against the PUBLIC url, not the file we just wrote ----
+  #
+  # Cloudflare REWRITES the HTML on the way out, so a raw byte comparison is
+  # wrong. Email Address Obfuscation turns every mailto: into a
+  # /cdn-cgi/l/email-protection link plus a decoder script. That changed the
+  # served page the moment pc.am published a contact address, and would have
+  # made this check warn on every deploy from then on.
+  #
+  # A check that cries wolf is a check people stop reading, so normalise the
+  # transforms we KNOW Cloudflare applies, then compare the rest byte for
+  # byte. Anything Cloudflare does that is NOT listed here still fails the
+  # check, which is the point.
   sleep 1
-  local_sum=$(sha256sum "$docroot/index.html" 2>/dev/null | cut -d' ' -f1)
-  live_sum=$(curl -fsSL --max-time 30 -H 'Cache-Control: no-cache' "$public/" 2>/dev/null \
-             | sha256sum | cut -d' ' -f1)
+  normalise() {
+    sed -e 's#/cdn-cgi/l/email-protection#MAILTO#g' \
+        -e 's#data-cfemail="[0-9a-f]*"##g' \
+        -e '/email-decode/d' \
+        -e 's#mailto:[^"]*#MAILTO#g'
+  }
+  local_sum=$(normalise < "$docroot/index.html" 2>/dev/null | sha256sum | cut -d' ' -f1)
+  live_sum=$(curl -fsSL --max-time 30 -H "Cache-Control: no-cache" "$public/" 2>/dev/null \
+             | normalise | sha256sum | cut -d' ' -f1)
   if [ "$local_sum" = "$live_sum" ]; then
     say "   verified: $public serves the deployed bytes"
   else
@@ -215,6 +232,7 @@ for target in $TARGETS; do
     say "   WARNING: $public does NOT match the file on disk."
     say "     on disk: $local_sum"
     say "     served : $live_sum"
+    say "   (both normalised for Cloudflare email obfuscation)"
     say "   Usually a Cloudflare cache; purge it, or wait and re-check. It can"
     say "   also mean another process rewrote the file after this deploy."
   fi
