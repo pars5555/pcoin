@@ -275,12 +275,17 @@ async function cmdNew(system, chain = 'pcn') {
   if (decrypt(blob, pass) !== mnemonic) die('Encrypted copy failed to round-trip. Nothing written.');
 
   writeFileSync(blobFile, JSON.stringify(blob, null, 2) + '\n');
-  writeFileSync(xpubFile, xpub + '\n');
+  // What the server actually needs differs by chain, and the filename says which.
+  // A PCN system derives a POOL of receive addresses, so it needs the account
+  // xpub. An EVM payment address is one address, used forever -- writing an xpub
+  // into a file called "-evm-address.txt" is a trap for whoever opens it next,
+  // and it shipped that way on 2026-09-08.
+  writeFileSync(xpubFile, (evm ? addr0 : xpub) + '\n');
 
   console.log('\n  Wrote:');
-  console.log('    ' + xpubFile + '   -> the server. Public, cannot spend.');
+  console.log('    ' + xpubFile + (evm ? '   -> the server. The address itself.' : '   -> the server. Public, cannot spend.'));
   console.log('    ' + blobFile + '  -> BOTH vault hosts. Encrypted.');
-  console.log('\n  Account path : ' + ACCOUNT_PATH);
+  console.log('\n  Account path : ' + (evm ? ACCOUNT_PATH_EVM + '/0/0' : ACCOUNT_PATH));
   console.log('  Address #0   : ' + addr0);
   console.log('  Blob SHA-256 : ' + createHash('sha256').update(readFileSync(blobFile)).digest('hex'));
   console.log('\n  Check address #0 against your wallet app before importing a pool.');
