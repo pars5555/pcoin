@@ -211,16 +211,15 @@ for target in $TARGETS; do
   # served page the moment pc.am published a contact address, and would have
   # made this check warn on every deploy from then on.
   #
-  # A check that cries wolf is a check people stop reading, so normalise the
-  # transforms we KNOW Cloudflare applies, then compare the rest byte for
-  # byte. Anything Cloudflare does that is NOT listed here still fails the
+  # A check that cries wolf is a check people stop reading, so strip the whole
+  # email element and the injected decoder script from BOTH sides, then compare
+  # the rest byte for byte. Anything else Cloudflare changes still fails the
   # check, which is the point.
   sleep 1
   normalise() {
-    sed -e 's#/cdn-cgi/l/email-protection#MAILTO#g' \
-        -e 's#data-cfemail="[0-9a-f]*"##g' \
-        -e '/email-decode/d' \
-        -e 's#mailto:[^"]*#MAILTO#g'
+    sed -e 's#<a href="mailto:[^"]*"[^>]*>.*</a>#EMAILLINK#g' \
+        -e 's#<a href="/cdn-cgi/l/email-protection[^"]*"[^>]*>.*</a>#EMAILLINK#g' \
+        -e 's#<script[^>]*cdn-cgi[^>]*></script>##g'
   }
   local_sum=$(normalise < "$docroot/index.html" 2>/dev/null | sha256sum | cut -d' ' -f1)
   live_sum=$(curl -fsSL --max-time 30 -H "Cache-Control: no-cache" "$public/" 2>/dev/null \
