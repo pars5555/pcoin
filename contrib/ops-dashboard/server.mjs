@@ -41,6 +41,8 @@ import { execFileSync } from 'node:child_process';
 
 const CONFIG = '/opt/pcoin-ops/config.json';
 const STATE  = '/opt/pcoin-ops/state.json';
+// Not in the repo: it names accounts and hosts, and this repository is public.
+const DEPS_FILE = process.env.PCOIN_OPS_DEPS || '/opt/pcoin-ops/dependencies.json';
 const PORT   = 8787;
 const EXPLORER = 'http://127.0.0.1:8080/api';   // the explorer runs on this box
 const GATE = 2800;
@@ -355,6 +357,60 @@ function page(title, body) {
 <title>${esc(title)}</title><style>${CSS}</style></head><body>${body}</body></html>`;
 }
 
+
+// ── dependencies ───────────────────────────────────────────────────────────
+// Every external account, service and wallet PCoin depends on, in one place,
+// so that "what else would break / who owns this / where is the credential"
+// has an answer that does not live in one person's head.
+//
+// IT HOLDS NO SECRETS, DELIBERATELY. Each row says WHERE the credential is,
+// never what it is. This page sits behind a password and a TOTP code, but
+// putting the actual keys here would make one phished code the end of the
+// estate, and it would contradict the standing rule that secrets live on D:
+// and the two vault hosts. A pointer is as useful for recovery and is worth
+// nothing to whoever steals it.
+//
+// The DATA is /opt/pcoin-ops/dependencies.json on the server, NOT in this
+// repo, because the repo is public and these are account names and hosts.
+// contrib/ops-dashboard/dependencies.example.json shows the shape.
+function dependenciesPage() {
+  let doc = null, err = null;
+  try { doc = JSON.parse(readFileSync(DEPS_FILE, 'utf8')); }
+  catch (e) { err = e.message; }
+
+  if (!doc) {
+    return shell('dependencies', 'Dependencies', null, `<div class="card">
+      <p class="bad">Cannot read ${esc(DEPS_FILE)}</p>
+      <p class="muted">${esc(String(err))}</p>
+      <p class="muted">This page renders a file that is deliberately not in the
+      repository. Copy <code>dependencies.example.json</code> to that path and
+      fill it in.</p></div>`);
+  }
+
+  const rows = (items) => items.map((r) => `<tr>
+    <td><b>${esc(r.name || '')}</b>${r.url ? `<br><a href="${esc(r.url)}" rel="noopener" class="muted">${esc(r.url)}</a>` : ''}</td>
+    <td>${esc(r.account || '—')}</td>
+    <td>${esc(r.purpose || '')}</td>
+    <td>${r.credential ? esc(r.credential) : '<span class="muted">none needed</span>'}</td>
+    <td class="muted">${esc(r.notes || '')}</td></tr>`).join('');
+
+  const sections = (doc.sections || []).map((s) => `
+    <h2 style="margin-top:26px">${esc(s.title)}</h2>
+    ${s.note ? `<p class="muted">${esc(s.note)}</p>` : ''}
+    <div class="card" style="padding:0;overflow-x:auto"><table class="tbl">
+      <thead><tr><th>What</th><th>Account / owner</th><th>Why we depend on it</th>
+      <th>Where the credential is</th><th>Notes</th></tr></thead>
+      <tbody>${rows(s.items || [])}</tbody></table></div>`).join('');
+
+  const n = (doc.sections || []).reduce((a, s) => a + (s.items || []).length, 0);
+  return shell('dependencies', 'Dependencies', `${n} entries · updated ${esc(doc.updated || 'unknown')}`, `
+    <div class="card"><p><b>This page contains no passwords, keys or seed
+    phrases, and it never should.</b> Every row points at where its credential
+    lives — <code>D:\pc.am\…</code> and the two vault hosts. That is enough to
+    recover from, and worth nothing to anyone who gets in here.</p></div>
+    ${sections}`);
+}
+
 const NAV = [
   ['Overview', [['.', 'dash', 'Dashboard']]],
   ['Chain',    [['./blocks', 'blocks', 'Blocks']]],
@@ -364,7 +420,8 @@ const NAV = [
   ['Money',    [['./fleet', 'fleet', 'Fleet balances'],
                 ['./payments', 'payments', 'Payment rails'],
                 ['./wrap', 'wrap', 'Wrap desk']]],
-  ['Account',  [['./security', 'security', 'Two-factor auth']]],
+  ['Account',  [['./security', 'security', 'Two-factor auth'],
+                ['./dependencies', 'dependencies', 'Dependencies']]],
 ];
 
 function shell(active, title, sub, inner) {
@@ -1110,6 +1167,7 @@ async function wrapPage() {
     if (path === '/fleet')    return send(200, 'text/html', await moneyPage(url, false));
     if (path === '/payments') return send(200, 'text/html', await moneyPage(url, true));
     if (path === '/wrap')     return send(200, 'text/html', await wrapPage());
+    if (path === '/dependencies') return send(200, 'text/html', dependenciesPage());
 
     if (path === '/security' && req.method === 'POST') {
       const f = new URLSearchParams(await body(req));

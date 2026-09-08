@@ -1,0 +1,20 @@
+{
+  "updated": "YYYY-MM-DD",
+  "_comment": "Shape only. The REAL file lives at /opt/pcoin-ops/dependencies.json on the ops host and is mirrored to D: and both vault hosts. It is deliberately NOT in this repo, because it names accounts and hosts and this repository is public. IT MUST NEVER CONTAIN A PASSWORD, KEY OR SEED PHRASE: the `credential` field says WHERE the credential is, never what it is.",
+  "sections": [
+    {
+      "title": "Domains, DNS and CDN",
+      "note": "Optional one-line note explaining why this group matters.",
+      "items": [
+        {
+          "name": "example.com (domain)",
+          "url": "https://example.com",
+          "account": "which login owns it",
+          "purpose": "what breaks if we lose it",
+          "credential": "D:/pc.am/SOME-FILE.md - a POINTER, never the value",
+          "notes": "gotchas worth knowing before anyone touches it"
+        }
+      ]
+    }
+  ]
+}
