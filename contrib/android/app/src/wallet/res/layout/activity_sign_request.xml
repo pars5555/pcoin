@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  A payment request that arrived from OUTSIDE the app.
+
+  The whole screen exists to answer one question before anything can happen:
+  WHO is asking you to send WHAT, and WHERE to. So the destination and the
+  amount are the largest things on it, above the buttons, and the origin of the
+  request is stated in plain words rather than implied.
+
+  There is deliberately no "Send" button here. The only forward action opens the
+  ordinary Send screen with the fields filled in, where the existing confirm and
+  the Keystore unlock still stand between the request and any money moving. An
+  exported screen that could itself spend would be the phishing surface the
+  manifest has always refused to create.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/canvas"
+    android:orientation="vertical">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingLeft="20dp"
+        android:paddingTop="20dp"
+        android:paddingRight="20dp"
+        android:paddingBottom="4dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/sr_title"
+            android:textColor="@color/ink"
+            android:textSize="26sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/sr_origin"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/sr_origin_unknown"
+            android:textColor="@color/ink_muted"
+            android:textSize="14sp" />
+    </LinearLayout>
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingLeft="20dp"
+            android:paddingTop="12dp"
+            android:paddingRight="20dp"
+            android:paddingBottom="20dp">
+
+            <TextView
+                android:id="@+id/sr_warn"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="18dp"
+                android:background="@drawable/btn_ghost"
+                android:padding="14dp"
+                android:text="@string/sr_warn"
+                android:textColor="@color/ink_muted"
+                android:textSize="14sp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/sr_amount_label"
+                android:textColor="@color/ink_muted"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/sr_amount"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:layout_marginBottom="18dp"
+                android:textColor="@color/ink"
+                android:textSize="30sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/sr_to_label"
+                android:textColor="@color/ink_muted"
+                android:textSize="13sp" />
+
+            <!-- Monospace and unbroken: an address the eye can compare is the
+                 only defence a person has against a lookalike destination. -->
+            <TextView
+                android:id="@+id/sr_address"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:layout_marginBottom="18dp"
+                android:fontFamily="monospace"
+                android:textColor="@color/ink"
+                android:textIsSelectable="true"
+                android:textSize="16sp" />
+
+            <TextView
+                android:id="@+id/sr_note"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp"
+                android:textColor="@color/ink_muted"
+                android:textSize="14sp"
+                android:visibility="gone" />
+        </LinearLayout>
+    </ScrollView>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingLeft="20dp"
+        android:paddingTop="8dp"
+        android:paddingRight="20dp"
+        android:paddingBottom="20dp">
+
+        <!-- Continue is NOT the primary-styled button and does not say "Send".
+             It says where it takes you, because the person tapping it is being
+             asked to keep going, not to pay. -->
+        <Button
+            android:id="@+id/sr_continue"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/btn_primary"
+            android:text="@string/sr_continue"
+            android:textAllCaps="false"
+            android:textColor="@color/on_brand"
+            android:textSize="16sp" />
+
+        <Button
+            android:id="@+id/sr_cancel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/btn_ghost"
+            android:text="@string/sr_cancel"
+            android:textAllCaps="false"
+            android:textColor="@color/ink"
+            android:textSize="16sp" />
+    </LinearLayout>
+</LinearLayout>

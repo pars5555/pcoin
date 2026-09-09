@@ -26,6 +26,11 @@
           the config change keeps one instance alive for the whole send.
         -->
         <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:label="@string/set_title" />
+
+        <activity
             android:name=".SendActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
             android:exported="false"
@@ -58,5 +63,34 @@
             android:exported="false"
             android:label="@string/scan_title"
             android:screenOrientation="portrait" />
+
+        <!--
+          THE ONLY EXPORTED SCREEN IN THIS APP, and the rule above still holds:
+          the SEND screen is not exported and must never be. This one is a
+          read-only review that cannot spend. It parses a `pcoin:` URI, shows
+          the destination and amount, and its single forward action opens Send
+          the ordinary way, where the existing review step and the Keystore
+          unlock both still stand between the request and any money moving.
+
+          It exists so the Telegram mini app can compose a payment without ever
+          holding a key: the request travels, the key stays in AndroidKeyStore.
+
+          `autoVerify` is deliberately absent: `pcoin:` is our own scheme, not
+          an http(s) link, so there is no domain to verify and nothing to claim
+          from another app. BROWSABLE is required for a link in a web page or a
+          chat to reach it at all.
+        -->
+        <activity
+            android:name=".SignRequestActivity"
+            android:exported="true"
+            android:label="@string/sr_title"
+            android:launchMode="singleTop">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="pcoin" />
+            </intent-filter>
+        </activity>
     </application>
 </manifest>

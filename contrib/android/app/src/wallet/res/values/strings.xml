@@ -52,6 +52,14 @@
     <string name="wallet_backup_body">Twelve words are the only way to get this wallet back if the phone is lost or the app is removed.</string>
     <string name="wallet_backup_action">Show my phrase</string>
 
+    <!-- Battery optimisation. Without the exemption Android kills the node
+         under memory pressure and then defers restarting it for hours, so the
+         balance needs a long catch-up sync every time the app is opened. -->
+    <string name="wallet_battery_title">Keep your balance up to date</string>
+    <string name="wallet_battery_body">Android is allowed to shut this app down in the background. When it does, your balance has to catch up with the network before it can be shown — which can take several minutes. Allowing it to run in the background keeps the balance ready the moment you open the app.</string>
+    <string name="wallet_battery_action">Allow background running</string>
+    <string name="wallet_battery_thanks">Done — your balance should be ready next time.</string>
+
     <!-- Shown in the same card once the phrase has been confirmed: no longer a
          nag, but still the only way back to the words. -->
     <string name="wallet_qr_description">QR code of your receiving address</string>
@@ -272,8 +280,67 @@
     <string name="book_empty">No names yet. Name an address after you pay it, or add one below.</string>
     <string name="book_add">Add an address</string>
     <string name="book_rename">Rename</string>
+    <!-- History search and filtering. Both narrow the rows already fetched
+         from the node; neither re-queries it. The "no matches" wording says
+         how many rows were actually searched, because saying "no matches"
+         over a partially loaded history is a confident wrong answer. -->
+    <string name="history_search_hint">Search address, transaction id or name</string>
+    <string name="history_filter_all">All</string>
+    <string name="history_filter_sent">Sent</string>
+    <string name="history_filter_received">Received</string>
+    <string name="history_copy_txid">Copy transaction id</string>
+    <string name="history_copy_address">Copy address</string>
+    <string name="history_copied_txid">Transaction id copied.</string>
+    <string name="history_copied_address">Address copied.</string>
+    <string name="history_no_matches">Nothing matches, across all %1$d transactions.</string>
+    <string name="history_no_matches_more">Nothing matches in the %1$d loaded so far. Scroll down to load more.</string>
+    <string name="history_count_filtered">%1$d of %2$d transactions.</string>
+    <string name="history_count_filtered_more">%1$d of the %2$d loaded so far. Scroll for more.</string>
+
+    <!-- Settings, and the warnings that live there. Every warning names what
+         it COSTS, not just what it is: "Android may stop this app" means
+         nothing to someone who does not know the app is a node. -->
+    <string name="set_title">Settings</string>
+    <string name="set_version">PCoin Wallet %1$s (%2$d)</string>
+    <string name="set_warn_header">Needs your attention</string>
+    <string name="set_warn_none">Nothing to fix. Android is letting the wallet keep up with the network.</string>
+    <plurals name="set_warn_some">
+        <item quantity="one">%1$d thing is stopping the wallet keeping up with the network.</item>
+        <item quantity="other">%1$d things are stopping the wallet keeping up with the network.</item>
+    </plurals>
+    <string name="set_pref_header">Preferences</string>
+    <string name="set_fee_title">Default sending speed</string>
+    <string name="set_fee_body">Which speed the send screen starts on. You can still change it for any individual payment.</string>
+
+    <string name="set_warn_battery_title">Background running is off</string>
+    <string name="set_warn_battery_body">Android is allowed to shut the wallet down to save memory. When it does, your balance has to catch up with the network before it can be shown, which can take several minutes.</string>
+    <string name="set_warn_battery_action">Allow background running</string>
+
+    <string name="set_warn_unused_title">"Pause app activity if unused" is on</string>
+    <string name="set_warn_unused_body">If you go a few months without opening the wallet, Android will stop it and take back its permissions. The node stops with it, so the next time you open the app it starts from a long way behind.</string>
+    <string name="set_warn_unused_action">Open app settings</string>
+
+    <string name="set_warn_notif_title">Notifications are blocked</string>
+    <string name="set_warn_notif_body">The wallet keeps its node running behind an ongoing notification. With notifications blocked, Android is far more likely to shut it down while you are not looking.</string>
+    <string name="set_warn_notif_action">Open notification settings</string>
+
+    <plurals name="warn_banner">
+        <item quantity="one">%1$d thing needs your attention</item>
+        <item quantity="other">%1$d things need your attention</item>
+    </plurals>
+    <string name="warn_banner_action">Open settings</string>
+
+    <string name="book_copy">Copy address</string>
+    <string name="book_send">Send to this address</string>
+    <string name="book_copied">Address copied.</string>
+    <string name="book_copy_failed">Could not reach the clipboard.</string>
     <string name="book_remove">Remove</string>
     <string name="book_pick_hint">Tap a name to pay it</string>
+    <!-- Shown when the book is opened to MANAGE it rather than to pick a
+         payee. Tapping a row does nothing here any more, so the old
+         "Tap a name to pay it" was telling the user to do something that
+         no longer works. -->
+    <string name="book_manage_hint">Copy, send, rename or remove with the buttons on each name.</string>
 
     <string name="book_recent_title">Paid, not named yet</string>
     <string name="book_recent_hint">Addresses this wallet has paid. Naming one here is the same as naming it after a payment.</string>
@@ -328,4 +395,18 @@
     <string name="send_save_body">Save it and you can pay it by name next time, without pasting anything.</string>
     <string name="send_saved_confirmation">Saved as %1$s</string>
     <string name="send_paid_named">You paid %1$s</string>
+
+    <!-- SignRequestActivity: a payment request that arrived from outside the app. -->
+    <string name="sr_title">Payment request</string>
+    <string name="sr_origin_unknown">This request came from outside the wallet.</string>
+    <string name="sr_origin_named">This request came from outside the wallet, via %1$s.</string>
+    <string name="sr_warn">Another app is asking you to send PCN. Nothing has been sent, and nothing can be sent from this screen. Read the address below and compare it with the one you expect.</string>
+    <string name="sr_amount_label">Amount requested</string>
+    <string name="sr_to_label">To this address</string>
+    <string name="sr_amount_unset">Not specified</string>
+    <string name="sr_unreadable_amount">Unreadable</string>
+    <string name="sr_unreadable">This request could not be read, so it is being refused rather than half-understood. Nothing has been sent. If you were expecting to pay someone, open Send yourself and enter the details by hand.</string>
+    <string name="sr_no_amount_note">No amount was requested, so you will enter one yourself on the next screen.</string>
+    <string name="sr_continue">Continue to Send</string>
+    <string name="sr_cancel">Cancel</string>
 </resources>
