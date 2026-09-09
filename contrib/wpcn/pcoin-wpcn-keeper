@@ -81,6 +81,18 @@ DEAD_BAND = float(os.environ.get("KEEPER_DEAD_BAND", 0.02))     # 2%
 SANITY_RATIO = float(os.environ.get("KEEPER_SANITY_RATIO", 5.0))
 
 DAILY_USDT_CAP = float(os.environ.get("KEEPER_DAILY_USDT_CAP", 25.0))
+
+# Whether the keeper may spend USDT buying wPCN back when the pool trades
+# BELOW the posted rate. Default on, for compatibility with how this ran
+# until 2026-09-09.
+#
+# Turning it OFF makes the keeper one-directional: it still sells wPCN into
+# a pool trading ABOVE the posted rate -- that earns USDT and needs no float
+# -- but it stops defending the downside. Buying back an unlimited supply
+# out of a small float is a countdown, not a defence, and a pool pinned
+# exactly level by our own money is not price discovery: it is a peg that
+# hides the absence of one. Selling pressure is allowed to move the price.
+BUY_ON = os.environ.get("KEEPER_BUY", "on").strip().lower() not in ("0", "off", "false", "no")
 DAILY_WPCN_CAP = float(os.environ.get("KEEPER_DAILY_WPCN_CAP", 2000.0))
 
 # Never spend the float to zero -- leave enough to keep operating and to make
@@ -296,6 +308,11 @@ def main() -> int:
     print(f"float                : {have_usdt:,.4f} USDT / {have_wpcn:,.2f} wPCN")
 
     buying = gap < 0                    # pool cheap -> buy wPCN -> price rises
+    if buying and not BUY_ON:
+        print("BUYING IS OFF (KEEPER_BUY=off) -- the pool is allowed to fall.")
+        print(f"pool ${pool:.8f} is {abs(gap) * 100:.2f}% below posted ${posted:.8f}. "
+              "Nothing bought. Selling into strength is still enabled.")
+        return 0
     if buying:
         want = solve_trade(u_res, w_res, posted, True)
         budget = min(want,
