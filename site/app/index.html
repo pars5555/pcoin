@@ -100,6 +100,16 @@
 
 <!-- ── CHAIN ──────────────────────────────────────────────────────────── -->
 <section id="chain" data-open>
+  <!-- Only rendered once an address has been remembered. Hidden by default so
+       a first-time visitor is not shown an empty box asking to be filled. -->
+  <div class="card" id="mine-card" hidden>
+    <h2>Your balance</h2>
+    <div class="big" id="mine-bal">&hellip;</div>
+    <div class="sub" id="mine-sub">&nbsp;</div>
+    <div class="row" style="margin-top:10px"><span class="k">Address</span>
+      <span class="v mono" id="mine-addr"></span></div>
+  </div>
+
   <div class="card">
     <h2>Rate</h2>
     <div class="big" id="rate">&hellip;</div>
@@ -131,7 +141,12 @@
       <button class="act" id="a-go">Check</button>
       <button class="act ghost" id="a-scan">Scan QR</button>
     </div>
-    <p class="note">Watch-only. This page holds no keys and cannot spend anything.</p>
+    <div class="btns">
+      <button class="act ghost" id="a-remember">Remember this address</button>
+    </div>
+    <p class="note">Watch-only. This page holds no keys and cannot spend anything.
+      Remembering an address stores it in this browser only &mdash; it never
+      leaves your device and it is not a wallet.</p>
   </div>
   <div id="a-out"></div>
 </section>
@@ -290,6 +305,8 @@ async function lookup(addr) {
               '" target="_blank" rel="noopener">full history on the explorer</a></p></div>';
     }
     $('a-out').innerHTML = html;
+    lastLookedUp = addr;
+    renderRememberButton();
     try { localStorage.setItem('pcn.addr', addr); } catch (e) { /* private mode */ }
   } catch (e) {
     $('a-out').innerHTML = '<div class="card"><p class="err">Could not look that up.</p>' +
@@ -310,13 +327,77 @@ $('a-scan').addEventListener('click', () => {
     return true;
   });
 });
+// ---- "remember my address" ----
+//
+// A bookmark, not a wallet. It is the address you asked about, kept in THIS
+// browser so you do not retype it; it carries no key and cannot authorise
+// anything. Said plainly on the page too, because "your balance" is exactly the
+// phrasing that makes people assume a wallet is involved.
+//
+// Every access is wrapped: localStorage throws outright in some embedded
+// webviews and in private mode, and a page that dies on a bookmark is worse
+// than one that forgets.
+let lastLookedUp = '';
+
+const getMine = () => { try { return localStorage.getItem('pcn.mine') || ''; } catch (e) { return ''; } };
+const setMine = (a) => { try { a ? localStorage.setItem('pcn.mine', a) : localStorage.removeItem('pcn.mine'); } catch (e) { /* ignore */ } };
+
+function renderRememberButton() {
+  const btn = $('a-remember');
+  const mine = getMine();
+  if (mine && mine === lastLookedUp) {
+    btn.textContent = 'Forget this address';
+    btn.dataset.mode = 'forget';
+  } else {
+    btn.textContent = 'Remember this address';
+    btn.dataset.mode = 'remember';
+  }
+  btn.hidden = !lastLookedUp;
+}
+
+$('a-remember').addEventListener('click', () => {
+  if (!lastLookedUp) return;
+  setMine($('a-remember').dataset.mode === 'forget' ? '' : lastLookedUp);
+  renderRememberButton();
+  loadMine();
+});
+
+/** The saved address's balance, on the Chain tab. Silent when nothing is saved. */
+async function loadMine() {
+  const mine = getMine();
+  const card = $('mine-card');
+  if (!mine) { card.hidden = true; return; }
+  card.hidden = false;
+  $('mine-addr').textContent = mine;
+  try {
+    const j = await getJson(EXPL + '/api/address/' + encodeURIComponent(mine));
+    const c = (j.balance && j.balance.confirmed) || {};
+    const immature = Number(c.immature_pcn || 0);
+    $('mine-bal').textContent = pcn(c.spendable_pcn || 0) + ' PCN';
+    $('mine-sub').textContent = immature > 0
+      ? 'spendable · plus ' + pcn(immature) + ' still maturing'
+      : 'spendable';
+  } catch (e) {
+    // Never a zero. An unreadable balance is not a balance of nothing, and on
+    // this page that distinction is the difference between "wait" and "panic".
+    $('mine-bal').textContent = FAIL;
+    $('mine-sub').innerHTML = '<span class="err">could not read it just now</span>';
+  }
+}
+
 try {
   const last = localStorage.getItem('pcn.addr');
   if (last) $('a-in').value = last;
 } catch (e) { /* private mode */ }
 
+// A remembered address is looked up on open, so the app answers "what do I
+// have" without being asked.
+if (getMine()) { $('a-in').value = getMine(); lookup(getMine()); }
+renderRememberButton();
+
 loadChain();
-setInterval(loadChain, 60000);
+loadMine();
+setInterval(() => { loadChain(); loadMine(); }, 60000);
 </script>
 </body>
 </html>
