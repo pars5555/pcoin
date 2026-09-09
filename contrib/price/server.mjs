@@ -133,6 +133,12 @@ const POOL_RPCS = ['https://bsc-dataseed.binance.org',
 // wPCN/WBNB when it is wPCN/USDT. Two balance reads cannot be misread.
 const BALANCE_OF = '0x70a08231';
 
+// Held-state alerting. In memory on purpose: after a restart the state is
+// re-confirmed over the next few polls rather than announced again.
+const HELD_CONFIRM_POLLS = Number(process.env.PCOIN_PRICE_HELD_CONFIRM || 3);
+let heldPending = null;
+let heldPendingPolls = 0;
+
 async function readPoolPriceUsd() {
   const call = async (rpc, token) => {
     const data = BALANCE_OF + '0'.repeat(24) + POOL_PAIR.slice(2).toLowerCase();
@@ -203,6 +209,56 @@ async function pollPool() {
     // window would answer null and read as "the pool cannot be reached".
     st.poolMedian = poolMedianUsd();
     st.poolHeldBy = poolStatus().limitedBy;
+
+    // Alert on CHANGE, and only once the new state has survived a few polls.
+    //
+    // Gating on change rather than on time is the lesson from the
+    // concentration watcher, which sent the same figure twenty-four times in
+    // eight hours and taught everyone to ignore it. The confirmation count is
+    // for the boundary: a pool sitting exactly on a brake would otherwise flip
+    // between held and not-held every minute and alert on each flip.
+    {
+      const held = st.poolHeldBy;
+      if (held === heldPending) heldPendingPolls += 1;
+      else { heldPending = held; heldPendingPolls = 1; }
+
+      if (heldPendingPolls >= HELD_CONFIRM_POLLS && held !== st.poolHeldAnnounced) {
+        const was = st.poolHeldAnnounced;
+        st.poolHeldAnnounced = held;
+        const med = st.poolMedian, ladder = st.ladderPrice, rate = st.serviceRate;
+        const pct = (a, b) => (b > 0 ? ((a - b) / b) * 100 : 0);
+        if (held) {
+          const why = {
+            floor: 'the published floor',
+            marketInterlock: "market.pc.am's 20% sale interlock",
+            dailyDrop: "one day's maximum fall",
+          }[held] || held;
+          await notify(
+            '⚠️ <b>The credit rate is being held ABOVE the pool</b>\n' +
+            `Stopped by: <b>${why}</b>\n\n` +
+            `pool (6h median) <code>$${Number(med).toFixed(8)}</code>\n` +
+            `serviceRate      <code>$${Number(rate).toFixed(8)}</code>  ` +
+            `(<b>${pct(rate, med) >= 0 ? '+' : ''}${pct(rate, med).toFixed(1)}%</b> above the pool)\n` +
+            `ladder ask       <code>$${Number(ladder).toFixed(8)}</code>\n\n` +
+            'While this lasts, buying wPCN on PancakeSwap, redeeming it 1:1 and ' +
+            'spending the PCN at a rail is profitable by that gap, and it is paid ' +
+            'out of market-hot.' +
+            (held === 'marketInterlock'
+              ? '\n\n<b>This one needs a decision.</b> The rate cannot follow the pool ' +
+                'any further without market.pc.am pausing every sale. Lowering the ' +
+                'LADDER is the only thing that moves it, and no automatic rule should ' +
+                'make that call.'
+              : '\n\nIt may clear on its own — ' +
+                (held === 'dailyDrop' ? 'the daily limit resets.' : 'the floor does not.')));
+        } else {
+          await notify(
+            '✅ <b>The credit rate has caught up with the pool</b>\n' +
+            `Was held by <b>${was}</b>; nothing is holding it now.\n` +
+            `serviceRate <code>$${Number(rate).toFixed(8)}</code>, ` +
+            `pool <code>$${Number(med).toFixed(8)}</code>.`);
+        }
+      }
+    }
     st.poolSampleCount = (st.poolSamples || []).length;
     try { save(st); } catch (e) { console.warn('[price] pool sample not saved:', e.message); }
     return { ok: true, price: r.price };
@@ -288,6 +344,10 @@ const DEFAULTS = {
   poolMedian: null,
   poolHeldBy: null,
   poolSampleCount: 0,
+  // The last held-state we ANNOUNCED. Explicitly null rather than absent:
+  // undefined would differ from null on the very first poll and announce a
+  // clearance that never happened.
+  poolHeldAnnounced: null,
 
   adminToken: '',
 };
