@@ -287,6 +287,26 @@ class Prefs(context: Context) {
         }
 
     /**
+     * Which fee tier the send screen starts on.
+     *
+     * AUTHORITATIVE INTENT, so commit() and not apply(): it is written only by
+     * the owner choosing it in Settings, and it decides what a payment costs.
+     *
+     * Stored as the enum NAME rather than its ordinal. An ordinal silently
+     * remaps if the enum is ever reordered -- "Normal" would become "Very
+     * fast" and every later send would quietly pay twenty times the fee, with
+     * nothing in the data to show it had happened. Reading back an unknown
+     * name falls to NORMAL, the cheapest tier, because the safe direction for
+     * an unreadable fee preference is down.
+     */
+    var defaultFeeTier: String
+        get() = sp.getString(KEY_DEFAULT_FEE_TIER, null) ?: DEFAULT_FEE_TIER
+        @Suppress("ApplySharedPref")
+        set(value) {
+            sp.edit().putString(KEY_DEFAULT_FEE_TIER, value).commit()
+        }
+
+    /**
      * Keep a copy of an address book blob that could not be parsed.
      *
      * Called before anything overwrites it, so a bad read can never be the
@@ -473,6 +493,8 @@ class Prefs(context: Context) {
         private const val KEY_HAS_LEGACY = "has_legacy_wallet"
         private const val KEY_NODE_REINDEX = "node_reindex_pending"
         private const val KEY_ADDRESS_BOOK = "address_book"
+        private const val KEY_DEFAULT_FEE_TIER = "default_fee_tier"
+        const val DEFAULT_FEE_TIER = "NORMAL"
         private const val KEY_ADDRESS_BOOK_CORRUPT = "address_book_corrupt"
 
         private const val KEY_FORWARD_ADDRESS = "forward_address"

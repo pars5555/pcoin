@@ -1,8 +1,11 @@
 package org.pcoin.miner
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -10,6 +13,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -98,18 +102,41 @@ class AddressBookActivity : AppCompatActivity() {
         val entries = AddressBook.ordered(store.load())
         savedRows.removeAllViews()
 
-        savedHint.text =
-            if (entries.isEmpty()) getString(R.string.book_empty)
-            else getString(R.string.book_pick_hint)
+        savedHint.text = when {
+            entries.isEmpty() -> getString(R.string.book_empty)
+            // Only the picking flow still pays on tap; saying so on the
+            // managing screen would describe a gesture that does nothing.
+            picking -> getString(R.string.book_pick_hint)
+            else -> getString(R.string.book_manage_hint)
+        }
 
         val inflater = LayoutInflater.from(this)
         for (e in entries) {
             val v = inflater.inflate(R.layout.row_book, savedRows, false)
             v.findViewById<TextView>(R.id.row_book_name).text = e.name
             v.findViewById<TextView>(R.id.row_book_address).text = e.address
-            v.findViewById<View>(R.id.row_book_tap).setOnClickListener { choose(e) }
+            val send = v.findViewById<ImageButton>(R.id.row_book_send)
+            v.findViewById<ImageButton>(R.id.row_book_copy).setOnClickListener { copyAddress(e) }
             v.findViewById<Button>(R.id.row_book_rename).setOnClickListener { promptRename(e) }
             v.findViewById<Button>(R.id.row_book_remove).setOnClickListener { confirmRemove(e) }
+
+            // TAPPING A ROW DOES NOTHING UNLESS WE WERE OPENED TO PICK ONE.
+            // Reading an address is what you are told to do BEFORE paying it,
+            // and it used to be the same gesture as paying it. Now only the
+            // plane icon sends.
+            //
+            // Picking is the exception and must stay: this screen is also
+            // opened from a send flow to choose a payee, and there the tap IS
+            // the choice. The send icon is hidden there -- you are already in
+            // the middle of a payment, so a second send button would either
+            // do nothing or start a second one.
+            if (picking) {
+                send.visibility = View.GONE
+                v.setOnClickListener { choose(e) }
+            } else {
+                send.setOnClickListener { choose(e) }
+                v.isClickable = false
+            }
             savedRows.addView(v)
         }
     }
@@ -120,6 +147,28 @@ class AddressBookActivity : AppCompatActivity() {
             finish()
         } else {
             startActivity(SendActivity.intentFor(this, entry.address))
+        }
+    }
+
+    /**
+     * Copy the ADDRESS, never the name.
+     *
+     * The name is the user's own note to themselves and means nothing to
+     * anyone else; pasting "exchange deposit" into a send field would be a
+     * silent failure. What goes on the clipboard is the thing that can be
+     * pasted somewhere useful.
+     */
+    private fun copyAddress(entry: AddressBook.Entry) {
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (cm == null) {
+            Toast.makeText(this, R.string.book_copy_failed, Toast.LENGTH_SHORT).show()
+            return
+        }
+        cm.setPrimaryClip(ClipData.newPlainText(entry.name, entry.address))
+        // Android 13+ shows its own copy confirmation; a toast on top of it is
+        // two notifications for one action.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            Toast.makeText(this, R.string.book_copied, Toast.LENGTH_SHORT).show()
         }
     }
 

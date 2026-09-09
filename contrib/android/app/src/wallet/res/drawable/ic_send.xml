@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Send: a paper plane pointing up-right.
+
+  Deliberately NOT an arrow. An arrow in a wallet is ambiguous — the history
+  screen uses direction to mean sent-vs-received, and reusing that shape for
+  the action button would make "send to this contact" look like a filter. The
+  plane is unmistakably an action.
+
+  ONE PATH, evenOdd. An earlier draft drew the fold as a white shape on top,
+  which only works on a white background: this icon is tinted and sits on a
+  button whose colour changes with the theme, so a hardcoded #FFFFFF would
+  have shown as a bright gash in dark mode. The fold is a HOLE instead, which
+  is transparent whatever it sits on.
+
+  fillColor is #000000 because every use site tints it — an icon carrying its
+  own colour cannot follow the button it sits on.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+    <path
+        android:fillColor="#000000"
+        android:fillType="evenOdd"
+        android:pathData="M21.5,2.5 L2.5,10.4 L9.8,13.4 L12.9,21.5 z M10.9,12.4 L17.9,5.4 L8.3,11.1 z" />
+</vector>

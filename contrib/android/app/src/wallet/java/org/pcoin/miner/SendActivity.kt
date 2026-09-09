@@ -98,6 +98,14 @@ class SendActivity : AppCompatActivity() {
     private lateinit var doneButton: Button
 
     private var sendMax = false
+    /**
+     * Starts on whatever Settings says, not always Normal.
+     *
+     * Read once, here, rather than on every render: a preference change made
+     * mid-compose must not silently move the fee under a payment the owner is
+     * already reviewing. An unreadable value falls to NORMAL -- the safe
+     * direction for a fee we cannot read is down, never up.
+     */
     private var feeTier = ForwardPolicy.FeeTier.NORMAL
     private var prepared: ForwardEngine.Prepared? = null
     private var busy = false
@@ -220,6 +228,13 @@ class SendActivity : AppCompatActivity() {
         feeNormalButton.setOnClickListener { setFeeTier(ForwardPolicy.FeeTier.NORMAL) }
         feeFastButton.setOnClickListener { setFeeTier(ForwardPolicy.FeeTier.FAST) }
         feeVeryFastButton.setOnClickListener { setFeeTier(ForwardPolicy.FeeTier.VERY_FAST) }
+        // Adopt the configured default BEFORE the buttons are marked, or the
+        // screen would highlight Normal while feeTier said something else.
+        feeTier = try {
+            ForwardPolicy.FeeTier.valueOf(prefs.defaultFeeTier)
+        } catch (t: IllegalArgumentException) {
+            ForwardPolicy.FeeTier.NORMAL
+        }
         markFeeTierButtons()
         reviewButton.setOnClickListener { onReview() }
         confirmButton.setOnClickListener { onConfirm() }

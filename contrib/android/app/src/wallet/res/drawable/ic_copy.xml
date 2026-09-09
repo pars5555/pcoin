@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Copy: two overlapping sheets, the familiar clipboard glyph.
+
+  24x24 viewport so one unit is one dp at the natural size. The back sheet is
+  drawn as an outline (evenOdd, so the middle is a hole rather than a lighter
+  fill) and the front sheet is solid; that reads as "there are two of these"
+  at 20dp, where two outlines would collapse into noise.
+
+  fillColor is #000000 because every use site tints it — an icon that carries
+  its own colour cannot follow the button it sits on.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+    <!-- back sheet: outline only, offset up and left -->
+    <path
+        android:fillColor="#000000"
+        android:fillType="evenOdd"
+        android:pathData="M4,2 h11 v3 h-2 v-1 h-7 v11 h1 v2 h-3 z" />
+
+    <!-- front sheet: solid, with a rounded corner -->
+    <path
+        android:fillColor="#000000"
+        android:fillType="evenOdd"
+        android:pathData="M8,6 h12 v16 h-12 z M10,8 v12 h8 v-12 z" />
+</vector>

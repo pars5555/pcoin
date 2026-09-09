@@ -95,18 +95,42 @@
             android:textSize="13sp"
             android:visibility="gone" />
 
-        <TextView
-            android:id="@+id/row_more_txid"
+        <!-- The txid and its copy button share a row, so the button is
+             obviously attached to THAT id rather than to the transaction in
+             general. Visibility is driven on the container, not the TextView,
+             or the button would linger after the id was hidden. -->
+        <LinearLayout
+            android:id="@+id/row_more_txid_row"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
             android:background="@drawable/bg_inset"
-            android:fontFamily="monospace"
-            android:padding="10dp"
-            android:textColor="@color/ink_muted"
-            android:textIsSelectable="true"
-            android:textSize="11sp"
-            android:visibility="gone" />
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/row_more_txid"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:fontFamily="monospace"
+                android:padding="10dp"
+                android:textColor="@color/ink_muted"
+                android:textIsSelectable="true"
+                android:textSize="11sp" />
+
+            <ImageButton
+                android:id="@+id/row_more_txid_copy"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_marginEnd="6dp"
+                android:background="@android:color/transparent"
+                android:contentDescription="@string/history_copy_txid"
+                android:padding="10dp"
+                android:src="@drawable/ic_copy"
+                android:tint="@color/brand" />
+        </LinearLayout>
 
         <!-- Counterparty addresses, each with its own pay button, added in code
              because there can be several and there is no honest way to pick one. -->

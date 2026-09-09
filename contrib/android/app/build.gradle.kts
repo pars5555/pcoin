@@ -1,4 +1,4 @@
-﻿import java.util.Properties
+import java.util.Properties
 
 plugins {
     id("com.android.application")
@@ -219,8 +219,49 @@ android {
             // uploaded to a draft at targetSdk 35 before Play rejected it, and
             // a version code cannot be reused once uploaded -- so 16 is burned
             // and this is 17. 0.2.13 never reached a user.
-            versionCode = 17
-            versionName = "0.2.14"
+            // 0.2.15: the node stops disappearing in the background. The app
+            // never asked to be exempt from battery optimisation -- the MINER
+            // flavour has since it shipped, the wallet never did -- so Android
+            // killed it under memory pressure (the node's RandomX validation
+            // cache alone is 256 MiB) and then DEFERRED restarting the service
+            // for hours. Measured on the owner's phone 2026-09-08: killed at
+            // 04:42 "to reserve free memory", restart scheduled 10 HOURS out,
+            // so the balance needed a long catch-up sync every time the app
+            // was opened. Plus: address-book rows no longer start a payment
+            // when tapped, copy and send are icons, and history gained
+            // per-row copy, an All/Sent/Received filter and search.
+            // 0.2.16: a settings screen, and two things that frightened the
+            // owner. (1) Restoring a funded phrase on a FRESH install said
+            // "found NO transactions ... it is not the right phrase", because
+            // the scan honestly returned zero from a node with no chain yet --
+            // the successful-RPC version of the unknown-is-not-no trap (§7.1),
+            // seen while restoring 52,658 PCN. (2) DONE after a restore closed
+            // the app instead of opening the home screen, because MainActivity
+            // finishes itself when there is no wallet, leaving an empty task.
+            // Plus: warnings moved ABOVE THE FOLD behind a gear with a badge --
+            // the battery card was below the receive address and went unseen
+            // for a day -- and a configurable default sending speed.
+            // 0.2.17: button padding. Setting android:background on a Button
+            // REPLACES the platform background AND the padding that came with
+            // it, and neither btn_ghost nor btn_primary declared any -- so
+            // every wrap_content button had its text jammed against the border.
+            // The weighted ones looked fine only because layout_weight
+            // stretched them, which is why this survived so long. Padding now
+            // lives in the two drawables, so buttons added later inherit it.
+            // 0.2.18: the node stops losing its chain when the app is killed.
+            // MEASURED on a real phone: synced to ~7,000, force-stopped, came
+            // back with a chainstate holding ONLY GENESIS -- no corruption, no
+            // error, LevelDB opened fine, tip height=0 -- and re-validated all
+            // 7,000 blocks from disk. Cause: Core only writes the UTXO set when
+            // the dbcache fills (never here, 0.3 MiB against 50 MB), on a clean
+            // shutdown (a SIGKILL has none), or on a PERIODIC full flush, which
+            // is DATABASE_FLUSH_INTERVAL = 24 HOURS. So nothing was ever
+            // written. The app now forces a flush once the node leaves initial
+            // block download and every 10 minutes after, and flushes when the
+            // app is swiped out of Recents -- the one unclean exit Android
+            // actually tells us about.
+            versionCode = 21
+            versionName = "0.2.18"
 
             buildConfigField("boolean", "MINING", "false")
             // The ONLY genuine collision between the two apps. bitcoind is

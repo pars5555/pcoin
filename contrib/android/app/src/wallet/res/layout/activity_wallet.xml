@@ -26,13 +26,91 @@
         android:orientation="vertical"
         android:padding="20dp">
 
-        <TextView
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/wallet_title"
-            android:textColor="@color/ink"
-            android:textSize="26sp"
-            android:textStyle="bold" />
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/wallet_title"
+                android:textColor="@color/ink"
+                android:textSize="26sp"
+                android:textStyle="bold" />
+
+            <!-- Gear plus a badge dot. The dot is the whole point: a settings
+                 icon that looks identical whether or not something is wrong
+                 tells the owner nothing, and he has already missed one warning
+                 that was sitting quietly further down this screen. -->
+            <FrameLayout
+                android:layout_width="48dp"
+                android:layout_height="48dp">
+
+                <ImageButton
+                    android:id="@+id/settings_button"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:background="@android:color/transparent"
+                    android:contentDescription="@string/set_title"
+                    android:padding="12dp"
+                    android:src="@drawable/ic_gear"
+                    android:tint="@color/ink_muted" />
+
+                <View
+                    android:id="@+id/settings_badge"
+                    android:layout_width="11dp"
+                    android:layout_height="11dp"
+                    android:layout_gravity="top|end"
+                    android:layout_marginTop="7dp"
+                    android:layout_marginEnd="7dp"
+                    android:background="@drawable/dot_alert"
+                    android:visibility="gone" />
+            </FrameLayout>
+        </LinearLayout>
+
+        <!-- ================= things Android is doing to us =================
+             ABOVE THE FOLD, ON PURPose. This banner used to be a card far down
+             the screen, under the receive address and the backup reminder, and
+             the owner ran for a day with the node being killed every night
+             without ever seeing it. A warning nobody scrolls to is not a
+             warning. Details and the fix buttons live in Settings; this is
+             only the thing that makes you look. -->
+
+        <LinearLayout
+            android:id="@+id/warn_banner"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/strip_wait"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:padding="14dp"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/warn_banner_text"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textColor="@color/ink"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/warn_banner_button"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:background="@drawable/btn_primary"
+                android:minHeight="48dp"
+                android:text="@string/warn_banner_action"
+                android:textAllCaps="false"
+                android:textColor="@color/on_brand"
+                android:textSize="15sp" />
+        </LinearLayout>
 
         <!-- Node state, in words. Never "Paused: switched off": that string comes
              from the mining gate, which is permanently false here. -->

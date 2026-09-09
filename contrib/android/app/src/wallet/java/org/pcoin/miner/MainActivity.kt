@@ -4,9 +4,13 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
+import android.provider.Settings
 import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
@@ -64,6 +68,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var shareButton: Button
     private lateinit var backupCard: LinearLayout
     private lateinit var backupButton: Button
+    private lateinit var warnBanner: LinearLayout
+    private lateinit var warnBannerText: TextView
+    private lateinit var settingsBadge: View
     private lateinit var chainLine: TextView
 
     /** When a balance was last actually READ, not when the screen last drew. */
@@ -122,6 +129,9 @@ class MainActivity : AppCompatActivity() {
         shareButton = findViewById(R.id.share_button)
         backupCard = findViewById(R.id.backup_card)
         backupButton = findViewById(R.id.backup_button)
+        warnBanner = findViewById(R.id.warn_banner)
+        warnBannerText = findViewById(R.id.warn_banner_text)
+        settingsBadge = findViewById(R.id.settings_badge)
         backupTitle = findViewById(R.id.backup_title)
         backupBody = findViewById(R.id.backup_body)
         receiveQr = findViewById(R.id.receive_qr)
@@ -144,6 +154,11 @@ class MainActivity : AppCompatActivity() {
         copyButton.setOnClickListener { copyAddress() }
         shareButton.setOnClickListener { shareAddress() }
         backupButton.setOnClickListener { startActivity(Intent(this, BackupActivity::class.java)) }
+        val openSettings = View.OnClickListener {
+            startActivity(Intent(this, SettingsActivity::class.java))
+        }
+        findViewById<View>(R.id.settings_button).setOnClickListener(openSettings)
+        findViewById<View>(R.id.warn_banner_button).setOnClickListener(openSettings)
 
         // The wallet must bring its own node up: the node is otherwise only
         // started by the mining flow, which is compiled out here.
@@ -157,6 +172,7 @@ class MainActivity : AppCompatActivity() {
         // while the screen was in the background.
         MinerService.prepare(this)
         renderAddress()
+        renderWarnBanner()
         ui.post(tick)
     }
 
@@ -181,6 +197,39 @@ class MainActivity : AppCompatActivity() {
      * complete. It must never sit on "Checking…" forever, and it must never
      * silently fall back to the stale number as though it were fresh.
      */
+    // ------------------------------------------------------------- warnings
+
+    /**
+     * A one-line banner ABOVE THE FOLD, and a dot on the gear.
+     *
+     * This replaced a detailed card that sat below the receive address and the
+     * backup reminder. It said the right thing and the owner never saw it --
+     * he ran for a day with the node being killed every night, then found the
+     * setting himself. A warning you have to scroll to is not a warning, so
+     * this one is the second thing on the screen and carries no detail at all:
+     * its only job is to make you open Settings, where the fixes live.
+     *
+     * Re-read on every resume, because the fix happens in a SYSTEM screen and
+     * the owner comes straight back here afterwards.
+     */
+    private fun renderWarnBanner() {
+        applyWarnCount(WalletWarnings.count(this))
+        // App-hibernation status resolves asynchronously; redraw when it lands.
+        WalletWarnings.refreshUnusedAppStatus(this) {
+            warnBanner.post { applyWarnCount(WalletWarnings.count(this)) }
+        }
+    }
+
+    private fun applyWarnCount(n: Int) {
+        settingsBadge.visibility = if (n > 0) View.VISIBLE else View.GONE
+        if (n == 0) {
+            warnBanner.visibility = View.GONE
+            return
+        }
+        warnBanner.visibility = View.VISIBLE
+        warnBannerText.text = resources.getQuantityString(R.plurals.warn_banner, n, n)
+    }
+
     private fun onRefresh() {
         if (refreshing) return
         refreshing = true

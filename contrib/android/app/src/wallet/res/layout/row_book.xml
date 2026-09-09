@@ -7,6 +7,12 @@
   bech32 address are the part of the checksum that differs between two addresses
   that share a prefix, so truncating the tail hides exactly what distinguishes
   them.
+
+  NOTHING IN THIS ROW STARTS A PAYMENT EXCEPT THE SEND BUTTON. The name and
+  address block used to be one big tap target that opened the send screen
+  pre-filled, so reading an address — the thing you are told to do before
+  paying — was the same gesture as paying it. The owner asked for that to
+  stop. Sending is now one small, deliberate button among four.
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
@@ -16,52 +22,69 @@
     android:orientation="vertical"
     android:padding="14dp">
 
-    <!-- The tappable part is this block, not the whole row: the Rename and
-         Remove buttons sit outside it so a mis-tap on either cannot start a
-         payment. -->
-    <LinearLayout
-        android:id="@+id/row_book_tap"
+    <TextView
+        android:id="@+id/row_book_name"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="vertical">
+        android:textColor="@color/ink"
+        android:textSize="16sp"
+        android:textStyle="bold" />
 
-        <TextView
-            android:id="@+id/row_book_name"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="@color/ink"
-            android:textSize="16sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/row_book_address"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:ellipsize="middle"
-            android:fontFamily="monospace"
-            android:singleLine="true"
-            android:textColor="@color/ink_muted"
-            android:textSize="11sp" />
-    </LinearLayout>
+    <TextView
+        android:id="@+id/row_book_address"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:ellipsize="middle"
+        android:fontFamily="monospace"
+        android:singleLine="true"
+        android:textColor="@color/ink_muted"
+        android:textSize="11sp" />
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="10dp"
+        android:gravity="center_vertical"
         android:orientation="horizontal">
+
+        <!-- Icons for the two actions that need no explanation, words for the
+             two that do. "Remove" especially: it is destructive and must never
+             be a glyph someone taps to find out what it does. -->
+
+        <ImageButton
+            android:id="@+id/row_book_copy"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:background="@drawable/btn_ghost"
+            android:contentDescription="@string/book_copy"
+            android:padding="11dp"
+            android:src="@drawable/ic_copy"
+            android:tint="@color/brand" />
+
+        <ImageButton
+            android:id="@+id/row_book_send"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:layout_marginStart="10dp"
+            android:background="@drawable/btn_ghost"
+            android:contentDescription="@string/book_send"
+            android:padding="11dp"
+            android:src="@drawable/ic_send"
+            android:tint="@color/brand" />
 
         <Button
             android:id="@+id/row_book_rename"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
             android:layout_weight="1"
             android:background="@drawable/btn_ghost"
-            android:minHeight="44dp"
+            android:minHeight="48dp"
             android:text="@string/book_rename"
             android:textAllCaps="false"
             android:textColor="@color/brand"
-            android:textSize="14sp" />
+            android:textSize="15sp" />
 
         <Button
             android:id="@+id/row_book_remove"
@@ -70,10 +93,10 @@
             android:layout_marginStart="10dp"
             android:layout_weight="1"
             android:background="@drawable/btn_ghost"
-            android:minHeight="44dp"
+            android:minHeight="48dp"
             android:text="@string/book_remove"
             android:textAllCaps="false"
             android:textColor="@color/ink_muted"
-            android:textSize="14sp" />
+            android:textSize="15sp" />
     </LinearLayout>
 </LinearLayout>

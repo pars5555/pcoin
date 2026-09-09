@@ -43,6 +43,81 @@
             android:textSize="13sp" />
     </LinearLayout>
 
+    <!-- =================== search and filter ===================
+         Both act on what has been LOADED. History pages in from the node 50
+         rows at a time, so a search cannot claim to have looked at rows that
+         were never fetched. The empty state says which of the two it is,
+         rather than reporting "no matches" for a wallet that simply has not
+         scrolled far enough yet. -->
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingLeft="20dp"
+        android:paddingRight="20dp"
+        android:paddingBottom="10dp">
+
+        <EditText
+            android:id="@+id/history_search"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_inset"
+            android:hint="@string/history_search_hint"
+            android:imeOptions="actionSearch"
+            android:inputType="text"
+            android:minHeight="48dp"
+            android:padding="12dp"
+            android:textColor="@color/ink"
+            android:textColorHint="@color/ink_muted"
+            android:textSize="14sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/filter_all"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:background="@drawable/btn_ghost"
+                android:minHeight="44dp"
+                android:text="@string/history_filter_all"
+                android:textAllCaps="false"
+                android:textColor="@color/brand"
+                android:textSize="14sp" />
+
+            <Button
+                android:id="@+id/filter_sent"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:background="@drawable/btn_ghost"
+                android:minHeight="44dp"
+                android:text="@string/history_filter_sent"
+                android:textAllCaps="false"
+                android:textColor="@color/brand"
+                android:textSize="14sp" />
+
+            <Button
+                android:id="@+id/filter_received"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:background="@drawable/btn_ghost"
+                android:minHeight="44dp"
+                android:text="@string/history_filter_received"
+                android:textAllCaps="false"
+                android:textColor="@color/brand"
+                android:textSize="14sp" />
+        </LinearLayout>
+    </LinearLayout>
+
     <ScrollView
         android:id="@+id/history_scroll"
         android:layout_width="match_parent"

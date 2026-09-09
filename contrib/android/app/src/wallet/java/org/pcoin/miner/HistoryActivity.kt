@@ -1,14 +1,23 @@
 package org.pcoin.miner
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.LayoutInflater
 import android.view.View
 import android.widget.Button
+import android.widget.EditText
+import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -70,6 +79,23 @@ class HistoryActivity : AppCompatActivity() {
     private var reachedEnd = false
 
     /**
+     * Which directions to show. MINED and MATURING are coins arriving, so they
+     * count as RECEIVED -- a wallet that mined a block was paid, and hiding
+     * that under "sent" or under neither would lose it entirely.
+     */
+    private enum class Filter { ALL, SENT, RECEIVED }
+
+    private var filter = Filter.ALL
+
+    /** Lower-cased, trimmed. Empty means no search. */
+    private var query = ""
+
+    private lateinit var searchBox: EditText
+    private lateinit var filterAll: Button
+    private lateinit var filterSent: Button
+    private lateinit var filterReceived: Button
+
+    /**
      * The address book, read once per draw rather than once per row.
      *
      * Fifty rows would otherwise be fifty reads and fifty JSON parses on the
@@ -108,6 +134,33 @@ class HistoryActivity : AppCompatActivity() {
         refresh = findViewById(R.id.history_refresh)
         scroll = findViewById(R.id.history_scroll)
         refresh.setOnClickListener { load() }
+
+        searchBox = findViewById(R.id.history_search)
+        filterAll = findViewById(R.id.filter_all)
+        filterSent = findViewById(R.id.filter_sent)
+        filterReceived = findViewById(R.id.filter_received)
+
+        // Filtering and searching NEVER re-ask the node. They narrow the rows
+        // already fetched, which is why they are instant and why the empty
+        // state says how many rows were actually looked at -- claiming "no
+        // matches" over a wallet that has loaded 50 of 400 rows would be a
+        // confident wrong answer of exactly the kind this project keeps
+        // paying for.
+        filterAll.setOnClickListener { setFilter(Filter.ALL) }
+        filterSent.setOnClickListener { setFilter(Filter.SENT) }
+        filterReceived.setOnClickListener { setFilter(Filter.RECEIVED) }
+        markFilterButtons()
+
+        searchBox.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
+            override fun afterTextChanged(s: Editable?) {
+                val next = s?.toString()?.trim()?.lowercase().orEmpty()
+                if (next == query) return
+                query = next
+                applyFilters()
+            }
+        })
 
         // Endless scroll. Fires when the view is within one screen-height of the
         // bottom, so the next page is usually already drawn by the time the user
@@ -177,9 +230,88 @@ class HistoryActivity : AppCompatActivity() {
         }.start()
     }
 
-    private fun render(list: List<ForwardEngine.HistoryEntry>) {
+    /**
+     * Does this row match the current filter and search?
+     *
+     * Searching covers the txid, the counterparty address, and the NAME saved
+     * for that address -- the three things someone actually remembers a
+     * payment by. Matching is a plain case-insensitive substring: a bech32
+     * address and a txid are both hex-ish strings where a prefix or a tail
+     * fragment is what a person has to hand, and anything cleverer would
+     * surprise more often than it helped.
+     */
+    private fun matches(e: ForwardEngine.HistoryEntry): Boolean {
+        val dirOk = when (filter) {
+            Filter.ALL -> true
+            Filter.SENT -> e.kind == ForwardEngine.HistoryEntry.Kind.SENT
+            // Mined and maturing coins are money arriving. Excluding them from
+            // "received" would make a mined block invisible under every filter
+            // except All, which is a hiding place, not a filter.
+            Filter.RECEIVED -> e.kind == ForwardEngine.HistoryEntry.Kind.RECEIVED ||
+                e.kind == ForwardEngine.HistoryEntry.Kind.MINED ||
+                e.kind == ForwardEngine.HistoryEntry.Kind.MATURING
+        }
+        if (!dirOk) return false
+        if (query.isEmpty()) return true
+        if (e.txid.lowercase().contains(query)) return true
+        if (e.address.lowercase().contains(query)) return true
+        val name = AddressBook.labelFor(bookEntries, e.address)
+        return name != null && name.lowercase().contains(query)
+    }
+
+    private fun setFilter(f: Filter) {
+        if (filter == f) return
+        filter = f
+        markFilterButtons()
+        applyFilters()
+    }
+
+    private fun applyFilters() {
+        // bookEntries is what name search reads; refresh it before matching or
+        // a rename made on the previous screen would not be searchable yet.
+        bookEntries = book.load()
+        render(loaded)
+    }
+
+    private fun markFilterButtons() {
+        for ((b, f) in listOf(filterAll to Filter.ALL, filterSent to Filter.SENT, filterReceived to Filter.RECEIVED)) {
+            val on = f == filter
+            // Filled, not just a different alpha. An alpha-only selected state
+            // shipped once on the send screen and the owner could not see
+            // which tier was chosen; the same mistake is available here.
+            b.setBackgroundResource(if (on) R.drawable.btn_primary else R.drawable.btn_ghost)
+            b.setTextColor(resources.getColor(if (on) R.color.on_brand else R.color.brand, theme))
+        }
+    }
+
+    private fun copy(text: String, toastRes: Int) {
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (cm == null) {
+            Toast.makeText(this, R.string.book_copy_failed, Toast.LENGTH_SHORT).show()
+            return
+        }
+        cm.setPrimaryClip(ClipData.newPlainText(null, text))
+        // Android 13+ shows its own copy confirmation.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            Toast.makeText(this, toastRes, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun render(all: List<ForwardEngine.HistoryEntry>) {
         rows.removeAllViews()
         bookEntries = book.load()
+        val filtering = filter != Filter.ALL || query.isNotEmpty()
+        val list = if (filtering) all.filter { matches(it) } else all
+
+        if (list.isEmpty() && filtering) {
+            // NOT "no transactions" -- that is a claim about the wallet, and
+            // this is a claim about the rows fetched so far. Saying which is
+            // the difference between "you have none" and "scroll for more".
+            status.text =
+                if (reachedEnd) getString(R.string.history_no_matches, all.size)
+                else getString(R.string.history_no_matches_more, all.size)
+            return
+        }
         if (list.isEmpty()) {
             // "Nothing yet" is a claim about the wallet. A node that has not
             // caught up cannot support it -- it has not seen the blocks the
@@ -196,9 +328,12 @@ class HistoryActivity : AppCompatActivity() {
         // is only qualified while more pages may still exist. Saying a bare
         // total before the end is reached would present a page as the whole
         // history, which is the thing the old cap message existed to prevent.
-        status.text =
-            if (reachedEnd) resources.getQuantityString(R.plurals.history_count, list.size, list.size)
-            else getString(R.string.history_count_more, list.size)
+        status.text = when {
+            filtering && reachedEnd -> getString(R.string.history_count_filtered, list.size, all.size)
+            filtering -> getString(R.string.history_count_filtered_more, list.size, all.size)
+            reachedEnd -> resources.getQuantityString(R.plurals.history_count, list.size, list.size)
+            else -> getString(R.string.history_count_more, list.size)
+        }
 
         val inflater = LayoutInflater.from(this)
         val stamp = SimpleDateFormat("d MMM yyyy, HH:mm", Locale.getDefault())
@@ -270,7 +405,7 @@ class HistoryActivity : AppCompatActivity() {
 
         status.text = getString(R.string.history_more_loading)
         facts.visibility = View.GONE
-        txidView.visibility = View.GONE
+        (txidView.parent as? View)?.visibility = View.GONE
         parties.removeAllViews()
         if (!fetching.add(e.txid)) return
 
@@ -315,7 +450,11 @@ class HistoryActivity : AppCompatActivity() {
             else getString(R.string.history_more_facts_nofee, height, d.confirmations)
         facts.visibility = View.VISIBLE
         txidView.text = d.txid
-        txidView.visibility = View.VISIBLE
+        // Visibility belongs to the row that holds the id AND its copy button;
+        // showing only the TextView would leave the button hidden beside it.
+        (txidView.parent as? View)?.visibility = View.VISIBLE
+        (txidView.parent as? View)?.findViewById<ImageButton>(R.id.row_more_txid_copy)
+            ?.setOnClickListener { copy(d.txid, R.string.history_copied_txid) }
 
         parties.removeAllViews()
 
@@ -359,6 +498,8 @@ class HistoryActivity : AppCompatActivity() {
             nameView.visibility = if (name == null) View.GONE else View.VISIBLE
             nameView.text = name.orEmpty()
             row.findViewById<TextView>(R.id.party_address).text = address
+            row.findViewById<ImageButton>(R.id.party_copy)
+                .setOnClickListener { copy(address, R.string.history_copied_address) }
             val pay = row.findViewById<Button>(R.id.party_pay)
             pay.setText(if (sent) R.string.history_pay_again else R.string.history_pay_this)
             // Fills the compose field and nothing more: validateaddress still

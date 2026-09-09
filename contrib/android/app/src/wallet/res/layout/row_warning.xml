@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  One thing Android is doing that stops the wallet working, and the button that
+  opens the screen where it is fixed.
+
+  The button says what it opens rather than "Fix", because it hands the owner
+  off to a SYSTEM screen that this app does not control: the honest promise is
+  "this takes you there", not "this solves it".
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginTop="12dp"
+    android:background="@drawable/strip_wait"
+    android:orientation="vertical"
+    android:padding="14dp">
+
+    <TextView
+        android:id="@+id/warn_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="@color/ink"
+        android:textSize="15sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/warn_body"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:textColor="@color/ink_muted"
+        android:textSize="13sp" />
+
+    <Button
+        android:id="@+id/warn_action"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:background="@drawable/btn_ghost"
+        android:minHeight="48dp"
+        android:textAllCaps="false"
+        android:textColor="@color/brand"
+        android:textSize="15sp" />
+</LinearLayout>

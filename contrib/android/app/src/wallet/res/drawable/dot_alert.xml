@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The badge on the settings gear.
+
+  A ring of canvas colour around the fill, so the dot stays readable when it
+  overlaps the dark part of the gear glyph underneath. Without the stroke the
+  two shapes merge and the badge disappears exactly when the gear is busiest.
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval">
+    <solid android:color="@color/alert" />
+    <stroke android:width="2dp" android:color="@color/canvas" />
+    <size android:width="11dp" android:height="11dp" />
+</shape>
