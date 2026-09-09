@@ -63,6 +63,66 @@ const SELL_CAP_USD_PER_DAY = 20;
 
 const cfg = JSON.parse(readFileSync(CFG, 'utf8'));
 
+// ── hCaptcha on the account forms ──────────────────────────────────────────
+//
+// Accounts are about to become a QUOTA KEY: a signed-in market account raises
+// the wrap desk's per-person limit well above the anonymous one. That only
+// holds if an account costs something to create. Signup is the vector that
+// matters here -- mass free accounts would defeat the quota outright -- and
+// login gets the same check because credential stuffing is the other cheap
+// automated attack on this form.
+//
+// Signup does NOT verify the email address, so without this an account costs a
+// made-up string. That is the gap this closes.
+//
+// Unset -> skipped, and the startup banner says so LOUDLY. A form that shows a
+// captcha nobody checks is worse than no captcha, so the widget is injected
+// only when a sitekey exists (see the HCAPTCHA marker in index.html).
+const HCAPTCHA_SITEKEY = cfg.hcaptchaSitekey || '';
+const HCAPTCHA_SECRET  = cfg.hcaptchaSecret  || '';
+const HCAPTCHA_ON = Boolean(HCAPTCHA_SITEKEY && HCAPTCHA_SECRET);
+
+const HCAPTCHA_TAG = HCAPTCHA_ON
+  ? '<script src="https://js.hcaptcha.com/1/api.js" async defer></script>'
+    + '<div class="h-captcha" data-sitekey="' + HCAPTCHA_SITEKEY + '" style="margin:.8rem 0"></div>'
+  : '';
+
+// Returns {ok} or {ok:false, why}. 'unreachable' is deliberately distinct from
+// 'rejected': one is an answer, the other is not having asked.
+async function hcaptchaVerdict(token, ip) {
+  if (!token) return { ok: false, why: 'missing' };
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(), 10_000);
+  try {
+    const b = new URLSearchParams({ secret: HCAPTCHA_SECRET, response: token });
+    if (ip) b.set('remoteip', ip);
+    const r = await fetch('https://api.hcaptcha.com/siteverify',
+      { method: 'POST', body: b, signal: c.signal });
+    if (!r.ok) return { ok: false, why: 'unreachable' };
+    const j = await r.json();
+    return j.success ? { ok: true } : { ok: false, why: 'rejected' };
+  } catch {
+    return { ok: false, why: 'unreachable' };
+  } finally { clearTimeout(t); }
+}
+
+// One gate for both forms. FAILS CLOSED, including when hCaptcha itself cannot
+// be reached: "we could not check" is not "you passed". The cost is real and
+// worth stating -- an hCaptcha outage stops new sign-ins until it recovers.
+// The alternative is an outage that silently disables the control instead, and
+// on the form that guards a quota key that is the worse of the two.
+async function captchaGate(req, res, f) {
+  if (!HCAPTCHA_ON) return true;
+  const v = await hcaptchaVerdict(f['h-captcha-response'], clientIp(req));
+  if (v.ok) return true;
+  json(res, v.why === 'unreachable' ? 503 : 400, {
+    error: v.why === 'unreachable'
+      ? 'the anti-bot check is unreachable right now — nothing is wrong with your details, please try again shortly'
+      : 'please complete the "I am human" check and try again',
+  });
+  return false;
+}
+
 // Small pool: this box also runs a node and an explorer, and the market is not
 // the thing that should exhaust its memory.
 const pool = mysql.createPool({
@@ -1162,6 +1222,7 @@ createServer(async (req, res) => {
     // ---- auth ----
     if (p === '/api/register' && req.method === 'POST') {
       const f = JSON.parse(await body(req));
+      if (!(await captchaGate(req, res, f))) return;
       const em = String(f.email || '').trim().toLowerCase();
       if (!VALID_EMAIL.test(em)) return json(res, 400, { error: 'invalid email' });
       if (String(f.password || '').length < 8) return json(res, 400, { error: 'password must be at least 8 characters' });
@@ -1183,6 +1244,7 @@ createServer(async (req, res) => {
     }
     if (p === '/api/login' && req.method === 'POST') {
       const f = JSON.parse(await body(req));
+      if (!(await captchaGate(req, res, f))) return;
       const em = String(f.email || '').trim().toLowerCase();
       const accRows = await q(`SELECT salt, hash FROM users WHERE email = ?`, [em]);
       const acc = accRows[0];
@@ -1464,7 +1526,9 @@ createServer(async (req, res) => {
     // ---- pages ----
     if (p === '/' || p.startsWith('/order/')) {
       return res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' })
-        && res.end(shell('Buy PCoin', readFileSync('/opt/pcoin-market/index.html', 'utf8')));
+        && res.end(shell('Buy PCoin',
+             readFileSync('/opt/pcoin-market/index.html', 'utf8')
+               .replace('<!--HCAPTCHA-->', HCAPTCHA_TAG)));
     }
     return json(res, 404, { error: 'not found' });
   } catch (e) {
@@ -1486,7 +1550,15 @@ createServer(async (req, res) => {
     }
     return json(res, 500, { error: e.message });
   }
-}).listen(PORT, '127.0.0.1', () => console.log(`pcoin-market on 127.0.0.1:${PORT}`));
+}).listen(PORT, '127.0.0.1', () => {
+  console.log(`pcoin-market on 127.0.0.1:${PORT}`);
+  // Say which state it is in every start. "The captcha is on" must never be
+  // something anyone infers from the config file they think they deployed.
+  if (HCAPTCHA_ON) console.log('  hCaptcha ON for /api/register and /api/login');
+  else console.warn('[market] WARNING: hCaptcha is OFF -- hcaptchaSitekey and ' +
+                    'hcaptchaSecret are not both set in config.json. Signup does not ' +
+                    'verify email either, so an account currently costs a made-up string.');
+});
 
 // Nothing should ever reach these. If something does, the process is in an
 // undefined state and the operator must hear about it before the box quietly

@@ -44,6 +44,7 @@
     <input id="email" type="email" autocomplete="username" placeholder="you@example.com">
     <label for="password">Password</label>
     <input id="password" type="password" autocomplete="current-password" placeholder="at least 8 characters">
+    <!--HCAPTCHA-->
     <button id="authBtn" onclick="doAuth()">Sign in</button>
     <div class="msg" id="authMsg"></div>
   </div>
@@ -129,10 +130,17 @@ async function doAuth() {
   try {
     await api(mode === 'in' ? '/api/login' : '/api/register', {
       method: 'POST',
-      body: JSON.stringify({ email: $('email').value, password: $('password').value }),
+      body: JSON.stringify({
+        email: $('email').value,
+        password: $('password').value,
+        'h-captcha-response': (window.hcaptcha ? hcaptcha.getResponse() : ''),
+      }),
     });
     await refresh();
-  } catch (e) { show($('authMsg'), 'err', e.message); }
+  } catch (e) {
+    show($('authMsg'), 'err', e.message);
+    if (window.hcaptcha) try { hcaptcha.reset(); } catch (_) { /* widget not rendered */ }
+  }
   btn.disabled = false;
 }
 
