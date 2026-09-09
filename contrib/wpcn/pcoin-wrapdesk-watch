@@ -450,6 +450,30 @@ def main() -> int:
                          "without deciding deliberately to raise it. ***"
                          if left <= 0 else "")))
 
+    # ---- PUBLISH the allocation figure so the DESK can refuse on it -------
+    #
+    # The desk used to compute its own "committed" from REQUESTED amounts while
+    # this script computed "used" from what was actually DEPOSITED. Two numbers
+    # for one quantity, and they drifted the moment anyone sent more than they
+    # asked for: on 2026-09-09 the desk said 2000.00 and this said 2152.00,
+    # because one depositor sent 500 against a 250 request and another asked for
+    # 100 but sent 10. The desk was the more permissive of the two, which is the
+    # wrong way round for a ceiling.
+    #
+    # Deposits are what create the obligation, and only this script sees them, so
+    # it is the one that must publish the number. The desk reads it and refuses
+    # against it. Both figures are written because they answer different
+    # questions and the SMALLER headroom is the one to plan against:
+    #   used_wpcn      what actually went out and stayed out (refunds excluded)
+    #   released_wpcn  what the send gate tests; >= used_wpcn, because a release
+    #                  recorded before send_wpcn existed is charged at maximum
+    st["allocation"] = {
+        "used_wpcn": round(used_total, 8),
+        "released_wpcn": round(released_wpcn, 8),
+        "total_alloc": TOTAL_ALLOC,
+        "at": int(time.time()),
+    }
+
     # ---- 2. is the cycle worth running right now? -------------------------
     price = get("https://price.pc.am")
     pool = pool_price()

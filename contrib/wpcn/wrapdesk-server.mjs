@@ -1007,9 +1007,42 @@ createServer(async (req, res) => {
       })();
       const wpcnFor = (a) =>
         Math.min(Number(a) || 0, PER_PERSON) * (1 - FEE_PCT / 100);
-      const committed = Object.entries(st.requests || {})
+
+      // COUNT DEPOSITS, NOT REQUESTS -- and when the two disagree, believe the
+      // larger.
+      //
+      // A request is an intention; a DEPOSIT is the obligation. Counting only
+      // requests let the ceiling drift the moment somebody sent more than they
+      // asked for: on 2026-09-09 this desk said 2000.00 committed while
+      // pcoin-wrapdesk-watch, which reads the chain, said 2152.00 -- one person
+      // had sent 500 PCN against a 250 request. The desk was the more permissive
+      // of the two, which is the wrong direction for a cap to be wrong in.
+      //
+      // The watcher is the only component that sees deposits, so it publishes
+      // the figure and this reads it. Neither number alone is sufficient:
+      //   requested  covers requests made since the watcher last ran, which have
+      //              no deposit yet and are therefore invisible to it
+      //   deposited  covers over-deposits, which the request rows understate
+      // Taking the MAX means neither blind spot can let the ceiling be exceeded.
+      //
+      // Unreadable or absent watcher state falls back to the requested figure
+      // alone: that under-counts over-deposits, but it is the behaviour this had
+      // before, and refusing every wrap because a monitoring file is missing
+      // would be worse than the drift it fixes.
+      const requested = Object.entries(st.requests || {})
         .filter(([k, x]) => k !== key && !x.refunded && !refundedAddrs.has(x.address))
         .reduce((sum, [, x]) => sum + wpcnFor(x.amount), 0);
+      const deposited = (() => {
+        try {
+          const a = JSON.parse(readFileSync(WATCH_STATE, 'utf8')).allocation;
+          if (!a) return 0;
+          // released_wpcn is the stricter of the watcher's two figures: a release
+          // recorded before amounts were logged is charged at the maximum it
+          // could have been. Plan against the number that actually refuses.
+          return Math.max(Number(a.used_wpcn) || 0, Number(a.released_wpcn) || 0);
+        } catch { return 0; }
+      })();
+      const committed = Math.max(requested, deposited);
       const headroom = TOTAL_ALLOC - committed;
       if (wpcnFor(amount) > headroom + 1e-8) {
         const maxPcn = Math.floor(headroom / (1 - FEE_PCT / 100) * 100) / 100;
