@@ -214,7 +214,36 @@
     <div class="row"><span class="k">PCN &rarr; wPCN</span><span class="v"><a href="https://wrapdesk.pc.am" target="_blank" rel="noopener">wrapdesk.pc.am</a></span></div>
     <div class="row"><span class="k">wPCN &rarr; PCN</span><span class="v"><a href="https://wrapdesk.pc.am/redeem" target="_blank" rel="noopener">redeem</a></span></div>
     <div class="row"><span class="k">Buy PCN</span><span class="v"><a href="https://market.pc.am" target="_blank" rel="noopener">market.pc.am</a></span></div>
-    <div class="row"><span class="k">Trade wPCN</span><span class="v"><a href="https://pancakeswap.finance/swap?outputCurrency=0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1" target="_blank" rel="noopener">PancakeSwap</a></span></div>
+    <!-- BOTH sides are pinned on purpose. Passing only outputCurrency leaves
+         the other side defaulted to BNB, and our only pool is wPCN/USDT -- so
+         the trade either fails to route or takes a multi-hop path at a worse
+         price, on a pool thin enough for that to hurt. -->
+    <div class="row"><span class="k">Buy wPCN</span><span class="v"><a
+      href="https://pancakeswap.finance/swap?inputCurrency=0x55d398326f99059fF775485246999027B3197955&amp;outputCurrency=0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1"
+      target="_blank" rel="noopener">USDT &rarr; wPCN</a></span></div>
+    <div class="row"><span class="k">Sell wPCN</span><span class="v"><a
+      href="https://pancakeswap.finance/swap?inputCurrency=0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1&amp;outputCurrency=0x55d398326f99059fF775485246999027B3197955"
+      target="_blank" rel="noopener">wPCN &rarr; USDT</a></span></div>
+  </div>
+
+  <div class="card">
+    <h2>Why you cannot search for it</h2>
+    <p class="note">
+      Typing &ldquo;wPCN&rdquo; into PancakeSwap finds nothing. Its token
+      selector only searches <b>curated token lists</b>, and wPCN is on none of
+      them &mdash; that takes a CoinGecko or CoinMarketCap listing first.
+    </p>
+    <p class="note">
+      Until then the only ways in are the two links above, or pasting the
+      contract address into PancakeSwap yourself and choosing <b>Import</b>:
+    </p>
+    <p class="note mono" style="user-select:all">0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1</p>
+    <p class="note">
+      PancakeSwap will warn you that it is an unknown token. That warning is
+      correct and you should read it &mdash; check the address against this one
+      character by character, because anyone can deploy a token calling itself
+      wPCN.
+    </p>
   </div>
 
   <div class="card">
