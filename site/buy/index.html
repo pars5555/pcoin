@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Buy wPCN — PCoin</title>
+<meta name="description" content="Buy wPCN on PancakeSwap. Read the pool-size warning first: the pool is small and large trades move the price a lot.">
+<meta name="theme-color" content="#0a0b10">
+<link rel="icon" href="/brand/pcoin-64.png">
+<!--
+  WHY THIS PAGE EXISTS, and it is not branding.
+
+  The PancakeSwap link needs two query parameters, which means an "&" in the
+  URL. Telegram stores that as "&amp;" when the message is sent as Markdown, so
+  the link a subscriber actually clicks arrives with a parameter literally named
+  "amp;outputCurrency" -- PancakeSwap ignores it, the output token is never
+  selected, and the person lands on the wrong swap. That happened to a real
+  announcement to 1,181 people.
+
+  A short, ampersand-free URL cannot be mangled by any of it. It also means the
+  destination can be corrected later without editing an announcement that has
+  already gone out.
+
+  And an interstitial is the honest shape anyway: the size warning is the thing
+  a first-time buyer most needs, and putting it before the trade rather than
+  after is the whole point.
+-->
+<style>
+  :root{ --bg:#0a0b10; --panel:#11131d; --text:#e9ebf4; --muted:#9aa2b8;
+         --dim:#6b7288; --teal:#2dd4bf; --amber:#fbbf24; --line:rgba(255,255,255,.09);
+         --mono:ui-monospace,"Cascadia Code",Menlo,Consolas,monospace; }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--bg);color:var(--text);
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+       font-size:16.5px;line-height:1.6;-webkit-font-smoothing:antialiased;
+       display:flex;align-items:center;justify-content:center;min-height:100vh;padding:22px}
+  .wrap{max-width:560px;width:100%}
+  a{color:var(--teal)}
+  .head{display:flex;align-items:center;gap:11px;margin-bottom:22px}
+  .head img{width:38px;height:38px;border-radius:9px}
+  h1{font-size:1.65rem;letter-spacing:-.01em}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;
+        padding:20px;margin-bottom:14px}
+  .go{display:block;text-align:center;background:var(--teal);color:#06231f;
+      font-weight:800;font-size:1.05rem;padding:15px;border-radius:12px;
+      text-decoration:none;margin-bottom:8px}
+  .warn{color:var(--amber)}
+  ul{margin:10px 0 0 20px}
+  li{margin-bottom:6px;color:var(--muted)}
+  .mono{font-family:var(--mono);font-size:.84rem;word-break:break-all;user-select:all}
+  .muted{color:var(--muted);font-size:.92rem}
+  .foot{color:var(--dim);font-size:.85rem;text-align:center;margin-top:18px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <img src="/brand/pcoin-round-128.png" alt="">
+    <h1>Buy wPCN</h1>
+  </div>
+
+  <div class="card">
+    <a class="go" id="go" rel="noopener"
+       href="https://pancakeswap.finance/swap?inputCurrency=0x55d398326f99059fF775485246999027B3197955&amp;outputCurrency=0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1">
+      Open PancakeSwap &rarr;
+    </a>
+    <p class="muted">Both sides are pre-selected: you pay <b>USDT</b>, you receive
+    <b>wPCN</b>, on BNB Smart Chain. You will need a little BNB for gas.</p>
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:1rem;margin-bottom:4px" class="warn">Read this first</h2>
+    <ul>
+      <li><b>The pool is small</b> — around $1,300 in total.</li>
+      <li>A <b>$10</b> trade moves the price a few percent. A <b>$100</b> trade moves it
+          by roughly a third. Buy in small amounts.</li>
+      <li><b>Check the rate you are actually quoted</b> before confirming, not the
+          rate you expected.</li>
+      <li>PCN is not listed on any exchange. This pool is the only open market it has,
+          and it is thin. Treat it accordingly.</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <p class="muted">Searching PancakeSwap for &ldquo;wPCN&rdquo; finds nothing — it is
+    on no token list yet. Use the button above, or paste this contract and choose
+    <b>Import</b>. Check it character by character:</p>
+    <p class="mono" style="margin-top:8px">0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1</p>
+  </div>
+
+  <p class="foot">
+    <a href="/">pc.am</a> &middot;
+    <a href="https://t.me/PCoinPCNBot">mini app</a> &middot;
+    <a href="https://t.me/PCoinPCNChat">chat</a> &middot;
+    <a href="/roadmap/">roadmap</a>
+  </p>
+</div>
+</body>
+</html>
