@@ -137,6 +137,8 @@ async function doAuth() {
       }),
     });
     await refresh();
+    const next = new URL(location.href).searchParams.get('next') || '';
+    if (next.startsWith('https://wrapdesk.pc.am/')) { location.href = next; return; }
   } catch (e) {
     show($('authMsg'), 'err', e.message);
     if (window.hcaptcha) try { hcaptcha.reset(); } catch (_) { /* widget not rendered */ }
