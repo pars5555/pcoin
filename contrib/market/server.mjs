@@ -779,7 +779,7 @@ let lastSigAlert = 0, lastCrashAlert = 0, lastGatewayAlert = 0;
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const CSS = readFileSync('/opt/pcoin-market/style.css', 'utf8');
 const shell = (title, b) => `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title><link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230d1117'/><path d='M16 5 L18.4 13.6 L27 16 L18.4 18.4 L16 27 L13.6 18.4 L5 16 L13.6 13.6 Z' fill='%232dd4bf'/></svg>">
 <style>${CSS}</style></head><body>${b}</body></html>`;
 
 // ── server ─────────────────────────────────────────────────────────────────
