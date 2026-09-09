@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PCoin</title>
+<meta name="description" content="PCoin (PCN) inside Telegram: the live rate, the chain, and any address's balance. Holds no keys.">
+<meta name="theme-color" content="#0a0b10">
+<link rel="icon" href="/brand/pcoin-64.png">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  /* Telegram supplies the palette. Every colour below falls back to the pc.am
+     dark theme, so the page is also correct when opened in a plain browser --
+     which is how it gets tested, and how anyone who follows the link outside
+     Telegram will see it. */
+  :root{
+    --bg:var(--tg-theme-bg-color,#0a0b10);
+    --panel:var(--tg-theme-secondary-bg-color,#11131d);
+    --text:var(--tg-theme-text-color,#e9ebf4);
+    --muted:var(--tg-theme-hint-color,#9aa2b8);
+    --link:var(--tg-theme-link-color,#2dd4bf);
+    --btn:var(--tg-theme-button-color,#2dd4bf);
+    --btn-text:var(--tg-theme-button-text-color,#06231f);
+    --line:rgba(128,140,170,.22);
+    --teal:#2dd4bf; --amber:#fbbf24; --red:#f87171; --green:#34d399;
+    --mono:ui-monospace,"Cascadia Code",Menlo,Consolas,monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    font-size:16px; line-height:1.5;
+    padding:12px 12px calc(24px + env(safe-area-inset-bottom));
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--link);text-decoration:none}
+  .head{display:flex;align-items:center;gap:10px;margin:4px 2px 14px}
+  .head img{width:34px;height:34px;border-radius:9px}
+  .head b{font-size:1.15rem}
+  .head span{color:var(--muted);font-size:.82rem;display:block;line-height:1.2}
+
+  nav{display:flex;gap:6px;margin-bottom:14px}
+  nav button{
+    flex:1;padding:9px 4px;border:1px solid var(--line);background:transparent;
+    color:var(--muted);border-radius:10px;font-size:.86rem;font-weight:600;
+    cursor:pointer;font-family:inherit;
+  }
+  nav button[aria-selected="true"]{background:var(--panel);color:var(--text);border-color:transparent}
+
+  section{display:none}
+  section[data-open]{display:block}
+
+  .card{background:var(--panel);border-radius:14px;padding:14px 15px;margin-bottom:10px}
+  .card h2{font-size:.76rem;letter-spacing:.09em;text-transform:uppercase;
+           color:var(--muted);font-weight:700;margin-bottom:10px}
+  .row{display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:6px 0}
+  .row + .row{border-top:1px solid var(--line)}
+  .row .k{color:var(--muted);font-size:.9rem}
+  .row .v{font-weight:700;font-variant-numeric:tabular-nums;text-align:right}
+  .row .v small{display:block;font-weight:400;color:var(--muted);font-size:.76rem}
+  .big{font-size:1.9rem;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+  .sub{color:var(--muted);font-size:.85rem}
+  .mono{font-family:var(--mono);font-size:.84rem;word-break:break-all}
+
+  input[type=text]{
+    width:100%;padding:11px 12px;border-radius:10px;border:1px solid var(--line);
+    background:var(--bg);color:var(--text);font-family:var(--mono);font-size:.86rem;
+  }
+  .btns{display:flex;gap:8px;margin-top:9px}
+  button.act{
+    flex:1;padding:11px;border:0;border-radius:10px;background:var(--btn);
+    color:var(--btn-text);font-weight:700;font-size:.92rem;cursor:pointer;font-family:inherit;
+  }
+  button.ghost{background:transparent;border:1px solid var(--line);color:var(--text)}
+
+  .note{font-size:.83rem;color:var(--muted);margin-top:8px}
+  .warn{color:var(--amber)}
+  .err{color:var(--red)}
+  .ok{color:var(--green)}
+  ul.hist{list-style:none;margin-top:4px}
+  ul.hist li{display:flex;justify-content:space-between;gap:10px;padding:8px 0;
+             border-top:1px solid var(--line);font-size:.88rem}
+  ul.hist li .h{color:var(--muted);font-size:.78rem}
+  .skel{color:var(--muted)}
+  .foot{text-align:center;color:var(--muted);font-size:.78rem;margin-top:16px;line-height:1.6}
+</style>
+</head>
+<body>
+
+<div class="head">
+  <img src="/brand/pcoin-round-128.png" alt="">
+  <div><b>PCoin</b><span>PCN &middot; an independent chain</span></div>
+</div>
+
+<nav>
+  <button data-tab="chain" aria-selected="true">Chain</button>
+  <button data-tab="addr" aria-selected="false">Address</button>
+  <button data-tab="wrap" aria-selected="false">Wrap</button>
+</nav>
+
+<!-- ── CHAIN ──────────────────────────────────────────────────────────── -->
+<section id="chain" data-open>
+  <div class="card">
+    <h2>Rate</h2>
+    <div class="big" id="rate">&hellip;</div>
+    <div class="sub" id="rate-sub">reading price.pc.am</div>
+  </div>
+
+  <div class="card">
+    <h2>Chain</h2>
+    <div class="row"><span class="k">Blocks</span><span class="v" id="height">&hellip;</span></div>
+    <div class="row"><span class="k">Mined so far</span><span class="v" id="supply">&hellip;<small>of a 21M cap</small></span></div>
+    <div class="row"><span class="k">Addresses holding PCN</span><span class="v" id="holders">&hellip;</span></div>
+    <div class="row"><span class="k">Difficulty</span><span class="v" id="diff">&hellip;</span></div>
+    <div class="row"><span class="k">Node peers</span><span class="v" id="peers">&hellip;</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Where the rate comes from</h2>
+    <p class="note" id="rate-note">&hellip;</p>
+  </div>
+</section>
+
+<!-- ── ADDRESS ────────────────────────────────────────────────────────── -->
+<section id="addr">
+  <div class="card">
+    <h2>Check any address</h2>
+    <input type="text" id="a-in" placeholder="pc1q…" autocomplete="off"
+           autocapitalize="off" spellcheck="false">
+    <div class="btns">
+      <button class="act" id="a-go">Check</button>
+      <button class="act ghost" id="a-scan">Scan QR</button>
+    </div>
+    <p class="note">Watch-only. This page holds no keys and cannot spend anything.</p>
+  </div>
+  <div id="a-out"></div>
+</section>
+
+<!-- ── WRAP ───────────────────────────────────────────────────────────── -->
+<section id="wrap">
+  <div class="card">
+    <h2>PCN &harr; wPCN</h2>
+    <p class="note">
+      <b>wPCN</b> is PCN on BNB Smart Chain, backed one-for-one by PCN held in a
+      public reserve. It exists so PCN can trade somewhere; PCN itself is not
+      listed on any exchange.
+    </p>
+    <div class="row" style="margin-top:8px"><span class="k">Pool price</span><span class="v" id="w-pool">&hellip;</span></div>
+    <div class="row"><span class="k">Posted rate</span><span class="v" id="w-posted">&hellip;</span></div>
+    <div class="row"><span class="k">Wrap fee</span><span class="v">5%</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Doors</h2>
+    <div class="row"><span class="k">PCN &rarr; wPCN</span><span class="v"><a href="https://wrapdesk.pc.am" target="_blank" rel="noopener">wrapdesk.pc.am</a></span></div>
+    <div class="row"><span class="k">wPCN &rarr; PCN</span><span class="v"><a href="https://wrapdesk.pc.am/redeem" target="_blank" rel="noopener">redeem</a></span></div>
+    <div class="row"><span class="k">Buy PCN</span><span class="v"><a href="https://market.pc.am" target="_blank" rel="noopener">market.pc.am</a></span></div>
+    <div class="row"><span class="k">Trade wPCN</span><span class="v"><a href="https://pancakeswap.finance/swap?outputCurrency=0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1" target="_blank" rel="noopener">PancakeSwap</a></span></div>
+  </div>
+
+  <div class="card">
+    <h2>Read this first</h2>
+    <p class="note warn">
+      The wPCN pool is small &mdash; a few hundred dollars moves it noticeably.
+      It is a door, not a market, and it should not be read as a valuation.
+      There is a limit on how much can be wrapped; the desk will say so.
+    </p>
+  </div>
+</section>
+
+<p class="foot">
+  <a href="https://pc.am/roadmap/" target="_blank" rel="noopener">roadmap</a> &middot;
+  <a href="https://explorer.pc.am" target="_blank" rel="noopener">explorer</a> &middot;
+  <a href="https://t.me/PCoinPCNChat" target="_blank" rel="noopener">chat</a><br>
+  This page stores nothing and holds no keys.
+</p>
+
+<script>
+'use strict';
+const tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+
+const $ = (id) => document.getElementById(id);
+const PRICE = 'https://price.pc.am';
+const EXPL = 'https://explorer.pc.am';
+
+// A failed read must never render as a number. Everything here shows a dash and
+// says it could not read, because a stale or invented figure on a money page is
+// worse than an obvious gap -- that rule is why the rails hold instead of
+// crediting when an explorer is unreachable.
+const FAIL = '—';
+
+async function getJson(url) {
+  const r = await fetch(url, { cache: 'no-store' });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+const usd = (n) => '$' + Number(n).toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+const num = (n) => Number(n).toLocaleString('en-US');
+const pcn = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 8 });
+
+// ---- tabs ----
+document.querySelectorAll('nav button').forEach((b) => {
+  b.addEventListener('click', () => {
+    document.querySelectorAll('nav button').forEach((x) => x.setAttribute('aria-selected', String(x === b)));
+    document.querySelectorAll('section').forEach((s) => {
+      if (s.id === b.dataset.tab) s.setAttribute('data-open', ''); else s.removeAttribute('data-open');
+    });
+  });
+});
+
+// ---- chain + rate ----
+async function loadChain() {
+  try {
+    const p = await getJson(PRICE);
+    $('rate').textContent = usd(p.serviceRate) + ' / PCN';
+    const pool = p.pool && p.pool.medianUsd;
+    $('rate-sub').textContent = 'what PCoin services credit 1 PCN at';
+    $('w-posted').textContent = usd(p.serviceRate);
+    $('w-pool').textContent = pool ? usd(pool) : 'not enough data yet';
+    $('rate-note').textContent = p.note || '';
+  } catch (e) {
+    $('rate').textContent = FAIL;
+    $('rate-sub').innerHTML = '<span class="err">could not read the rate</span>';
+    $('rate-note').textContent = '';
+  }
+  try {
+    const s = await getJson(EXPL + '/api/status');
+    // The `chain` object is the indexer's own count, not height x 50. It is the
+    // right number: it comes from the UTXO set the explorer actually built, so
+    // it cannot drift from reality the way an arithmetic guess can.
+    const c = s.chain || {};
+    $('height').textContent = num(c.height != null ? c.height : s.index.node_height);
+    $('supply').innerHTML = (c.supply_pcn != null ? num(Math.round(c.supply_pcn)) + ' PCN' : FAIL) +
+                            '<small>of a 21M cap</small>';
+    $('holders').textContent = c.addresses_with_balance != null ? num(c.addresses_with_balance) : FAIL;
+    $('peers').textContent = num(s.index.node_connections);
+    $('diff').textContent = c.difficulty != null ? Number(c.difficulty).toFixed(4) : FAIL;
+  } catch (e) {
+    ['height', 'supply', 'holders', 'peers', 'diff'].forEach((k) => { $(k).textContent = FAIL; });
+  }
+}
+
+// ---- address ----
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+async function lookup(addr) {
+  addr = String(addr || '').trim().replace(/^pcoin:/i, '').split('?')[0];
+  if (!addr) return;
+  $('a-out').innerHTML = '<div class="card"><p class="skel">Looking up…</p></div>';
+  try {
+    const j = await getJson(EXPL + '/api/address/' + encodeURIComponent(addr));
+    if (!j.balance) throw new Error('no such address');
+    const b = j.balance;
+    const items = (j.history && j.history.items) || [];
+    let html =
+      '<div class="card"><h2>Balance</h2>' +
+      '<div class="big">' + pcn(b.confirmed) + ' PCN</div>' +
+      '<div class="sub">confirmed</div>' +
+      '<div class="row" style="margin-top:10px"><span class="k">Unconfirmed</span><span class="v">' + pcn(b.unconfirmed) + '</span></div>' +
+      '<div class="row"><span class="k">Received, lifetime</span><span class="v">' + pcn(b.lifetime) + '</span></div>' +
+      '<div class="row"><span class="k">Address</span><span class="v mono">' + esc(addr) + '</span></div>' +
+      '</div>';
+    if (items.length) {
+      html += '<div class="card"><h2>Recent</h2><ul class="hist">';
+      for (const it of items.slice(0, 12)) {
+        const d = Number(it.value_pcn !== undefined ? it.value_pcn : it.value || 0);
+        const sign = d >= 0 ? '+' : '';
+        html += '<li><span class="h">block ' + num(it.height) + '</span>' +
+                '<span class="' + (d >= 0 ? 'ok' : '') + '">' + sign + pcn(d) + ' PCN</span></li>';
+      }
+      html += '</ul><p class="note"><a href="' + EXPL + '/address/' + encodeURIComponent(addr) +
+              '" target="_blank" rel="noopener">full history on the explorer</a></p></div>';
+    }
+    $('a-out').innerHTML = html;
+    try { localStorage.setItem('pcn.addr', addr); } catch (e) { /* private mode */ }
+  } catch (e) {
+    $('a-out').innerHTML = '<div class="card"><p class="err">Could not look that up.</p>' +
+      '<p class="note">Either the address has never been seen on this chain, or the explorer ' +
+      'could not be reached. It is deliberately not showing you a zero &mdash; an unreadable ' +
+      'answer is not a balance of nothing.</p></div>';
+  }
+}
+
+$('a-go').addEventListener('click', () => lookup($('a-in').value));
+$('a-in').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup($('a-in').value); });
+$('a-scan').addEventListener('click', () => {
+  if (!tg || !tg.showScanQrPopup) { alert('QR scanning works inside Telegram.'); return; }
+  tg.showScanQrPopup({ text: 'Scan a PCoin address' }, (t) => {
+    $('a-in').value = String(t || '').replace(/^pcoin:/i, '').split('?')[0];
+    tg.closeScanQrPopup();
+    lookup($('a-in').value);
+    return true;
+  });
+});
+try {
+  const last = localStorage.getItem('pcn.addr');
+  if (last) $('a-in').value = last;
+} catch (e) { /* private mode */ }
+
+loadChain();
+setInterval(loadChain, 60000);
+</script>
+</body>
+</html>
