@@ -1,0 +1,10 @@
+[Unit]
+Description=PCoin — relay @PCoinPCNChat to the ops channel
+Documentation=https://github.com/pars5555/pcoin
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pcoin-group-watch
+Nice=10
+MemoryMax=128M
+TimeoutStartSec=180

@@ -1,0 +1,11 @@
+[Unit]
+Description=PCoin — check the discussion group every minute
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=60
+AccuracySec=15
+Unit=pcoin-group-watch.service
+
+[Install]
+WantedBy=timers.target

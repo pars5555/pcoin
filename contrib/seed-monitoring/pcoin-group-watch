@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+"""Watch @PCoinPCNChat and tell the operator what people are saying.
+
+    pcoin-group-watch              one pass; run it from a timer
+    pcoin-group-watch --dry-run    read and print, send nothing, advance nothing
+    pcoin-group-watch --status     what it knows, without touching Telegram
+
+WHY THIS EXISTS. The discussion group is where a bug report will arrive, and
+nobody is watching a chat at 3am. This relays every message to the private ops
+channel, and shouts louder when a message looks like somebody is stuck.
+
+THREE THINGS THAT WOULD BREAK IT, EACH GUARDED:
+
+  ONE POLLER ONLY. `getUpdates` is exclusive: two consumers steal each other's
+  updates and each sees half a conversation. Nothing else on this estate polls
+  it (checked: no webhook, no other consumer), and nothing else may start.
+  A 409 from Telegram means somebody did, and that is reported loudly rather
+  than retried, because retrying is what makes the two of you fight.
+
+  A FAILED READ ADVANCES NOTHING. The offset is only written after the messages
+  it covers have been delivered. A crash or a network failure re-reads; it never
+  silently drops a report. Duplicates are cheap, a lost bug report is not.
+
+  IT NEVER POSTS TO THE PUBLIC CHANNEL. It only ever writes to ALERT_CHAT, and
+  the public channel id is not in this file at all. Operational text reaching
+  subscribers has happened once on this project and it is not happening again.
+"""
+import html
+import json
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+CONF = os.environ.get("PCOIN_ALERT_CONF", "/etc/pcoin/alert.conf")
+STATE = os.environ.get("GROUP_WATCH_STATE", "/var/lib/pcoin-group-watch/state.json")
+GROUP_ID = int(os.environ.get("GROUP_CHAT_ID", "-1003975107618"))
+LOG = os.environ.get("GROUP_WATCH_LOG", "/var/log/pcoin-group-watch.log")
+
+# Words that turn a relay into something worth waking up for. Deliberately about
+# a person being STUCK, not about sentiment -- "this is great" needs no operator.
+TRIGGERS = re.compile(
+    r"\b(bug|broken|not working|doesn'?t work|does not work|can'?t|cannot|fail(ed|ing|s)?|"
+    r"error|stuck|missing|lost|scam|stolen|hack(ed)?|refund|didn'?t receive|no reply|"
+    r"help|support|問題)\b", re.I)
+
+DRY = "--dry-run" in sys.argv
+
+
+def conf():
+    out = {}
+    try:
+        with open(CONF, encoding="utf-8") as fh:
+            for line in fh:
+                m = re.match(r"^\s*([A-Z_]+)\s*=\s*(.*?)\s*$", line)
+                if m:
+                    out[m.group(1)] = m.group(2).strip().strip('"').strip("'")
+    except OSError as e:
+        sys.exit("cannot read %s: %s" % (CONF, e))
+    return out
+
+
+def load_state():
+    """Missing or damaged state must normalise, not raise. A first install that
+    dies on a KeyError is a watcher nobody ever gets working."""
+    try:
+        with open(STATE, encoding="utf-8") as fh:
+            s = json.load(fh)
+        if not isinstance(s, dict):
+            s = {}
+    except (OSError, ValueError):
+        s = {}
+    s.setdefault("offset", 0)
+    s.setdefault("seen", 0)
+    s.setdefault("last_run", 0)
+    return s
+
+
+def save_state(s):
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    tmp = STATE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(s, fh, indent=2)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, STATE)
+
+
+def api(token, method, params=None, timeout=40):
+    url = "https://api.telegram.org/bot%s/%s" % (token, method)
+    data = urllib.parse.urlencode(params or {}).encode()
+    req = urllib.request.Request(url, data=data)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.load(r)
+
+
+def send(token, chat, text):
+    if DRY:
+        print("  [dry-run] would send to %s:\n%s\n" % (chat, re.sub(r"<[^>]+>", "", text)))
+        return True
+    try:
+        j = api(token, "sendMessage", {
+            "chat_id": chat, "parse_mode": "HTML",
+            "disable_web_page_preview": "true", "text": text})
+        if not j.get("ok"):
+            print("  telegram refused: %s" % j.get("description"), file=sys.stderr)
+        return bool(j.get("ok"))
+    except Exception as e:
+        # A relay that cannot be delivered must NOT advance the offset, or the
+        # message is gone for good.
+        print("  send failed: %s" % e, file=sys.stderr)
+        return False
+
+
+def who(msg):
+    f = msg.get("from") or {}
+    name = " ".join(x for x in (f.get("first_name"), f.get("last_name")) if x) or "someone"
+    if f.get("username"):
+        name += " (@%s)" % f["username"]
+    if (msg.get("sender_chat") or {}).get("title"):
+        name = msg["sender_chat"]["title"]
+    return name
+
+
+def describe(msg):
+    """What was said, in words, including the non-text kinds."""
+    if msg.get("text"):
+        return msg["text"]
+    for k, label in (("photo", "a photo"), ("document", "a file"), ("video", "a video"),
+                     ("voice", "a voice message"), ("sticker", "a sticker"),
+                     ("animation", "a GIF"), ("audio", "audio")):
+        if msg.get(k):
+            cap = msg.get("caption")
+            return ("%s: %s" % (label, cap)) if cap else label
+    if msg.get("new_chat_members"):
+        return "[joined the group]"
+    if msg.get("left_chat_member"):
+        return "[left the group]"
+    return "[a message this watcher does not render]"
+
+
+def main():
+    c = conf()
+    token = c.get("TELEGRAM_TOKEN")
+    alert_to = c.get("ALERT_CHAT") or c.get("MARKET_CHAT")
+    if not token:
+        sys.exit("no TELEGRAM_TOKEN in %s" % CONF)
+    if not alert_to:
+        sys.exit("no ALERT_CHAT in %s -- refusing to guess a destination" % CONF)
+
+    st = load_state()
+    if "--status" in sys.argv:
+        print("  offset      : %d" % st["offset"])
+        print("  messages seen: %d" % st["seen"])
+        print("  last run    : %s" % (time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime(st["last_run"]))
+                                      if st["last_run"] else "never"))
+        print("  group       : %d" % GROUP_ID)
+        return 0
+
+    try:
+        j = api(token, "getUpdates", {
+            "offset": st["offset"], "timeout": 0, "limit": 100,
+            "allowed_updates": json.dumps(["message", "edited_message"])})
+    except urllib.error.HTTPError as e:
+        if e.code == 409:
+            sys.exit("CONFLICT (409): something else is polling getUpdates for this bot. "
+                     "Only one consumer may. Find it and stop it -- do not retry.")
+        sys.exit("getUpdates failed: %s" % e)
+    except Exception as e:
+        sys.exit("getUpdates failed: %s" % e)
+
+    if not j.get("ok"):
+        sys.exit("getUpdates said: %s" % j.get("description"))
+
+    ups = j.get("result", [])
+    if not ups:
+        st["last_run"] = int(time.time())
+        if not DRY:
+            save_state(st)
+        print("  nothing new")
+        return 0
+
+    highest = st["offset"]
+    relayed = 0
+    delivered_through = st["offset"]
+
+    for u in ups:
+        uid = u.get("update_id", 0)
+        highest = max(highest, uid)
+        msg = u.get("message") or u.get("edited_message") or {}
+        chat = (msg.get("chat") or {}).get("id")
+
+        # Everything not from OUR group is consumed and ignored on purpose: this
+        # is the only poller, so leaving them unconsumed would stall the offset
+        # for ever behind traffic from the bot's other chats.
+        if chat != GROUP_ID:
+            delivered_through = uid
+            continue
+        if (msg.get("from") or {}).get("is_bot"):
+            delivered_through = uid
+            continue
+        # Telegram copies every channel post into its linked discussion group and
+        # marks the copy `is_automatic_forward`. Relaying those means the operator
+        # is told about announcements they wrote themselves, and an edit produces
+        # a second one -- noise that trains people to ignore the channel this
+        # writes to, which is the failure mode that matters.
+        if msg.get("is_automatic_forward") or (msg.get("sender_chat") or {}).get("type") == "channel":
+            delivered_through = uid
+            continue
+
+        text = describe(msg)
+        urgent = bool(msg.get("text") and TRIGGERS.search(msg["text"]))
+        head = "🆘 <b>PCoin Chat — someone needs help</b>" if urgent else "💬 <b>PCoin Chat</b>"
+        body = ("%s\n<b>%s</b>\n%s\n\n<a href=\"https://t.me/PCoinPCNChat/%d\">open the message</a>"
+                % (head, html.escape(who(msg)), html.escape(text[:1200]), msg.get("message_id", 0)))
+
+        try:
+            with open(LOG, "a", encoding="utf-8") as fh:
+                fh.write("%s\t%s\t%s\n" % (
+                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(msg.get("date", time.time()))),
+                    who(msg), text.replace("\n", " ")[:600]))
+        except OSError as e:
+            print("  log write failed: %s" % e, file=sys.stderr)
+
+        if not send(token, alert_to, body):
+            # Stop here. Everything before this update was delivered; everything
+            # from here on will be re-read next run.
+            print("  delivery failed at update %d -- offset held at %d"
+                  % (uid, delivered_through + 1), file=sys.stderr)
+            break
+        relayed += 1
+        delivered_through = uid
+        st["seen"] += 1
+
+    st["offset"] = delivered_through + 1
+    st["last_run"] = int(time.time())
+    if not DRY:
+        save_state(st)
+    print("  %d update(s) read, %d relayed, offset now %d%s"
+          % (len(ups), relayed, st["offset"], " (dry run, nothing saved)" if DRY else ""))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
