@@ -239,6 +239,12 @@ def main() -> int:
               "explicitly.", file=sys.stderr)
 
     used_total = 0.0        # allocation consumed, summed across ALL addresses
+    # Same figure, broken down BY DEPOSIT ADDRESS. The desk maps a deposit
+    # address back to the account that requested it, so a per-account quota
+    # can be summed from this without the desk ever seeing the chain itself.
+    # These entries sum to used_total exactly -- same arithmetic, same refund
+    # exclusion -- so the two can never disagree about the same deposits.
+    per_addr = {}
     # What has ALREADY gone out, read from the ledger rather than recomputed, plus
     # what this run has instructed. A send is only instructed if it fits inside
     # TOTAL_ALLOC once both are counted -- otherwise the desk re-promises the same
@@ -417,6 +423,9 @@ def main() -> int:
                 _k = f"wrap:{it.get('txid','?')}:{watch_addr}"
                 if not (st["seen"].get(_k, {}) or {}).get("refunded"):
                     used_total += min(a, PER_PERSON) * (1 - FEE_PCT / 100.0)
+                    per_addr[watch_addr] = round(
+                        per_addr.get(watch_addr, 0.0)
+                        + min(a, PER_PERSON) * (1 - FEE_PCT / 100.0), 8)
 
     if used_total > 0:
         left = TOTAL_ALLOC - used_total
@@ -468,6 +477,7 @@ def main() -> int:
     #   released_wpcn  what the send gate tests; >= used_wpcn, because a release
     #                  recorded before send_wpcn existed is charged at maximum
     st["allocation"] = {
+        "per_address": per_addr,
         "used_wpcn": round(used_total, 8),
         "released_wpcn": round(released_wpcn, 8),
         "total_alloc": TOTAL_ALLOC,
