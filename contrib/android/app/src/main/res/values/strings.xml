@@ -111,6 +111,12 @@
     <string name="done_restored">Your wallet has been restored. Mining rewards will be paid to:\n\n%1$s\n\n%2$s</string>
     <string name="done_scan_found">The scan found %1$d transaction(s) and a balance of %2$s.\n\nIf that is not what you expected, the phrase may not be the one you meant — check the words against your paper.</string>
     <string name="done_scan_empty">The scan finished and found NO transactions and a balance of zero.\n\nIf this phrase should have coins, it is not the right phrase: check every word against your paper, and check the word count. Nothing has been destroyed — your other wallets are untouched.</string>
+    <!-- The SAME zero, but from a node that has not caught up yet. On a fresh
+         install there is no chain to scan, so the scan honestly reports zero
+         and the message above would tell someone with a funded phrase that
+         their phrase is wrong. That happened to the owner on 2026-09-08 while
+         restoring a wallet holding 52,658 PCN. -->
+    <string name="done_scan_empty_syncing">Nothing found YET \u2014 this phone has not finished downloading the blockchain, so there was nothing to scan.\n\nThis does NOT mean your phrase is wrong. Leave the app open; your transactions and balance will appear once the phone has caught up. If it is still empty after that, check every word against your paper.</string>
     <string name="done_scan_unknown">The node could not be asked what the scan found, so this wallet\'s balance is not known yet. Check the main screen in a moment.</string>
     <string name="done_button">Done</string>
 

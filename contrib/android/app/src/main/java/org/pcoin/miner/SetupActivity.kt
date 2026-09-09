@@ -851,6 +851,20 @@ class SetupActivity : AppCompatActivity() {
             val summary = when {
                 result.txCount < 0 || result.balance < 0 ->
                     getString(R.string.done_scan_unknown)
+                // A ZERO FROM AN UNSYNCED NODE IS NOT A ZERO.
+                //
+                // The doctrine above says "could not ask the node" is its own
+                // case and is not zero. This is that same trap one level
+                // deeper: the RPC SUCCEEDED, so the answer looks authoritative,
+                // but it describes a chain the phone has not downloaded yet. On
+                // a fresh install there is nothing to scan, so a correct phrase
+                // scans to zero -- and the message below tells the owner their
+                // phrase is wrong. That happened, while restoring a wallet
+                // holding 52,658 PCN, and it is the most frightening thing this
+                // app can say to someone holding their paper backup.
+                result.txCount == 0 && result.balance == 0.0 &&
+                    !MinerState.snapshot.balanceIsTrustworthy ->
+                    getString(R.string.done_scan_empty_syncing)
                 result.txCount == 0 && result.balance == 0.0 ->
                     getString(R.string.done_scan_empty)
                 else ->
@@ -975,8 +989,36 @@ class SetupActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Go to the home screen, rather than just closing.
+     *
+     * WHY THIS IS NOT A BARE finish(). MainActivity calls finish() ON ITSELF
+     * when there is no wallet yet and hands over to this screen, so by the time
+     * setup completes the task usually has no home screen left underneath. A
+     * bare finish() therefore emptied the task and the app vanished -- the
+     * owner reported exactly that twice: "i restored and push DONE and app
+     * closed". The wallet was fine; it just looked like a crash at the worst
+     * possible moment, seconds after someone typed twelve words in.
+     *
+     * CLEAR_TOP + SINGLE_TOP so that when a home screen IS still underneath
+     * (setup reached from the miner's menu, say) it is reused rather than a
+     * second copy stacked on top of it. MainActivity is singleTop in the
+     * manifest, so this reuses the instance and re-runs onNewIntent/onResume,
+     * which is what re-reads the freshly stored wallet.
+     */
     private fun finishSetup() {
         setResult(Activity.RESULT_OK)
+        try {
+            startActivity(
+                Intent(this, MainActivity::class.java).addFlags(
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP,
+                ),
+            )
+        } catch (t: Throwable) {
+            // Never let a failed hand-off strand the user on a dead screen:
+            // finishing below at least returns them to wherever they came from.
+            Log.w(TAG, "could not open the home screen: ${t.message}")
+        }
         finish()
     }
 
