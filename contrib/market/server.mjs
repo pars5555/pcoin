@@ -78,6 +78,11 @@ const cfg = JSON.parse(readFileSync(CFG, 'utf8'));
 // Unset -> skipped, and the startup banner says so LOUDLY. A form that shows a
 // captcha nobody checks is worse than no captcha, so the widget is injected
 // only when a sitekey exists (see the HCAPTCHA marker in index.html).
+// ── single sign-on for the wrap desk ───────────────────────────────────────
+// Deliberately NOT cfg.sessionSecret -- see the /sso/wrapdesk route for why.
+// Absent secret disables the route rather than falling back to another key.
+const SSO_ON = Boolean(cfg.ssoSecret);
+const SSO_RETURN_OK = cfg.ssoReturnPrefixes || ['https://wrapdesk.pc.am/'];
 const HCAPTCHA_SITEKEY = cfg.hcaptchaSitekey || '';
 const HCAPTCHA_SECRET  = cfg.hcaptchaSecret  || '';
 const HCAPTCHA_ON = Boolean(HCAPTCHA_SITEKEY && HCAPTCHA_SECRET);
@@ -1220,6 +1225,45 @@ createServer(async (req, res) => {
     }
 
     // ---- auth ----
+    // ---- SSO: hand the wrap desk a signed statement of who is signed in ----
+    //
+    // The wrap desk raises its per-person limit for a market account, so it must
+    // learn the account WITHOUT being able to forge one. This mints a short-lived
+    // token the desk verifies with a shared secret.
+    //
+    // FOUR things here are load-bearing, and three of them are ways this goes
+    // wrong rather than features:
+    //
+    // 1. A SEPARATE SECRET from sessionSecret. Same-secret tokens mean a stolen
+    //    market session cookie is also a wrap-desk grant and vice versa; the two
+    //    systems would share a blast radius for no benefit. Different audience,
+    //    different key.
+    // 2. The return URL is ALLOWLISTED. Redirecting to whatever ?return= says,
+    //    with a signed identity token in the query string, is an open redirect
+    //    that hands the token to anyone who can get a link clicked.
+    // 3. 120 SECONDS. The token exists only to survive one browser redirect. The
+    //    desk swaps it for its own cookie immediately, so a long life buys
+    //    nothing and a leaked URL in a log or Referer stays useful for longer.
+    // 4. Not signed in is a REDIRECT HOME, not an error page: the caller is a
+    //    browser mid-bounce, and the useful thing to show is the login form.
+    if (p === '/sso/wrapdesk') {
+      if (!SSO_ON) return json(res, 503, { error: 'single sign-on is not configured' });
+      const back = String(u.searchParams.get('return') || '');
+      if (!SSO_RETURN_OK.some((pre) => back.startsWith(pre))) {
+        return json(res, 400, { error: 'return url is not an allowed destination' });
+      }
+      if (!email) {
+        // Send them to the login form, remembering where they were going.
+        res.writeHead(302, { Location: '/?next=' + encodeURIComponent(back) });
+        return res.end();
+      }
+      const payload = `${email}|${Date.now() + 120_000}`;
+      const tok = `${payload}.${createHmac('sha256', cfg.ssoSecret).update(payload).digest('hex')}`;
+      const sep = back.includes('?') ? '&' : '?';
+      res.writeHead(302, { Location: back + sep + 'sso=' + encodeURIComponent(tok) });
+      return res.end();
+    }
+
     if (p === '/api/register' && req.method === 'POST') {
       const f = JSON.parse(await body(req));
       if (!(await captchaGate(req, res, f))) return;
