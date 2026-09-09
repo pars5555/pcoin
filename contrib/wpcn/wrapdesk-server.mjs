@@ -431,7 +431,7 @@ price.pc.am, and the <b>liquidity is not locked</b> — the project holds the LP
 tokens. Only send what you can afford to lose.</p></div>`;
 
 // ── pages ───────────────────────────────────────────────────────────────────
-const home = (msg = '') => page('PCoin wrap desk — turn PCN into wPCN', '/', `
+const home = (msg = '', acct = null, leftPcn = null) => page('PCoin wrap desk — turn PCN into wPCN', '/', `
 <h1>Turn PCN into wPCN</h1>
 <p class="lead">wPCN is PCoin wrapped as a BEP-20 on BNB Smart Chain, so it can
 trade on PancakeSwap. Backed 1:1 by the PCN you send.</p>
@@ -465,7 +465,7 @@ rel="noopener">PancakeSwap</a>. Want PCN back later? The
 
 <h2>The terms</h2><div class="card"><table>
 <tr><th>Limit</th><td>${PER_PERSON} PCN per person · ${TOTAL_ALLOC} wPCN total while the desk is new</td></tr>
-<tr><th>More</th><td>Sign in with a <a href="${SSO_START}?return=https%3A%2F%2Fwrapdesk.pc.am%2Fsso">market.pc.am account</a> and your limit becomes ${ACCOUNT_MONTHLY_PCN} PCN a month.</td></tr>
+<tr><th>More</th><td>${acct ? `Signed in as <b>${esc(acct)}</b> &mdash; <b>${n2(leftPcn)} PCN</b> of your ${ACCOUNT_MONTHLY_PCN} PCN monthly allowance left. <a href="/signout">Sign out</a>` : `Sign in with a <a href="${SSO_START}?return=https%3A%2F%2Fwrapdesk.pc.am%2Fsso">market.pc.am account</a> and your limit becomes ${ACCOUNT_MONTHLY_PCN} PCN a month.`}</td></tr>
 <tr><th>Fee</th><td>${FEE_PCT}% — send 100 PCN, receive ${100 - FEE_PCT} wPCN</td></tr>
 <tr><th>Wait</th><td>${CONFIRMATIONS} confirmations, about ${WAIT_H} hours</td></tr>
 <tr><th>Backing</th><td>1:1, <a href="/proof">verifiable</a></td></tr>
@@ -1007,7 +1007,13 @@ createServer(async (req, res) => {
     // HEAD answers like GET (Node drops the body itself): link checkers, uptime
     // monitors and social-card fetchers all probe with HEAD and read 404 as "dead".
     const isGet = req.method === 'GET' || req.method === 'HEAD';
-    if (isGet && p === '/')       return send(200, home());
+    if (isGet && p === '/') {
+      const who = accountOf(req);
+      if (!who) return send(200, home());
+      const usedW = accountUsedWpcn(load(), who);
+      const capW = ACCOUNT_MONTHLY_PCN * (1 - FEE_PCT / 100);
+      return send(200, home('', who, Math.max(0, (capW - usedW) / (1 - FEE_PCT / 100))));
+    }
     if (isGet && p === '/track')  return send(200, track());
     if (isGet && p === '/redeem') return send(200, redeem());
     if (isGet && p === '/faq')    return send(200, faq());
