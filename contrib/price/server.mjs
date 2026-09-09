@@ -99,6 +99,122 @@ const SERVICE_RATE_FLOOR = 1e-8;
 const LADDER_SANITY_FACTOR = 2;
 const LADDER = 'http://127.0.0.1:8789/api/ladder/state';   // market.pc.am, same box
 
+// -- the PancakeSwap pool, and why the posted rate now follows it DOWN ------
+//
+// Until 2026-09-09 this feed was the anchor and the pool was held to it by
+// pcoin-wpcn-keeper, which bought wPCN whenever the pool fell. That is over:
+// the keeper's float was 132 USDT against an unlimited, freely-mintable
+// supply, so it was a countdown, not a defence.
+//
+// With nothing defending the downside the pool WILL fall when people sell, and
+// that opens a leak which did not exist while the two were pinned together:
+//
+//     buy wPCN cheap on PancakeSwap -> redeem() 1:1 into PCN
+//       -> spend that PCN at any of the six rails, credited at serviceRate
+//
+// Every cent serviceRate sits above the pool is free money to whoever does
+// that, paid out of market-hot. So the rate must track the pool DOWN. This is
+// not a courtesy to the market; it is the thing that closes the arbitrage.
+//
+// THE POOL MAY ONLY EVER LOWER THE RATE, NEVER RAISE IT. That asymmetry is the
+// whole safety argument. The pool holds about $1,387, so roughly $100 moves it
+// 15%; if it could push the rate UP, a stranger could buy 15% more credit at
+// our services for $100. Pushing it DOWN costs them money and only reduces
+// what we credit -- there is no attack in that direction, so none is guarded.
+const POOL_PAIR = '0xB2c6C80cb31DE366Fb556Fff7C433660BAF60204';
+const POOL_WPCN = '0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1';   // 8 decimals
+const POOL_USDT = '0x55d398326f99059fF775485246999027B3197955';   // 18 decimals
+const POOL_RPCS = ['https://bsc-dataseed.binance.org',
+                   'https://bsc-dataseed1.defibit.io',
+                   'https://bsc-dataseed1.ninicoin.io'];
+// balanceOf(address) on each token, rather than getReserves() on the pair.
+// getReserves needs token0/token1 ordering to interpret, and that ordering has
+// already been got wrong once on this project -- the pair was documented as
+// wPCN/WBNB when it is wPCN/USDT. Two balance reads cannot be misread.
+const BALANCE_OF = '0x70a08231';
+
+async function readPoolPriceUsd() {
+  const call = async (rpc, token) => {
+    const data = BALANCE_OF + '0'.repeat(24) + POOL_PAIR.slice(2).toLowerCase();
+    const r = await fetch(rpc, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call',
+                             params: [{ to: token, data }, 'latest'] }),
+      signal: AbortSignal.timeout(12000),
+    });
+    if (!r.ok) throw new Error('rpc HTTP ' + r.status);
+    const j = await r.json();
+    if (j.error) throw new Error(j.error.message || 'rpc error');
+    if (typeof j.result !== 'string' || !/^0x[0-9a-f]*$/i.test(j.result)) {
+      throw new Error('rpc returned no usable result');
+    }
+    return BigInt(j.result);
+  };
+  let lastErr = null;
+  for (const rpc of POOL_RPCS) {
+    try {
+      const [w, u] = await Promise.all([call(rpc, POOL_WPCN), call(rpc, POOL_USDT)]);
+      // A pair with nothing in it has no price. Returning 0 here would be an
+      // answer-shaped unknown, and the rate would walk to the floor on it.
+      if (w <= 0n || u <= 0n) throw new Error('pair reserves are zero');
+      const wpcn = Number(w) / 1e8;
+      const usdt = Number(u) / 1e18;
+      const price = usdt / wpcn;
+      if (!(isFinite(price) && price > 0)) throw new Error('pair produced a non-price');
+      return { price, wpcn, usdt, rpc };
+    } catch (e) { lastErr = e; }
+  }
+  throw new Error('no BSC RPC answered: ' + (lastErr ? lastErr.message : 'unknown'));
+}
+
+/** Median of the samples inside the window, or null for UNKNOWN.
+ *
+ *  Median, not mean: one absurd reading from a flaky RPC moves a mean and
+ *  cannot move a median. And null rather than a number when there is not
+ *  enough history -- a thin sample is not a cheap price, it is no price, and
+ *  the doctrine here is that an unknown must never resolve into a figure. */
+function poolMedianUsd() {
+  const windowMs = (st.poolTwapHours || 6) * 3600e3;
+  const cut = Date.now() - windowMs;
+  const xs = (st.poolSamples || [])
+    .filter(s => s && s.t >= cut && s.p > 0).map(s => s.p).sort((a, b) => a - b);
+  if (xs.length < (st.poolMinSamples || 12)) return null;
+  const m = Math.floor(xs.length / 2);
+  return xs.length % 2 ? xs[m] : (xs[m - 1] + xs[m]) / 2;
+}
+
+async function pollPool() {
+  if (!st.poolFollow) return { ok: false, why: 'poolFollow is off' };
+  try {
+    const r = await readPoolPriceUsd();
+    st.poolPrice = r.price;
+    st.poolAt = Date.now();
+    st.poolWpcn = r.wpcn;
+    st.poolUsdt = r.usdt;
+    st.poolSamples = [...(st.poolSamples || []), { t: st.poolAt, p: r.price }]
+      // Keep more than the window, so raising poolTwapHours has history to work
+      // with immediately, and cap the array so a long-running process cannot
+      // grow the state file without bound.
+      .filter(s => s && s.t >= Date.now() - 36 * 3600e3)
+      .slice(-2000);
+    // Computed here, not in the response, so the REPLICAS can publish the
+    // same figures. They hold no samples and must never recompute -- an empty
+    // window would answer null and read as "the pool cannot be reached".
+    st.poolMedian = poolMedianUsd();
+    st.poolHeldBy = poolStatus().limitedBy;
+    st.poolSampleCount = (st.poolSamples || []).length;
+    try { save(st); } catch (e) { console.warn('[price] pool sample not saved:', e.message); }
+    return { ok: true, price: r.price };
+  } catch (e) {
+    // Unreadable resolves NOTHING. The last median stands until it ages out of
+    // the window on its own, and if it does the target falls back to the
+    // ladder -- never to zero, and never to the floor.
+    console.warn('[price] pool unreadable:', e.message);
+    return { ok: false, why: e.message };
+  }
+}
+
 const DEFAULTS = {
   reserve: 1000,            // USDT
   supply: 1000000,          // PCN in the pool -> opening price 0.001
@@ -135,6 +251,44 @@ const DEFAULTS = {
   soldToday: 0,
   day: '',
   history: [],
+  // Follow the pool downward. See the block by POOL_PAIR for the reasoning.
+  poolFollow: true,
+  // THE FLOOR. Rung 0 of the ladder is $0.015 -- the first price PCN was ever
+  // offered at, and the bottom of our own order book. Below this we would be
+  // crediting PCN at less than we have ever sold it for, on the word of a pool
+  // holding about $1,300. It is a published number with history rather than
+  // one somebody picked, which is the only kind of floor worth having.
+  poolFloorUsd: 0.015,
+  // How far below the LADDER price the rate may be dragged.
+  //
+  // market.pc.am carries its own interlock: at maxDivergencePct (20) between
+  // the ladder and the rate the products actually credit at, it PAUSES EVERY
+  // SALE and alerts. That interlock is right -- selling PCN at the ladder price
+  // while the rails credit far less would shortchange the buyer -- so this
+  // number sits UNDER it, and the rate stops following before the market jams
+  // rather than after. If the pool falls further than this, it is a decision
+  // for a person: the LADDER has to come down, and no automatic rule here can
+  // make that choice.
+  poolMaxDivergencePct: 15,
+  // A crash is not a price. At most this much below where the rate opened the
+  // day, however far the pool goes.
+  poolMaxDailyDropPct: 10,
+  poolTwapHours: 6,
+  poolMinSamples: 12,
+  poolPrice: null,
+  poolAt: 0,
+  poolWpcn: null,
+  poolUsdt: null,
+  poolSamples: [],
+  // Where the rate stood when the day opened, for poolMaxDailyDropPct.
+  rateDayKey: '',
+  rateDayOpen: 0,
+  // Worked out by the primary each poll and mirrored to the replicas, so
+  // every origin publishes the same pool picture. Never recomputed off-box.
+  poolMedian: null,
+  poolHeldBy: null,
+  poolSampleCount: 0,
+
   adminToken: '',
 };
 
@@ -342,7 +496,50 @@ const ladderKnown = () => typeof st.ladderPrice === 'number' && isFinite(st.ladd
 const postedPrice = () => (ladderKnown() ? st.ladderPrice : price());
 // retuneServiceRate must not walk toward the AMM fallback. If the ladder has
 // never been known there is no target, and no target means no step.
-const retuneTarget = () => (ladderKnown() ? st.ladderPrice : null);
+// The rate the walk aims at. The ladder is the ceiling; the pool may pull it
+// down; three separate brakes bound how far. Every one of them yields the
+// LADDER price when its input is unknown -- never zero, and never the floor.
+function retuneTarget() {
+  if (!ladderKnown()) return null;
+  const ladder = st.ladderPrice;
+  if (!st.poolFollow) return ladder;
+  const pool = poolMedianUsd();
+  if (pool === null) return ladder;          // too little history is not a price
+  const dayFrom = st.rateDayOpen > 0 ? st.rateDayOpen : st.serviceRate;
+  const brakes = [
+    st.poolFloorUsd || 0,                                    // absolute floor
+    ladder * (1 - (st.poolMaxDivergencePct || 0) / 100),     // market interlock
+    dayFrom * (1 - (st.poolMaxDailyDropPct || 0) / 100),     // one day's fall
+  ];
+  // min() against the ladder is what makes this one-directional: a pool
+  // trading ABOVE the ladder changes nothing at all.
+  return Math.max(Math.min(ladder, pool), ...brakes);
+}
+
+/** What the pool says, and what is stopping the rate reaching it. Used by
+ *  /price and by the log line, so both describe the same situation. */
+function poolStatus() {
+  const pool = poolMedianUsd();
+  if (!ladderKnown() || pool === null) return { pool, limited: false, limitedBy: null };
+  const ladder = st.ladderPrice;
+  if (pool >= ladder) return { pool, limited: false, limitedBy: null };
+  const dayFrom = st.rateDayOpen > 0 ? st.rateDayOpen : st.serviceRate;
+  const bars = [
+    ['floor', st.poolFloorUsd || 0],
+    ['marketInterlock', ladder * (1 - (st.poolMaxDivergencePct || 0) / 100)],
+    ['dailyDrop', dayFrom * (1 - (st.poolMaxDailyDropPct || 0) / 100)],
+  ].filter(([, v]) => v > pool).sort((a, b) => b[1] - a[1]);
+  return { pool, limited: bars.length > 0, limitedBy: bars.length ? bars[0][0] : null };
+}
+
+/** Open the day's rate window. poolMaxDailyDropPct is measured from here. */
+function rollRateDay() {
+  const d = today();
+  if (st.rateDayKey !== d || !(st.rateDayOpen > 0)) {
+    st.rateDayKey = d;
+    st.rateDayOpen = st.serviceRate;
+  }
+}
 
 // ── transient guard ────────────────────────────────────────────────────────
 // A ladder price must be SEEN TWICE, 60s apart, before it is believed.
@@ -430,6 +627,7 @@ async function pollLadder(force = false) {
     const snapshot = { ...st };
     const before = { serviceRate: st.serviceRate };
     Object.assign(st, next);
+    rollRateDay();
     const tune = retuneServiceRate(force);
     try { save(st); }
     catch (e) {
@@ -474,6 +672,11 @@ async function pollLadder(force = false) {
 if (ROLE === 'primary') {
   await pollLadder();
   setInterval(pollLadder, 60000);
+  // The pool is read on the same cadence and only by the primary, for the same
+  // reason the ladder is: replicas take the whole state from /state, so three
+  // origins cannot disagree about what the pool said.
+  await pollPool();
+  setInterval(pollPool, 60000);
 }
 // Replicas need no poll of their own: they take ladderPrice, serviceRate and
 // the clock stamps wholesale from the primary's /state, so all three origins
@@ -621,6 +824,19 @@ createServer(async (req, res) => {
         // and a consumer must not use one for the other.
         price: Number(postedPrice().toFixed(9)),
         serviceRate: st.serviceRate,
+        // What the rate is tracking, and what is holding it up. Published
+        // because "why is the credit rate below the ladder price" has to be
+        // answerable from the feed itself, not from a server log.
+        rateFollowsPoolDown: !!st.poolFollow,
+        rateFloorUsd: st.poolFloorUsd,
+        pool: st.poolFollow ? {
+          spotUsd: st.poolPrice,
+          medianUsd: st.poolMedian ?? null,
+          windowHours: st.poolTwapHours,
+          samples: st.poolSampleCount ?? 0,
+          ageSeconds: st.poolAt ? Math.floor((Date.now() - st.poolAt) / 1000) : null,
+          rateHeldAboveBy: st.poolHeldBy ?? null,
+        } : null,
         currency: 'USD',
         // BUYBACK. Every field below describes selling PCN back to us, and it
         // is CLOSED unless `buybackOpen` is true. When it is closed the price
@@ -647,8 +863,8 @@ createServer(async (req, res) => {
         // Stated so nobody mistakes a posted price for a market price.
         note: 'Posted from a finite 100,000 PCN order-book ladder, not discovered on a market. ' +
               'PCN is not exchange traded; its wrapped form wPCN trades in a small PancakeSwap ' +
-              'pool that a keeper holds to THIS rate, so that pool follows this feed and must ' +
-              'not be read as a price. ' +
+              'pool. Until 2026-09-09 a keeper held that pool to THIS rate; it no ' +
+              'longer defends the downside, so the pool falls on real selling and this rate follows it down, bounded by a published floor. ' +
               // Both directions, deliberately. This field used to end by telling
               // holders their way out was to sell the pool -- a public API field,
               // read by every integrator, advertising only the exit. The pool is
@@ -779,6 +995,14 @@ createServer(async (req, res) => {
                         'serviceMaxMovePct','serviceCeiling','serviceRetuneIntervalHours',
                         'serviceRateAt','ladderPrice','ladderAt','ladderSoldPcn',
                         'ladderRemainingPcn','soldToday','day','history','role']) {
+      // The pool scalars, so all three origins publish one story. The
+      // SAMPLES stay behind: that array is capped at 2000 entries and would
+      // add ~80 KB to every sync, against a 256 KB ceiling -- a payload that
+      // grows with uptime is how a working sync breaks months later.
+      for (const kk of ['poolFollow','poolPrice','poolAt','poolMedian','poolHeldBy',
+                        'poolSampleCount','poolFloorUsd','poolTwapHours','poolWpcn','poolUsdt']) {
+        if (st[kk] !== undefined) pub[kk] = st[kk];
+      }
         if (st[kk] !== undefined) pub[kk] = st[kk];
       }
       return json(res, 200, pub);
