@@ -95,6 +95,7 @@
 <nav>
   <button data-tab="chain" aria-selected="true">Chain</button>
   <button data-tab="addr" aria-selected="false">Address</button>
+  <button data-tab="send" aria-selected="false">Send</button>
   <button data-tab="wrap" aria-selected="false">Wrap</button>
 </nav>
 
@@ -149,6 +150,49 @@
       leaves your device and it is not a wallet.</p>
   </div>
   <div id="a-out"></div>
+</section>
+
+<!-- ── SEND ───────────────────────────────────────────────────────────── -->
+<!--
+  This page CANNOT send. It composes a request and hands it to the PCoin wallet
+  app, which holds the key in Android's Keystore and asks you there. Nothing is
+  signed here, nothing is transmitted here, and closing this tab mid-way costs
+  nothing.
+-->
+<section id="send">
+  <div class="card">
+    <h2>Send PCN</h2>
+    <p class="note" style="margin:0 0 12px">
+      This hands the payment to the <b>PCoin wallet app</b>, which asks you to
+      confirm it and signs it there. Your key never comes near this page.
+    </p>
+    <label class="sub" for="s-to">To</label>
+    <input type="text" id="s-to" placeholder="pc1q…" autocomplete="off"
+           autocapitalize="off" spellcheck="false" style="margin-bottom:10px">
+    <label class="sub" for="s-amt">Amount in PCN (optional)</label>
+    <input type="text" id="s-amt" placeholder="0.00" inputmode="decimal"
+           autocomplete="off" style="margin-bottom:4px">
+    <div class="btns">
+      <button class="act" id="s-go">Open in wallet</button>
+      <button class="act ghost" id="s-scan">Scan QR</button>
+    </div>
+    <p class="note" id="s-note"></p>
+  </div>
+
+  <div class="card">
+    <h2>If nothing happens</h2>
+    <p class="note">
+      Then the wallet app is not installed on this device, or you are on a
+      platform it does not exist for. It is <b>Android only</b> today &mdash;
+      Telegram Desktop and iPhone have nothing to hand the payment to.
+      Get it from <a href="https://pc.am/download/" target="_blank" rel="noopener">pc.am/download</a>,
+      then come back and try again.
+    </p>
+    <p class="note">
+      Nothing is lost either way. Until the wallet app confirms it, no payment
+      exists.
+    </p>
+  </div>
 </section>
 
 <!-- ── WRAP ───────────────────────────────────────────────────────────── -->
@@ -327,6 +371,59 @@ $('a-scan').addEventListener('click', () => {
     return true;
   });
 });
+// ---- send: compose a request, hand it to the wallet app ----
+//
+// The whole design in one line: the REQUEST travels, the key does not. This
+// builds a `pcoin:` URI and asks the OS to open it. The PCoin wallet claims that
+// scheme and shows a review screen; the signing and the device unlock both
+// happen there, in an app that already holds the key properly.
+//
+// Amount is deliberately OPTIONAL and is only a hint. The wallet shows it and
+// makes the person type it themselves before sending, so a number nobody read
+// cannot become a payment.
+$('s-go').addEventListener('click', () => {
+  const to = String($('s-to').value || '').trim().replace(/^pcoin:/i, '').split('?')[0];
+  const amt = String($('s-amt').value || '').trim();
+  const note = $('s-note');
+  if (!to) { note.innerHTML = '<span class="err">Enter an address first.</span>'; return; }
+  // A local sanity check only. The wallet validates properly against a node --
+  // this exists so an obvious typo is caught before an app switch, not to
+  // decide whether an address is real.
+  if (!/^pc1[a-z0-9]{20,}$/i.test(to)) {
+    note.innerHTML = '<span class="err">That does not look like a PCoin address. ' +
+      'They start with <code>pc1</code>.</span>';
+    return;
+  }
+  if (amt && !(Number(amt) > 0)) {
+    note.innerHTML = '<span class="err">Amount must be a positive number, or left blank.</span>';
+    return;
+  }
+  const uri = 'pcoin:' + to + (amt ? '?amount=' + encodeURIComponent(amt) : '');
+  note.textContent = 'Opening the wallet app…';
+  // openLink would send this to a browser, which cannot handle a pcoin: scheme.
+  // A plain navigation lets Android hand it to whichever app claims it.
+  window.location.href = uri;
+  // If the app is not installed nothing visibly happens, so say so rather than
+  // leaving "Opening…" on screen for ever.
+  setTimeout(() => {
+    note.innerHTML = 'If the wallet did not open, it is probably not installed on ' +
+      'this device. See <b>If nothing happens</b> below.';
+  }, 2500);
+});
+
+$('s-scan').addEventListener('click', () => {
+  if (!tg || !tg.showScanQrPopup) { alert('QR scanning works inside Telegram.'); return; }
+  tg.showScanQrPopup({ text: 'Scan the address to pay' }, (t) => {
+    const raw = String(t || '');
+    const parsed = raw.replace(/^pcoin:/i, '');
+    $('s-to').value = parsed.split('?')[0];
+    const m = parsed.match(/[?&]amount=([0-9.]+)/);
+    if (m) $('s-amt').value = m[1];
+    tg.closeScanQrPopup();
+    return true;
+  });
+});
+
 // ---- "remember my address" ----
 //
 // A bookmark, not a wallet. It is the address you asked about, kept in THIS
