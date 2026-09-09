@@ -260,8 +260,18 @@ android {
             // block download and every 10 minutes after, and flushes when the
             // app is swiped out of Recents -- the one unclean exit Android
             // actually tells us about.
-            versionCode = 21
-            versionName = "0.2.18"
+            // 0.2.19: SignRequestActivity ships (50788fa) -- a read-only review
+            // screen for `pcoin:` payment requests, so the Telegram mini app can
+            // compose a payment while the key stays in AndroidKeyStore. It is
+            // the only activity in this flavour exported to other apps besides
+            // the launcher; SendActivity stays exported="false" because a
+            // payment screen any app can launch with extras is a phishing
+            // surface.
+            //
+            // 21 is spent: 0.2.18 is published and live, and an upload consumes
+            // a version code whether or not it is ever released.
+            versionCode = 22
+            versionName = "0.2.19"
 
             buildConfigField("boolean", "MINING", "false")
             // The ONLY genuine collision between the two apps. bitcoind is
