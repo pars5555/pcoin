@@ -845,6 +845,45 @@ class NodeController(context: Context) {
      * a last resort. A clean stop matters: bitcoind flushes the chainstate on
      * shutdown, and a SIGKILL mid-flush costs a long reindex next launch.
      */
+    /**
+     * Force the UTXO set out of RAM and onto disk.
+     *
+     * WHY THIS EXISTS AT ALL. Core writes the chainstate on exactly three
+     * occasions: when the dbcache fills, on a clean shutdown, and on a PERIODIC
+     * full flush -- and that last one is `DATABASE_FLUSH_INTERVAL`, **24 hours**
+     * (`validation.cpp:96`). The hourly `DATABASE_WRITE_INTERVAL` writes only
+     * the block index, not the coins.
+     *
+     * On PCoin none of the first three ever happen on a phone. The whole UTXO
+     * set is a few MiB against a 50 MB dbcache, so the cache never fills; a
+     * force-stop is a SIGKILL, so there is no clean shutdown; and nobody leaves
+     * a wallet running for 24 hours before the first kill.
+     *
+     * MEASURED, not assumed: a phone synced ~7,000 blocks, was force-stopped,
+     * and came back with a chainstate containing ONLY GENESIS -- no corruption,
+     * no error, LevelDB opened fine, tip height=0. Everything it had validated
+     * was still in RAM and went with the process. The blocks were all still on
+     * disk, so it re-validated all 7,000 from scratch, which is what the owner
+     * experienced as "it starts catching up from the beginning every time".
+     *
+     * gettxoutsetinfo is the lever: it calls ForceFlushStateToDisk() before it
+     * reads (`rpc/blockchain.cpp:1005`). Measured on a full node at height 7050
+     * with 71,045 UTXOs: 38-76 ms. It is O(UTXO set), so it is cheap now and
+     * will not be forever -- if this chain ever carries a real UTXO set, revisit
+     * the interval rather than the mechanism.
+     *
+     * Returns true if the flush was actually made. A failure resolves NOTHING
+     * (§7.1): it is not evidence the chainstate is safe, and the caller must not
+     * record it as a completed flush.
+     */
+    fun flushChainstate(): Boolean = try {
+        rpc.call("gettxoutsetinfo", readTimeoutMs = FLUSH_RPC_TIMEOUT_MS)
+        true
+    } catch (e: IOException) {
+        Log.w(TAG, "chainstate flush failed: ${e.message}")
+        false
+    }
+
     fun shutdown() {
         // Short timeouts here on purpose: onDestroy joins this thread for only
         // a few seconds, and of the two calls the one that MUST get through is
@@ -1024,6 +1063,10 @@ class NodeController(context: Context) {
          * difference is seconds. Recovering from both causes beats saving them.
          */
         private const val REINDEX_ARG = "-reindex"
+
+        /** Generous: the call walks the UTXO set, and a slow flush is
+         *  still worth waiting for -- the alternative is losing it. */
+        private const val FLUSH_RPC_TIMEOUT_MS = 60_000
         private const val STATS_TIMEOUT_MS = 10_000
 
         /**

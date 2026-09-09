@@ -127,6 +127,15 @@ class MinerService : Service() {
      */
     private var foregroundRefused = false
 
+    /**
+     * When the chainstate was last written to disk by us, or 0 for never.
+     * See [NodeController.flushChainstate] for why this is our job at all.
+     */
+    private var lastFlushMs = 0L
+
+    /** True once we have flushed at least once since this node came up. */
+    private var flushedSinceSync = false
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -250,6 +259,69 @@ class MinerService : Service() {
     @Synchronized
     private fun clearWorker(self: Thread) {
         if (worker === self) worker = null
+    }
+
+    /**
+     * Write the coins to disk soon after the node catches up, then every
+     * [FLUSH_INTERVAL_MS] after that.
+     *
+     * The FIRST flush is the one that matters most. A phone that has just
+     * finished its initial sync holds the entire result in RAM and has never
+     * written any of it; a kill at that moment costs the whole chain, which is
+     * exactly what was measured. Flushing once the node reports it is no longer
+     * in initial block download turns that from "lose everything" into "lose
+     * nothing".
+     *
+     * The periodic flush then bounds what any later kill can cost to
+     * [FLUSH_INTERVAL_MS] of blocks rather than the whole chain.
+     *
+     * Runs on the control thread, which already owns the node and already makes
+     * blocking RPC calls here -- a second thread would race it for the same
+     * socket. A failed flush leaves [lastFlushMs] alone so the next tick tries
+     * again: "I could not write it" is not "it is written".
+     */
+    private fun maybeFlushChainstate() {
+        val snap = MinerState.snapshot
+        // Never during IBD: the cache is churning, the flush would be repeated
+        // work, and there is nothing durable to protect yet.
+        if (snap.initialBlockDownload) return
+
+        val now = System.currentTimeMillis()
+        val due = !flushedSinceSync || now - lastFlushMs >= FLUSH_INTERVAL_MS
+        if (!due) return
+
+        if (node.flushChainstate()) {
+            lastFlushMs = now
+            flushedSinceSync = true
+        }
+    }
+
+    /**
+     * The user swiped the app out of Recents.
+     *
+     * Android gives us this callback; it does NOT give us one for a force-stop
+     * from Settings, which is a SIGKILL and uncatchable. So this is the one
+     * unclean exit we can turn into a clean one -- and a clean stop flushes the
+     * chainstate, which is the difference between resuming at the tip and
+     * re-validating the chain from genesis.
+     *
+     * Deliberately does NOT stop the service. The node is meant to keep running
+     * so the balance is ready next time; all we do here is make sure what it
+     * has learned is on disk before anything else can happen to the process.
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        try {
+            if (node.nodeAlive && !MinerState.snapshot.initialBlockDownload) {
+                if (node.flushChainstate()) {
+                    lastFlushMs = System.currentTimeMillis()
+                    flushedSinceSync = true
+                    Log.i(TAG, "task removed; chainstate flushed")
+                }
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "task-removed flush failed: ${t.message}")
+        }
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
@@ -441,6 +513,8 @@ class MinerService : Service() {
         if (!node.nodeAlive) {
             throw NodeController.NodeStartException("bitcoind exited: ${node.startupError()}")
         }
+
+        maybeFlushChainstate()
 
         val battery = readBattery()
         val percent = prefs.performancePercent
@@ -1126,6 +1200,10 @@ class MinerService : Service() {
         private const val NOTIF_ID = 1001
 
         private const val TICK_MS = 3_000L
+
+        /** How much validation work a kill may cost. Ten minutes is about
+         *  one PCoin block, against a flush measured in tens of ms. */
+        private const val FLUSH_INTERVAL_MS = 10 * 60 * 1000L
 
         /**
          * Five missed ticks before we assume the node is gone and rebuild. With
