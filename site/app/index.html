@@ -250,24 +250,41 @@ async function lookup(addr) {
   $('a-out').innerHTML = '<div class="card"><p class="skel">Looking up…</p></div>';
   try {
     const j = await getJson(EXPL + '/api/address/' + encodeURIComponent(addr));
-    if (!j.balance) throw new Error('no such address');
-    const b = j.balance;
+    if (!j.balance || !j.balance.confirmed) throw new Error('no such address');
+    const c = j.balance.confirmed, u = j.balance.unconfirmed || {}, L = j.balance.lifetime || {};
     const items = (j.history && j.history.items) || [];
+    const immature = Number(c.immature_pcn || 0);
+    const incoming = Number(u.receiving_pcn || 0);
+
     let html =
-      '<div class="card"><h2>Balance</h2>' +
-      '<div class="big">' + pcn(b.confirmed) + ' PCN</div>' +
-      '<div class="sub">confirmed</div>' +
-      '<div class="row" style="margin-top:10px"><span class="k">Unconfirmed</span><span class="v">' + pcn(b.unconfirmed) + '</span></div>' +
-      '<div class="row"><span class="k">Received, lifetime</span><span class="v">' + pcn(b.lifetime) + '</span></div>' +
+      '<div class="card"><h2>Spendable</h2>' +
+      '<div class="big">' + pcn(c.spendable_pcn) + ' PCN</div>' +
+      '<div class="sub">confirmed and mature</div>';
+    // IMMATURE IS A MANDATORY THIRD BALANCE ON THIS CHAIN. Almost every
+    // transaction here is a coinbase, and a freshly mined block is unspendable
+    // for 100 more blocks. Folding it into one figure would tell a miner they
+    // hold money they cannot move -- or that they hold nothing when they do.
+    if (immature > 0) {
+      html += '<div class="row" style="margin-top:10px"><span class="k">Not yet mature</span>' +
+              '<span class="v warn">' + pcn(immature) + '<small>mined, spendable after 100 blocks</small></span></div>';
+    }
+    if (incoming > 0) {
+      html += '<div class="row"><span class="k">Incoming, unconfirmed</span><span class="v">' + pcn(incoming) + '</span></div>';
+    }
+    html +=
+      '<div class="row"><span class="k">Received, lifetime</span><span class="v">' + pcn(L.received_pcn || 0) + '</span></div>' +
+      '<div class="row"><span class="k">Sent, lifetime</span><span class="v">' + pcn(L.sent_pcn || 0) + '</span></div>' +
+      '<div class="row"><span class="k">Transactions</span><span class="v">' + num(L.tx_count || 0) + '</span></div>' +
       '<div class="row"><span class="k">Address</span><span class="v mono">' + esc(addr) + '</span></div>' +
       '</div>';
+
     if (items.length) {
       html += '<div class="card"><h2>Recent</h2><ul class="hist">';
       for (const it of items.slice(0, 12)) {
-        const d = Number(it.value_pcn !== undefined ? it.value_pcn : it.value || 0);
-        const sign = d >= 0 ? '+' : '';
-        html += '<li><span class="h">block ' + num(it.height) + '</span>' +
-                '<span class="' + (d >= 0 ? 'ok' : '') + '">' + sign + pcn(d) + ' PCN</span></li>';
+        const d = Number(it.net_pcn || 0);
+        const when = (it.time_iso || '').slice(0, 10);
+        html += '<li><span class="h">' + esc(when) + '<br>' + num(it.confirmations) + ' confirmations</span>' +
+                '<span class="' + (d >= 0 ? 'ok' : '') + '">' + (d >= 0 ? '+' : '') + pcn(d) + ' PCN</span></li>';
       }
       html += '</ul><p class="note"><a href="' + EXPL + '/address/' + encodeURIComponent(addr) +
               '" target="_blank" rel="noopener">full history on the explorer</a></p></div>';
