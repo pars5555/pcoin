@@ -47,6 +47,7 @@
  */
 import { createServer } from 'node:http';
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { dirname } from 'node:path';
 
 const PORT       = Number(process.env.WRAPDESK_PORT || 8791);
@@ -55,6 +56,85 @@ const STATE_FILE = process.env.WRAPDESK_STATE || '/var/lib/wrapdesk/requests.jso
 // pcoin-wrapdesk-watch's ledger. READ-ONLY here, and its absence is tolerated:
 // this desk must keep taking requests if the watcher has not run yet.
 const WATCH_STATE = process.env.WRAPDESK_WATCH_STATE || '/var/lib/pcoin-wrapdesk/state.json';
+// ── accounts: a market.pc.am sign-in raises the per-person limit ────────────
+//
+// A BSC address is free and infinite, so a limit keyed on one is a limit in
+// name only: anyone wanting more just types a different address. An account
+// costs an email, a password and an hCaptcha, so it is the first quota key here
+// with any cost at all. It is still NOT identity -- accounts are cheap too --
+// and it raises the bar rather than closing the door. The TOTAL allocation
+// remains the real ceiling.
+//
+// The secret is shared with market.pc.am, which mints the token. An absent
+// secret disables sign-in rather than falling back to something weaker.
+const SSO_SECRET = process.env.WRAP_SSO_SECRET || '';
+const SSO_ON = Boolean(SSO_SECRET);
+const SSO_START = process.env.WRAP_SSO_START || 'https://market.pc.am/sso/wrapdesk';
+// Per ACCOUNT, per rolling 30 days, in PCN.
+const ACCOUNT_MONTHLY_PCN = Number(process.env.WRAP_ACCOUNT_MONTHLY_PCN || 1000);
+
+// This desk's own cookie is signed with a key DERIVED from the shared secret,
+// never the shared secret itself: one secret to provision, but a stolen desk
+// cookie is not a market token and cannot be replayed as one.
+const COOKIE_KEY = SSO_ON
+  ? createHmac('sha256', SSO_SECRET).update('wrapdesk-cookie-v1').digest('hex')
+  : '';
+
+// Both tokens are `${email}|${expiry}` signed with HMAC-SHA256, and both are
+// split from the RIGHT. market.pc.am records why: an address containing the
+// delimiter, split from the left, mints a token that is genuinely signed and
+// reads back as somebody else's account.
+function verifySigned(tok, key) {
+  if (!tok || !key) return null;
+  const i = tok.lastIndexOf('.');
+  if (i < 0) return null;
+  const payload = tok.slice(0, i);
+  const want = createHmac('sha256', key).update(payload).digest('hex');
+  const got = tok.slice(i + 1);
+  if (got.length !== want.length) return null;
+  if (!timingSafeEqual(Buffer.from(got), Buffer.from(want))) return null;
+  const cut = payload.lastIndexOf('|');
+  if (cut < 0) return null;
+  const email = payload.slice(0, cut);
+  const exp = Number(payload.slice(cut + 1));
+  if (!Number.isFinite(exp) || Date.now() > exp) return null;
+  return email || null;
+}
+
+function signSession(email) {
+  const payload = `${email}|${Date.now() + 7 * 864e5}`;
+  return `${payload}.${createHmac('sha256', COOKIE_KEY).update(payload).digest('hex')}`;
+}
+
+function accountOf(req) {
+  if (!SSO_ON) return null;
+  const c = (req.headers.cookie || '').split(/;\s*/).find((x) => x.startsWith('wd='));
+  return c ? verifySigned(decodeURIComponent(c.slice(3)), COOKIE_KEY) : null;
+}
+
+// What this account has consumed in the last 30 days, in wPCN.
+//
+// Deposits are the obligation, so a DEPOSITED figure is used wherever the
+// watcher has published one for that address; a request with no deposit yet
+// falls back to what was asked for, so a fresh request still counts. Same
+// reasoning as the total ceiling below.
+function accountUsedWpcn(st, email) {
+  if (!email) return 0;
+  let perAddr = {};
+  try {
+    const a = JSON.parse(readFileSync(WATCH_STATE, 'utf8')).allocation;
+    perAddr = (a && a.per_address) || {};
+  } catch { perAddr = {}; }
+  const since = Date.now() - 30 * 864e5;
+  let used = 0;
+  for (const r of Object.values(st.requests || {})) {
+    if (r.account !== email) continue;
+    if (!(Number(r.created) >= since)) continue;
+    const dep = Number(perAddr[r.address] || 0);
+    used += dep > 0 ? dep : Math.min(Number(r.amount) || 0, PER_PERSON) * (1 - FEE_PCT / 100);
+  }
+  return used;
+}
 const EXPLORER   = process.env.WRAPDESK_EXPLORER || 'https://explorer.pc.am';
 
 const FEE_PCT       = Number(process.env.WRAP_FEE_PCT || 5);
@@ -385,6 +465,7 @@ rel="noopener">PancakeSwap</a>. Want PCN back later? The
 
 <h2>The terms</h2><div class="card"><table>
 <tr><th>Limit</th><td>${PER_PERSON} PCN per person · ${TOTAL_ALLOC} wPCN total while the desk is new</td></tr>
+<tr><th>More</th><td>Sign in with a <a href="${SSO_START}?return=https%3A%2F%2Fwrapdesk.pc.am%2Fsso">market.pc.am account</a> and your limit becomes ${ACCOUNT_MONTHLY_PCN} PCN a month.</td></tr>
 <tr><th>Fee</th><td>${FEE_PCT}% — send 100 PCN, receive ${100 - FEE_PCT} wPCN</td></tr>
 <tr><th>Wait</th><td>${CONFIRMATIONS} confirmations, about ${WAIT_H} hours</td></tr>
 <tr><th>Backing</th><td>1:1, <a href="/proof">verifiable</a></td></tr>
@@ -933,6 +1014,26 @@ createServer(async (req, res) => {
     if (isGet && p === '/proof')  return send(200, await proof());
 
     // ── allocate (or return) a deposit address ──────────────────────────────
+    // ---- sign in / out via market.pc.am ----
+    if (p === '/sso') {
+      if (!SSO_ON) return send(503, home('<p class="err">Sign-in is not configured on this desk.</p>'));
+      const who = verifySigned(url.searchParams.get('sso') || '', SSO_SECRET);
+      if (!who) {
+        // Expired is the common case (the token lives 120 seconds) and is
+        // deliberately indistinguishable from forged here. Say what to do, not
+        // which of the two it was.
+        return send(400, home('<p class="err">That sign-in link is no longer valid. Please start again from market.pc.am.</p>'));
+      }
+      res.writeHead(302, {
+        Location: '/',
+        'Set-Cookie': `wd=${encodeURIComponent(signSession(who))}; Path=/; Max-Age=${7 * 86400}; HttpOnly; Secure; SameSite=Lax`,
+      });
+      return res.end();
+    }
+    if (p === '/signout') {
+      res.writeHead(302, { Location: '/', 'Set-Cookie': 'wd=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax' });
+      return res.end();
+    }
     if (req.method === 'POST' && p === '/request') {
       const f = new URLSearchParams(await body(req));
       const bsc = (f.get('bsc') || '').trim();
@@ -949,6 +1050,20 @@ createServer(async (req, res) => {
         // the rest comes back. The form has said "(max 250)" all along; it just was
         // not enforced. Refuse it here, where the person can still change it, rather
         // than after they have parted with the coins.
+        // Which limit applies depends on whether they are signed in. An account
+        // is checked against a ROLLING 30-DAY TOTAL rather than one request, so
+        // four requests of 250 cannot walk past it the way per-deposit checks
+        // have been walked past on this desk before.
+        const acct = accountOf(req);
+        if (acct) {
+          const usedW = accountUsedWpcn(load(), acct);
+          const capW = ACCOUNT_MONTHLY_PCN * (1 - FEE_PCT / 100);
+          const leftPcn = Math.max(0, (capW - usedW) / (1 - FEE_PCT / 100));
+          if (amount > leftPcn + 1e-8) {
+            return send(400, home(`<p class="err">Your account has <b>${n2(leftPcn)} PCN</b> of its
+              ${ACCOUNT_MONTHLY_PCN} PCN monthly allowance left. Enter ${n2(leftPcn)} or less.</p>`));
+          }
+        } else
         if (amount > PER_PERSON)
           return send(400, home(`<p class="err">${n2(amount)} PCN is more than one person
             may wrap. The limit is <b>${PER_PERSON} PCN</b>, across every deposit you
@@ -1067,7 +1182,7 @@ createServer(async (req, res) => {
             addresses. That is our problem, not yours — please get in touch.</p>`));
         const slot = pool.find((x) => x.i === st.nextIndex);
         r = { bsc, index: slot.i, address: slot.a, amount,
-              created: Date.now(), released: null };
+              created: Date.now(), released: null, account: acct || null };
         st.requests[key] = r; st.nextIndex = slot.i + 1; save(st);
       } else if (amount > 0 && r.amount !== amount) { r.amount = amount; save(st); }
 
