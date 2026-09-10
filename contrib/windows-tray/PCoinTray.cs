@@ -735,8 +735,14 @@ namespace PCoinTray
         }
         //! A recovery-phrase window is open. Set only around the automatic
         //! wizard, which fires from the same node-ready path that starts
-        //! auto-tuning and is therefore the one thing the solo offer can
-        //! collide with.
+        //! auto-tuning.
+        //!
+        //! NOTHING READS THIS ANY MORE (hence CS0414). Its only reader was the
+        //! solo-offer modal, which deferred rather than open a window over
+        //! somebody's twelve words; that modal was removed 2026-09-10. The flag
+        //! is kept because it is the only signal that the phrase wizard is on
+        //! screen, and the next thing that wants to avoid covering it will need
+        //! exactly this. Delete it if that never happens.
         volatile bool _phraseUiOpen;
         volatile string _calibStatus;
         bool _seedDeclined;            // the user was offered a phrase and said no
@@ -1791,7 +1797,18 @@ namespace PCoinTray
                 SaveConfig();
                 StartMining(bestN);
                 SetCalibStatus(null);
-                MaybeOfferSolo(bestH);
+                // NO MODAL HERE ANY MORE. Auto-tune used to finish by opening a
+                // dialog asking pool-or-solo. It is gone: solo is the default
+                // now, the Mining-mode card in the window carries both options
+                // with a recommendation line, and the user can change it at any
+                // moment without being asked. Interrupting somebody to put a
+                // choice they already have in front of them is not a feature.
+                //
+                // The owner's argument, and it is the stronger one: with our own
+                // pool finding ~71% of blocks, a dialog that can end with
+                // "stay with the pool" is a prompt that sometimes makes the
+                // concentration problem worse. A default plus a visible control
+                // cannot.
             }
             catch (Exception ex)
             {
@@ -1806,92 +1823,19 @@ namespace PCoinTray
             if (_optimalThreads > 0) SetMode(Cpu.PercentForThreads(_optimalThreads, _cores));
         }
 
-        /**
-         * Offer solo mining ONCE, to a machine that has just measured a rate
-         * solo actually suits.
-         *
-         * Every rule here is deliberate:
-         *
-         *  - it only ASKS. Nothing in this path changes the mining mode; the
-         *    mode changes if and only if the person clicks the solo button, and
-         *    then through the same SetPool every other caller goes through.
-         *  - it is asked once per install and BOTH answers are remembered, so a
-         *    machine whose owner chose the pool is never nagged again.
-         *  - a machine below the floor is told nothing at all about solo. So is
-         *    one whose days-per-block cannot be computed, because a difficulty
-         *    that could not be read is not a low difficulty.
-         *  - nothing downstream depends on an answer arriving. This tray can be
-         *    started into session 0, where it has no desktop and no notification
-         *    area (CLAUDE.md 7.3, seen on two of three machines), so the dialog
-         *    may never be seen by anyone; not seeing it leaves the PC exactly as
-         *    the installer configured it, which is the pool.
-         */
-        void MaybeOfferSolo(double measuredHps)
-        {
-            try
-            {
-                if (_soloAsked || _cancelCalibrate) return;
-                if (string.IsNullOrEmpty(_poolUrl)) return;     // already solo: nothing to offer
-                double diff = _difficulty;
-                if (diff <= 0)
-                {
-                    // Chain fields only land on a full poll, which may not have
-                    // happened yet on a freshly started app. Ask for one rather
-                    // than assume anything about the number that decides this.
-                    try { var r = Poll(true); if (r != null) diff = r.Difficulty; } catch { }
-                }
-                // Never put the question to a machine that could not act on the
-                // answer: solo mining on an unsynced node builds a competing
-                // fork (CLAUDE.md 7.9). Not asking is the safe outcome -- the
-                // machine stays on the pool and is asked after the next start.
-                if (SoloBlockedBySync())
-                {
-                    Program.Note("solo offer: not asking, the node is not known to be current");
-                    return;
-                }
-                if (!Cpu.ShouldOfferSolo(measuredHps, diff))
-                {
-                    // Say WHY. Three silent returns meant a fleet machine that
-                    // was refused left no trace at all, and the refusal is the
-                    // interesting case.
-                    Program.Note("solo offer: not asking -- " + Cpu.WhyNotOffered(measuredHps, diff));
-                    return;
-                }
-                double days = Cpu.SoloDaysPerBlock(measuredHps, diff);
-                _sync.BeginInvoke(new Action(() => AskSolo(measuredHps, days)));
-            }
-            catch (Exception ex) { Program.Note("solo offer: " + ex.Message); }
-        }
+        // The pool-vs-solo MODAL used to live here (MaybeOfferSolo / AskSolo,
+        // and SoloOfferForm in ModeForms.cs). Removed 2026-09-10 on the
+        // owner's instruction: "there is option user will select anytime, no
+        // need to offer".
+        //
+        // Two reasons it should not come back. Solo is the default now, so the
+        // dialog could only ever reach someone already on the pool -- and its
+        // "Stay with the pool" branch made the ~71% concentration problem
+        // slightly worse each time it was taken. And the choice was never
+        // hidden: the Mining-mode card in the window carries both options with
+        // a live recommendation line, changeable at any moment. Interrupting
+        // somebody to hand them a control they already have is not a feature.
 
-        //! The UI half of MaybeOfferSolo. On the UI thread, because it opens a
-        //! modal dialog; the arithmetic that decided to ask was done off it.
-        void AskSolo(double measuredHps, double days)
-        {
-            try
-            {
-                if (_soloAsked) return;
-                if (_phraseUiOpen)
-                {
-                    // The phrase wizard is on screen. That one is about coins
-                    // that cannot be recovered; this one is about a fee. Leave
-                    // _soloAsked alone, so the next start asks rather than this
-                    // opening a window over somebody's twelve words.
-                    Program.Note("solo offer: deferred, phrase setup is open");
-                    return;
-                }
-                bool solo = SoloOfferForm.Ask(measuredHps, days, _poolUrl);
-                // Record that it was asked BEFORE acting on the answer: a
-                // failure in the switch below must not bring the dialog back on
-                // the next start and re-ask a person who has already answered.
-                _soloAsked = true;
-                SaveConfig();
-                Program.Note(string.Format(CultureInfo.InvariantCulture,
-                    "solo offer: {0:0} H/s, {1:0.0} days per block -> {2}",
-                    measuredHps, days, solo ? "solo" : "pool"));
-                if (solo) SetPool("");
-            }
-            catch (Exception ex) { Program.Note("solo offer: " + ex.Message); }
-        }
 
         // ---------- recovery phrase ----------
 
