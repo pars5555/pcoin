@@ -292,6 +292,7 @@
   <a href="https://explorer.pc.am" target="_blank" rel="noopener">explorer</a> &middot;
   <a href="https://t.me/PCoinPCNChat" target="_blank" rel="noopener">chat</a> &middot;
   <a href="https://discord.gg/dGmdwJkb9f" target="_blank" rel="noopener">discord</a><br>
+  <span style="opacity:.5;font-size:.8em">build 2026-09-10b</span><br>
   This page stores nothing and holds no keys.
 </p>
 
@@ -477,20 +478,32 @@ $('s-go').addEventListener('click', () => {
   const hop = 'https://pc.am/pay?to=' + encodeURIComponent(to) +
               (amt ? '&amount=' + encodeURIComponent(amt) : '');
   note.textContent = 'Opening your wallet…';
+
+  // NEVER navigate THIS frame to the pcoin: scheme. That is what produced
+  // "This content is blocked" on Telegram Web, and silence on Telegram
+  // Desktop. Every route below leaves the iframe first, and every one of them
+  // ends at an https page, because https is the only thing a mini app is
+  // reliably allowed to hand outwards.
+  let handed = false;
   if (tg && typeof tg.openLink === 'function') {
-    tg.openLink(hop);
+    try { tg.openLink(hop); handed = true; } catch (e) { handed = false; }
+  }
+  if (!handed) {
+    // A real new tab, not a navigation of this frame.
+    try { handed = !!window.open(hop, '_blank', 'noopener'); } catch (e) { handed = false; }
+  }
+
+  // The link is shown either way. If both routes were refused -- a strict
+  // popup blocker, an old Telegram -- a link the person taps themselves still
+  // works, and saying so beats a spinner that never resolves.
+  const linkHtml = '<a href="' + hop + '" target="_blank" rel="noopener">Open the payment page</a>';
+  if (handed) {
     setTimeout(() => {
       note.innerHTML = 'Your browser should have opened with the request. ' +
-        'If it did not, <a href="' + hop + '" target="_blank" rel="noopener">open it here</a>.';
+        'If it did not: ' + linkHtml + '.';
     }, 2500);
   } else {
-    // Not inside Telegram (someone opened the page directly). A normal tab can
-    // follow the scheme itself, so there is nothing to hop through.
-    window.location.href = uri;
-    setTimeout(() => {
-      note.innerHTML = 'If the wallet did not open, it is probably not installed on ' +
-        'this device. See <b>If nothing happens</b> below.';
-    }, 2500);
+    note.innerHTML = 'Tap to continue: ' + linkHtml;
   }
 });
 
