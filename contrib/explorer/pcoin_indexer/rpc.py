@@ -95,9 +95,29 @@ class RpcClient:
                 if exc.code == 401 and attempt == 0 and self._cookie_path:
                     # Node restarted -> new cookie. Re-read once, then give up.
                     continue
-                if exc.code == 500 and raw:
-                    # Core returns 500 with a JSON-RPC error body for e.g.
-                    # "Block height out of range". That is an answer.
+                if exc.code in (404, 500) and raw:
+                    # Core answers with a JSON-RPC error body under a non-200
+                    # status in two cases, and BOTH are answers, not failures:
+                    #
+                    #   500  a method that exists and refused -- "Block height
+                    #        out of range".
+                    #   404  a method that does not exist on this node at all,
+                    #        carrying -32601 "Method not found".
+                    #
+                    # The 404 case was missing, and it is the one that matters
+                    # most here. `listwallets` on a -disablewallet node is
+                    # exactly a 404 + -32601, so nodeview.wallet_probe() could
+                    # never see the -32601 it looks for: the transport raised
+                    # first, the probe recorded "could not determine whether the
+                    # broadcast node has a wallet", and broadcast.py refuses on
+                    # an unknown answer. The check that exists to REQUIRE a
+                    # -disablewallet node could therefore never pass on one, so
+                    # POST /api/tx was unreachable in every configuration.
+                    #
+                    # Parsing is what makes this safe: a 404 from a reverse
+                    # proxy or a wrong path returns HTML, json.loads fails, and
+                    # it falls through to RpcTransportError as before. Only a
+                    # well-formed JSON-RPC body is promoted to an answer.
                     try:
                         return json.loads(raw.decode("utf-8"), parse_float=Decimal)
                     except ValueError:
