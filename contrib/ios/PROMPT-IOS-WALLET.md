@@ -39,7 +39,12 @@ device, chain data over HTTP from `explorer.pc.am`.
 
 That changes what you build, and it exposes a gap on our side:
 
-> ### BROADCAST IS CURRENTLY REFUSED IN PRODUCTION
+> ### ~~BROADCAST IS CURRENTLY REFUSED IN PRODUCTION~~ — CLEARED 2026-09-10
+>
+> **This is fixed. See `PROMPT-IOS-BROADCAST-READY.md`, which replaces this
+> section.** A `-disablewallet` relay node now sits behind `POST /api/tx` and
+> it is verified working. The rest of this section is kept because the reason
+> it was broken is instructive, not because it still applies.
 >
 > Measured 2026-09-10 against all three instances:
 >
