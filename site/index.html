@@ -1617,25 +1617,65 @@ sudo systemctl stop pcoin-miner
     if (parseInt(thr.value, 10) > d.t) { thr.value = String(d.t); t = d.t; }
     thrO.textContent = t + (t === d.t ? " (all)" : "");
 
-    var hs = d.per * t;
+    // A RANGE, not a number, for anything we have not measured ourselves.
+    //
+    // A miner wrote in on 2026-09-10: our table put a Ryzen 9 5950X at about
+    // 2 kH/s, and he measures 5 kH/s on an older Xeon E5-2697A across the same
+    // 32 threads. He is right that those cannot both be sensible. The entries
+    // carrying est:1 were never measured on real hardware, and RandomX in the
+    // light mode PCoin uses is bound by memory latency and cache, so two
+    // machines with the same model number and different RAM differ by more than
+    // most people expect.
+    //
+    // Rather than publish a made-up point estimate to one decimal place, an
+    // unmeasured device now shows a band. Measured devices -- the phones -- keep
+    // their single figure, because that one was actually observed.
+    //
+    // If you have a real measurement, we would rather have it than our guess:
+    // pcoin@pc.am. Every device that moves from estimated to measured makes this
+    // page less wrong.
+    var EST_LO = 0.7, EST_HI = 2.5;
+
+    var hsMid = d.per * t;
+    var hsLo  = d.est ? hsMid * EST_LO : hsMid;
+    var hsHi  = d.est ? hsMid * EST_HI : hsMid;
+
     // Expected hashes for one block at this difficulty. 2^32 is the standard
     // difficulty-1 work unit, unchanged from Bitcoin.
     var perBlock = difficulty * 4294967296;
-    var secs = perBlock / hs;
+    // Faster hashing means LESS time per block, so the fast end of the hashrate
+    // band gives the SHORT end of the time band. Keeping the pairing straight
+    // here is the whole reason these are computed rather than swapped by hand.
+    var secsLo = perBlock / hsHi;
+    var secsHi = perBlock / hsLo;
+    var perDayLo = (86400 / secsHi) * SUBSIDY;
+    var perDayHi = (86400 / secsLo) * SUBSIDY;
+    var secs = perBlock / hsMid;
     var perDay = (86400 / secs) * SUBSIDY;
+
+    function fmtHs(v) {
+      return v >= 1000 ? (v / 1000).toFixed(2) + " kH/s" : v.toFixed(1) + " H/s";
+    }
+    function fmtPcn(v) {
+      return v >= 1 ? v.toFixed(1) : v > 0 ? v.toFixed(3) : "0";
+    }
+    function fmtShare(v) {
+      return v >= 1 ? v.toFixed(1) + "%" : v >= 0.01 ? v.toFixed(2) + "%" : "<0.01%";
+    }
 
     // Network hashrate from OBSERVED block spacing, not the 600 s target. The
     // chain currently runs well slower than target, so using the target would
     // overstate the network by about 70% and understate your share by the same.
     var netHs = perBlock / spacing;
-    var share = (hs / netHs) * 100;
+    var share = (hsMid / netHs) * 100;
 
-    elHs.textContent = (hs >= 1000 ? (hs / 1000).toFixed(2) + " kH/s" : hs.toFixed(1) + " H/s");
-    elSh.textContent = share >= 1 ? share.toFixed(1) + "%" :
-                       share >= 0.01 ? share.toFixed(2) + "%" : "<0.01%";
-    elTm.textContent = duration(secs);
-    elDy.textContent = perDay >= 1 ? perDay.toFixed(1) + " PCN" :
-                       perDay > 0 ? perDay.toFixed(3) + " PCN" : "—";
+    elHs.textContent = d.est ? fmtHs(hsLo) + " – " + fmtHs(hsHi) : fmtHs(hsMid);
+    elSh.textContent = d.est ? fmtShare((hsLo / netHs) * 100) + " – " + fmtShare((hsHi / netHs) * 100)
+                             : fmtShare(share);
+    elTm.textContent = d.est ? duration(secsLo) + " – " + duration(secsHi) : duration(secs);
+    elDy.textContent = perDay > 0
+      ? (d.est ? fmtPcn(perDayLo) + " – " + fmtPcn(perDayHi) + " PCN" : fmtPcn(perDay) + " PCN")
+      : "—";
 
     // The number above is real but it is large for one reason only: almost
     // nobody is mining, so difficulty sits near the floor. Saying that plainly,
@@ -1653,7 +1693,11 @@ sudo systemctl stop pcoin-miner
       ", observed block spacing " + Math.round(spacing) + " s" +
       (live ? " — both live from explorer.pc.am."
             : " — <b>could not reach the explorer, using a snapshot from " + SNAPSHOT_WHEN + "</b>.") +
-      " " + (d.est ? "This device is an <b>estimate</b>, not measured."
+      " " + (d.est ? "This device was <b>never measured</b>, so it is shown as a <b>range</b> rather" +
+                     " than a number. RandomX in light mode is bound by memory latency, so two" +
+                     " machines with the same model number can differ by more than people expect." +
+                     " If you have a real measurement, send it to pcoin@pc.am and we will replace" +
+                     " the guess with it."
                    : "Measured on that hardware at " + d.mt + " threads.") +
       (t > d.mt * 2
         ? " <b>At " + t + " threads this is extrapolated well past what was measured, and RandomX" +
