@@ -37,8 +37,8 @@ param(
     # half-applied bump is impossible. The hash is of pcoin-win64-miner.zip
     # and the install aborts on a mismatch, so a forgotten bump here breaks
     # every new install rather than failing quietly.
-    [string]$Version = '1.4.18',
-    [string]$Sha256 = '9416c63b1d157b89d440bcdec58e3c4a6a4394f598aa90de8e482b68b732f9d8',
+    [string]$Version = '1.4.19',
+    [string]$Sha256 = '81758964b81aa6169c84d1e5db148508d23ecf4d4a03b119f0c124e53003a176',
     # All three seeds, not just one. The node also carries them compiled in as
     # of v1.2.1, so this is belt and braces rather than the only route in.
     [string[]]$AddNode = @('35.239.156.16:9444', '178.105.3.51:9444', '152.53.171.190:9444'),
@@ -455,6 +455,15 @@ if (-not $NoMine) {
   "poolurl=$poolUrl",
   "optimal=$optimal",
   "hashrate=$hashrate",
+  # PERSIST THE AUTOSTART CHOICE. Reading $keep['autostart'] above and then
+  # writing a config without it is worse than never having supported it: this
+  # file rewrites the config WHOLESALE, so the key vanished on every upgrade,
+  # the tray read "absent" as ON, saved autostart=1, and the NEXT upgrade
+  # dutifully recreated the shortcut and the task. Autostart turned itself back
+  # on after one upgrade and a restart -- the exact bug v1.4.11 was written to
+  # prevent, and the same shape as the -Threads incident documented above.
+  # Caught end-to-end on a real desktop 2026-09-10, not by reading the code.
+  "autostart=$autostart",
   "percent=$percent") |
     Set-Content -Encoding ascii $trayCfg
 if ($threadsOut -gt 0) { Write-Output "  configured to mine with $threadsOut cores" }
