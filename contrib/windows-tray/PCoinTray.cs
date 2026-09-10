@@ -37,6 +37,42 @@ namespace PCoinTray
         //! as it always did. An unreadable config also means ON: the failure
         //! that matters here is an app that silently will not start, and
         //! "unknown" must never become that.
+        //! Was this process started by Task Scheduler rather than by a person?
+        //!
+        //! Needed because the PCoinMiner task's command line cannot be changed
+        //! without administrator rights, so on exactly the machines that need
+        //! this most, autostart does NOT pass --minimized and never will. On
+        //! fleet PC DESKTOP-AKHQ7BJ the running tray's parent was `svchost`,
+        //! which is the Schedule service; a person double-clicking gets
+        //! `explorer`. That difference is the signal that survives when the
+        //! command line cannot be touched.
+        //!
+        //! Returns FALSE when it cannot tell, deliberately. Wrongly declining to
+        //! start is far worse than wrongly starting: it leaves someone with an
+        //! app that will not open and therefore no way to change the setting
+        //! back. Unknown must fall to the harmless side, and here that is "run".
+        static bool LaunchedByScheduler()
+        {
+            try
+            {
+                int me = Process.GetCurrentProcess().Id;
+                using (var q = new System.Management.ManagementObjectSearcher(
+                           "SELECT ParentProcessId FROM Win32_Process WHERE ProcessId=" + me))
+                {
+                    foreach (System.Management.ManagementObject o in q.Get())
+                    {
+                        int ppid = Convert.ToInt32(o["ParentProcessId"]);
+                        string name = Process.GetProcessById(ppid).ProcessName;
+                        return name.Equals("svchost", StringComparison.OrdinalIgnoreCase)
+                            || name.Equals("taskeng", StringComparison.OrdinalIgnoreCase)
+                            || name.Equals("services", StringComparison.OrdinalIgnoreCase);
+                    }
+                }
+            }
+            catch { /* cannot tell -> not scheduler -> the app starts */ }
+            return false;
+        }
+
         static bool AutostartWanted()
         {
             try
@@ -163,7 +199,7 @@ namespace PCoinTray
             //
             // Before any node is started, like the session-0 check above, so
             // this never leaves a bitcoind behind.
-            if (minimized && !AutostartWanted())
+            if (!AutostartWanted() && (minimized || LaunchedByScheduler()))
                 return;
 
             // One instance only: a second tray icon would be confusing and the
@@ -786,6 +822,9 @@ namespace PCoinTray
         ToolStripMenuItem _miPhrase;
         ToolStripMenuItem _miOff;
         ToolStripMenuItem _miAutostart;
+        ToolStripMenuItem _miUpdate;
+        UpdateInfo _update = new UpdateInfo();
+        DateTime _lastUpdateCheck = DateTime.MinValue;
         readonly Dictionary<int, ToolStripMenuItem> _miPercent = new Dictionary<int, ToolStripMenuItem>();
 
         //! Percentage of the machine -> worker threads. Always at least one
@@ -839,6 +878,13 @@ namespace PCoinTray
             _timer.Start();
 
             StartShowListener();
+
+            // A first look ~40 s in: late enough that it never competes with
+            // getting the node up, early enough that someone who opens the menu
+            // to see why their miner is odd already has the answer.
+            var upd = new System.Windows.Forms.Timer { Interval = 40000 };
+            upd.Tick += (s, e) => { upd.Interval = 6 * 60 * 60 * 1000; CheckUpdatesInBackground(true); };
+            upd.Start();
 
             // Launched by a person, so show the window. Autostart passes
             // --minimized and lands here with minimized=true, because a window
@@ -1025,6 +1071,12 @@ namespace PCoinTray
             // had no way to tell why.
             _miAutostart = new ToolStripMenuItem("Start with Windows", null, (s, e) => OnToggleAutostart());
             menu.Items.Add(_miAutostart);
+            // Version first, so "what have I got" and "is there more" sit
+            // together. The label carries the answer: nobody should have to
+            // click a thing called "Check for updates" to find out they are
+            // fine.
+            _miUpdate = new ToolStripMenuItem("Check for updates...", null, (s, e) => OnUpdateClicked());
+            menu.Items.Add(_miUpdate);
             menu.Items.Add(new ToolStripMenuItem("Open PCoin folder", null, (s, e) =>
             {
                 try { Process.Start("explorer.exe", _dir); } catch { }
@@ -1040,9 +1092,148 @@ namespace PCoinTray
             menu.Opening += (s, e) =>
             {
                 try { _miAutostart.Checked = Autostart.IsEnabled(); } catch { }
+                try { MarkUpdate(); } catch { }
             };
 
             _icon.ContextMenuStrip = menu;
+        }
+
+        // ---------- updates ----------
+
+        //! Paint the menu item from what we currently believe, without ever
+        //! blocking the UI on a network read. Unknown says so rather than
+        //! borrowing "up to date", which is the answer people act on.
+        void MarkUpdate()
+        {
+            if (_miUpdate == null) return;
+            switch (_update.State)
+            {
+                case UpdateState.Available:
+                    _miUpdate.Text = "Update to " + _update.Latest + " (you have " + Build.Version + ")...";
+                    _miUpdate.Font = new Font(SystemFonts.MenuFont, FontStyle.Bold);
+                    break;
+                case UpdateState.UpToDate:
+                    _miUpdate.Text = "Up to date (" + Build.Version + ") - check again";
+                    _miUpdate.Font = SystemFonts.MenuFont;
+                    break;
+                default:
+                    _miUpdate.Text = "Check for updates... (you have " + Build.Version + ")";
+                    _miUpdate.Font = SystemFonts.MenuFont;
+                    break;
+            }
+        }
+
+        //! The quiet check. Runs off the UI thread, at most once every six
+        //! hours, and NEVER pops anything up on its own -- an app that
+        //! interrupts you to talk about itself is the thing people turn off.
+        //! It only changes the label, and balloons once when the answer first
+        //! becomes "there is one".
+        void CheckUpdatesInBackground(bool announce)
+        {
+            if ((DateTime.UtcNow - _lastUpdateCheck).TotalHours < 6) return;
+            _lastUpdateCheck = DateTime.UtcNow;
+            var t = new Thread(() =>
+            {
+                var info = Updates.Check();
+                _sync.BeginInvoke((Action)(() =>
+                {
+                    bool isNew = info.State == UpdateState.Available
+                              && _update.State != UpdateState.Available;
+                    _update = info;
+                    MarkUpdate();
+                    if (announce && isNew)
+                        Balloon("PCoin " + info.Latest + " is available",
+                                "You have " + Build.Version + ". Right-click the PCoin icon to update.",
+                                false);
+                }), null);
+            })
+            { IsBackground = true, Name = "pcoin-update-check" };
+            t.Start();
+        }
+
+        void OnUpdateClicked()
+        {
+            // Clicking is an explicit ask, so the six-hour throttle does not
+            // apply and the answer is fetched now, on this thread, with the
+            // cursor showing why the menu paused.
+            UpdateInfo info;
+            try
+            {
+                Cursor.Current = Cursors.WaitCursor;
+                info = Updates.Check();
+            }
+            finally { Cursor.Current = Cursors.Default; }
+
+            _update = info;
+            _lastUpdateCheck = DateTime.UtcNow;
+            MarkUpdate();
+
+            if (info.State == UpdateState.Unknown)
+            {
+                MessageBox.Show(
+                    "Could not tell whether there is a newer version: " + info.Detail + "." +
+                    Environment.NewLine + Environment.NewLine +
+                    "You have " + Build.Version + ". This is not a failure of PCoin itself " +
+                    "and nothing has changed; try again later, or see pc.am/download.",
+                    "PCoin Miner", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            if (info.State == UpdateState.UpToDate)
+            {
+                MessageBox.Show(
+                    "You have the newest version (" + Build.Version + ").",
+                    "PCoin Miner", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            if (MessageBox.Show(
+                    "PCoin " + info.Latest + " is available. You have " + Build.Version + "." +
+                    Environment.NewLine + Environment.NewLine +
+                    "The installer will close PCoin, replace it and start it again. Your wallet " +
+                    "and settings are not touched - the recovery phrase lives in a separate file " +
+                    "the installer never rewrites." + Environment.NewLine + Environment.NewLine +
+                    "Update now?",
+                    "PCoin Miner", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+                return;
+
+            RunUpdater();
+        }
+
+        //! Hand the job to the SAME installer pc.am tells everyone to run, in a
+        //! visible window. Not a bespoke download-and-swap path: that would be a
+        //! second updater to get wrong, and this one already verifies the zip
+        //! against a pinned SHA-256, keeps the payout address and thread count,
+        //! and refuses on a mismatch.
+        //!
+        //! The window stays visible on purpose. This stops the tray and starts
+        //! a new one, and doing that behind a silent background process is
+        //! indistinguishable from a crash.
+        void RunUpdater()
+        {
+            try
+            {
+                var psi = new ProcessStartInfo("powershell.exe",
+                    "-NoProfile -ExecutionPolicy Bypass -Command " +
+                    "\"& ([scriptblock]::Create((irm https://pc.am/dl/install.ps1)))\"")
+                {
+                    UseShellExecute = true,
+                    WindowStyle = ProcessWindowStyle.Normal
+                };
+                Process.Start(psi);
+                // install.ps1 stops any running PCoinTray itself, then starts
+                // the new one. Leaving quietly here means it does not have to
+                // kill us, which is the difference between a clean handover and
+                // a process disappearing mid-write.
+                Quit();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Could not start the updater: " + ex.Message +
+                                Environment.NewLine + Environment.NewLine +
+                                "You can update by hand from pc.am/download.",
+                                "PCoin Miner", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
         }
 
         //! Toggle autostart, then SAY WHAT ACTUALLY HAPPENED. Removing the

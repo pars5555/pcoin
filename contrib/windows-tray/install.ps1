@@ -10,18 +10,19 @@
 # `irm` on its own only DOWNLOADS the script -- PowerShell has no way to run a
 # remote script without piping it somewhere, so `| iex` is the floor, and that
 # pipeline cannot carry arguments. Everything a normal install needs must
-# therefore be the DEFAULT: mining is on unless -NoMine, and the pool is chosen
-# unless -Solo. The older form still works and still takes switches, which
+# therefore be the DEFAULT: mining is on unless -NoMine, and SOLO is chosen
+# unless -Pool. The older form still works and still takes switches, which
 # matters because copies of it are already published:
 #
 #   & ([scriptblock]::Create((irm https://pc.am/dl/install.ps1))) -Mine
 #   powershell -ExecutionPolicy Bypass -File install.ps1 -Threads 4
 #
-# Mining starting immediately is safe HERE because a new install mines to the
-# POOL, and a pool miner works on the block the pool hands it rather than one
-# built from its own chain -- so it does not need to be synced first and cannot
-# build a competing fork while it catches up. -Solo does need a synced node,
-# and the tray waits for that on its own.
+# Mining starts immediately, and with solo as the default that is safe only
+# because the tray REFUSES to solo-mine until the chain is current: three
+# consecutive full polls saying so, re-checked every tick. Do not remove that
+# gate. A fresh solo install once began at height 16 of 6,806 and found three
+# blocks on its own fork before the first chain read landed, which is why the
+# check treats "we have not looked yet" as unsafe rather than as "not syncing".
 
 param(
     [int]$Threads = 0,
@@ -36,8 +37,8 @@ param(
     # half-applied bump is impossible. The hash is of pcoin-win64-miner.zip
     # and the install aborts on a mismatch, so a forgotten bump here breaks
     # every new install rather than failing quietly.
-    [string]$Version = '1.4.10',
-    [string]$Sha256 = '13ad603fdb66b2acb104741fd3650532c23de2ed75a518e7dc7ac940938a51c4',
+    [string]$Version = '1.4.12',
+    [string]$Sha256 = 'bc3ee07536ac56c2aec77a9bdea53113a6ba16a328d87410d10ae941cd3e5265',
     # All three seeds, not just one. The node also carries them compiled in as
     # of v1.2.1, so this is belt and braces rather than the only route in.
     [string[]]$AddNode = @('35.239.156.16:9444', '178.105.3.51:9444', '152.53.171.190:9444'),
@@ -64,10 +65,16 @@ param(
     # Without it the install skips the 9 MB download when C:\PCoin already holds
     # this $Version, and only re-applies config / restarts the tray.
     [switch]$Force,
-    # Mine SOLO instead of the default pool. Solo pays the whole 50 PCN block when
-    # THIS machine finds one -- rare unless you have a lot of hash rate, so most
-    # miners see long dry spells. The default (pool) pays a small steady share.
-    # You can switch either way later from the tray's Mining-mode panel.
+    # Mine for the POOL instead of the default solo. The pool pays a small
+    # steady share of every block it finds; solo pays the whole 50 PCN when THIS
+    # machine finds one. Solo is the default as of v1.4.11 -- see the reasoning
+    # where $poolUrl is set. You can switch either way later from the tray's
+    # Mining-mode panel, and the tray tells you which suits your hash rate.
+    [switch]$Pool,
+    # Accepted and now redundant: solo is the default. It stays because the
+    # published one-liner carrying it is in people's notes and in this repo's
+    # docs, and dropping the parameter would turn every copy into "a parameter
+    # cannot be found that matches -Solo".
     [switch]$Solo
 )
 
@@ -200,6 +207,7 @@ if (-not $script:IsAdmin -and -not $NoElevate) {
     if ($NoMine) { $extra = $extra + ' -NoMine' }
     if ($Force) { $extra = $extra + ' -Force' }
     if ($Solo) { $extra = $extra + ' -Solo' }
+    if ($Pool) { $extra = $extra + ' -Pool' }
     # Pass -Threads ONLY when it was actually given. Passing it unconditionally
     # sent a bare "-Threads 0" to the elevated child, where it is
     # indistinguishable from someone typing it -- so the child read 0 as an
@@ -373,11 +381,27 @@ $hashrate = ''
 if ($keep.ContainsKey('hashrate')) { $hashrate = $keep['hashrate'] }
 $soloPrompt = ''
 if ($keep.ContainsKey('soloprompt')) { $soloPrompt = $keep['soloprompt'] }
-# Default a NEW install to the pool: for a small miner, pool pays a steady share
-# instead of waiting days for a rare solo block. An existing install keeps its own
-# choice, and -Solo forces solo.
-$poolUrl = 'pool.pc.am:3333'
+# Default a NEW install to SOLO. Changed 2026-09-10, on the owner's instruction,
+# and the arithmetic had moved under the old default: at difficulty 0.0557 an
+# ordinary 500 H/s desktop finds a block every 5.5 days, a 2,000 H/s machine
+# every 1.4 days, and a measured fleet PC at 5,967 H/s finds about two a DAY.
+# "Waiting days for a rare solo block" described a harder chain than this one.
+#
+# The real reason is not the payout though, it is concentration: our own pool
+# mines ~71% of blocks, which is the single thing every exchange conversation
+# dies on. A pool miner's blocks are attributed to the pool; a solo miner's are
+# attributed to that miner. Defaulting to solo is the only lever we have that
+# makes the chain measurably less ours without asking anybody to do anything.
+#
+# Safe because the tray refuses to solo-mine until the chain is current -- three
+# consecutive full polls, re-checked every tick (SoloBlockedBySync). That guard
+# exists because a fresh solo install once mined three blocks onto its own fork
+# from height 16, so it is proven rather than assumed.
+#
+# An EXISTING install keeps whatever it already had: nobody is moved silently.
+$poolUrl = ''
 if ($keep.ContainsKey('poolurl')) { $poolUrl = $keep['poolurl'] }
+if ($Pool) { $poolUrl = 'pool.pc.am:3333' }
 if ($Solo) { $poolUrl = '' }
 $percent = ''
 if ($keep.ContainsKey('percent')) { $percent = $keep['percent'] }

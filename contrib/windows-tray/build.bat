@@ -41,6 +41,7 @@ rem ship. Embedding needs nothing shipped alongside it.
   /reference:System.Drawing.dll ^
   /reference:System.Numerics.dll ^
   /reference:System.Security.dll ^
+  /reference:System.Management.dll ^
   /reference:System.Windows.Forms.dll ^
   /reference:System.Xaml.dll ^
   /reference:"%FW%\WPF\WindowsBase.dll" ^
@@ -48,6 +49,8 @@ rem ship. Embedding needs nothing shipped alongside it.
   /reference:"%FW%\WPF\PresentationFramework.dll" ^
   PCoinTray.cs ^
   Autostart.cs ^
+  Updates.cs ^
+  Version.cs ^
   MinerWindow.cs ^
   ForwardPolicy.cs ^
   ForwardStore.cs ^

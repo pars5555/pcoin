@@ -30,7 +30,7 @@ NEVER Compress-Archive. It writes entry names containing backslashes, so the
 whole tree unpacks on Linux and macOS as a few files with \ in their names.
 zipfile writes forward slashes; the assert below refuses to ship otherwise.
 """
-import argparse, hashlib, os, shutil, sys, tempfile, zipfile
+import argparse, hashlib, os, re, shutil, sys, tempfile, zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -72,6 +72,28 @@ def main():
     # success, and leaves the user no way to remove PCoin from Settings.
     if not os.path.isfile(a.uninstaller):
         sys.exit("no uninstall.ps1 at %s" % a.uninstaller)
+
+    # THE VERSION IN THE BINARY MUST BE THE VERSION ON THE BOX.
+    #
+    # The tray now answers "am I out of date?" by comparing Build.Version
+    # against what pc.am publishes. If that constant is not bumped with the
+    # release, every user of the new build is told they are up to date forever
+    # -- a silent, self-inflicted denial of every future fix. So this refuses
+    # rather than warns: a check that only prints is not a check (CLAUDE.md
+    # 7.12).
+    vfile = os.path.join(HERE, "Version.cs")
+    try:
+        vsrc = open(vfile, encoding="utf-8").read()
+    except IOError:
+        sys.exit("cannot read %s -- the tray's own version is unknown" % vfile)
+    vm = re.search(r'Version\s*=\s*"([^"]+)"', vsrc)
+    if not vm:
+        sys.exit("no Version constant found in %s" % vfile)
+    if vm.group(1) != a.version:
+        sys.exit("REFUSING: --version is %s but Version.cs says %s. "
+                 "Bump Version.cs, install.ps1 $Version and $Sha256 together."
+                 % (a.version, vm.group(1)))
+    print("version constant in the binary: %s (matches --version)" % vm.group(1))
 
     tmp = tempfile.mkdtemp(prefix="pcoinpack")
     try:
