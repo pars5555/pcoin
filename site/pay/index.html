@@ -87,9 +87,9 @@
 
     <div class="card">
       <button class="go" id="open" type="button">Open my PCoin wallet</button>
-      <p class="muted" style="margin-top:10px">Your wallet opens with this
-      request filled in. <b>Nothing is sent</b> until you check it and confirm
-      there.</p>
+      <p class="muted" style="margin-top:10px" id="hint">Your wallet opens with
+      this request filled in. <b>Nothing is sent</b> until you check it and
+      confirm there.</p>
     </div>
 
     <div class="card">
@@ -133,15 +133,43 @@
 
   var uri = 'pcoin:' + to + (amt ? '?amount=' + encodeURIComponent(amt) : '');
 
-  function open_() { location.href = uri; }
-  document.getElementById('open').addEventListener('click', open_);
+  // AM I IN A FRAME? It decides everything below.
+  //
+  // Telegram Web does not open links in a real tab -- it opens them in its own
+  // in-app frame. A framed page may not navigate to a custom scheme, so firing
+  // pcoin: here produces exactly the error the mini app used to produce one
+  // level up: "This content is blocked. Contact the site owner to fix the
+  // issue." Measured 2026-09-10, after the mini app itself was already fixed.
+  //
+  // So when framed we do not touch the scheme at all. The button opens THIS
+  // page again in a real top-level tab, and that copy -- unframed -- fires the
+  // link normally. One extra tap, and it works everywhere rather than looking
+  // broken on one platform.
+  let framed = false;
+  try { framed = window.top !== window.self; } catch (e) { framed = true; }
 
-  // One automatic attempt, because most people arriving here already pressed
-  // Send and should not have to press a second button. It is a NAVIGATION, not
-  // a popup, so it is allowed; and if the platform refuses, the button is
-  // still sitting there. Deliberately not repeated: a page that keeps trying to
-  // launch an app is indistinguishable from one attacking you.
-  setTimeout(open_, 350);
+  function open_() { location.href = uri; }
+  const btn = document.getElementById('open');
+
+  if (framed) {
+    btn.textContent = 'Open my PCoin wallet';
+    btn.addEventListener('click', function () {
+      window.open(location.href, '_blank', 'noopener');
+    });
+    const hint = document.getElementById('hint');
+    if (hint) {
+      hint.innerHTML = 'This opens in a new tab, which is the only place a ' +
+        'wallet link can be followed from here. <b>Nothing is sent</b> until ' +
+        'you check it and confirm in the wallet.';
+    }
+  } else {
+    btn.addEventListener('click', open_);
+    // One automatic attempt, because most people arriving here already pressed
+    // Send and should not have to press a second button. Deliberately not
+    // repeated: a page that keeps trying to launch an app is indistinguishable
+    // from one attacking you.
+    setTimeout(open_, 350);
+  }
 
   function copy(el, text, done) {
     el.addEventListener('click', function () {
