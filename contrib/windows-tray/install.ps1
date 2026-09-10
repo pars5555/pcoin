@@ -37,8 +37,8 @@ param(
     # half-applied bump is impossible. The hash is of pcoin-win64-miner.zip
     # and the install aborts on a mismatch, so a forgotten bump here breaks
     # every new install rather than failing quietly.
-    [string]$Version = '1.4.16',
-    [string]$Sha256 = '6655d2b8969fbd59dc2065cdadadc60f035758f7ef317b9266b1265402c5306b',
+    [string]$Version = '1.4.17',
+    [string]$Sha256 = 'e9c74f9ee0317462c3d77264b1fb6d2850b2a7e7f8ccc50d92fc789f4cab8ba8',
     # All three seeds, not just one. The node also carries them compiled in as
     # of v1.2.1, so this is belt and braces rather than the only route in.
     [string[]]$AddNode = @('35.239.156.16:9444', '178.105.3.51:9444', '152.53.171.190:9444'),
@@ -490,10 +490,18 @@ try {
         # working while the tray's tick said it was off.
         if ($startup) {
             $wsOff = New-Object -ComObject WScript.Shell
-            $mine = (Join-Path $InstallDir 'PCoinTray.exe')
+            # NOT $mine. PowerShell variables are case-insensitive, so $mine IS
+            # the -Mine switch parameter, and assigning a path to a [switch]
+            # throws "Cannot convert ... to SwitchParameter" -- which aborts
+            # this whole try block and silently leaves every shortcut in place.
+            # This file already carries that warning further down, about the
+            # session-id local, and I walked into it anyway. Measured on a real
+            # machine 2026-09-10: both shortcuts survived an autostart=0 install
+            # and the log said only "autostart skipped: Cannot convert...".
+            $mineExe = (Join-Path $InstallDir 'PCoinTray.exe')
             foreach ($f in (Get-ChildItem $startup -Filter *.lnk -ErrorAction SilentlyContinue)) {
                 try {
-                    if ($wsOff.CreateShortcut($f.FullName).TargetPath -eq $mine) {
+                    if ($wsOff.CreateShortcut($f.FullName).TargetPath -eq $mineExe) {
                         Remove-Item $f.FullName -Force -ErrorAction SilentlyContinue
                         Write-Output ('  removed autostart shortcut ' + $f.Name)
                     }
