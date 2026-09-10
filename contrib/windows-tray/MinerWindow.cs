@@ -218,6 +218,8 @@ namespace PCoinTray
         // costs nothing when you are current.
         readonly Border _updateCard = new Border { Visibility = Visibility.Collapsed };
         readonly TextBlock _updateText = new TextBlock();
+        readonly TextBlock _versionText = new TextBlock();
+        readonly Button _updateMini = new Button();
         Action _doUpdate;
         readonly CheckBox   _fastCheck = new CheckBox();
         readonly TextBlock  _fastNote  = new TextBlock();
@@ -365,16 +367,51 @@ namespace PCoinTray
             DockPanel.SetDock(name, Dock.Left);
             row.Children.Add(name);
 
+            // Right-hand side: machine name, and under it the version with an
+            // Update button beside it. The version is ALWAYS shown -- "which one
+            // am I running" is the first question anyone asks when something
+            // looks wrong, and until now the only answer was to open a menu.
+            var right = new StackPanel
+            {
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+
             var machine = new TextBlock
             {
                 Text = Environment.MachineName,
                 Foreground = Muted,
                 FontSize = 12,
-                VerticalAlignment = VerticalAlignment.Center,
                 HorizontalAlignment = HorizontalAlignment.Right,
                 TextTrimming = TextTrimming.CharacterEllipsis
             };
-            row.Children.Add(machine);
+            right.Children.Add(machine);
+
+            var verRow = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Margin = new Thickness(0, 2, 0, 0)
+            };
+            // Collapsed until there is something to offer, and it sits BEFORE
+            // the version so the eye lands on the action, not the number.
+            _updateMini.Content = "Update";
+            _updateMini.Padding = new Thickness(8, 1, 8, 1);
+            _updateMini.FontSize = 11;
+            _updateMini.Cursor = Cursors.Hand;
+            _updateMini.Margin = new Thickness(0, 0, 6, 0);
+            _updateMini.Visibility = Visibility.Collapsed;
+            _updateMini.Click += (s, e) => { var a = _doUpdate; if (a != null) a(); };
+            verRow.Children.Add(_updateMini);
+
+            _versionText.Text = "v" + Build.Version;
+            _versionText.Foreground = Muted;
+            _versionText.FontSize = 11;
+            _versionText.VerticalAlignment = VerticalAlignment.Center;
+            verRow.Children.Add(_versionText);
+
+            right.Children.Add(verRow);
+            row.Children.Add(right);
             return row;
         }
 
@@ -524,11 +561,20 @@ namespace PCoinTray
             if (string.IsNullOrEmpty(latest))
             {
                 _updateCard.Visibility = Visibility.Collapsed;
+                _updateMini.Visibility = Visibility.Collapsed;
+                _versionText.Text = "v" + current;
+                _versionText.Foreground = Muted;
                 return;
             }
             _updateText.Text = "PCoin " + latest + " is available. You have " + current +
                                ". Updating keeps your wallet, your payout address and your settings.";
             _updateCard.Visibility = Visibility.Visible;
+            _updateMini.Content = "Update to " + latest;
+            _updateMini.Visibility = Visibility.Visible;
+            // The version goes from grey to the warning colour, so the header
+            // alone says "you are behind" without anyone reading a sentence.
+            _versionText.Text = "v" + current;
+            _versionText.Foreground = Warn;
         }
 
         UIElement SyncCard()
