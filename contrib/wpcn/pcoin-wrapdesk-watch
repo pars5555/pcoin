@@ -2,9 +2,13 @@
 """Tell the operator what to DO about the wrap desk, hourly, until it is done.
 
 This is not a health check. It is a task list that nags. Every wrap has manual
-steps spread over hours -- wait for confirmations, send wPCN, sell the PCN, buy
-wPCN back -- and a step forgotten halfway is how a desk ends up with a customer
-paid nothing or a pool left un-rebalanced.
+steps spread over hours -- wait for confirmations, send wPCN, and (only while
+the keeper is buying) sell the PCN and buy wPCN back -- and a step forgotten
+halfway is how a desk ends up with a customer paid nothing.
+
+Whether that last pair applies is READ from the keeper's unit, never assumed:
+see keeper_buys(). It was hardcoded once and went stale two days after the
+owner switched buying off.
 
 WHAT "DONE" MEANS HERE, AND WHY THERE IS NO BUTTON.
 
@@ -68,6 +72,58 @@ FEE_PCT = float(os.environ.get("WRAP_FEE_PCT", 5.0))
 
 EXPLORER = "https://explorer.pc.am"
 RESERVE = os.environ.get("WRAP_RESERVE", "pc1q7hhzmdkkx0zjtzj6qkwmuvhlgwfqjrc6j2dk52")
+
+
+def keeper_buys():
+    """Is the keeper actually buying wPCN back?  True / False / None(unknown).
+
+    THIS WAS HARDCODED ONCE AND IT WENT STALE. Every ACTION this script printed
+    said "sell the PCN, buy wPCN back from the pool". On 2026-09-08 the owner
+    turned exactly that off -- KEEPER_BUY=off on pcoin-wpcn-keeper -- so the
+    pool is allowed to fall on real selling instead of our own USDT holding a
+    number still. The advice outlived the decision, and an operator following
+    it would have quietly undone the thing it was changed to do.
+
+    So read the keeper's own unit rather than asserting either answer, and
+    return None when it cannot be read. Unknown is its own state: advising
+    "buy" or "do not buy" off a failed read is precisely how a stale
+    instruction re-establishes itself.
+    """
+    try:
+        r = subprocess.run(["systemctl", "show", "pcoin-wpcn-keeper",
+                            "-p", "Environment", "--value"],
+                           capture_output=True, text=True, timeout=10)
+    except Exception:
+        return None
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    # systemd prints Environment as one space-separated line of KEY=VALUE.
+    # Split rather than regex: this file does not import re, and an import for
+    # one lookup is a worse trade than three lines of string work.
+    for tok in r.stdout.split():
+        if tok.startswith("KEEPER_BUY="):
+            return tok.split("=", 1)[1].strip().lower() not in ("0", "off", "false", "no")
+    return True              # flag absent means the keeper's own ON default
+
+
+def cycle_advice(amt):
+    """The second half of the cycle, phrased from what is TRUE right now.
+
+    Always ends in a newline so the caller can drop it in unconditionally.
+    """
+    buys = keeper_buys()
+    if buys is False:
+        return ("Do NOT buy wPCN back: KEEPER_BUY=off on the keeper, a standing "
+                "decision that the pool is allowed to fall on real selling rather "
+                "than be held up with our own USDT. Selling the %.2f PCN is "
+                "optional and separate.\n" % amt)
+    if buys is None:
+        return ("Whether to buy wPCN back is UNKNOWN -- the keeper's KEEPER_BUY "
+                "setting could not be read. Check the unit before doing either; "
+                "do not assume the old advice.\n")
+    return ("Then: sell the %.2f PCN on market.pc.am, and use the proceeds to buy "
+            "wPCN back from the pool -- but ONLY while the pool trades BELOW "
+            "price.pc.am.\n" % amt)
 
 # wrapdesk.pc.am writes every allocated deposit address here, with the BSC
 # address that asked for it. Without this the watcher can see that PCN arrived
@@ -402,9 +458,7 @@ def main() -> int:
                               f"  SEND     : {net:.2f} wPCN\n"
                               f"  TO       : {pay_to}\n"
                               f"Send from the inventory wallet.{over}\n"
-                              f"Then: sell the {amt:.2f} PCN on market.pc.am, and use the "
-                              f"proceeds to buy wPCN back from the pool -- but ONLY while "
-                              f"the pool trades BELOW price.pc.am.\n"
+                              f"{cycle_advice(amt)}"
                               f"WHEN SENT, close it out or this repeats hourly forever:\n"
                               f"  pcoin-wrapdesk-watch --released {txid}:{watch_addr} <bsc_txhash>"))
 
@@ -495,7 +549,23 @@ def main() -> int:
                       "buying wPCN."))
     elif pool and pool.get("price") is not None:
         pp = float(pool["price"])
-        if pp < float(rate):
+        buys = keeper_buys()
+        if buys is False:
+            # The arithmetic is still worth printing -- it is the peg's
+            # temperature -- but it must not read as an instruction while
+            # buying is switched off by a standing decision.
+            side = "below" if pp < float(rate) else "at or above"
+            tasks.append(("cycle_off", "info",
+                          f"Pool ${pp:.6f} is {side} price.pc.am ${float(rate):.6f}. "
+                          f"Buying back is OFF (KEEPER_BUY=off) -- a standing decision "
+                          f"that the pool is allowed to fall on real selling. This is "
+                          f"the peg's temperature, not something to act on."))
+        elif buys is None:
+            tasks.append(("cycle_unknown", "warn",
+                          f"Pool ${pp:.6f} vs price.pc.am ${float(rate):.6f}, but the "
+                          f"keeper's KEEPER_BUY setting could NOT be read, so whether to "
+                          f"buy wPCN back is UNKNOWN. Check the unit before doing either."))
+        elif pp < float(rate):
             tasks.append(("cycle_open", "info",
                           f"Cycle is OPEN: pool ${pp:.6f} is below price.pc.am "
                           f"${float(rate):.6f}. Buying wPCN back is profitable and "
