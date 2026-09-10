@@ -30,6 +30,7 @@
 
 using System;
 using System.Globalization;
+using System.IO;
 using System.Net;
 using System.Text.RegularExpressions;
 
@@ -54,6 +55,18 @@ namespace PCoinTray
             @"^[0-9a-fA-F]{64}\s+pcoin-win64-miner\.zip\s+#\s*v([0-9]+(?:\.[0-9]+)*)\s*$",
             RegexOptions.Multiline);
 
+        // Remembered between checks so the NEXT one can be conditional. This is
+        // a long-lived process -- days -- so a client that has already seen the
+        // file asks "has it changed since?" instead of downloading it again.
+        //
+        // Measured against the live server: a plain GET is 3,665 bytes, and
+        // If-Modified-Since returns 304 with ZERO bytes. ETag does NOT work
+        // here -- Apache emits a weak, -gzip-suffixed ETag that does not match
+        // back through Cloudflare, so If-None-Match answers 200 every time.
+        // Using it would have looked correct and quietly done nothing.
+        static string _lastModified;
+        static string _lastSeenVersion;
+
         public static UpdateInfo Check()
         {
             var info = new UpdateInfo();
@@ -61,11 +74,39 @@ namespace PCoinTray
             try
             {
                 ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
-                using (var wc = new WebClient())
+                var req = (HttpWebRequest)WebRequest.Create(SumsUrl);
+                req.UserAgent = "PCoinTray/" + Build.Version;
+                req.Timeout = 20000;
+                req.ReadWriteTimeout = 20000;
+                req.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
+                if (_lastModified != null)
                 {
-                    wc.Headers.Add("User-Agent", "PCoinTray/" + Build.Version);
-                    body = wc.DownloadString(SumsUrl);
+                    DateTime since;
+                    if (DateTime.TryParse(_lastModified, CultureInfo.InvariantCulture,
+                                          DateTimeStyles.AdjustToUniversal, out since))
+                        req.IfModifiedSince = since;
                 }
+                using (var resp = (HttpWebResponse)req.GetResponse())
+                using (var sr = new StreamReader(resp.GetResponseStream()))
+                {
+                    body = sr.ReadToEnd();
+                    _lastModified = resp.Headers["Last-Modified"];
+                }
+            }
+            catch (WebException wex)
+            {
+                var hr = wex.Response as HttpWebResponse;
+                if (hr != null && hr.StatusCode == HttpStatusCode.NotModified && _lastSeenVersion != null)
+                {
+                    // Nothing changed since we last looked, and we still know
+                    // what it said. Zero bytes crossed the wire.
+                    info.Latest = _lastSeenVersion;
+                    info.State = Compare(_lastSeenVersion, Build.Version) > 0
+                               ? UpdateState.Available : UpdateState.UpToDate;
+                    return info;
+                }
+                info.Detail = "could not reach pc.am (" + wex.Message + ")";
+                return info;                    // Unknown, deliberately
             }
             catch (Exception ex)
             {
@@ -81,6 +122,7 @@ namespace PCoinTray
             }
 
             info.Latest = m.Groups[1].Value;
+            _lastSeenVersion = info.Latest;
             int cmp = Compare(info.Latest, Build.Version);
             info.State = cmp > 0 ? UpdateState.Available : UpdateState.UpToDate;
             return info;

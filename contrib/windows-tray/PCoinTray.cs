@@ -835,6 +835,12 @@ namespace PCoinTray
         //! constant, used by both the throttle and the timer -- they were two
         //! literals and two literals drift.
         const double UPDATE_CHECK_HOURS = 5.0;
+        //! Up to this much random slack on each interval, so a fleet that was
+        //! restarted together does not stay in lockstep for ever and arrive at
+        //! the server in a spike. Chosen per-tick, not once, so two machines
+        //! that happen to draw the same offset drift apart on the next one.
+        const int UPDATE_JITTER_MINUTES = 20;
+        static readonly Random _jitter = new Random();
         readonly Dictionary<int, ToolStripMenuItem> _miPercent = new Dictionary<int, ToolStripMenuItem>();
 
         //! Percentage of the machine -> worker threads. Always at least one
@@ -895,7 +901,8 @@ namespace PCoinTray
             var upd = new System.Windows.Forms.Timer { Interval = 40000 };
             upd.Tick += (s, e) =>
             {
-                upd.Interval = (int)(UPDATE_CHECK_HOURS * 60 * 60 * 1000);
+                upd.Interval = (int)(UPDATE_CHECK_HOURS * 60 * 60 * 1000)
+                             + _jitter.Next(0, UPDATE_JITTER_MINUTES * 60 * 1000);
                 CheckUpdatesInBackground(true);
             };
             upd.Start();
@@ -1144,7 +1151,11 @@ namespace PCoinTray
         //! becomes "there is one".
         void CheckUpdatesInBackground(bool announce)
         {
-            if ((DateTime.UtcNow - _lastUpdateCheck).TotalHours < UPDATE_CHECK_HOURS) return;
+            // Slightly under the interval, so a jittered tick is never thrown
+            // away by the very throttle that is meant to stop RUNAWAY checks.
+            // The throttle exists for repeated menu-adjacent calls, not for the
+            // timer, and the two must not fight.
+            if ((DateTime.UtcNow - _lastUpdateCheck).TotalHours < UPDATE_CHECK_HOURS * 0.9) return;
             _lastUpdateCheck = DateTime.UtcNow;
             var t = new Thread(() =>
             {
