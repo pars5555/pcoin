@@ -20,8 +20,8 @@ param(
     # the zip is fetched from, so the URL and the hash move as one. The install
     # aborts on a mismatch, so a forgotten bump breaks every new install
     # loudly rather than installing something unverified.
-    [string]$Version = '1.4.8',
-    [string]$Sha256 = '31465a0cc80c11fd0b1848cb295d337b8912b20a4cbf74625ac70cfc95c4daf2',
+    [string]$Version = '1.4.20',
+    [string]$Sha256 = '47ddda821fac7d3a507d845a621fb842f096416f242b22a5997d123848d79574',
     # Install from a local zip instead of downloading (offline / testing a
     # build before it is published). Its SHA-256 is still checked against
     # $Sha256 when one is given.
@@ -269,6 +269,39 @@ try {
     }
 } catch {
     Write-Output ('  Apps-list entry skipped: ' + $_.Exception.Message)
+}
+
+# --- payment links (pcoin: / pcn:) ---------------------------------------
+#
+# Without this a payment link is inert on Windows. The wallet has always been
+# able to PARSE one -- PaymentUri.cs handles pcoin:, pcn: and bitcoin:, with or
+# without an empty authority -- but nothing told Windows which program to hand a
+# clicked link to, so the click simply evaporated. That is what made Send in the
+# Telegram mini app do nothing on Telegram Desktop while doing the right thing
+# on Android, and the mini app told those users no Windows wallet existed, which
+# stopped being true at v1.4.0.
+#
+# HKCU, not HKCR: this needs no administrator, and a per-user handler is the
+# honest scope for a per-user wallet. An elevated install still writes it for
+# the account that ran it, which is the account whose wallet this is.
+#
+# The %1 MUST be quoted. A URI is attacker-influenced text arriving from a
+# browser or a chat client; unquoted it would be split on spaces and the tail
+# handed to the app as extra arguments.
+try {
+    $exe = Join-Path $InstallDir 'PCoinWallet.exe'
+    foreach ($scheme in @('pcoin', 'pcn')) {
+        $root = "HKCU:\Software\Classes\$scheme"
+        New-Item -Path $root -Force | Out-Null
+        New-ItemProperty -Path $root -Name '(default)'    -Value "URL:PCoin payment" -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $root -Name 'URL Protocol' -Value ''                  -PropertyType String -Force | Out-Null
+        New-Item -Path "$root\shell\open\command" -Force | Out-Null
+        New-ItemProperty -Path "$root\shell\open\command" -Name '(default)' `
+            -Value ('"' + $exe + '" "%1"') -PropertyType String -Force | Out-Null
+    }
+    Write-Output '  payment links (pcoin: and pcn:) now open this wallet'
+} catch {
+    Write-Output ('  payment links not registered: ' + $_.Exception.Message)
 }
 
 # --- open it -------------------------------------------------------------

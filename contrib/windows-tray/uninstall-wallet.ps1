@@ -263,6 +263,19 @@ foreach ($root in @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\P
                     'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PCoinWallet')) {
     if (Test-Path $root) {
         try { Remove-Item $root -Recurse -Force -ErrorAction Stop; Write-Output '  removed the Apps-list entry' } catch { }
+
+# Hand the pcoin:/pcn: schemes back. Leaving them behind would point payment
+# links at an exe that no longer exists, which fails in the worst way available:
+# silently, on a link about money.
+foreach ($scheme in @('pcoin', 'pcn')) {
+    $sk = "HKCU:\Software\Classes\$scheme"
+    if (Test-Path $sk) {
+        try {
+            Remove-Item $sk -Recurse -Force -ErrorAction Stop
+            Write-Output ('  removed the ' + $scheme + ': payment-link handler')
+        } catch { }
+    }
+}
     }
 }
 

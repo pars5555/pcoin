@@ -64,6 +64,18 @@ namespace PCoinTray
         const string MUTEX_NAME = @"Global\PCoinWalletSingleInstance";
         internal const string SHOW_EVENT = @"Global\PCoinWalletShowWindow";
 
+        //! A payment URI this launch was asked to open, or null.
+        internal static string PendingUri;
+
+        //! How a SECOND launch hands a URI to the first. SHOW_EVENT carries no
+        //! payload, so the URI goes through a file beside the exe and the event
+        //! is only the nudge. Written and deleted by the same pair of methods so
+        //! a stale file cannot resurface later as a surprise payment screen.
+        internal static string HandoffPath()
+        {
+            return Path.Combine(Path.GetDirectoryName(Application.ExecutablePath), "pcoin-pending-uri.txt");
+        }
+
         //! A winexe has no console of its own, so borrow the one it was started
         //! from. Only used by --selftest.
         [DllImport("kernel32.dll")]
@@ -76,6 +88,18 @@ namespace PCoinTray
             foreach (var a in args)
             {
                 if (a == "--selftest" || a == "-selftest") return SelfTest();
+            }
+            // A pcoin: / pcn: / bitcoin: URI on the command line. Windows passes
+            // it here when this app is the registered handler for the scheme,
+            // which is what makes a payment link in a browser or in Telegram
+            // Desktop reach the wallet at all. Parsed, never acted on: it only
+            // ever pre-fills the send form, where the ordinary review and the
+            // confirmation still stand between it and any money moving.
+            foreach (var a in args)
+            {
+                if (string.IsNullOrEmpty(a) || a.StartsWith("-")) continue;
+                var t = PaymentUri.Parse(a);
+                if (t != null) { PendingUri = a; break; }
             }
             Run();
             return 0;
@@ -144,6 +168,12 @@ namespace PCoinTray
             {
                 if (!created)
                 {
+                    // Hand the URI over BEFORE the nudge, so the running copy
+                    // cannot be woken to find nothing waiting for it.
+                    if (PendingUri != null)
+                    {
+                        try { File.WriteAllText(HandoffPath(), PendingUri); } catch { }
+                    }
                     SignalExistingInstance();
                     return;
                 }
@@ -165,6 +195,13 @@ namespace PCoinTray
                     }
                     catch { }
                 };
+                // A URI given to the FIRST launch goes through the same file the
+                // second launch would use, so there is one path into the send
+                // form rather than two that can drift apart.
+                if (PendingUri != null)
+                {
+                    try { File.WriteAllText(HandoffPath(), PendingUri); } catch { }
+                }
                 Note("start: v" + typeof(WalletProgram).Assembly.GetName().Version + " in " +
                      Path.GetDirectoryName(Application.ExecutablePath));
                 Application.Run(new WalletApp());
@@ -329,6 +366,29 @@ namespace PCoinTray
             var force = _sync.Handle;   // realise the handle so BeginInvoke works
             ShowWindow();
             StartShowListener();
+
+            // Drain a payment link handed to THIS launch, but not before the
+            // wallet can act on it: opening the send form with no phrase loaded
+            // gives a dialog that cannot send and no explanation why. Polls
+            // until _phrase exists, then fires once and stops. Gives up after
+            // two minutes rather than waiting for ever on a wallet that is
+            // never going to finish setting up.
+            var uriTimer = new System.Windows.Forms.Timer { Interval = 1500 };
+            int uriTries = 0;
+            uriTimer.Tick += (s, e) =>
+            {
+                uriTries++;
+                if (_phrase == null && uriTries < 80) return;
+                uriTimer.Stop();
+                if (_phrase == null)
+                {
+                    WalletProgram.Note("payment link dropped: no wallet is set up on this PC");
+                    try { File.Delete(WalletProgram.HandoffPath()); } catch { }
+                    return;
+                }
+                DrainPendingUri();
+            };
+            uriTimer.Start();
             var t = new Thread(Startup) { IsBackground = true, Name = "wallet-startup" };
             t.Start();
         }
@@ -450,12 +510,48 @@ namespace PCoinTray
                     while (!_quitting)
                     {
                         if (!ev.WaitOne(1000)) continue;
-                        try { _sync.BeginInvoke(new Action(() => { if (_window != null) _window.Reveal(); })); }
+                        try
+                        {
+                            _sync.BeginInvoke(new Action(() =>
+                            {
+                                if (_window != null) _window.Reveal();
+                                DrainPendingUri();
+                            }));
+                        }
                         catch { }
                     }
                 }
             }) { IsBackground = true, Name = "wallet-show-listener" };
             t.Start();
+        }
+
+        //! Take whatever a second launch left for us and open the send form with
+        //! it. Read-and-delete in one go: a URI that stayed on disk would open a
+        //! payment screen at some unrelated future start, which is exactly the
+        //! kind of surprise a wallet must never produce.
+        //!
+        //! Parsed again here rather than trusted. The file is writable by anyone
+        //! who can write next to the exe, so it is input, not instruction -- and
+        //! all it can do is pre-fill a form the person still has to review and
+        //! confirm.
+        void DrainPendingUri()
+        {
+            string raw = null;
+            try
+            {
+                var f = WalletProgram.HandoffPath();
+                if (File.Exists(f))
+                {
+                    raw = File.ReadAllText(f);
+                    File.Delete(f);
+                }
+            }
+            catch { return; }
+            if (string.IsNullOrEmpty(raw)) return;
+            var t = PaymentUri.Parse(raw);
+            if (t == null) { WalletProgram.Note("payment link ignored: not a usable address"); return; }
+            WalletProgram.Note("payment link opened for " + t.Address);
+            OpenSend(t.Address);
         }
 
         void Push()
