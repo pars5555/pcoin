@@ -459,17 +459,39 @@ $('s-go').addEventListener('click', () => {
     note.innerHTML = '<span class="err">Amount must be a positive number, or left blank.</span>';
     return;
   }
-  const uri = 'pcoin:' + to + (amt ? '?amount=' + encodeURIComponent(amt) : '');
-  note.textContent = 'Opening the wallet app…';
-  // openLink would send this to a browser, which cannot handle a pcoin: scheme.
-  // A plain navigation lets Android hand it to whichever app claims it.
-  window.location.href = uri;
-  // If the app is not installed nothing visibly happens, so say so rather than
-  // leaving "Opening…" on screen for ever.
-  setTimeout(() => {
-    note.innerHTML = 'If the wallet did not open, it is probably not installed on ' +
-      'this device. See <b>If nothing happens</b> below.';
-  }, 2500);
+  // WHY THIS GOES THROUGH pc.am/pay AND NOT STRAIGHT TO pcoin:
+  //
+  // A mini app runs in a SANDBOXED IFRAME, and navigating that iframe to a
+  // custom scheme is refused. Measured 2026-09-10 on a machine where the
+  // pcoin: handler was correctly registered: Telegram Desktop did nothing at
+  // all, and Telegram Web answered "This content is blocked". The handler was
+  // never the problem -- the iframe was. The comment that used to sit here,
+  // that a browser "cannot handle a pcoin: scheme", was simply wrong.
+  //
+  // Telegram WILL open an https:// link in the real browser. From a normal
+  // top-level page the scheme navigation is ordinary and the OS does the usual
+  // thing, so the request travels as https and only becomes a pcoin: link once
+  // it is somewhere allowed to follow one. That page cannot send anything
+  // either: it holds no key and offers a Copy button for iPhone, where no
+  // wallet exists to open.
+  const hop = 'https://pc.am/pay?to=' + encodeURIComponent(to) +
+              (amt ? '&amount=' + encodeURIComponent(amt) : '');
+  note.textContent = 'Opening your wallet…';
+  if (tg && typeof tg.openLink === 'function') {
+    tg.openLink(hop);
+    setTimeout(() => {
+      note.innerHTML = 'Your browser should have opened with the request. ' +
+        'If it did not, <a href="' + hop + '" target="_blank" rel="noopener">open it here</a>.';
+    }, 2500);
+  } else {
+    // Not inside Telegram (someone opened the page directly). A normal tab can
+    // follow the scheme itself, so there is nothing to hop through.
+    window.location.href = uri;
+    setTimeout(() => {
+      note.innerHTML = 'If the wallet did not open, it is probably not installed on ' +
+        'this device. See <b>If nothing happens</b> below.';
+    }, 2500);
+  }
 });
 
 $('s-scan').addEventListener('click', () => {

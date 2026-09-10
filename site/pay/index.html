@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Open in your PCoin wallet</title>
+<meta name="description" content="Hands a PCoin payment request to the wallet app on this device. Nothing is sent from this page.">
+<meta name="theme-color" content="#0a0b10">
+<meta name="robots" content="noindex">
+<link rel="icon" href="/brand/pcoin-64.png">
+<!--
+  WHY THIS PAGE EXISTS, and it is not decoration.
+
+  A Telegram mini app runs inside a sandboxed iframe. Navigating that iframe to
+  a custom scheme like `pcoin:` is refused: on Telegram Desktop nothing happens
+  at all, and on Telegram Web the browser answers "This content is blocked".
+  Both were measured on 2026-09-10, with the pcoin: handler correctly registered
+  on the machine -- so the handler was never the problem, the iframe was.
+
+  Telegram WILL open an https:// link in the real browser (openLink). Once we
+  are in a normal top-level page, the scheme navigation is an ordinary one and
+  the operating system does what it always does: Windows offers to open PCoin
+  Wallet, Android offers the wallet app.
+
+  So the request travels as https to here, and only here does it become a
+  pcoin: link. The key never travels at all -- this page cannot sign, cannot
+  send, and holds nothing.
+
+  It carries no analytics and sets no storage: a page that knows a payment
+  address should learn as little as possible about the person reading it.
+-->
+<style>
+  :root{ --bg:#0a0b10; --panel:#11131d; --text:#e9ebf4; --muted:#9aa2b8;
+         --dim:#6b7288; --teal:#2dd4bf; --amber:#fbbf24; --line:rgba(255,255,255,.09);
+         --mono:ui-monospace,"Cascadia Code",Menlo,Consolas,monospace; }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--bg);color:var(--text);
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+       font-size:16.5px;line-height:1.6;-webkit-font-smoothing:antialiased;
+       display:flex;align-items:center;justify-content:center;min-height:100vh;padding:22px}
+  .wrap{max-width:540px;width:100%}
+  a{color:var(--teal)}
+  .head{display:flex;align-items:center;gap:11px;margin-bottom:20px}
+  .head img{width:38px;height:38px;border-radius:9px}
+  h1{font-size:1.5rem;letter-spacing:-.01em}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;
+        padding:20px;margin-bottom:14px}
+  .go{display:block;width:100%;text-align:center;background:var(--teal);color:#06231f;
+      font-weight:800;font-size:1.05rem;padding:15px;border-radius:12px;
+      text-decoration:none;border:0;cursor:pointer;font-family:inherit}
+  .lbl{color:var(--dim);font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px}
+  .mono{font-family:var(--mono);font-size:.9rem;word-break:break-all;user-select:all}
+  .amt{font-size:1.5rem;font-weight:700}
+  .muted{color:var(--muted);font-size:.92rem}
+  .warn{color:var(--amber)}
+  .row{display:flex;gap:8px;margin-top:12px}
+  .btn2{flex:1;background:transparent;color:var(--text);border:1px solid var(--line);
+        border-radius:10px;padding:10px;font-size:.9rem;cursor:pointer;font-family:inherit}
+  .foot{color:var(--dim);font-size:.85rem;text-align:center;margin-top:16px}
+  ul{margin:8px 0 0 20px} li{margin-bottom:5px;color:var(--muted);font-size:.92rem}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <img src="/brand/pcoin-round-128.png" alt="">
+    <h1>Open in your wallet</h1>
+  </div>
+
+  <div id="bad" class="card" hidden>
+    <p class="warn"><b>That link is not a PCoin payment request.</b></p>
+    <p class="muted" style="margin-top:6px">Nothing has been sent and there is
+    nothing to act on. Go back and try again.</p>
+  </div>
+
+  <div id="ok" hidden>
+    <div class="card">
+      <p class="lbl">Amount</p>
+      <p class="amt" id="amt">—</p>
+      <p class="lbl" style="margin-top:14px">To this address</p>
+      <p class="mono" id="addr"></p>
+      <div class="row">
+        <button class="btn2" id="copy" type="button">Copy address</button>
+        <button class="btn2" id="copyamt" type="button">Copy amount</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <button class="go" id="open" type="button">Open my PCoin wallet</button>
+      <p class="muted" style="margin-top:10px">Your wallet opens with this
+      request filled in. <b>Nothing is sent</b> until you check it and confirm
+      there.</p>
+    </div>
+
+    <div class="card">
+      <h2 style="font-size:1rem;margin-bottom:4px">If nothing opens</h2>
+      <ul>
+        <li><b>Android</b> — install the wallet from
+            <a href="/download/">pc.am/download</a>, then tap the button again.</li>
+        <li><b>Windows</b> — PCoin Wallet handles these links from version
+            1.4.20. Older ones do not; reinstall from
+            <a href="/download/">pc.am/download</a>.</li>
+        <li><b>iPhone</b> — there is no iOS wallet yet. Copy the address above
+            and pay from a device that has one.</li>
+      </ul>
+    </div>
+  </div>
+
+  <p class="foot">
+    <a href="/">pc.am</a> &middot; this page cannot send anything
+  </p>
+</div>
+<script>
+'use strict';
+(function () {
+  var q = new URLSearchParams(location.search);
+  var to  = (q.get('to')  || '').trim();
+  var amt = (q.get('amount') || '').trim();
+
+  // Validate here as well as in the mini app. This page can be reached with any
+  // query string at all, so what it displays has to be checked where it is
+  // displayed -- an address shown on a payment page is the one thing a reader
+  // will trust without re-reading.
+  var addrOk = /^pc1[a-z0-9]{20,}$/i.test(to);
+  var amtOk  = amt === '' || (Number(amt) > 0 && isFinite(Number(amt)));
+  if (!addrOk || !amtOk) {
+    document.getElementById('bad').hidden = false;
+    return;
+  }
+  document.getElementById('ok').hidden = false;
+  document.getElementById('addr').textContent = to;
+  document.getElementById('amt').textContent = amt ? (amt + ' PCN') : 'not specified';
+
+  var uri = 'pcoin:' + to + (amt ? '?amount=' + encodeURIComponent(amt) : '');
+
+  function open_() { location.href = uri; }
+  document.getElementById('open').addEventListener('click', open_);
+
+  // One automatic attempt, because most people arriving here already pressed
+  // Send and should not have to press a second button. It is a NAVIGATION, not
+  // a popup, so it is allowed; and if the platform refuses, the button is
+  // still sitting there. Deliberately not repeated: a page that keeps trying to
+  // launch an app is indistinguishable from one attacking you.
+  setTimeout(open_, 350);
+
+  function copy(el, text, done) {
+    el.addEventListener('click', function () {
+      var old = el.textContent;
+      try {
+        navigator.clipboard.writeText(text).then(function () {
+          el.textContent = done;
+          setTimeout(function () { el.textContent = old; }, 1400);
+        });
+      } catch (e) {
+        // Older webviews. Select it instead so a long-press copy still works.
+        var r = document.createRange();
+        r.selectNodeContents(document.getElementById('addr'));
+        var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+      }
+    });
+  }
+  copy(document.getElementById('copy'), to, 'Copied');
+  if (amt) copy(document.getElementById('copyamt'), amt, 'Copied');
+  else document.getElementById('copyamt').disabled = true;
+})();
+</script>
+</body>
+</html>
