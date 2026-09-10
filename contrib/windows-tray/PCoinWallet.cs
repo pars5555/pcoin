@@ -202,7 +202,13 @@ namespace PCoinTray
                 {
                     try { File.WriteAllText(HandoffPath(), PendingUri); } catch { }
                 }
-                Note("start: v" + typeof(WalletProgram).Assembly.GetName().Version + " in " +
+                // Build.Version, NOT the assembly version. csc as invoked by
+                // build-wallet.bat stamps no AssemblyVersion, so the assembly
+                // one is always 0.0.0.0 -- which is what this line logged, making
+                // the log unable to answer the first question any support
+                // conversation asks. Build.Version is the number the installer,
+                // the release and pc.am/dl all agree on.
+                Note("start: v" + Build.Version + " in " +
                      Path.GetDirectoryName(Application.ExecutablePath));
                 Application.Run(new WalletApp());
                 Note("exit: message loop ended");

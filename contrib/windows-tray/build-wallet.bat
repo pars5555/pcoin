@@ -58,7 +58,7 @@ if not exist "%FW%\WPF\PresentationFramework.dll" (
   TxParties.cs ^
   WalletSettingsForm.cs ^
   WalletSettings.cs ^
-  Bip39Wordlist.cs
+  Bip39Wordlist.cs Version.cs
 
 if errorlevel 1 exit /b 1
 echo Built PCoinWallet.exe
