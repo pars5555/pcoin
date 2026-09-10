@@ -825,6 +825,10 @@ namespace PCoinTray
         ToolStripMenuItem _miUpdate;
         UpdateInfo _update = new UpdateInfo();
         DateTime _lastUpdateCheck = DateTime.MinValue;
+        //! How often to ask pc.am whether there is a newer build. ONE
+        //! constant, used by both the throttle and the timer -- they were two
+        //! literals and two literals drift.
+        const double UPDATE_CHECK_HOURS = 5.0;
         readonly Dictionary<int, ToolStripMenuItem> _miPercent = new Dictionary<int, ToolStripMenuItem>();
 
         //! Percentage of the machine -> worker threads. Always at least one
@@ -883,7 +887,11 @@ namespace PCoinTray
             // getting the node up, early enough that someone who opens the menu
             // to see why their miner is odd already has the answer.
             var upd = new System.Windows.Forms.Timer { Interval = 40000 };
-            upd.Tick += (s, e) => { upd.Interval = 6 * 60 * 60 * 1000; CheckUpdatesInBackground(true); };
+            upd.Tick += (s, e) =>
+            {
+                upd.Interval = (int)(UPDATE_CHECK_HOURS * 60 * 60 * 1000);
+                CheckUpdatesInBackground(true);
+            };
             upd.Start();
 
             // Launched by a person, so show the window. Autostart passes
@@ -1123,14 +1131,14 @@ namespace PCoinTray
             }
         }
 
-        //! The quiet check. Runs off the UI thread, at most once every six
-        //! hours, and NEVER pops anything up on its own -- an app that
+        //! The quiet check. Runs off the UI thread, at most once every
+        //! UPDATE_CHECK_HOURS, and NEVER pops anything up on its own -- an app that
         //! interrupts you to talk about itself is the thing people turn off.
         //! It only changes the label, and balloons once when the answer first
         //! becomes "there is one".
         void CheckUpdatesInBackground(bool announce)
         {
-            if ((DateTime.UtcNow - _lastUpdateCheck).TotalHours < 6) return;
+            if ((DateTime.UtcNow - _lastUpdateCheck).TotalHours < UPDATE_CHECK_HOURS) return;
             _lastUpdateCheck = DateTime.UtcNow;
             var t = new Thread(() =>
             {
@@ -1141,6 +1149,7 @@ namespace PCoinTray
                               && _update.State != UpdateState.Available;
                     _update = info;
                     MarkUpdate();
+                    PushUpdateToWindow();
                     if (announce && isNew)
                         Balloon("PCoin " + info.Latest + " is available",
                                 "You have " + Build.Version + ". Right-click the PCoin icon to update.",
@@ -1149,6 +1158,19 @@ namespace PCoinTray
             })
             { IsBackground = true, Name = "pcoin-update-check" };
             t.Start();
+        }
+
+        //! Mirror the update state into the main window. Safe to call before the
+        //! window exists -- ShowWindow pushes again on creation.
+        void PushUpdateToWindow()
+        {
+            if (_window == null) return;
+            try
+            {
+                _window.ShowUpdate(_update.State == UpdateState.Available ? _update.Latest : "",
+                                   Build.Version);
+            }
+            catch { /* a UI problem must never take the miner down */ }
         }
 
         void OnUpdateClicked()
@@ -1167,6 +1189,7 @@ namespace PCoinTray
             _update = info;
             _lastUpdateCheck = DateTime.UtcNow;
             MarkUpdate();
+            PushUpdateToWindow();
 
             if (info.State == UpdateState.Unknown)
             {
@@ -3000,8 +3023,12 @@ namespace PCoinTray
                         () => OpenForwardSettings(),
                         () => OnAckProbe(),
                         on => SetFastMode(on),
-                        url => SetPool(url));
+                        url => SetPool(url),
+                        () => RunUpdater());
                 }
+                // Push what we already know before showing it, so the banner is
+                // there on the first paint rather than appearing a moment later.
+                PushUpdateToWindow();
                 _window.Reveal();
                 PushToWindow(_nodeUp);
             }

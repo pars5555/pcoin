@@ -211,6 +211,14 @@ namespace PCoinTray
 
         readonly Slider _slider = new Slider();
         readonly StackPanel _fastPanel = new StackPanel();
+        // The update banner. It sits at the TOP of the window, above
+        // everything, because that is where someone looks first -- an update
+        // offered only in a tray right-click menu is one most people never
+        // find. Collapsed until there is actually something to say, so it
+        // costs nothing when you are current.
+        readonly Border _updateCard = new Border { Visibility = Visibility.Collapsed };
+        readonly TextBlock _updateText = new TextBlock();
+        Action _doUpdate;
         readonly CheckBox   _fastCheck = new CheckBox();
         readonly TextBlock  _fastNote  = new TextBlock();
         //! Guards the same way _sliderEcho does: when the app pushes state INTO
@@ -273,8 +281,10 @@ namespace PCoinTray
 
         public MinerWindow(RateHistory history, Action<int> setPercent, Action openPhrase, Action openFolder,
                            Action openForward, Action ackProbe,
-                           Action<bool> setFastMode, Action<string> setPool)
+                           Action<bool> setFastMode, Action<string> setPool,
+                           Action doUpdate = null)
         {
+            _doUpdate = doUpdate;
             _setFastMode = setFastMode;
             _history = history;
             _setPercent = setPercent;
@@ -327,6 +337,7 @@ namespace PCoinTray
             };
             var col = new StackPanel();
             col.Children.Add(Header());
+            col.Children.Add(UpdateCard());
             col.Children.Add(RateCard());
             col.Children.Add(StatsRow());
             col.Children.Add(SyncCard());
@@ -466,6 +477,58 @@ namespace PCoinTray
             cell.Padding = new Thickness(10, 8, 6, 8);
             Grid.SetColumn(cell, column);
             grid.Children.Add(cell);
+        }
+
+        //! Shown only when there IS an update. A banner that is always present
+        //! saying "you are up to date" is noise people learn to skip, and then
+        //! they skip it on the day it matters.
+        UIElement UpdateCard()
+        {
+            var stack = new StackPanel();
+            _updateText.Foreground = Text;
+            _updateText.FontSize = 13;
+            _updateText.TextWrapping = TextWrapping.Wrap;
+            stack.Children.Add(_updateText);
+
+            var btn = new Button
+            {
+                Content = "Update now",
+                Padding = new Thickness(12, 6, 12, 6),
+                FontSize = 12,
+                Cursor = Cursors.Hand,
+                Margin = new Thickness(0, 10, 0, 0),
+                HorizontalAlignment = HorizontalAlignment.Left
+            };
+            btn.Click += (s, e) => { var a = _doUpdate; if (a != null) a(); };
+            stack.Children.Add(btn);
+
+            _updateCard.Child = stack;
+            _updateCard.Background = Card;
+            // Accent border rather than the usual edge: this is the one card
+            // that is asking for something, so it should not look like the
+            // read-only panels around it.
+            _updateCard.BorderBrush = Accent;
+            _updateCard.BorderThickness = new Thickness(1);
+            _updateCard.CornerRadius = new CornerRadius(10);
+            _updateCard.Padding = new Thickness(12, 10, 12, 10);
+            _updateCard.Margin = new Thickness(0, 0, 0, 10);
+            _updateCard.Visibility = Visibility.Collapsed;
+            return _updateCard;
+        }
+
+        //! Called by the tray when its check has an answer. `latest` empty means
+        //! "nothing to offer" and hides the banner -- including after an update,
+        //! so a stale banner cannot outlive the thing it was offering.
+        public void ShowUpdate(string latest, string current)
+        {
+            if (string.IsNullOrEmpty(latest))
+            {
+                _updateCard.Visibility = Visibility.Collapsed;
+                return;
+            }
+            _updateText.Text = "PCoin " + latest + " is available. You have " + current +
+                               ". Updating keeps your wallet, your payout address and your settings.";
+            _updateCard.Visibility = Visibility.Visible;
         }
 
         UIElement SyncCard()

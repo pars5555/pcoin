@@ -1,4 +1,4 @@
-// Copyright (c) 2026 The PCoin developers
+﻿// Copyright (c) 2026 The PCoin developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 //
@@ -12,7 +12,7 @@
 // The obvious hazard is that this goes stale and the app cheerfully reports
 // itself up to date forever. So pack-win64.py REFUSES to build a zip whose
 // --version disagrees with this constant. A check that only warns is not a
-// check (CLAUDE.md §7.12); this one stops the release.
+// check (CLAUDE.md Â§7.12); this one stops the release.
 
 namespace PCoinTray
 {
@@ -20,6 +20,6 @@ namespace PCoinTray
     {
         //! Bump together with install.ps1's $Version and the release tag.
         //! pack-win64.py will not let you forget.
-        public const string Version = "1.4.12";
+        public const string Version = "1.4.13";
     }
 }
