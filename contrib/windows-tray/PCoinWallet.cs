@@ -382,34 +382,13 @@ namespace PCoinTray
                 uriTimer.Stop();
                 if (_phrase == null)
                 {
-                    // Refusing was already right -- a send screen with no key
-                    // cannot send and does not explain itself. But doing it
-                    // SILENTLY was its own bug: someone taps a payment link,
-                    // the wallet opens, and nothing happens, which reads as the
-                    // payment failing rather than as no wallet being set up.
-                    WalletProgram.Note("payment link dropped: no wallet is set up on this PC");
+                    // Two minutes gone and no wallet has appeared. DrainPendingUri
+                    // would refuse this anyway -- the guard lives there now -- but
+                    // saying so here names the reason in the log, which "waited and
+                    // gave up" and "there was never a wallet" otherwise share.
+                    WalletProgram.Note("payment link dropped: no wallet after waiting");
                     try { File.Delete(WalletProgram.HandoffPath()); } catch { }
-                    try
-                    {
-                        // Offering the download page is a real choice here, not
-                        // decoration: this app is obviously installed, so what
-                        // is missing is a wallet -- but somebody on an old
-                        // build gets the upgrade from the same page, and it is
-                        // the one address worth remembering.
-                        var ans = MessageBox.Show(
-                            "A payment link was opened, but there is no wallet on this PC yet." +
-                            Environment.NewLine + Environment.NewLine +
-                            "Nothing has been sent. Set up or restore a wallet in this window " +
-                            "first, then open the link again." +
-                            Environment.NewLine + Environment.NewLine +
-                            "Open pc.am/download for the wallet and the checksums?",
-                            "PCoin Wallet", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
-                        if (ans == DialogResult.Yes)
-                        {
-                            try { Process.Start("https://pc.am/download/"); } catch { }
-                        }
-                    }
-                    catch { }
+                    NoWalletDialog();
                     return;
                 }
                 DrainPendingUri();
@@ -551,6 +530,37 @@ namespace PCoinTray
             t.Start();
         }
 
+        //! What a payment link does when there is no wallet yet. One method, so
+        //! that every route which refuses says the same thing.
+        //!
+        //! Refusing was always right -- a send screen with no key cannot send and
+        //! cannot explain itself. Doing it SILENTLY was its own bug: someone taps
+        //! a payment link, the wallet opens, nothing happens, and it reads as the
+        //! payment failing rather than as no wallet being set up.
+        void NoWalletDialog()
+        {
+            try
+            {
+                // Offering the download page is a real choice, not decoration:
+                // this app is obviously installed, so what is missing is a
+                // wallet -- but somebody on an old build gets their upgrade from
+                // that page, and it is the one address worth remembering.
+                var ans = MessageBox.Show(
+                    "A payment link was opened, but there is no wallet on this PC yet." +
+                    Environment.NewLine + Environment.NewLine +
+                    "Nothing has been sent. Set up or restore a wallet in this window " +
+                    "first, then open the link again." +
+                    Environment.NewLine + Environment.NewLine +
+                    "Open pc.am/download for the wallet and the checksums?",
+                    "PCoin Wallet", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+                if (ans == DialogResult.Yes)
+                {
+                    try { Process.Start("https://pc.am/download/"); } catch { }
+                }
+            }
+            catch { }
+        }
+
         //! Take whatever a second launch left for us and open the send form with
         //! it. Read-and-delete in one go: a URI that stayed on disk would open a
         //! payment screen at some unrelated future start, which is exactly the
@@ -562,6 +572,25 @@ namespace PCoinTray
         //! confirm.
         void DrainPendingUri()
         {
+            // THE NO-WALLET CHECK BELONGS HERE, not in one caller.
+            //
+            // It used to sit only in the startup timer, and this method has TWO
+            // callers: that timer, and the show-listener, which runs when a
+            // second launch hands a URI to the copy already running. That second
+            // route went straight through to _phrase.Wallet and threw -- the user
+            // saw "Object reference not set to an instance of an object" on a
+            // fresh install, reported 2026-09-10.
+            //
+            // A guard that only one caller performs is not a guard. Here it
+            // covers every route in, including any added later.
+            if (_phrase == null)
+            {
+                WalletProgram.Note("payment link dropped: no wallet is set up on this PC");
+                try { File.Delete(WalletProgram.HandoffPath()); } catch { }
+                NoWalletDialog();
+                return;
+            }
+
             string raw = null;
             try
             {
