@@ -270,8 +270,8 @@ android {
             //
             // 21 is spent: 0.2.18 is published and live, and an upload consumes
             // a version code whether or not it is ever released.
-            versionCode = 22
-            versionName = "0.2.19"
+            versionCode = 23
+            versionName = "0.2.20"
 
             buildConfigField("boolean", "MINING", "false")
             // The ONLY genuine collision between the two apps. bitcoind is
