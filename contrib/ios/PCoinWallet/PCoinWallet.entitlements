@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  NOT WIRED INTO THE BUILD YET, and deliberately so.
+
+	  Associated Domains is a signed capability: it needs a provisioning profile
+	  from a real Apple Developer team, and the matching
+	  apple-app-site-association file on pc.am has to name that team's ID. There
+	  is no team on the machine this was built on (`security find-identity -v -p
+	  codesigning` reports zero identities), so setting CODE_SIGN_ENTITLEMENTS
+	  now would produce a build that fails to sign rather than a feature.
+
+	  TO TURN IT ON, all three, in the same change:
+
+	    1. Add the Associated Domains capability to the App ID in the developer
+	       portal, and regenerate the profile.
+	    2. In tools/genproj.py, add
+	           ("CODE_SIGN_ENTITLEMENTS", "PCoinWallet/PCoinWallet.entitlements")
+	       to `target_common`, and regenerate.
+	    3. Deploy contrib/ios/apple-app-site-association to
+	           https://pc.am/.well-known/apple-app-site-association
+	       with the real Team ID substituted, served as application/json with no
+	       redirect. Today that URL is a 404, measured 2026-09-10.
+
+	  Until then the `pcoin:` scheme carries every payment request, which is what
+	  the hop page at site/pay/index.html already falls back to. Nothing is
+	  broken by the delay; the hop page simply shows its "open in your wallet"
+	  button instead of the app opening straight from the link.
+	-->
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>applinks:pc.am</string>
+	</array>
+</dict>
+</plist>

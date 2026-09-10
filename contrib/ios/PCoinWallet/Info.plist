@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>PCoin Wallet</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+
+	<!-- The custom scheme, matching the Android manifest. Every URL that
+	     arrives this way lands on SignRequestView and nowhere else: the send
+	     screen is deliberately unreachable from outside the app, because a
+	     payment screen any other app can launch with fields filled is a
+	     phishing surface. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>am.pc.pcoinwallet.payment</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>pcoin</string>
+			</array>
+		</dict>
+	</array>
+
+	<!-- The camera is used for one thing: reading a QR code that fills the
+	     address field. The string says exactly that, because a vague purpose
+	     string is a permission people decline. -->
+	<key>NSCameraUsageDescription</key>
+	<string>To scan a PCoin address from a QR code. The camera is used only while the scanner is open, and nothing is recorded or sent anywhere.</string>
+
+	<!-- Face ID gates the KEY, not a screen: the recovery phrase is decrypted by
+	     a Secure Enclave key that will not operate without this. -->
+	<key>NSFaceIDUsageDescription</key>
+	<string>To unlock your recovery phrase when you send PCoin or view your twelve words. Your key never leaves this iPhone.</string>
+
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string></string>
+	</dict>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>armv7</string>
+	</array>
+
+	<!-- No arbitrary loads. Every request this app makes is HTTPS to
+	     explorer.pc.am, and there is no reason to weaken ATS for it. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<false/>
+	</dict>
+
+	<!-- ITSAppUsesNonExemptEncryption: the app uses only standard cryptography
+	     (SHA-256, HMAC, PBKDF2, secp256k1 ECDSA) for its own wallet, which is
+	     the exempt category. Declared here so the App Store Connect question is
+	     answered by the build rather than by whoever uploads it. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+</dict>
+</plist>

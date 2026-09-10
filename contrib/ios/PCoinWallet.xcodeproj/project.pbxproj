@@ -1,0 +1,464 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		2BF0554C08E813D0BA633434 /* PCoinWalletApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = D907BE1AF052EC9B350DCF0B /* PCoinWalletApp.swift */; };
+		2586342B0A8AAED3ACFFEE24 /* Strings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6876388DEDA165AEFB1BD71F /* Strings.swift */; };
+		EFFC8C1F1D55074FBF8C890B /* AddressBookStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3302B8C3FFD9785B217CF00D /* AddressBookStore.swift */; };
+		9472CE9EFE416583F9A12F9B /* Prefs.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA7778DC749D0CC387B7EC99 /* Prefs.swift */; };
+		B74F609BEF37DAFE95A3B32D /* SeedStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D2C906F941085BB1CA99398 /* SeedStore.swift */; };
+		6EE34EF3B48485C09793DA7D /* WalletStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26C40FCCDDCD9584F3F39504 /* WalletStore.swift */; };
+		2F66315A77AC1E32B3C4A027 /* WatchOnlyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD9BAC416643D7DDADE97DB6 /* WatchOnlyStore.swift */; };
+		3BD4CB865B5D79BA564A8F21 /* AddressBookView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 145B92604781FCF60D6F40B3 /* AddressBookView.swift */; };
+		C7AD8A4395617F2B344715E6 /* BackupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77A125FFB961EA024F62FEF4 /* BackupView.swift */; };
+		E01CD3BB0A61CEA93E34A2B0 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A06BCD504CA7DCB7C7DA0B6 /* HistoryView.swift */; };
+		482E372674DE835CA8B10663 /* MainView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C8DA6B17F1BC56074F0BBAE /* MainView.swift */; };
+		07E1D03EDCDF02BBB971865C /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA5D2807C46D6A25400DDF66 /* RootView.swift */; };
+		7D210B901BD81991043973C0 /* ScanView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CC0461C9FDB892E4AF7B7C6 /* ScanView.swift */; };
+		CAB7D7BF970A36FDB5CE093A /* SendView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CB63E0029CB437D9414671F /* SendView.swift */; };
+		5EE3C88DEE68B5152DB68D37 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8C0168A96697FA0E61AF3F9 /* SettingsView.swift */; };
+		5699E93E95E64C1620EF0CC3 /* SetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDBFF763C47234F52CFCC6DE /* SetupView.swift */; };
+		92E9E31880D854836515AA6E /* SignRequestView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9BE5E6314CE7E694AF2705A /* SignRequestView.swift */; };
+		08E28B5768D6516D89CE132E /* QRCodeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7D0313E52C55AF0282916E0 /* QRCodeView.swift */; };
+		AD53D95B8497DCA6154269B8 /* WalletWarnings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9993F236ABFE019E8E4391CB /* WalletWarnings.swift */; };
+		8DF2033578E67EB08CFE5E7E /* PCoinKit in Frameworks */ = {isa = PBXBuildFile; productRef = 90F0F093B03A11CCD1C93E34 /* PCoinKit */; };
+		EFF72CA571309BF9A9B89EA5 /* PaymentLinkUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8428227CDC79560B45D0CA38 /* PaymentLinkUITests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		E193A05215AD3DCAEA9BE2F9 /* PCoinWallet.app */ = {isa = PBXFileReference; explicitFileType = "wrapper.application"; includeInIndex = 0; path = "PCoinWallet.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		28BF839B984C38F5F78F80A8 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		D907BE1AF052EC9B350DCF0B /* PCoinWalletApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PCoinWalletApp.swift; sourceTree = "<group>"; };
+		6876388DEDA165AEFB1BD71F /* Strings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Strings.swift; sourceTree = "<group>"; };
+		3302B8C3FFD9785B217CF00D /* AddressBookStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddressBookStore.swift; sourceTree = "<group>"; };
+		CA7778DC749D0CC387B7EC99 /* Prefs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Prefs.swift; sourceTree = "<group>"; };
+		3D2C906F941085BB1CA99398 /* SeedStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SeedStore.swift; sourceTree = "<group>"; };
+		26C40FCCDDCD9584F3F39504 /* WalletStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletStore.swift; sourceTree = "<group>"; };
+		FD9BAC416643D7DDADE97DB6 /* WatchOnlyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchOnlyStore.swift; sourceTree = "<group>"; };
+		145B92604781FCF60D6F40B3 /* AddressBookView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddressBookView.swift; sourceTree = "<group>"; };
+		77A125FFB961EA024F62FEF4 /* BackupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupView.swift; sourceTree = "<group>"; };
+		2A06BCD504CA7DCB7C7DA0B6 /* HistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryView.swift; sourceTree = "<group>"; };
+		5C8DA6B17F1BC56074F0BBAE /* MainView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainView.swift; sourceTree = "<group>"; };
+		FA5D2807C46D6A25400DDF66 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		8CC0461C9FDB892E4AF7B7C6 /* ScanView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScanView.swift; sourceTree = "<group>"; };
+		0CB63E0029CB437D9414671F /* SendView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SendView.swift; sourceTree = "<group>"; };
+		A8C0168A96697FA0E61AF3F9 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		EDBFF763C47234F52CFCC6DE /* SetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupView.swift; sourceTree = "<group>"; };
+		B9BE5E6314CE7E694AF2705A /* SignRequestView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignRequestView.swift; sourceTree = "<group>"; };
+		E7D0313E52C55AF0282916E0 /* QRCodeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRCodeView.swift; sourceTree = "<group>"; };
+		9993F236ABFE019E8E4391CB /* WalletWarnings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletWarnings.swift; sourceTree = "<group>"; };
+		2279B633D0D024CA3B98E894 /* PCoinWalletUITests.xctest */ = {isa = PBXFileReference; explicitFileType = "wrapper.cfbundle"; includeInIndex = 0; path = "PCoinWalletUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		8428227CDC79560B45D0CA38 /* PaymentLinkUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaymentLinkUITests.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A8AE17D7754CD02205A5280D /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				8DF2033578E67EB08CFE5E7E /* PCoinKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		773270C2740B76B21CD4D714 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		748B651F9CC61D1D6BD106B4 = {
+			isa = PBXGroup;
+			children = (
+				116D56E5BDF6AEDF16D0739A /* PCoinWallet */,
+				3D13FD7AB4FF6BC5AD1EAF9C /* PCoinWalletUITests */,
+				4DBCBA309B6C2F3D3C148D2D /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		4DBCBA309B6C2F3D3C148D2D /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				E193A05215AD3DCAEA9BE2F9 /* PCoinWallet.app */,
+				2279B633D0D024CA3B98E894 /* PCoinWalletUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		116D56E5BDF6AEDF16D0739A /* PCoinWallet */ = {
+			isa = PBXGroup;
+			children = (
+				28433BF21275CAF24DB7D606 /* App */,
+				4D8503A6FAE2F9BB79F9E30D /* Components */,
+				F2260BA30FC04C5A978B6DBE /* Model */,
+				430C7FABE19D66E4C1634EC8 /* Screens */,
+				28BF839B984C38F5F78F80A8 /* Info.plist */,
+			);
+			path = PCoinWallet;
+			sourceTree = "<group>";
+		};
+		28433BF21275CAF24DB7D606 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				D907BE1AF052EC9B350DCF0B /* PCoinWalletApp.swift */,
+				6876388DEDA165AEFB1BD71F /* Strings.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		4D8503A6FAE2F9BB79F9E30D /* Components */ = {
+			isa = PBXGroup;
+			children = (
+				E7D0313E52C55AF0282916E0 /* QRCodeView.swift */,
+				9993F236ABFE019E8E4391CB /* WalletWarnings.swift */,
+			);
+			path = Components;
+			sourceTree = "<group>";
+		};
+		F2260BA30FC04C5A978B6DBE /* Model */ = {
+			isa = PBXGroup;
+			children = (
+				3302B8C3FFD9785B217CF00D /* AddressBookStore.swift */,
+				CA7778DC749D0CC387B7EC99 /* Prefs.swift */,
+				3D2C906F941085BB1CA99398 /* SeedStore.swift */,
+				26C40FCCDDCD9584F3F39504 /* WalletStore.swift */,
+				FD9BAC416643D7DDADE97DB6 /* WatchOnlyStore.swift */,
+			);
+			path = Model;
+			sourceTree = "<group>";
+		};
+		430C7FABE19D66E4C1634EC8 /* Screens */ = {
+			isa = PBXGroup;
+			children = (
+				145B92604781FCF60D6F40B3 /* AddressBookView.swift */,
+				77A125FFB961EA024F62FEF4 /* BackupView.swift */,
+				2A06BCD504CA7DCB7C7DA0B6 /* HistoryView.swift */,
+				5C8DA6B17F1BC56074F0BBAE /* MainView.swift */,
+				FA5D2807C46D6A25400DDF66 /* RootView.swift */,
+				8CC0461C9FDB892E4AF7B7C6 /* ScanView.swift */,
+				0CB63E0029CB437D9414671F /* SendView.swift */,
+				A8C0168A96697FA0E61AF3F9 /* SettingsView.swift */,
+				EDBFF763C47234F52CFCC6DE /* SetupView.swift */,
+				B9BE5E6314CE7E694AF2705A /* SignRequestView.swift */,
+			);
+			path = Screens;
+			sourceTree = "<group>";
+		};
+		3D13FD7AB4FF6BC5AD1EAF9C /* PCoinWalletUITests */ = {
+			isa = PBXGroup;
+			children = (
+				8428227CDC79560B45D0CA38 /* PaymentLinkUITests.swift */,
+			);
+			path = PCoinWalletUITests;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		7C9390216B657FE4DD0812A9 /* PCoinWallet */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BB3F85AF0B73662DB3D37E63;
+			buildPhases = (
+				BE0E117FCAE65A6FB51A150D /* Sources */,
+				A8AE17D7754CD02205A5280D /* Frameworks */,
+				39D6E36107CAE66117D4B4F2 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = PCoinWallet;
+			packageProductDependencies = (
+				90F0F093B03A11CCD1C93E34 /* PCoinKit */,
+			);
+			productName = PCoinWallet;
+			productReference = E193A05215AD3DCAEA9BE2F9 /* PCoinWallet.app */;
+			productType = "com.apple.product-type.application";
+		};
+		02DD873CBCFF575C7EE91DA5 /* PCoinWalletUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1EF0FDEA6BDD9E01B8ADA1B8;
+			buildPhases = (
+				151B47725211AF312A64BD6E /* Sources */,
+				773270C2740B76B21CD4D714 /* Frameworks */,
+				4FFD9871D74E52D61901C8F6 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				0E32C62CEE34D02B966A3D24 /* PBXTargetDependency */,
+			);
+			name = PCoinWalletUITests;
+			productName = PCoinWalletUITests;
+			productReference = 2279B633D0D024CA3B98E894 /* PCoinWalletUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		244210E48437B6556980A702 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1620;
+				LastUpgradeCheck = 1620;
+				TargetAttributes = {
+					7C9390216B657FE4DD0812A9 = {
+						CreatedOnToolsVersion = 16.2;
+					};
+					02DD873CBCFF575C7EE91DA5 = {
+						CreatedOnToolsVersion = 16.2;
+						TestTargetID = 7C9390216B657FE4DD0812A9;
+					};
+				};
+			};
+			buildConfigurationList = A15C1660503C9D18B9702A73;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 748B651F9CC61D1D6BD106B4;
+			packageReferences = (
+				F4E5F1BF0406AB6AAE1C0CD6 /* XCLocalSwiftPackageReference "PCoinKit" */,
+			);
+			productRefGroup = 4DBCBA309B6C2F3D3C148D2D /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				7C9390216B657FE4DD0812A9 /* PCoinWallet */,
+				02DD873CBCFF575C7EE91DA5 /* PCoinWalletUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		39D6E36107CAE66117D4B4F2 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		4FFD9871D74E52D61901C8F6 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		BE0E117FCAE65A6FB51A150D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2BF0554C08E813D0BA633434 /* PCoinWalletApp.swift in Sources */,
+				2586342B0A8AAED3ACFFEE24 /* Strings.swift in Sources */,
+				EFFC8C1F1D55074FBF8C890B /* AddressBookStore.swift in Sources */,
+				9472CE9EFE416583F9A12F9B /* Prefs.swift in Sources */,
+				B74F609BEF37DAFE95A3B32D /* SeedStore.swift in Sources */,
+				6EE34EF3B48485C09793DA7D /* WalletStore.swift in Sources */,
+				2F66315A77AC1E32B3C4A027 /* WatchOnlyStore.swift in Sources */,
+				3BD4CB865B5D79BA564A8F21 /* AddressBookView.swift in Sources */,
+				C7AD8A4395617F2B344715E6 /* BackupView.swift in Sources */,
+				E01CD3BB0A61CEA93E34A2B0 /* HistoryView.swift in Sources */,
+				482E372674DE835CA8B10663 /* MainView.swift in Sources */,
+				07E1D03EDCDF02BBB971865C /* RootView.swift in Sources */,
+				7D210B901BD81991043973C0 /* ScanView.swift in Sources */,
+				CAB7D7BF970A36FDB5CE093A /* SendView.swift in Sources */,
+				5EE3C88DEE68B5152DB68D37 /* SettingsView.swift in Sources */,
+				5699E93E95E64C1620EF0CC3 /* SetupView.swift in Sources */,
+				92E9E31880D854836515AA6E /* SignRequestView.swift in Sources */,
+				08E28B5768D6516D89CE132E /* QRCodeView.swift in Sources */,
+				AD53D95B8497DCA6154269B8 /* WalletWarnings.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		151B47725211AF312A64BD6E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EFF72CA571309BF9A9B89EA5 /* PaymentLinkUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		0E32C62CEE34D02B966A3D24 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 7C9390216B657FE4DD0812A9 /* PCoinWallet */;
+			targetProxy = 65379E1EC7ECF4134EE582B6 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin PBXContainerItemProxy section */
+		65379E1EC7ECF4134EE582B6 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 244210E48437B6556980A702 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 7C9390216B657FE4DD0812A9;
+			remoteInfo = PCoinWallet;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin XCBuildConfiguration section */
+		1718AAF4E5CB68E01B8646DA /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = "DEBUG=1 $(inherited)";
+				ONLY_ACTIVE_ARCH = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		33463152ED1CFFD4190C6F38 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		71A517A1A22C3544001A82D7 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = PCoinWallet/Info.plist;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = am.pc.pcoinwallet;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		A4B3E1A33B72091D0E6E439D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = PCoinWallet/Info.plist;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = am.pc.pcoinwallet;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		CED50B41FABAB922D0A7DC7B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = am.pc.pcoinwallet.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_TARGET_NAME = PCoinWallet;
+			};
+			name = Debug;
+		};
+		BCB5FEF87E180D1AA96AC444 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = am.pc.pcoinwallet.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_TARGET_NAME = PCoinWallet;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A15C1660503C9D18B9702A73 /* Build configuration list for PBXProject */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1718AAF4E5CB68E01B8646DA /* Debug */,
+				33463152ED1CFFD4190C6F38 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		BB3F85AF0B73662DB3D37E63 /* Build configuration list for PBXNativeTarget */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				71A517A1A22C3544001A82D7 /* Debug */,
+				A4B3E1A33B72091D0E6E439D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		1EF0FDEA6BDD9E01B8ADA1B8 /* Build configuration list for PBXNativeTarget */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CED50B41FABAB922D0A7DC7B /* Debug */,
+				BCB5FEF87E180D1AA96AC444 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		F4E5F1BF0406AB6AAE1C0CD6 /* XCLocalSwiftPackageReference "PCoinKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = PCoinKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		90F0F093B03A11CCD1C93E34 /* PCoinKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = PCoinKit;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 244210E48437B6556980A702 /* Project object */;
+}

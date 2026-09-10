@@ -1,0 +1,20 @@
+{
+  "_comment": "TEMPLATE. Replace TEAMID with the real Apple Developer Team ID before deploying. Deploy to https://pc.am/.well-known/apple-app-site-association, served as application/json, no redirect, no .json extension. That URL is a 404 today (measured 2026-09-10), so universal links do not work yet and the pcoin: scheme carries every payment request. See contrib/ios/PCoinWallet/PCoinWallet.entitlements for the other two halves of turning this on.",
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["TEAMID.am.pc.pcoinwallet"],
+        "components": [
+          {
+            "/": "/pay",
+            "comment": "The payment hop page. Only this path is claimed: claiming /* would make the wallet swallow every link to pc.am, including the download page and the docs."
+          },
+          {
+            "/": "/pay/*",
+            "comment": "Same page with a trailing path."
+          }
+        ]
+      }
+    ]
+  }
+}
