@@ -37,8 +37,8 @@ param(
     # half-applied bump is impossible. The hash is of pcoin-win64-miner.zip
     # and the install aborts on a mismatch, so a forgotten bump here breaks
     # every new install rather than failing quietly.
-    [string]$Version = '1.4.17',
-    [string]$Sha256 = 'e9c74f9ee0317462c3d77264b1fb6d2850b2a7e7f8ccc50d92fc789f4cab8ba8',
+    [string]$Version = '1.4.18',
+    [string]$Sha256 = '9416c63b1d157b89d440bcdec58e3c4a6a4394f598aa90de8e482b68b732f9d8',
     # All three seeds, not just one. The node also carries them compiled in as
     # of v1.2.1, so this is belt and braces rather than the only route in.
     [string[]]$AddNode = @('35.239.156.16:9444', '178.105.3.51:9444', '152.53.171.190:9444'),
@@ -179,9 +179,23 @@ foreach ($old in $oldDirs) {
 # PowerShell 5.1 wraps in a NativeCommandError and THROWS under ErrorAction Stop
 # (2>$null does not stop it). Delete only when the task actually exists, and
 # swallow anything anyway.
-if ($script:IsAdmin -and (Get-ScheduledTask -TaskName PCoinMiner -ErrorAction SilentlyContinue)) {
-    try { cmd /c 'schtasks /delete /tn PCoinMiner /f >nul 2>nul' | Out-Null } catch { }
-}
+# THE TASK IS NO LONGER TORN DOWN HERE, and that is the fix for a real
+# incident. It used to be deleted at this line and recreated ~500 lines later,
+# after the download, hash check, copy, config, Defender exclusions, firewall
+# and shortcuts. Anything that interrupted the install in that window -- a
+# dropped connection, a failed download, antivirus, a reboot -- left the
+# machine with NO autostart task and no message saying so.
+#
+# That happened on fleet PC DESKTOP-AKHQ7BJ on 2026-09-10. The install
+# self-elevated (silently, because that box sets ConsentPromptBehaviorAdmin=0),
+# the elevated child deleted the task here, copied the new build, and was then
+# cut off before recreating it. What was left was the task's XML file gone and
+# its TaskCache\Tree registry entry orphaned, so schtasks answered "cannot find
+# the file specified" and even an administrator could not recreate it by name.
+#
+# The delete was redundant anyway: the create below passes /f, which replaces
+# an existing task. Turning autostart OFF still removes it -- that now happens
+# in the autostart section, next to the shortcut removal it belongs with.
 foreach ($sd in @([Environment]::GetFolderPath('Startup'), (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup'))) {
     if ($sd) { $stale = Join-Path $sd 'PCoinTray.lnk'; if (Test-Path $stale) { Remove-Item $stale -Force -ErrorAction SilentlyContinue } }
 }
@@ -662,7 +676,20 @@ function Grant-LockPagesRight([string]$account) {
 
 try {
     $who = (Get-CimInstance Win32_ComputerSystem).UserName
-    if ($autostart -eq '0') { $who = $null }
+    if ($autostart -eq '0') {
+        # Autostart is off, so remove the task rather than merely skip creating
+        # it -- otherwise the setting only works for people who never had one.
+        # This is the ONLY place the task is deleted now, immediately beside the
+        # branch that would have created it, so there is no window in which the
+        # machine is left without one.
+        if ($script:IsAdmin -and (Get-ScheduledTask -TaskName PCoinMiner -ErrorAction SilentlyContinue)) {
+            try {
+                cmd /c 'schtasks /delete /tn PCoinMiner /f >nul 2>nul' | Out-Null
+                Write-Output '  autostart task removed (switched off in the tray)'
+            } catch { }
+        }
+        $who = $null
+    }
     if ($who) {
         $exePath = Join-Path $InstallDir 'PCoinTray.exe'
         # Do not CALL schtasks without admin. It writes a bare
