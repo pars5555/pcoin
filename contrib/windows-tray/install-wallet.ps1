@@ -20,8 +20,8 @@ param(
     # the zip is fetched from, so the URL and the hash move as one. The install
     # aborts on a mismatch, so a forgotten bump breaks every new install
     # loudly rather than installing something unverified.
-    [string]$Version = '1.4.23',
-    [string]$Sha256 = '77729e69299202144e716e2f86221f5ee914ae596f23930382a7374626b6411a',
+    [string]$Version = '1.4.24',
+    [string]$Sha256 = 'aa59c0489a05d289e4a1188bcc451288c3caa17edee0f8ce51c607197c40891a',
     # Install from a local zip instead of downloading (offline / testing a
     # build before it is published). Its SHA-256 is still checked against
     # $Sha256 when one is given.
