@@ -47,7 +47,7 @@
  */
 import { createServer } from 'node:http';
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, timingSafeEqual, randomBytes } from 'node:crypto';
 import { dirname } from 'node:path';
 
 const PORT       = Number(process.env.WRAPDESK_PORT || 8791);
@@ -104,6 +104,80 @@ function verifySigned(tok, key) {
 function signSession(email) {
   const payload = `${email}|${Date.now() + 7 * 864e5}`;
   return `${payload}.${createHmac('sha256', COOKIE_KEY).update(payload).digest('hex')}`;
+}
+
+// ── who may be shown an EXISTING deposit address ────────────────────
+//
+// POST /request used to answer with the stored deposit address for whatever BSC
+// address it was given. BSC addresses are public — they are visible in every
+// PancakeSwap trade — so anyone could feed one in and learn the PCoin deposit
+// address behind it. That is an unauthenticated linkage oracle, and it defeats
+// the one privacy property the per-user address pool exists to provide:
+// wrapdesk.pc.am deliberately publishes NO BSC address anywhere, because that
+// mapping is a link only the desk should hold. Answering with it gave it away.
+//
+// The fix has to keep the honest case working — the same person coming back for
+// the address they were given. So the creator leaves with a signed cookie naming
+// the record, and only that cookie, or a signed-in account that owns the record,
+// unlocks it again. A stranger submitting the same BSC address is told a request
+// exists and nothing more.
+//
+// One cookie PER record, named by an HMAC of the key, so a browser that made two
+// requests does not lose the first. The value is an opaque token: it names no
+// address.
+//
+// Domain-separated with a "claim:" prefix, so a claim token and a session cookie
+// — both signed with COOKIE_KEY, both the same shape — can never be presented
+// for one another.
+// A key of its OWN, not COOKIE_KEY.
+//
+// COOKIE_KEY is the empty string whenever SSO is off, and an HMAC under an empty
+// key, in a repository anyone can read, is a signature anyone can forge -- which
+// would leave the oracle wide open while looking closed. This must not depend on
+// a setting that has nothing to do with it.
+//
+// Persisted beside the state file so claims survive a restart. If it cannot be
+// written the desk still runs on a fresh random key: claims then stop working
+// across restarts, which costs a returning owner a message to us and never
+// hands anybody a forgeable token. Fail closed, loudly enough to find later.
+const CLAIM_KEY = (() => {
+  const f = dirname(STATE_FILE) + '/claim-key';
+  try {
+    const k = readFileSync(f, 'utf8').trim();
+    if (k.length >= 32) return k;
+  } catch { /* first run, or unreadable -- fall through and mint one */ }
+  const k = randomBytes(32).toString('hex');
+  try {
+    mkdirSync(dirname(f), { recursive: true });
+    writeFileSync(f, k + String.fromCharCode(10), { mode: 0o600 });
+  } catch (e) {
+    console.error('wrapdesk: could not persist the claim key (%s). Deposit-address '
+      + 'claims will not survive a restart.', e && e.message);
+  }
+  return k;
+})();
+
+function claimCookieName(key) {
+  return 'wdc_' + createHmac('sha256', CLAIM_KEY).update('name:' + key)
+    .digest('hex').slice(0, 12);
+}
+
+function signClaim(key) {
+  const payload = `claim:${key}|${Date.now() + 180 * 864e5}`;
+  return `${payload}.${createHmac('sha256', CLAIM_KEY).update(payload).digest('hex')}`;
+}
+
+function claimCookieFor(key) {
+  return `${claimCookieName(key)}=${encodeURIComponent(signClaim(key))}; Path=/; ` +
+         `Max-Age=${180 * 86400}; HttpOnly; Secure; SameSite=Lax`;
+}
+
+function holdsClaim(req, key) {
+  const want = claimCookieName(key) + '=';
+  const c = (req.headers.cookie || '').split(/;\s*/).find((x) => x.startsWith(want));
+  if (!c) return false;
+  return verifySigned(decodeURIComponent(c.slice(want.length)), CLAIM_KEY)
+         === `claim:${key}`;
 }
 
 function accountOf(req) {
@@ -196,8 +270,23 @@ if (pool.length < 100) throw new Error(`address pool too small: ${pool.length}`)
 
 // ── state ───────────────────────────────────────────────────────────────────
 function load() {
-  try { return JSON.parse(readFileSync(STATE_FILE, 'utf8')); }
-  catch { return { requests: {}, nextIndex: FIRST_INDEX }; }
+  // NORMALISE, do not merely survive an unreadable file.
+  //
+  // This used to return whatever JSON.parse gave back. A state file that PARSES
+  // but has no `requests` key -- a fresh `{}`, or one hand-edited during an
+  // incident -- then made `st.requests[key]` throw on every single request, so
+  // the desk answered 500 to everybody while the file looked perfectly fine.
+  //
+  // This is the same defect, in the same shape, that pcoin-wrapdesk-watch was
+  // fixed for on 2026-09-08: a fresh `{}` died with KeyError on the first wrap
+  // and a first install crashed. It was fixed there and left here.
+  let st;
+  try { st = JSON.parse(readFileSync(STATE_FILE, 'utf8')); }
+  catch { st = {}; }
+  if (!st || typeof st !== 'object' || Array.isArray(st)) st = {};
+  if (!st.requests || typeof st.requests !== 'object') st.requests = {};
+  if (!Number.isInteger(st.nextIndex)) st.nextIndex = FIRST_INDEX;
+  return st;
 }
 function save(s) {
   mkdirSync(dirname(STATE_FILE), { recursive: true });
@@ -1179,6 +1268,7 @@ createServer(async (req, res) => {
       }
 
       let r = st.requests[key];
+      let setCookie = null;
       if (!r) {
         if (tooMany(ip))
           return send(429, home(`<p class="err">Too many new requests from your
@@ -1190,10 +1280,32 @@ createServer(async (req, res) => {
         r = { bsc, index: slot.i, address: slot.a, amount,
               created: Date.now(), released: null, account: acct || null };
         st.requests[key] = r; st.nextIndex = slot.i + 1; save(st);
-      } else if (amount > 0 && r.amount !== amount) { r.amount = amount; save(st); }
+        // The creator, and only the creator, leaves holding the claim.
+        setCookie = claimCookieFor(key);
+      } else {
+        // An EXISTING record: prove ownership before revealing anything.
+        // See the note above claimCookieName().
+        const owns = holdsClaim(req, key) || (acct && r.account && r.account === acct);
+        if (!owns) {
+          return send(403, home(`<p class="err">A wrap request already exists for that
+            BSC address, and its deposit address is not shown to a visitor we cannot
+            recognise — that pairing is private to whoever created it.</p>
+            <p class="muted">If it was you: open this page in the browser you used the
+            first time, or sign in with the account you created it under. If both are
+            gone, get in touch and we will sort it out. Nothing is wrong with the
+            request itself and no coins are affected.</p>`));
+        }
+        // Only the owner may restate the amount. It used to be writable by anyone
+        // who knew the BSC address, so a stranger could overwrite the figure on
+        // somebody else's record.
+        if (amount > 0 && r.amount !== amount) { r.amount = amount; save(st); }
+        // Re-issue, so a returning owner's claim does not expire under them.
+        setCookie = claimCookieFor(key);
+      }
 
       const eligible = Math.min(amount, PER_PERSON);
       const net = eligible * (1 - FEE_PCT / 100);
+      if (setCookie) res.setHeader('Set-Cookie', setCookie);
       return send(200, page('Your deposit address', '/', `
 <h1>Send PCN to this address</h1>
 <div class="card"><p class="muted">Your deposit address — <b>yours alone</b>, and
