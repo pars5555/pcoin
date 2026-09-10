@@ -391,12 +391,23 @@ namespace PCoinTray
                     try { File.Delete(WalletProgram.HandoffPath()); } catch { }
                     try
                     {
-                        MessageBox.Show(
+                        // Offering the download page is a real choice here, not
+                        // decoration: this app is obviously installed, so what
+                        // is missing is a wallet -- but somebody on an old
+                        // build gets the upgrade from the same page, and it is
+                        // the one address worth remembering.
+                        var ans = MessageBox.Show(
                             "A payment link was opened, but there is no wallet on this PC yet." +
                             Environment.NewLine + Environment.NewLine +
-                            "Nothing has been sent. Set up or restore a wallet first, then open " +
-                            "the link again.",
-                            "PCoin Wallet", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                            "Nothing has been sent. Set up or restore a wallet in this window " +
+                            "first, then open the link again." +
+                            Environment.NewLine + Environment.NewLine +
+                            "Open pc.am/download for the wallet and the checksums?",
+                            "PCoin Wallet", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+                        if (ans == DialogResult.Yes)
+                        {
+                            try { Process.Start("https://pc.am/download/"); } catch { }
+                        }
                     }
                     catch { }
                     return;

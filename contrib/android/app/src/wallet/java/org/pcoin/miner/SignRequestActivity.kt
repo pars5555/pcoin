@@ -93,6 +93,34 @@ class SignRequestActivity : AppCompatActivity() {
             addressView.text = target.address
             warnView.setText(R.string.sr_no_wallet)
             continueButton.visibility = View.GONE
+
+            // The useful action, offered first: this app IS installed -- it
+            // could not be drawing this screen otherwise -- so what is missing
+            // is a wallet, not the app. Setting one up is the thing that turns
+            // "cannot be paid" into "can".
+            val setup: Button = findViewById(R.id.sr_setup)
+            setup.visibility = View.VISIBLE
+            setup.setOnClickListener {
+                startActivity(Intent(this, MainActivity::class.java))
+                finish()
+            }
+
+            // And the store link underneath, for the case the button cannot
+            // help with: an old sideloaded build, or one that came from
+            // somewhere other than Play. market:// first so it lands in the
+            // Play app; the https URL is the fallback when Play is absent,
+            // which is the whole point of having both.
+            val store: TextView = findViewById(R.id.sr_store)
+            store.visibility = View.VISIBLE
+            store.setOnClickListener {
+                val id = "am.pc.pcoinwallet"
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$id")))
+                } catch (e: Exception) {
+                    startActivity(Intent(Intent.ACTION_VIEW,
+                        Uri.parse("https://play.google.com/store/apps/details?id=$id")))
+                }
+            }
             return
         }
 

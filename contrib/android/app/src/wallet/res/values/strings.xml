@@ -411,4 +411,6 @@
     <string name="sr_cancel">Cancel</string>
     <string name="sr_no_wallet_amount">No wallet yet</string>
     <string name="sr_no_wallet">There is no wallet on this phone yet, so this request cannot be paid. Nothing has been sent. Open PCoin Wallet, set up or restore a wallet, then tap the payment link again.</string>
+    <string name="sr_setup">Set up a wallet</string>
+    <string name="sr_store">Get PCoin Wallet on Google Play</string>
 </resources>

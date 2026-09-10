@@ -142,6 +142,31 @@
             android:textColor="@color/on_brand"
             android:textSize="16sp" />
 
+        <!-- Shown only when there is no wallet yet. It resolves the situation
+             the screen is complaining about, which a download link does not:
+             the app is already installed, or this screen could not be here. -->
+        <Button
+            android:id="@+id/sr_setup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/btn_primary"
+            android:text="@string/sr_setup"
+            android:textAllCaps="false"
+            android:textColor="@color/on_brand"
+            android:textSize="16sp"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/sr_store"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:gravity="center"
+            android:text="@string/sr_store"
+            android:textColor="@color/brand"
+            android:textSize="14sp"
+            android:visibility="gone" />
+
         <Button
             android:id="@+id/sr_cancel"
             android:layout_width="match_parent"
