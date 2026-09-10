@@ -8,6 +8,7 @@ import android.view.View
 import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import org.pcoin.miner.wallet.SeedStore
 
 /**
  * The one screen in this app that ANY other app is allowed to open.
@@ -77,6 +78,24 @@ class SignRequestActivity : AppCompatActivity() {
             return
         }
 
+        // NO WALLET, NO SEND SCREEN.
+        //
+        // Reported from a real phone 2026-09-10: a fresh install with no wallet
+        // set up still walked through to Send, which cannot send anything and
+        // does not explain why. Offering a payment screen to someone who has no
+        // key is worse than refusing -- it looks like the payment failed rather
+        // than like the wallet was never set up.
+        //
+        // Checked BEFORE the request is displayed, so nobody reads an address
+        // and an amount and forms an intention they cannot act on.
+        if (!SeedStore(this).exists()) {
+            amountView.text = getString(R.string.sr_no_wallet_amount)
+            addressView.text = target.address
+            warnView.setText(R.string.sr_no_wallet)
+            continueButton.visibility = View.GONE
+            return
+        }
+
         originView.text = describeOrigin()
 
         val sat = target.amountSat
@@ -95,11 +114,18 @@ class SignRequestActivity : AppCompatActivity() {
         }
 
         continueButton.setOnClickListener {
-            // Hands over ONLY the address, through the same internal factory the
-            // address book uses. The amount is shown here and typed there on
-            // purpose: it is the number most worth a person's second look, and
-            // one they have entered themselves is one they have read.
-            startActivity(SendActivity.intentFor(this, target.address))
+            // Hands the request over through the same internal factory the
+            // address book uses. The amount travels with it as a starting
+            // value.
+            //
+            // It used to be deliberately dropped, on the reasoning that a
+            // number someone typed themselves is one they have read. That
+            // traded a real cost for a small gain: this screen already shows
+            // the amount in the largest type on it, so it HAS been read, and
+            // making people retype it mostly produces typos. The protection
+            // that matters is unchanged -- the send screen still validates it,
+            // still shows the fee, and still requires the unlock.
+            startActivity(SendActivity.intentFor(this, target.address, target.amountSat ?: 0L))
             finish()
         }
     }

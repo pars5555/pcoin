@@ -199,6 +199,13 @@ class SendActivity : AppCompatActivity() {
             amountField.requestFocus()
         }
 
+        // An amount the payment link carried. Only ever a positive one: a link
+        // saying zero is a link that named no amount, and writing "0.00000000"
+        // into the box would be a confident answer to a question nobody asked.
+        intent?.getLongExtra(EXTRA_AMOUNT_SAT, 0L)?.takeIf { it > 0L }?.let {
+            amountField.setText(Amounts.toPlainString(it))
+        }
+
         addressField.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
@@ -808,6 +815,17 @@ class SendActivity : AppCompatActivity() {
         private const val EXTRA_ADDRESS = "org.pcoin.miner.extra.SEND_TO"
 
         /**
+         * Satoshis a payment link asked for, or 0 for "none given".
+         *
+         * It used to be dropped on the way here, so every link produced a
+         * half-filled form: the person read the amount off the review screen
+         * and retyped it, which mostly produces typos. It is a starting value
+         * only -- the field is ordinary and editable, it goes through the same
+         * validation as anything typed, and nothing is sent until confirmed.
+         */
+        private const val EXTRA_AMOUNT_SAT = "org.pcoin.miner.extra.SEND_AMOUNT_SAT"
+
+        /**
          * Distinct from SeedGate's REQUEST_CONFIRM_CREDENTIAL (7241). Both
          * arrive at the same onActivityResult, and a collision would route a
          * device-unlock result into the address picker.
@@ -830,7 +848,9 @@ class SendActivity : AppCompatActivity() {
          * chose. The address still goes through validateaddress and still has
          * to be reviewed.
          */
-        fun intentFor(ctx: Context, address: String): Intent =
-            Intent(ctx, SendActivity::class.java).putExtra(EXTRA_ADDRESS, address)
+        fun intentFor(ctx: Context, address: String, amountSat: Long = 0L): Intent =
+            Intent(ctx, SendActivity::class.java)
+                .putExtra(EXTRA_ADDRESS, address)
+                .putExtra(EXTRA_AMOUNT_SAT, amountSat)
     }
 }

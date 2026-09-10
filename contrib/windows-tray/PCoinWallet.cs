@@ -382,8 +382,23 @@ namespace PCoinTray
                 uriTimer.Stop();
                 if (_phrase == null)
                 {
+                    // Refusing was already right -- a send screen with no key
+                    // cannot send and does not explain itself. But doing it
+                    // SILENTLY was its own bug: someone taps a payment link,
+                    // the wallet opens, and nothing happens, which reads as the
+                    // payment failing rather than as no wallet being set up.
                     WalletProgram.Note("payment link dropped: no wallet is set up on this PC");
                     try { File.Delete(WalletProgram.HandoffPath()); } catch { }
+                    try
+                    {
+                        MessageBox.Show(
+                            "A payment link was opened, but there is no wallet on this PC yet." +
+                            Environment.NewLine + Environment.NewLine +
+                            "Nothing has been sent. Set up or restore a wallet first, then open " +
+                            "the link again.",
+                            "PCoin Wallet", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                    catch { }
                     return;
                 }
                 DrainPendingUri();
@@ -550,8 +565,9 @@ namespace PCoinTray
             if (string.IsNullOrEmpty(raw)) return;
             var t = PaymentUri.Parse(raw);
             if (t == null) { WalletProgram.Note("payment link ignored: not a usable address"); return; }
-            WalletProgram.Note("payment link opened for " + t.Address);
-            OpenSend(t.Address);
+            WalletProgram.Note("payment link opened for " + t.Address +
+                               (t.HasAmount ? " amount " + Amounts.ToPlainString(t.AmountSat) : " (no amount)"));
+            OpenSend(t.Address, t.HasAmount ? t.AmountSat : 0);
         }
 
         void Push()
@@ -865,9 +881,10 @@ namespace PCoinTray
          * address came from your own history" is not evidence that it is the
          * address you want to pay today.
          */
-        void OpenSend(string prefillAddress)
+        void OpenSend(string prefillAddress, long prefillAmountSat = 0)
         {
-            using (var f = new SendForm(_engine, _phrase.Wallet, _book, _phrase.Address0, _settings, prefillAddress))
+            using (var f = new SendForm(_engine, _phrase.Wallet, _book, _phrase.Address0, _settings,
+                                        prefillAddress, prefillAmountSat))
             {
                 f.ShowDialog();
             }

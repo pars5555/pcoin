@@ -1,6 +1,7 @@
 package org.pcoin.miner
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -90,5 +91,24 @@ class PaymentUriTest {
     @Test
     fun `surrounding whitespace is tolerated`() {
         assertEquals(addr, PaymentUri.parse("  $addr\n")?.address)
+    }
+
+    /**
+     * A stray character in the address must be refused, not displayed.
+     *
+     * Regression for a real one found on hardware 2026-09-10: a link ending
+     * "...nq4j\?amount=7.25" parsed as an address with a trailing backslash,
+     * and the payment-request screen showed it as though it were legitimate,
+     * through to the send form. Whitespace alone was being rejected. Windows
+     * already refused the same input.
+     */
+    @Test
+    fun `address with a non alphanumeric character is refused`() {
+        val good = "pc1qnfk7xenwzxx7h4mx88g004crlx0m2zcjg3nq4j"
+        assertNotNull(PaymentUri.parse("pcoin:$good?amount=7.25"))
+
+        for (bad in listOf("$good\\", "$good/", "$good;", "$good\"", "$good<", "$good%20x")) {
+            assertNull("must refuse: $bad", PaymentUri.parse("pcoin:$bad?amount=7.25"))
+        }
     }
 }

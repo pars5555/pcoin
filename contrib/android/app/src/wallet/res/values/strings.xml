@@ -409,4 +409,6 @@
     <string name="sr_no_amount_note">No amount was requested, so you will enter one yourself on the next screen.</string>
     <string name="sr_continue">Continue to Send</string>
     <string name="sr_cancel">Cancel</string>
+    <string name="sr_no_wallet_amount">No wallet yet</string>
+    <string name="sr_no_wallet">There is no wallet on this phone yet, so this request cannot be paid. Nothing has been sent. Open PCoin Wallet, set up or restore a wallet, then tap the payment link again.</string>
 </resources>

@@ -215,8 +215,14 @@ namespace PCoinTray
         readonly Button _saveName;
         string _sentTo = "";
 
+        //! prefillAmountSat: 0 means "none given". A payment link may carry an
+        //! amount, and dropping it made every link a half-filled form -- the
+        //! person had to read a number off the previous screen and retype it,
+        //! which mostly produces typos. It is still only a starting value: the
+        //! field is ordinary, editable, and re-validated, and nothing is sent
+        //! until the person confirms.
         public SendForm(ForwardEngine engine, string wallet, AddressBookStore book, string ownAddress,
-                        WalletSettings settings, string prefillAddress)
+                        WalletSettings settings, string prefillAddress, long prefillAmountSat = 0)
         {
             _engine = engine;
             _wallet = wallet;
@@ -354,6 +360,7 @@ namespace PCoinTray
 
             SetTier(_tier);
             if (!string.IsNullOrEmpty(prefillAddress)) _addr.Text = prefillAddress;
+            if (prefillAmountSat > 0) _amount.Text = Amounts.ToPlainString(prefillAmountSat);
             ShowCompose();
         }
 

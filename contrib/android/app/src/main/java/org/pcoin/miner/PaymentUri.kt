@@ -63,9 +63,22 @@ object PaymentUri {
         val query = s.substringAfter('?', "")
         val address = normalise(s.substringBefore('?').trim())
         if (address.length < MIN_ADDRESS) return null
-        // An address never contains whitespace. If this one does, the QR held a
-        // sentence, not a payment.
-        if (address.any { it.isWhitespace() }) return null
+        // An address is letters and digits, nothing else. Both formats this
+        // chain uses are alphanumeric -- bech32 pc1... and base58 P... -- so
+        // anything else means the text was not just an address.
+        //
+        // This used to reject only WHITESPACE, and that was too narrow. A link
+        // ending "...nq4j\?amount=7.25" -- one stray escape -- parsed as an
+        // address with a trailing backslash, and the payment-request screen
+        // showed it as though it were real, all the way through to the send
+        // form. Measured on hardware 2026-09-10. Windows already refused the
+        // same input, so the two wallets disagreed about what an address is,
+        // which is the worst place for them to differ.
+        //
+        // Nothing could have been LOST -- a node rejects such an address -- but
+        // this screen exists so a person can read the true destination, and it
+        // must not display a doctored one as legitimate.
+        if (address.any { !it.isLetterOrDigit() }) return null
 
         return Target(address, amountFrom(query))
     }
