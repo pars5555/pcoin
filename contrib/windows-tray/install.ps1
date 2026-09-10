@@ -352,6 +352,15 @@ $seedPrompt = ''
 if ($keep.ContainsKey('seedprompt')) { $seedPrompt = $keep['seedprompt'] }
 $fastMode = '1'   # default ON for a NEW install; an upgrade keeps whatever is already set, just below
 if ($keep.ContainsKey('fastmode')) { $fastMode = $keep['fastmode'] }
+
+# Autostart is a USER CHOICE and an upgrade must not overturn it -- the same
+# rule -Threads already carries a warning about further down. Someone who
+# turned 'Start with Windows' off in the tray had, before this, to turn it
+# off again after every upgrade, with nothing saying why it came back.
+# Absent means ON, so existing installs are unchanged.
+$autostart = '1'
+if ($keep.ContainsKey('autostart')) { $autostart = $keep['autostart'] }
+if ($autostart -eq '0') { Write-Output '  autostart stays OFF (your setting from the tray)' }
 # What the tray has MEASURED about this machine, and the questions it has
 # already put to its owner. `optimal` and `hashrate` are the result of an
 # auto-tune that costs a couple of minutes of mining to redo; `soloprompt`
@@ -448,7 +457,16 @@ try {
         $p = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup'
         if (Test-Path $p) { $startup = $p }
     }
-    if ($startup) {
+    if ($autostart -eq '0') {
+        # Honour the tray's 'Start with Windows' switch, and REMOVE a shortcut
+        # an earlier version left behind -- skipping the create alone would
+        # leave the setting working only for people who never had it on.
+        if ($startup) {
+            $off = Join-Path $startup 'PCoin Miner.lnk'
+            if (Test-Path $off) { Remove-Item $off -Force -ErrorAction SilentlyContinue }
+        }
+        Write-Output '  autostart shortcut not created (switched off in the tray)'
+    } elseif ($startup) {
         $ws = New-Object -ComObject WScript.Shell
         $lnk = $ws.CreateShortcut((Join-Path $startup 'PCoin Miner.lnk'))
         $lnk.TargetPath = (Join-Path $InstallDir 'PCoinTray.exe')
@@ -595,6 +613,7 @@ function Grant-LockPagesRight([string]$account) {
 
 try {
     $who = (Get-CimInstance Win32_ComputerSystem).UserName
+    if ($autostart -eq '0') { $who = $null }
     if ($who) {
         $exePath = Join-Path $InstallDir 'PCoinTray.exe'
         # Do not CALL schtasks without admin. It writes a bare

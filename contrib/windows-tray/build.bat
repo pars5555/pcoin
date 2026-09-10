@@ -47,6 +47,7 @@ rem ship. Embedding needs nothing shipped alongside it.
   /reference:"%FW%\WPF\PresentationCore.dll" ^
   /reference:"%FW%\WPF\PresentationFramework.dll" ^
   PCoinTray.cs ^
+  Autostart.cs ^
   MinerWindow.cs ^
   ForwardPolicy.cs ^
   ForwardStore.cs ^

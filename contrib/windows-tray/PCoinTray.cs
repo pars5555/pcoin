@@ -571,6 +571,9 @@ namespace PCoinTray
         //! someone playing a game on the same PC are all reasons to say no that
         //! no amount of probing will discover.
         bool _fastMode = true;
+        //! Persisted INTENT for "start with Windows". install.ps1 reads it
+        //! back on every upgrade, so turning it off stays off.
+        bool _autostartPref = true;
         const int DEFAULT_PERCENT = 50;
         static readonly int[] PERCENT_STEPS = { 10, 25, 50, 75, 100 };
 
@@ -739,6 +742,7 @@ namespace PCoinTray
         readonly ToolStripMenuItem _miForwardLast = new ToolStripMenuItem("") { Enabled = false, Visible = false };
         ToolStripMenuItem _miPhrase;
         ToolStripMenuItem _miOff;
+        ToolStripMenuItem _miAutostart;
         readonly Dictionary<int, ToolStripMenuItem> _miPercent = new Dictionary<int, ToolStripMenuItem>();
 
         //! Percentage of the machine -> worker threads. Always at least one
@@ -865,6 +869,7 @@ namespace PCoinTray
                     else if (k == "poolurl") _poolUrl = v;
                     else if (k == "seedprompt") _seedDeclined = v == "declined";
                     else if (k == "fastmode") _fastMode = v == "1";
+                    else if (k == "autostart") _autostartPref = v != "0";
                     else if (k == "datadir") _datadir = v;
                     else if (k == "optimal") { int o; if (int.TryParse(v, out o)) _optimalThreads = o; }
                     else if (k == "hashrate")
@@ -914,7 +919,8 @@ namespace PCoinTray
                         ? _measuredHps.ToString("0.###", CultureInfo.InvariantCulture) : "") + "\r\n" +
                     "seedprompt=" + (_seedDeclined ? "declined" : "") + "\r\n" +
                     "soloprompt=" + (_soloAsked ? "asked" : "") + "\r\n" +
-                    "fastmode=" + (_fastMode ? "1" : "0") + "\r\n");
+                    "fastmode=" + (_fastMode ? "1" : "0") + "\r\n" +
+                    "autostart=" + (_autostartPref ? "1" : "0") + "\r\n");
             }
             catch { }
         }
@@ -970,6 +976,12 @@ namespace PCoinTray
             {
                 if (!string.IsNullOrEmpty(_address)) Clipboard.SetText(_address);
             }));
+            // One switch for BOTH autostart mechanisms. Task Manager only
+            // shows the Startup shortcut, so before this existed a person who
+            // turned it off there watched the app come back every sign-in and
+            // had no way to tell why.
+            _miAutostart = new ToolStripMenuItem("Start with Windows", null, (s, e) => OnToggleAutostart());
+            menu.Items.Add(_miAutostart);
             menu.Items.Add(new ToolStripMenuItem("Open PCoin folder", null, (s, e) =>
             {
                 try { Process.Start("explorer.exe", _dir); } catch { }
@@ -979,7 +991,62 @@ namespace PCoinTray
             menu.Items.Add(new ToolStripMenuItem("Uninstall PCoin...", null, (s, e) => OnUninstall()));
             menu.Items.Add(new ToolStripMenuItem("Stop mining and exit", null, (s, e) => Quit()));
 
+            // Read the real state when the menu opens rather than trusting a
+            // remembered one: both mechanisms can be changed from outside this
+            // app, and a tick that lies is the whole bug.
+            menu.Opening += (s, e) =>
+            {
+                try { _miAutostart.Checked = Autostart.IsEnabled(); } catch { }
+            };
+
             _icon.ContextMenuStrip = menu;
+        }
+
+        //! Toggle autostart, then SAY WHAT ACTUALLY HAPPENED. Removing the
+        //! scheduled task can need elevation, and reporting a success we did
+        //! not verify is exactly what made the original bug invisible.
+        void OnToggleAutostart()
+        {
+            bool on = Autostart.IsEnabled();
+            string msg;
+            AutostartResult r = on ? Autostart.Disable(out msg) : Autostart.Enable(out msg);
+
+            bool nowOn = Autostart.IsEnabled();
+            _miAutostart.Checked = nowOn;
+
+            // Persist the INTENT. install.ps1 reads this on every upgrade and
+            // will not recreate either mechanism when it is 0 -- otherwise the
+            // next upgrade quietly switches it back on, which is the same class
+            // of bug as the -Threads one that installer already warns about.
+            _autostartPref = nowOn;
+            SaveConfig();
+
+            if (r == AutostartResult.Done && nowOn != on)
+            {
+                Balloon("PCoin Miner",
+                        nowOn ? "PCoin will start when you sign in."
+                              : "PCoin will no longer start by itself. Mining carries on until you close it.",
+                        false);
+            }
+            else if (r == AutostartResult.NeedsAdmin)
+            {
+                MessageBox.Show(
+                    "Windows would not allow this without administrator rights." + Environment.NewLine + Environment.NewLine +
+                    "The Startup shortcut is gone, but a scheduled task named " + Autostart.TaskName +
+                    " is still there and will keep starting PCoin when you sign in." + Environment.NewLine + Environment.NewLine +
+                    "To remove it, open Command Prompt as administrator and run:" + Environment.NewLine + Environment.NewLine +
+                    "    schtasks /delete /tn " + Autostart.TaskName + " /f",
+                    "PCoin Miner", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            else if (r == AutostartResult.Failed)
+            {
+                MessageBox.Show("Could not change this: " + msg, "PCoin Miner",
+                                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            else if (!string.IsNullOrEmpty(msg))
+            {
+                Balloon("PCoin Miner", msg, false);
+            }
         }
 
         void MarkMode()
