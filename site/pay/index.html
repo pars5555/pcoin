@@ -95,8 +95,15 @@
     <div class="card">
       <h2 style="font-size:1rem;margin-bottom:4px">If nothing opens</h2>
       <ul>
-        <li><b>Android</b> — install the wallet from
-            <a href="/download/">pc.am/download</a>, then tap the button again.</li>
+        <!-- Google Play, NOT the .apk on pc.am/download. The Play build and a
+             sideloaded one are signed with different keys, so they can never
+             upgrade each other: whoever installs the wrong one has to uninstall
+             to switch, and uninstalling destroys the wallet. Sending Android
+             users anywhere but Play is setting that trap for them. -->
+        <li><b>Android</b> — get
+            <a href="https://play.google.com/store/apps/details?id=am.pc.pcoinwallet"
+               target="_blank" rel="noopener">PCoin Wallet on Google Play</a>,
+            then tap the button again.</li>
         <li><b>Windows</b> — PCoin Wallet handles these links from version
             1.4.20. Older ones do not; reinstall from
             <a href="/download/">pc.am/download</a>.</li>
