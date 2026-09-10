@@ -36,8 +36,8 @@ param(
     # half-applied bump is impossible. The hash is of pcoin-win64-miner.zip
     # and the install aborts on a mismatch, so a forgotten bump here breaks
     # every new install rather than failing quietly.
-    [string]$Version = '1.4.9',
-    [string]$Sha256 = '95d744cc396aa8dc790bbbbc2fbaa354145ae4c7ac91a0945ddbca26e2a42272',
+    [string]$Version = '1.4.10',
+    [string]$Sha256 = '13ad603fdb66b2acb104741fd3650532c23de2ed75a518e7dc7ac940938a51c4',
     # All three seeds, not just one. The node also carries them compiled in as
     # of v1.2.1, so this is belt and braces rather than the only route in.
     [string[]]$AddNode = @('35.239.156.16:9444', '178.105.3.51:9444', '152.53.171.190:9444'),
@@ -458,18 +458,35 @@ try {
         if (Test-Path $p) { $startup = $p }
     }
     if ($autostart -eq '0') {
-        # Honour the tray's 'Start with Windows' switch, and REMOVE a shortcut
-        # an earlier version left behind -- skipping the create alone would
-        # leave the setting working only for people who never had it on.
+        # Honour the tray's 'Start with Windows' switch, and remove EVERY
+        # shortcut in Startup that launches our exe -- matched by TARGET, not by
+        # name. A fleet PC carried both 'PCoin Miner.lnk' and 'PCoin.lnk' (the
+        # desktop icon, copied there by somebody) and each started the app just
+        # as well, so deleting only the one we happen to create left autostart
+        # working while the tray's tick said it was off.
         if ($startup) {
-            $off = Join-Path $startup 'PCoin Miner.lnk'
-            if (Test-Path $off) { Remove-Item $off -Force -ErrorAction SilentlyContinue }
+            $wsOff = New-Object -ComObject WScript.Shell
+            $mine = (Join-Path $InstallDir 'PCoinTray.exe')
+            foreach ($f in (Get-ChildItem $startup -Filter *.lnk -ErrorAction SilentlyContinue)) {
+                try {
+                    if ($wsOff.CreateShortcut($f.FullName).TargetPath -eq $mine) {
+                        Remove-Item $f.FullName -Force -ErrorAction SilentlyContinue
+                        Write-Output ('  removed autostart shortcut ' + $f.Name)
+                    }
+                } catch { }
+            }
         }
         Write-Output '  autostart shortcut not created (switched off in the tray)'
     } elseif ($startup) {
         $ws = New-Object -ComObject WScript.Shell
         $lnk = $ws.CreateShortcut((Join-Path $startup 'PCoin Miner.lnk'))
         $lnk.TargetPath = (Join-Path $InstallDir 'PCoinTray.exe')
+        # --minimized is LOAD-BEARING, not cosmetic. It is how the app knows it
+        # was started by autostart rather than by a person, and therefore how it
+        # knows to close again when autostart has been switched off. On a real
+        # machine the scheduled task cannot be removed by a non-admin user, so
+        # this flag is the only thing that keeps the promise.
+        $lnk.Arguments = '--minimized'
         $lnk.WorkingDirectory = $InstallDir
         $lnk.Description = 'PCoin node and miner'
         $lnk.Save()
@@ -633,7 +650,11 @@ try {
             } catch {
                 Write-Output ('  (could not grant Lock-pages-in-memory; mining without large pages: ' + $_.Exception.Message + ')')
             }
-            schtasks /create /tn PCoinMiner /tr $exePath /sc onlogon /ru $who /it /rl $rl /f | Out-Null
+            # Same flag as the shortcut, and for the same reason: this task
+            # is the mechanism a non-admin user cannot delete, so the app
+            # must be able to recognise its own autostart and bow out.
+            $tr = '"' + $exePath + '" --minimized'
+            schtasks /create /tn PCoinMiner /tr $tr /sc onlogon /ru $who /it /rl $rl /f | Out-Null
             if ($LASTEXITCODE -eq 0) { Write-Output "  autostart task created for $who ($rl)" }
             else { Write-Output '  autostart task could not be created (the Startup shortcut still applies)' }
         }

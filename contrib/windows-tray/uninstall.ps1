@@ -241,6 +241,20 @@ $lnks = @()
 foreach ($sd in @([Environment]::GetFolderPath('Startup'),
                   (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup'))) {
     if ($sd) { $lnks += (Join-Path $sd 'PCoin Miner.lnk'); $lnks += (Join-Path $sd 'PCoinTray.lnk') }
+    # And ANY other .lnk in there that launches our exe, matched by target
+    # rather than by name. A fleet PC had the desktop icon 'PCoin.lnk' copied
+    # into Startup, where it started the app exactly as well as ours and was
+    # removed by nothing -- so an uninstall left something behind that pointed
+    # at a folder that no longer existed.
+    if ($sd -and (Test-Path $sd)) {
+        try {
+            $wsU = New-Object -ComObject WScript.Shell
+            $mineU = (Join-Path $InstallDir 'PCoinTray.exe')
+            foreach ($f in (Get-ChildItem $sd -Filter *.lnk -ErrorAction SilentlyContinue)) {
+                try { if ($wsU.CreateShortcut($f.FullName).TargetPath -eq $mineU) { $lnks += $f.FullName } } catch { }
+            }
+        } catch { }
+    }
 }
 $desk = [Environment]::GetFolderPath('Desktop')
 if ($desk) { $lnks += (Join-Path $desk 'PCoin.lnk') }

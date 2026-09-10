@@ -30,6 +30,32 @@ namespace PCoinTray
 {
     static class Program
     {
+        //! Read JUST the autostart flag out of pcoin-tray.cfg, without building
+        //! the whole app -- this runs before anything else exists.
+        //!
+        //! Absent means ON, so an install predating the setting behaves exactly
+        //! as it always did. An unreadable config also means ON: the failure
+        //! that matters here is an app that silently will not start, and
+        //! "unknown" must never become that.
+        static bool AutostartWanted()
+        {
+            try
+            {
+                string cfg = Path.Combine(Path.GetDirectoryName(Application.ExecutablePath),
+                                          "pcoin-tray.cfg");
+                if (!File.Exists(cfg)) return true;
+                foreach (var line in File.ReadAllLines(cfg))
+                {
+                    int eq = line.IndexOf('=');
+                    if (eq <= 0) continue;
+                    if (line.Substring(0, eq).Trim() == "autostart")
+                        return line.Substring(eq + 1).Trim() != "0";
+                }
+            }
+            catch { /* an unreadable config must not make the app unstartable */ }
+            return true;
+        }
+
         //! A winexe has no console of its own, so borrow the one it was started
         //! from. Only used by --selftest.
         [DllImport("kernel32.dll")]
@@ -122,6 +148,23 @@ namespace PCoinTray
                     || string.Equals(a, "/minimized", StringComparison.OrdinalIgnoreCase))
                     minimized = true;
             }
+
+            // AUTOSTART IS OFF AND AUTOSTART IS WHAT STARTED US: leave, now.
+            //
+            // This is the only lever that needs no privilege, and on a real
+            // machine it is the only one that works at all. Measured on fleet PC
+            // DESKTOP-AKHQ7BJ on 2026-09-10: the tray's own user could neither
+            // delete NOR disable the PCoinMiner scheduled task -- both answered
+            // "Access is denied" -- and that user was not an administrator, so
+            // UAC would have demanded a password they do not have.
+            //
+            // A task we cannot remove still launches an app that can decline to
+            // run. Declining costs nothing and cannot be refused.
+            //
+            // Before any node is started, like the session-0 check above, so
+            // this never leaves a bitcoind behind.
+            if (minimized && !AutostartWanted())
+                return;
 
             // One instance only: a second tray icon would be confusing and the
             // two would fight over the mining mode.
@@ -1021,22 +1064,23 @@ namespace PCoinTray
             _autostartPref = nowOn;
             SaveConfig();
 
-            if (r == AutostartResult.Done && nowOn != on)
+            if (r == AutostartResult.TaskRemains)
+            {
+                MessageBox.Show(
+                    "PCoin will no longer start with Windows." + Environment.NewLine + Environment.NewLine +
+                    "Windows would not let the scheduled task be removed without administrator " +
+                    "rights, so it is still there and will still fire at sign-in — but PCoin now " +
+                    "closes again immediately when it does, so you will not see it." + Environment.NewLine + Environment.NewLine +
+                    "To remove the task itself, an administrator can run:" + Environment.NewLine + Environment.NewLine +
+                    "    schtasks /delete /tn " + Autostart.TaskName + " /f",
+                    "PCoin Miner", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            else if (r == AutostartResult.Done && nowOn != on)
             {
                 Balloon("PCoin Miner",
                         nowOn ? "PCoin will start when you sign in."
                               : "PCoin will no longer start by itself. Mining carries on until you close it.",
                         false);
-            }
-            else if (r == AutostartResult.NeedsAdmin)
-            {
-                MessageBox.Show(
-                    "Windows would not allow this without administrator rights." + Environment.NewLine + Environment.NewLine +
-                    "The Startup shortcut is gone, but a scheduled task named " + Autostart.TaskName +
-                    " is still there and will keep starting PCoin when you sign in." + Environment.NewLine + Environment.NewLine +
-                    "To remove it, open Command Prompt as administrator and run:" + Environment.NewLine + Environment.NewLine +
-                    "    schtasks /delete /tn " + Autostart.TaskName + " /f",
-                    "PCoin Miner", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
             else if (r == AutostartResult.Failed)
             {

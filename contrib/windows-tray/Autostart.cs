@@ -4,28 +4,46 @@
 //
 // Turning "start with Windows" off, and having it actually stay off.
 //
-// WHY THIS FILE EXISTS. There are TWO independent autostart mechanisms and
-// Windows only shows you one of them:
+// WHY THIS FILE EXISTS. There are up to THREE autostart mechanisms and Windows
+// shows you one of them:
 //
 //   1. a shortcut in the user's Startup folder, and
-//   2. a scheduled task named PCoinMiner with an AtLogOn trigger.
+//   2. any OTHER shortcut someone has dropped in that folder pointing at the
+//      same exe -- on a real fleet PC that was `PCoin.lnk`, the desktop icon,
+//      copied there by someone; it starts the app exactly as well as ours, and
+//   3. a scheduled task named PCoinMiner with an AtLogOn trigger.
 //
-// Task Manager's "Startup apps" tab lists (1) and does not list (2) at all. So
-// a person who does the obvious thing -- open Task Manager, disable PCoin
-// Miner -- has disabled nothing that matters, and the app keeps appearing on
-// every sign-in. That was reported by a real user on 2026-09-09, and they were
-// right: from where they were standing the app simply refused to stop.
+// Task Manager's "Startup apps" tab lists the shortcuts and does NOT list the
+// task. So a person who does the obvious thing -- open Task Manager, disable
+// PCoin Miner -- has disabled nothing that matters, and the app keeps appearing
+// on every sign-in. That was reported by a real user on 2026-09-09, and they
+// were right: from where they were standing the app simply refused to stop.
+//
+// MEASURED ON A REAL MACHINE, 2026-09-10, and it changed the design. On fleet PC
+// DESKTOP-AKHQ7BJ the tray's own user could neither delete nor disable the
+// scheduled task:
+//
+//     schtasks /delete  /tn PCoinMiner /f       -> ERROR: Access is denied.
+//     schtasks /change  /tn PCoinMiner /disable -> ERROR: Access is denied.
+//     Disable-ScheduledTask                     -> Access is denied.
+//
+// and that user was not an administrator, so UAC would have demanded a password
+// they do not have. Removing the task is therefore NOT something we can rely on.
+//
+// Hence the lever that always works and needs no privilege at all: a task we
+// cannot remove still launches an app that can DECLINE TO RUN. Autostart passes
+// `--minimized`, and PCoinTray exits immediately when it sees that flag while
+// the config says autostart is off. See AutostartWanted() in PCoinTray.cs.
+// Removing the mechanisms is still attempted -- it is tidier -- but the promise
+// to the user no longer depends on it succeeding.
 //
 // An app that will not stop starting is indistinguishable from malware, so the
 // bar here is higher than "we tried". Every operation VERIFIES afterwards and
 // reports what is actually true, because the whole failure was a control that
 // looked like it worked.
-//
-// The second mechanism exists for a good reason (Explorer staggers Startup
-// items and can take minutes; Task Scheduler is immediate), so the answer is
-// not to delete it -- it is to make one switch govern both.
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 
@@ -37,14 +55,20 @@ namespace PCoinTray
     enum AutostartResult
     {
         Done,           // verified: the requested state is the state on disk
-        NeedsAdmin,     // the scheduled task would not budge without elevation
+        TaskRemains,    // shortcuts gone, the task could not be removed
         Failed          // something else went wrong; the message says what
     }
 
     static class Autostart
     {
         public const string TaskName = "PCoinMiner";
-        const string ShortcutName = "PCoin Miner.lnk";
+        const string PreferredShortcut = "PCoin Miner.lnk";
+        public const string MinimizedFlag = "--minimized";
+
+        public static string ExePath()
+        {
+            return Process.GetCurrentProcess().MainModule.FileName;
+        }
 
         //! The Startup folder for the CURRENT user. Empty when the profile is
         //! not fully loaded (a service context), in which case there is no
@@ -69,16 +93,53 @@ namespace PCoinTray
             return null;
         }
 
-        static string ShortcutPath()
+        //! EVERY shortcut in Startup that launches this exe, whatever it is
+        //! called. Matching on the FILENAME was the bug: a fleet PC had both
+        //! `PCoin Miner.lnk` and `PCoin.lnk` pointing here, and removing only
+        //! the first left the app starting at every sign-in with the tick
+        //! showing "off".
+        public static List<string> OurShortcuts()
         {
-            string d = StartupDir();
-            return d == null ? null : Path.Combine(d, ShortcutName);
-        }
+            var hits = new List<string>();
+            string dir = StartupDir();
+            if (dir == null) return hits;
 
-        public static bool ShortcutExists()
-        {
-            string p = ShortcutPath();
-            try { return p != null && File.Exists(p); } catch { return false; }
+            string me;
+            try { me = Path.GetFullPath(ExePath()); }
+            catch { return hits; }
+
+            string[] lnks;
+            try { lnks = Directory.GetFiles(dir, "*.lnk"); }
+            catch { return hits; }
+
+            Type t = Type.GetTypeFromProgID("WScript.Shell");
+            if (t == null) return hits;
+            object shell = null;
+            try
+            {
+                shell = Activator.CreateInstance(t);
+                foreach (var p in lnks)
+                {
+                    try
+                    {
+                        object lnk = t.InvokeMember("CreateShortcut",
+                            System.Reflection.BindingFlags.InvokeMethod, null, shell, new object[] { p });
+                        string target = Convert.ToString(lnk.GetType().InvokeMember("TargetPath",
+                            System.Reflection.BindingFlags.GetProperty, null, lnk, new object[0]));
+                        if (!string.IsNullOrEmpty(target) &&
+                            string.Equals(Path.GetFullPath(target), me, StringComparison.OrdinalIgnoreCase))
+                            hits.Add(p);
+                    }
+                    catch { /* a damaged .lnk is not a reason to stop reading the rest */ }
+                }
+            }
+            catch { }
+            finally
+            {
+                if (shell != null)
+                    try { System.Runtime.InteropServices.Marshal.ReleaseComObject(shell); } catch { }
+            }
+            return hits;
         }
 
         //! Ask Task Scheduler, never a cached answer. /nh /fo csv keeps the
@@ -91,11 +152,11 @@ namespace PCoinTray
             return rc == 0 && outp.IndexOf(TaskName, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
-        //! "Will this app start itself when I sign in?" -- true if EITHER
-        //! mechanism is live. Anything narrower is the bug this file fixes.
+        //! "Will this app start itself when I sign in?" -- true if ANY mechanism
+        //! is live. Anything narrower is the bug this file exists to fix.
         public static bool IsEnabled()
         {
-            return ShortcutExists() || TaskExists();
+            return OurShortcuts().Count > 0 || TaskExists();
         }
 
         // ---------- turning it off ----------
@@ -103,50 +164,45 @@ namespace PCoinTray
         public static AutostartResult Disable(out string message)
         {
             message = "";
-            bool shortcutGone = true;
+            var left = new List<string>();
 
-            string p = ShortcutPath();
-            if (p != null)
+            foreach (var p in OurShortcuts())
             {
-                try { if (File.Exists(p)) File.Delete(p); }
-                catch (Exception ex) { shortcutGone = false; message = ex.Message; }
-                shortcutGone = shortcutGone && !File.Exists(p);
+                try { File.Delete(p); } catch { }
+                if (File.Exists(p)) left.Add(Path.GetFileName(p));
             }
 
-            // The task is the half that needs privilege. It was created by an
-            // elevated installer with /RU <user>, so a non-elevated delete is
-            // refused -- and schtasks says so on stderr with a non-zero code
-            // rather than throwing, which is easy to miss.
+            if (left.Count > 0)
+            {
+                message = "Could not delete " + string.Join(", ", left.ToArray()) +
+                          " from your Startup folder.";
+                return AutostartResult.Failed;
+            }
+
+            // The task is the half that needs privilege, and on a real machine
+            // it is refused outright -- see the header. Try, then try once
+            // through UAC, then say plainly that it is still there. What we do
+            // NOT do is pretend: the app declining to run is what actually
+            // keeps the promise, and that is already in force by now.
             if (TaskExists())
             {
                 string outp, err;
                 Run("schtasks.exe", "/delete /tn \"" + TaskName + "\" /f", out outp, out err);
-
                 if (TaskExists())
                 {
-                    // One elevated retry, which raises a UAC prompt the person
-                    // asked for by clicking the menu item.
-                    if (!RunElevated("schtasks.exe", "/delete /tn \"" + TaskName + "\" /f"))
-                    {
-                        message = "Windows did not allow the scheduled task to be removed.";
-                        return AutostartResult.NeedsAdmin;
-                    }
+                    RunElevated("schtasks.exe", "/delete /tn \"" + TaskName + "\" /f");
                     if (TaskExists())
                     {
-                        message = "The scheduled task " + TaskName + " is still present.";
-                        return AutostartResult.NeedsAdmin;
+                        message = "The scheduled task " + TaskName + " could not be removed " +
+                                  "(Windows refused without administrator rights). PCoin will " +
+                                  "still not start: the task launches it, and it closes again " +
+                                  "immediately.";
+                        return AutostartResult.TaskRemains;
                     }
                 }
             }
 
-            if (!shortcutGone)
-            {
-                message = "The Startup shortcut could not be deleted: " + message;
-                return AutostartResult.Failed;
-            }
-
-            // Verify the whole claim, not the half we just touched.
-            return IsEnabled() ? AutostartResult.Failed : AutostartResult.Done;
+            return AutostartResult.Done;
         }
 
         // ---------- turning it back on ----------
@@ -154,15 +210,16 @@ namespace PCoinTray
         public static AutostartResult Enable(out string message)
         {
             message = "";
-            string exe = Application_ExecutablePath();
+            string exe = ExePath();
 
-            string p = ShortcutPath();
-            if (p == null)
+            string dir = StartupDir();
+            if (dir == null)
             {
                 message = "Could not locate your Startup folder.";
                 return AutostartResult.Failed;
             }
 
+            string p = Path.Combine(dir, PreferredShortcut);
             try { CreateShortcut(p, exe); }
             catch (Exception ex) { message = ex.Message; return AutostartResult.Failed; }
 
@@ -174,18 +231,18 @@ namespace PCoinTray
 
             // The scheduled task is the faster of the two but needs admin. Not
             // having it is not a failure: the shortcut alone does start the app,
-            // just later. Say so rather than raising a UAC prompt nobody asked
-            // for -- and never claim the task exists when it does not.
+            // just later, because Explorer staggers Startup items. Say so rather
+            // than raising a UAC prompt nobody asked for.
             if (!TaskExists())
             {
                 string outp, err;
                 string who = Environment.UserDomainName + "\\" + Environment.UserName;
                 Run("schtasks.exe",
-                    "/create /tn \"" + TaskName + "\" /tr \"" + exe + "\" " +
+                    "/create /tn \"" + TaskName + "\" /tr \"\\\"" + exe + "\\\" " + MinimizedFlag + "\" " +
                     "/sc onlogon /ru \"" + who + "\" /it /rl LIMITED /f", out outp, out err);
                 if (!TaskExists())
-                    message = "Enabled. It will start a little after sign-in; " +
-                              "reinstalling as administrator makes it immediate.";
+                    message = "Enabled. It will start shortly after sign-in rather than " +
+                              "immediately; reinstalling as administrator makes it immediate.";
             }
 
             return IsEnabled() ? AutostartResult.Done : AutostartResult.Failed;
@@ -193,20 +250,10 @@ namespace PCoinTray
 
         // ---------- plumbing ----------
 
-        static string Application_ExecutablePath()
-        {
-            return Process.GetCurrentProcess().MainModule.FileName;
-        }
-
-        //! Deliberately IDENTICAL to what install.ps1 creates -- same target,
-        //! same working directory, same (absent) arguments. Toggling this off
-        //! and on again must not quietly change how the app starts.
-        //!
-        //! Worth knowing: neither this nor install.ps1 passes --minimized, so
-        //! the window DOES appear at sign-in even though PCoinTray.cs:796 says
-        //! autostart should pass it. That is a separate, older discrepancy and
-        //! is left alone here on purpose -- changing whether a window appears
-        //! at logon is not a change to smuggle in with a bug fix.
+        //! Deliberately identical to what install.ps1 creates, MinimizedFlag
+        //! included. That flag is load-bearing now, not cosmetic: it is how the
+        //! app knows it was started by autostart rather than by a person, and
+        //! therefore how it knows to close again when autostart is off.
         static void CreateShortcut(string lnkPath, string exe)
         {
             Type t = Type.GetTypeFromProgID("WScript.Shell");
@@ -217,6 +264,7 @@ namespace PCoinTray
                     System.Reflection.BindingFlags.InvokeMethod, null, shell, new object[] { lnkPath });
                 Type lt = lnk.GetType();
                 Set(lt, lnk, "TargetPath", exe);
+                Set(lt, lnk, "Arguments", MinimizedFlag);
                 Set(lt, lnk, "WorkingDirectory", Path.GetDirectoryName(exe));
                 Set(lt, lnk, "Description", "PCoin node and miner");
                 lt.InvokeMember("Save", System.Reflection.BindingFlags.InvokeMethod, null, lnk, new object[0]);
