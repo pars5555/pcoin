@@ -177,37 +177,6 @@
   .dl-alt:hover{color:var(--teal)}
 
 
-  /* hashrate calculator */
-  .calc-shell{
-    border:1px solid var(--line);border-radius:var(--radius);padding:22px;
-    background:var(--panel);margin-top:24px;
-  }
-  .calc-controls{display:flex;gap:22px;flex-wrap:wrap;margin-bottom:22px}
-  .calc-field{display:flex;flex-direction:column;gap:8px;flex:1 1 260px;min-width:0}
-  .calc-field>span{font-size:.9rem;color:var(--muted)}
-  .calc-field>span b{color:var(--text)}
-  .calc-field select,.calc-field input[type=range]{
-    width:100%;max-width:100%;box-sizing:border-box;
-  }
-  .calc-field select{
-    background:var(--bg);color:var(--text);border:1px solid var(--line);
-    border-radius:10px;padding:11px 12px;font:inherit;font-size:.95rem;
-  }
-  .calc-field input[type=range]{accent-color:var(--teal);height:34px}
-  .calc-results{
-    display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));
-  }
-  .calc-cell{
-    background:var(--bg);border:1px solid var(--line-soft);border-radius:12px;padding:14px 16px;
-    min-width:0;
-  }
-  .calc-label{display:block;font-size:.8rem;color:var(--dim);margin-bottom:6px}
-  .calc-value{
-    display:block;font-size:1.35rem;font-weight:700;color:var(--text);
-    font-family:var(--mono);word-break:break-word;
-  }
-  .calc-note{margin-top:16px;font-size:.85rem;color:var(--dim)}
-  .calc-note b{color:var(--muted)}
 
   /* parameters table */
   .table-shell{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);overflow-x:auto}
@@ -362,7 +331,7 @@
       <a href="/#mission">Mission</a>
       <a href="/download/" aria-current="page">Download</a>
       <a href="/#mining">Mining</a>
-      <a href="/#calculator">Calculator</a>
+      <a href="/#hardware">Hardware</a>
       <a href="https://docs.pc.am" rel="noopener">Integrate</a>
       <a href="https://explorer.pc.am" rel="noopener">Explorer</a>
       <a href="https://market.pc.am" rel="noopener">Buy PCN</a>
@@ -733,8 +702,10 @@ cmake --build build -j "$(nproc)"
     <summary>How much can I earn?</summary>
     <p>Each block pays 50 PCN and arrives roughly every ten minutes, shared among
     everyone mining. Your share is your hashrate over the network&rsquo;s.
-    <a href="/#calculator">The calculator on the front page</a> does the arithmetic with
-    live numbers. PCN itself is on no exchange. Its wrapped form, wPCN, trades in a small
+    There is no calculator here and there deliberately is not one anywhere: a predicted
+    hash rate looks certain and is not. <a href="/#hardware">The front page lists three machines we
+    really measured</a>, and the honest way to learn your own is to run the miner for ten minutes and
+    read the figure off it. PCN itself is on no exchange. Its wrapped form, wPCN, trades in a small
     PancakeSwap pool that is steered to the rate posted at
     <a href="https://price.pc.am" rel="noopener">price.pc.am</a> &mdash; the same rate the services
     that accept PCN use &mdash; so read that page, not the pool, for a price. Either way,

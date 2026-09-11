@@ -177,37 +177,22 @@
   .dl-alt:hover{color:var(--teal)}
 
 
-  /* hashrate calculator */
-  .calc-shell{
-    border:1px solid var(--line);border-radius:var(--radius);padding:22px;
-    background:var(--panel);margin-top:24px;
+  /* measured machines */
+  .hw-wrap{margin-top:24px;overflow-x:auto}
+  .hw-table{width:100%;border-collapse:collapse;min-width:620px}
+  .hw-table th,.hw-table td{
+    text-align:left;padding:13px 14px;border-bottom:1px solid var(--line-soft);
+    vertical-align:top;font-size:.93rem;
   }
-  .calc-controls{display:flex;gap:22px;flex-wrap:wrap;margin-bottom:22px}
-  .calc-field{display:flex;flex-direction:column;gap:8px;flex:1 1 260px;min-width:0}
-  .calc-field>span{font-size:.9rem;color:var(--muted)}
-  .calc-field>span b{color:var(--text)}
-  .calc-field select,.calc-field input[type=range]{
-    width:100%;max-width:100%;box-sizing:border-box;
+  .hw-table th{
+    font-size:.78rem;letter-spacing:.06em;text-transform:uppercase;
+    color:var(--dim);font-weight:600;border-bottom:1px solid var(--line);
   }
-  .calc-field select{
-    background:var(--bg);color:var(--text);border:1px solid var(--line);
-    border-radius:10px;padding:11px 12px;font:inherit;font-size:.95rem;
-  }
-  .calc-field input[type=range]{accent-color:var(--teal);height:34px}
-  .calc-results{
-    display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));
-  }
-  .calc-cell{
-    background:var(--bg);border:1px solid var(--line-soft);border-radius:12px;padding:14px 16px;
-    min-width:0;
-  }
-  .calc-label{display:block;font-size:.8rem;color:var(--dim);margin-bottom:6px}
-  .calc-value{
-    display:block;font-size:1.35rem;font-weight:700;color:var(--text);
-    font-family:var(--mono);word-break:break-word;
-  }
-  .calc-note{margin-top:16px;font-size:.85rem;color:var(--dim)}
-  .calc-note b{color:var(--muted)}
+  .hw-table td.hw-cpu{color:var(--text);font-weight:600}
+  .hw-table td.hw-rate{font-family:var(--mono);font-weight:700;color:var(--teal);white-space:nowrap}
+  .hw-table td.hw-why{color:var(--muted)}
+  .hw-note{margin-top:20px;font-size:.9rem;color:var(--muted);max-width:72ch}
+  .hw-note b{color:var(--text)}
 
   /* parameters table */
   .table-shell{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);overflow-x:auto}
@@ -342,7 +327,7 @@
       <a href="#mission">Mission</a>
       <a href="/download/">Download</a>
       <a href="#mining">Mining</a>
-      <a href="#calculator">Calculator</a>
+      <a href="#hardware">Hardware</a>
       <a href="#pool">Pool</a>
       <a href="#spend">Spend it</a>
       <a href="#trade">Trading</a>
@@ -522,63 +507,75 @@
     </div>
   </section>
 
-  <!-- 3b · HASHRATE CALCULATOR -->
-  <section id="calculator" class="alt">
+  <!-- 3b · WHAT REAL MACHINES DO -->
+  <section id="hardware" class="alt">
     <div class="wrap">
-      <span class="kicker">Hashrate calculator</span>
-      <h2>What would your device actually do?</h2>
+      <span class="kicker">Hardware</span>
+      <h2>What real machines actually do</h2>
       <p class="lede">
-        Pick a device and how much of it you want to give up.
-        Entries under <b>measured</b> were read straight off those devices running this software; the rest
-            are estimates anchored on them, good to roughly 20%. Difficulty is read live
-        from <a href="https://explorer.pc.am" rel="noopener">the explorer</a>, so the answer is against the
-        real network as it is right now.
+        This page used to carry a calculator. It was removed, because it produced a number that
+        looked certain and was not. What follows instead is three machines whose hash rate we have
+        really measured, each with the thread count it was running at.
       </p>
 
-      <div class="calc-shell">
-        <div class="calc-controls">
-          <label class="calc-field">
-            <span>Device</span>
-            <select id="calc-device"></select>
-          </label>
-          <label class="calc-field">
-            <span>Threads: <b id="calc-threads-out">2</b></span>
-            <input id="calc-threads" type="range" min="1" max="32" value="2" step="1">
-          </label>
-        </div>
-
-        <div class="calc-results">
-          <div class="calc-cell">
-            <span class="calc-label">Your hash rate</span>
-            <span class="calc-value" id="calc-hs">&mdash;</span>
-          </div>
-          <div class="calc-cell">
-            <span class="calc-label">Share of network</span>
-            <span class="calc-value" id="calc-share">&mdash;</span>
-          </div>
-          <div class="calc-cell">
-            <span class="calc-label">Average time per block you find</span>
-            <span class="calc-value" id="calc-time">&mdash;</span>
-          </div>
-          <div class="calc-cell">
-            <span class="calc-label">Average PCN per day <span style="color:var(--dim)">&mdash; at today's difficulty</span></span>
-            <span class="calc-value" id="calc-day">&mdash;</span>
-          </div>
-        </div>
-
-        <p class="calc-note" id="calc-dilute"></p>
-        <p class="calc-note" id="calc-basis">Reading live figures from the explorer&hellip;</p>
+      <div class="hw-wrap">
+        <table class="hw-table">
+          <thead>
+            <tr><th>CPU</th><th>Threads running</th><th>Measured</th><th>What it is</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="hw-cpu">Intel Core i9-9900K<br><span style="font-weight:400;color:var(--dim)">8 cores / 16 threads</span></td>
+              <td>4</td>
+              <td class="hw-rate">~250 H/s</td>
+              <td class="hw-why">One of our own always-on PCs. It is held at four threads on purpose,
+                so that whoever is using the machine never notices it.</td>
+            </tr>
+            <tr>
+              <td class="hw-cpu">Intel Core i9-10900X<br><span style="font-weight:400;color:var(--dim)">10 cores / 20 threads</span></td>
+              <td>4</td>
+              <td class="hw-rate">~260 H/s</td>
+              <td class="hw-why">Two more cores than the machine above, held at the same four threads.
+                It earns about ten more hashes a second. That gap is the whole lesson on this page.</td>
+            </tr>
+            <tr>
+              <td class="hw-cpu">Dual Xeon E5-2697A v4<br><span style="font-weight:400;color:var(--dim)">32 cores / 64 threads, 64&nbsp;GB</span></td>
+              <td>29</td>
+              <td class="hw-rate">4,000&ndash;6,000 H/s</td>
+              <td class="hw-why">The largest machine we know of on our pool, reported by the miner who
+                runs it, using SRBMiner in fast mode. Fast mode builds a 2&nbsp;GB dataset and runs at
+                roughly twice light mode, which is what our own two PCs above use.</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
 
+      <p class="hw-note">
+        <b>Do not read this as a ranking of CPUs.</b> RandomX spends its time reading a 256&nbsp;MB
+        cache, so what limits you is memory &mdash; its speed, how many channels your board actually
+        fills, and how much of it fits inside your CPU&rsquo;s own cache. Core count decides far less
+        than people expect. Two computers with the same CPU printed on the box and different memory
+        will not give you the same answer, and one computer will not give you the same answer at four
+        threads and at twelve.
+      </p>
+      <p class="hw-note">
+        <b>So we are not going to predict your machine, and nobody honestly can.</b> Install it, let
+        it run ten minutes, and read the hash rate off the miner itself &mdash; the tray app,
+        <span class="mono">pcoin-mine</span> and your pool page all show it live. That takes less time
+        than reading this page, and it is the only figure that is about your computer. Try more
+        threads and fewer, and keep whichever you actually like living with. If you measure something
+        worth sharing, send it to <a href="mailto:pcoin@pc.am">pcoin@pc.am</a> and we will put it in
+        this table.
+      </p>
+
       <div class="honest-box" style="max-width:100%">
-        <b>Read this before you believe any of it.</b> Mining is a lottery, and these are
-        <i>averages over a long run</i>, not a schedule. A phone averaging one block every nine days may
-        find two next week and none for a month; that is what randomness looks like and it is not a fault.
-        The numbers also move: every miner who joins pushes difficulty up and everyone's share down, and
-        from height 2800 difficulty adjusts <b>every block</b>, so it reacts within minutes rather than
-        weeks. Thread counts above about half your cores usually return less than they cost, because
-        RandomX is bound by memory rather than clock speed &mdash; and on a phone the heat limit will stop
-        you before the core count does. <b>Nothing here is income, and none of it is a promise.</b>
+        <b>Read this before you believe any of it.</b> Mining is a lottery, and a hash rate is not
+        income. It tells you your share of the work, not what you will be paid: a machine averaging
+        one block a week may find two tomorrow and none for a month, and that is what randomness looks
+        like, not a fault. The numbers also move on their own &mdash; every miner who joins pushes
+        difficulty up and everyone&rsquo;s share down, and difficulty now adjusts <b>every block</b>,
+        so it reacts within minutes rather than weeks. <b>Nothing here is income, and none of it is a
+        promise.</b>
       </div>
     </div>
   </section>
@@ -1272,7 +1269,7 @@ curl -fsSL https://pc.am/dl/install.sh | sudo sh
 <span class="c"># 53.5 kH/s that day and is more than ten times that now, so the share</span>
 <span class="c"># and the block estimate below are HISTORY, not a forecast — the same</span>
 <span class="c"># machine would wait far longer today. The tool reads both live; use the</span>
-<span class="c"># calculator above, or pool.pc.am, for what to actually expect.</span>
+<span class="c"># hardware section above, or pool.pc.am, for what to expect.</span>
 pcoin-mine
 
 <span class="o">  PCoin miner
@@ -1538,250 +1535,5 @@ sudo systemctl stop pcoin-miner
   </div>
 </footer>
 
-<script>
-/* Hashrate calculator.
- *
- * Every "measured" figure below came off that exact device running this
- * software, divided by the threads it was using at the time. Nothing is
- * extrapolated from a benchmark score, and the estimated entries say so.
- *
- * Difficulty is fetched live from the explorer rather than baked in, because a
- * hardcoded difficulty on a chain that retargets every block from height 2800
- * would be wrong within the hour. If the fetch fails the page says so and falls
- * back to a dated snapshot rather than quietly showing a stale answer.
- */
-(function () {
-  "use strict";
-
-  // per = hashes/sec per thread. mt = the thread count it was actually measured
-  // at, which matters: RandomX is bound by memory bandwidth, so multiplying a
-  // 4-thread measurement out to 20 threads flatters the result. The UI says so
-  // rather than pretending the scaling is linear.
-  var DEVICES = [
-    { g: "Phones - measured", n: "Galaxy S20 FE - Snapdragon 865", per: 23.0, t: 8, mt: 2 },
-    { g: "Phones - measured", n: "Moto G Play 2024 - Snapdragon 680", per: 22.5, t: 8, mt: 2 },
-    { g: "Phones - measured", n: "Galaxy Note9 - Snapdragon 845", per: 19.5, t: 8, mt: 2 },
-    { g: "Phones - measured", n: "Pixel 4a - Snapdragon 730G", per: 17.0, t: 8, mt: 2 },
-    { g: "Phones - measured", n: "Galaxy Z Flip 4 - Snapdragon 8+ Gen 1", per: 13.5, t: 8, mt: 2 },
-    { g: "Phones - estimated", n: "Galaxy S24 Ultra - Snapdragon 8 Gen 3", per: 25.0, t: 8, mt: 2, est: 1 },
-    { g: "Phones - estimated", n: "Galaxy S23 - Snapdragon 8 Gen 2", per: 24.0, t: 8, mt: 2, est: 1 },
-    { g: "Phones - estimated", n: "Pixel 8 - Tensor G3", per: 22.0, t: 8, mt: 2, est: 1 },
-    { g: "Phones - estimated", n: "Pixel 7 - Tensor G2", per: 21.0, t: 8, mt: 2, est: 1 },
-    { g: "Phones - estimated", n: "Galaxy S22 - Snapdragon 8 Gen 1", per: 20.0, t: 8, mt: 2, est: 1 },
-    { g: "Phones - estimated", n: "OnePlus 11 - Snapdragon 8 Gen 2", per: 24.0, t: 8, mt: 2, est: 1 },
-    { g: "Phones - estimated", n: "Galaxy A54 - Exynos 1380", per: 16.0, t: 8, mt: 2, est: 1 },
-    { g: "Phones - estimated", n: "Redmi Note 12 - Snapdragon 685", per: 14.0, t: 8, mt: 2, est: 1 },
-    { g: "Desktop CPUs - measured", n: "Intel Core i5-9600K - 6 cores", per: 70.0, t: 6, mt: 2 },
-    { g: "Desktop CPUs - measured", n: "Intel Core i9-10900X - 10 cores", per: 64.5, t: 20, mt: 4 },
-    { g: "Desktop CPUs - measured", n: "Intel Core i9-9900K - 8 cores", per: 63.0, t: 16, mt: 4 },
-    { g: "Desktop CPUs - Intel", n: "Intel Core i9-14900K - 8 P-cores (+16 E)", per: 72.0, t: 16, mt: 4, est: 1 },
-    { g: "Desktop CPUs - Intel", n: "Intel Core i9-13900K - 8 P-cores (+16 E)", per: 70.0, t: 16, mt: 4, est: 1 },
-    { g: "Desktop CPUs - Intel", n: "Intel Core i7-13700K - 8 P-cores (+8 E)", per: 70.0, t: 16, mt: 4, est: 1 },
-    { g: "Desktop CPUs - Intel", n: "Intel Core i5-13600K - 6 P-cores (+8 E)", per: 69.0, t: 12, mt: 4, est: 1 },
-    { g: "Desktop CPUs - Intel", n: "Intel Core i7-12700K - 8 P-cores (+4 E)", per: 68.0, t: 16, mt: 4, est: 1 },
-    { g: "Desktop CPUs - Intel", n: "Intel Core i5-12400F - 6 cores", per: 66.0, t: 12, mt: 4, est: 1 },
-    { g: "Desktop CPUs - Intel", n: "Intel Core i7-11700K - 8 cores", per: 66.0, t: 16, mt: 4, est: 1 },
-    { g: "Desktop CPUs - Intel", n: "Intel Core i7-9700K - 8 cores", per: 65.0, t: 8, mt: 4, est: 1 },
-    { g: "Desktop CPUs - Intel", n: "Intel Core i5-10400 - 6 cores", per: 62.0, t: 12, mt: 4, est: 1 },
-    { g: "Desktop CPUs - Intel", n: "Intel Core i3-12100F - 4 cores", per: 66.0, t: 8, mt: 4, est: 1 },
-    { g: "Desktop CPUs - AMD", n: "AMD Ryzen 9 7950X - 16 cores", per: 68.1, t: 32, mt: 4, est: 1 },
-    { g: "Desktop CPUs - AMD", n: "AMD Ryzen 9 7900X - 12 cores", per: 68.1, t: 24, mt: 4, est: 1 },
-    { g: "Desktop CPUs - AMD", n: "AMD Ryzen 7 7700X - 8 cores", per: 74.0, t: 16, mt: 4, est: 1 },
-    { g: "Desktop CPUs - AMD", n: "AMD Ryzen 5 7600X - 6 cores", per: 73.0, t: 12, mt: 4, est: 1 },
-    { g: "Desktop CPUs - AMD", n: "AMD Ryzen 9 5950X - 16 cores", per: 64.4, t: 32, mt: 4, est: 1 },
-    { g: "Desktop CPUs - AMD", n: "AMD Ryzen 9 5900X - 12 cores", per: 64.4, t: 24, mt: 4, est: 1 },
-    { g: "Desktop CPUs - AMD", n: "AMD Ryzen 7 5800X - 8 cores", per: 69.0, t: 16, mt: 4, est: 1 },
-    { g: "Desktop CPUs - AMD", n: "AMD Ryzen 5 5600X - 6 cores", per: 69.0, t: 12, mt: 4, est: 1 },
-    { g: "Desktop CPUs - AMD", n: "AMD Ryzen 7 3700X - 8 cores", per: 58.0, t: 16, mt: 4, est: 1 },
-    { g: "Desktop CPUs - AMD", n: "AMD Ryzen 5 3600 - 6 cores", per: 57.0, t: 12, mt: 4, est: 1 },
-    { g: "Other", n: "Typical laptop CPU", per: 45, t: 8, mt: 4, est: 1 },
-    { g: "Other", n: "Small cloud VPS (2 vCPU, shared)", per: 16, t: 2, mt: 1, est: 1 }
-  ];
-
-  var SUBSIDY = 50;                 // PCN per block, until the first halving
-  // FALLBACK ONLY -- used when explorer.pc.am cannot be reached. Re-measure it
-  // whenever difficulty moves materially, because a stale snapshot here does not
-  // fail visibly: it quietly quotes an earnings figure that is too GENEROUS by
-  // exactly the factor difficulty has risen. The 7 Aug figure (0.00034) survived
-  // until 14 Aug, by which point difficulty was 0.0097 -- 28x higher -- so any
-  // visitor who could not reach the explorer was shown roughly 28x the coins
-  // they would actually earn.
-  //   node: bitcoin-cli getblock $(bitcoin-cli getblockhash <tip>) | jq .difficulty
-  //   spacing: median gap over the last ~25 blocks, discarding negative gaps
-  //            (block timestamps are not monotonic in height on this chain)
-  var SNAPSHOT_DIFF = 0.10412300;   // measured 3 Sep 2026 at height 6346
-  var SNAPSHOT_SPACING = 600;       // the LWMA target. Spacing is noisy and one day's
-                                    // median is no better a guess than the target it is
-                                    // held to, so the fallback uses the target.
-  var SNAPSHOT_WHEN = "3 Sep 2026";
-
-  var sel   = document.getElementById("calc-device");
-  var thr   = document.getElementById("calc-threads");
-  var thrO  = document.getElementById("calc-threads-out");
-  var elHs  = document.getElementById("calc-hs");
-  var elSh  = document.getElementById("calc-share");
-  var elTm  = document.getElementById("calc-time");
-  var elDy  = document.getElementById("calc-day");
-  var elBas = document.getElementById("calc-basis");
-  if (!sel || !thr) return;
-
-  var difficulty = SNAPSHOT_DIFF;
-  var spacing = SNAPSHOT_SPACING;
-  var live = false;
-
-  var group = null;
-  DEVICES.forEach(function (d, i) {
-    if (d.g !== group) {
-      group = d.g;
-      var og = document.createElement("optgroup");
-      og.label = group;
-      sel.appendChild(og);
-    }
-    var o = document.createElement("option");
-    o.value = String(i);
-    o.textContent = d.n + (d.est ? " (estimate)" : "");
-    sel.lastChild.appendChild(o);
-  });
-  sel.value = "0";
-
-  function duration(sec) {
-    if (!isFinite(sec) || sec <= 0) return "—";
-    var u = [["year", 31557600], ["day", 86400], ["hour", 3600], ["minute", 60]];
-    for (var i = 0; i < u.length; i++) {
-      if (sec >= u[i][1]) {
-        var v = sec / u[i][1];
-        return (v >= 10 ? Math.round(v) : Math.round(v * 10) / 10) +
-               " " + u[i][0] + (Math.round(v) === 1 ? "" : "s");
-      }
-    }
-    return Math.round(sec) + " seconds";
-  }
-
-  function render() {
-    var d = DEVICES[parseInt(sel.value, 10) || 0];
-    var t = Math.min(parseInt(thr.value, 10) || 1, d.t);
-    if (parseInt(thr.value, 10) > d.t) { thr.value = String(d.t); t = d.t; }
-    thrO.textContent = t + (t === d.t ? " (all)" : "");
-
-    // A RANGE, not a number, for anything we have not measured ourselves.
-    //
-    // A miner wrote in on 2026-09-10: our table put a Ryzen 9 5950X at about
-    // 2 kH/s, and he measures 5 kH/s on an older Xeon E5-2697A across the same
-    // 32 threads. He is right that those cannot both be sensible. The entries
-    // carrying est:1 were never measured on real hardware, and RandomX in the
-    // light mode PCoin uses is bound by memory latency and cache, so two
-    // machines with the same model number and different RAM differ by more than
-    // most people expect.
-    //
-    // Rather than publish a made-up point estimate to one decimal place, an
-    // unmeasured device now shows a band. Measured devices -- the phones -- keep
-    // their single figure, because that one was actually observed.
-    //
-    // If you have a real measurement, we would rather have it than our guess:
-    // pcoin@pc.am. Every device that moves from estimated to measured makes this
-    // page less wrong.
-    var EST_LO = 0.7, EST_HI = 2.5;
-
-    var hsMid = d.per * t;
-    var hsLo  = d.est ? hsMid * EST_LO : hsMid;
-    var hsHi  = d.est ? hsMid * EST_HI : hsMid;
-
-    // Expected hashes for one block at this difficulty. 2^32 is the standard
-    // difficulty-1 work unit, unchanged from Bitcoin.
-    var perBlock = difficulty * 4294967296;
-    // Faster hashing means LESS time per block, so the fast end of the hashrate
-    // band gives the SHORT end of the time band. Keeping the pairing straight
-    // here is the whole reason these are computed rather than swapped by hand.
-    var secsLo = perBlock / hsHi;
-    var secsHi = perBlock / hsLo;
-    var perDayLo = (86400 / secsHi) * SUBSIDY;
-    var perDayHi = (86400 / secsLo) * SUBSIDY;
-    var secs = perBlock / hsMid;
-    var perDay = (86400 / secs) * SUBSIDY;
-
-    function fmtHs(v) {
-      return v >= 1000 ? (v / 1000).toFixed(2) + " kH/s" : v.toFixed(1) + " H/s";
-    }
-    function fmtPcn(v) {
-      return v >= 1 ? v.toFixed(1) : v > 0 ? v.toFixed(3) : "0";
-    }
-    function fmtShare(v) {
-      return v >= 1 ? v.toFixed(1) + "%" : v >= 0.01 ? v.toFixed(2) + "%" : "<0.01%";
-    }
-
-    // Network hashrate from OBSERVED block spacing, not the 600 s target. The
-    // chain currently runs well slower than target, so using the target would
-    // overstate the network by about 70% and understate your share by the same.
-    var netHs = perBlock / spacing;
-    var share = (hsMid / netHs) * 100;
-
-    elHs.textContent = d.est ? fmtHs(hsLo) + " – " + fmtHs(hsHi) : fmtHs(hsMid);
-    elSh.textContent = d.est ? fmtShare((hsLo / netHs) * 100) + " – " + fmtShare((hsHi / netHs) * 100)
-                             : fmtShare(share);
-    elTm.textContent = d.est ? duration(secsLo) + " – " + duration(secsHi) : duration(secs);
-    elDy.textContent = perDay > 0
-      ? (d.est ? fmtPcn(perDayLo) + " – " + fmtPcn(perDayHi) + " PCN" : fmtPcn(perDay) + " PCN")
-      : "—";
-
-    // The number above is real but it is large for one reason only: almost
-    // nobody is mining, so difficulty sits near the floor. Saying that plainly,
-    // with the arithmetic, is the difference between informing someone and
-    // baiting them.
-    var d10 = perDay / 10, d100 = perDay / 100;
-    document.getElementById("calc-dilute").innerHTML =
-      "That figure is high because the network is tiny, and it is divided by every miner who joins. " +
-      "<b>If ten times as much hashrate were mining, the same device would average " +
-      (d10 >= 1 ? d10.toFixed(1) : d10.toFixed(3)) + " PCN/day; at a hundred times, " +
-      (d100 >= 1 ? d100.toFixed(1) : d100.toFixed(3)) + " PCN/day.</b> " +
-      "The coins are the same coins either way — there are just more people sharing them.";
-
-    var basis = "Difficulty " + difficulty.toPrecision(4) +
-      ", observed block spacing " + Math.round(spacing) + " s" +
-      (live ? " — both live from explorer.pc.am."
-            : " — <b>could not reach the explorer, using a snapshot from " + SNAPSHOT_WHEN + "</b>.") +
-      " " + (d.est ? "This device was <b>never measured</b>, so it is shown as a <b>range</b> rather" +
-                     " than a number. RandomX in light mode is bound by memory latency, so two" +
-                     " machines with the same model number can differ by more than people expect." +
-                     " If you have a real measurement, send it to pcoin@pc.am and we will replace" +
-                     " the guess with it."
-                   : "Measured on that hardware at " + d.mt + " threads.") +
-      (t > d.mt * 2
-        ? " <b>At " + t + " threads this is extrapolated well past what was measured, and RandomX" +
-          " scales sub-linearly with threads, so treat it as an optimistic ceiling.</b>"
-        : "") +
-      " Capped at " + d.t + " threads for this hardware.";
-    elBas.innerHTML = basis;
-  }
-
-  sel.addEventListener("change", render);
-  thr.addEventListener("input", render);
-  render();
-
-  // Recent blocks give both numbers at once: the tip's difficulty and, from the
-  // timestamps, how far apart blocks actually land. The MEDIAN is used rather
-  // than the mean because a single long gap -- routine on a chain this small --
-  // drags a mean badly. Block timestamps are also not monotonic in height here,
-  // so negative gaps are discarded rather than trusted.
-  fetch("https://explorer.pc.am/api/blocks?limit=25", { mode: "cors" })
-    .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
-    .then(function (j) {
-      var b = (j && j.blocks) || [];
-      if (!b.length) return;
-      if (typeof b[0].difficulty === "number" && b[0].difficulty > 0) difficulty = b[0].difficulty;
-      var ts = b.map(function (x) { return x.time; })
-                .filter(function (x) { return typeof x === "number"; })
-                .sort(function (x, y) { return y - x; });
-      var gaps = [];
-      for (var i = 0; i + 1 < ts.length; i++) { if (ts[i] - ts[i + 1] > 0) gaps.push(ts[i] - ts[i + 1]); }
-      if (gaps.length >= 5) {
-        gaps.sort(function (x, y) { return x - y; });
-        spacing = gaps[Math.floor(gaps.length / 2)];
-      }
-      live = true;
-      render();
-    })
-    .catch(function () { /* the snapshot notice above already says so */ });
-})();
-</script>
 </body>
 </html>
