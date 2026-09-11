@@ -594,12 +594,52 @@ def post_poll(token):
     st["chat_id"] = CHAT_ID
     save_state(st)
     try:
-        tg(token, "pinChatMessage",
-           {"chat_id": CHAT_ID, "message_id": mid, "disable_notification": "true"})
+        pin_only(token, mid)
         log("posted and pinned the vote as message %s" % mid)
     except TgError as e:
         log("posted the vote as %s but could not pin it: %s" % (mid, e.description))
     return 0
+
+
+def pin_only(token, mid, why=""):
+    """Make `mid` the ONLY pinned message in the channel.
+
+    Telegram pins are a STACK, not a slot. `pinChatMessage` pushes another entry
+    on and nothing ever pops it, so a script that re-pins whenever it finds a
+    foreign pin on top adds one every round -- which is exactly how this channel
+    reached ten pinned messages, with the progress bar buried under nine dead
+    experiments. A subscriber sees the pin bar; ten pins means the one message
+    that is meant to be glanceable is not.
+
+    So: clear, then pin. "Exactly one pin" becomes an invariant this function
+    enforces on every run, instead of a state somebody has to tidy by hand.
+
+    The trade, and it is real: `unpinAllChatMessages` removes EVERY pin,
+    including one a human pinned deliberately. The owner asked for one bar and
+    nothing else, so that is the behaviour -- but the displaced pin is LOGGED
+    with its id and first line before it goes, because a side effect nobody can
+    see afterwards is how this got out of hand in the first place. Unpinning
+    destroys nothing: the message stays in the channel and stays linkable.
+
+    A failure to clear is NOT fatal. Pinning anyway leaves a stack of two, which
+    is untidy; refusing to pin would leave the banner invisible, which is worse.
+    """
+    prev = None
+    try:
+        prev = pinned_message(token, CHAT_ID)
+    except Exception:
+        pass                      # a read we could not do resolves nothing
+    if prev is not None and prev.get("message_id") != mid:
+        body = (prev.get("caption") or prev.get("text") or "").replace("\n", " | ")
+        log("displacing pinned message %s to make room for the banner: %s"
+            % (prev.get("message_id"), body[:120] or "(no text)"))
+    try:
+        tg(token, "unpinAllChatMessages", {"chat_id": CHAT_ID})
+    except TgError as e:
+        log("could not clear the pin stack (%s); pinning anyway, which may leave "
+            "more than one pinned message" % e.description)
+    tg(token, "pinChatMessage",
+       {"chat_id": CHAT_ID, "message_id": mid, "disable_notification": "true"})
 
 
 # ----------------------------------------------------------------- main -----
@@ -706,8 +746,7 @@ def main():
         st["message_id"] = mid
         save_state(st)          # before the pin and the delete: a crash here must not orphan it
         try:
-            tg(token, "pinChatMessage",
-               {"chat_id": CHAT_ID, "message_id": mid, "disable_notification": "true"})
+            pin_only(token, mid)
         except TgError as e:
             log("posted %s but could not pin it: %s" % (mid, e.description))
         try:
@@ -773,7 +812,7 @@ def main():
         st["message_id"] = mid
         save_state(st)   # save BEFORE pinning: a pin failure must not orphan the post
         try:
-            tg(token, "pinChatMessage", {"chat_id": CHAT_ID, "message_id": mid, "disable_notification": "true"})
+            pin_only(token, mid)
             log("posted and pinned banner as message %s: count=%d" % (mid, count))
         except TgError as e:
             log("posted banner as message %s but could not pin it: %s -- pin it by hand, "
@@ -781,12 +820,17 @@ def main():
 
     # An edit succeeds whether or not the message is still pinned, so a human who
     # unpins the banner leaves it being faithfully updated somewhere nobody looks.
+    #
+    # THIS BRANCH IS WHAT BUILT THE STACK. It used to call pinChatMessage
+    # directly: every run that found a foreign pin on top added one more, and
+    # nothing ever removed any, so the channel reached TEN pinned messages with
+    # the bar buried underneath. `pin_only()` clears first, so the worst this can
+    # now do is put the banner back where it belongs.
     pin = pinned_message(token, CHAT_ID)
     if pin is not None and pin.get("message_id") != st["message_id"]:
         try:
-            tg(token, "pinChatMessage",
-               {"chat_id": CHAT_ID, "message_id": st["message_id"], "disable_notification": "true"})
-            log("the banner had been unpinned (pinned message was %s); re-pinned it"
+            pin_only(token, st["message_id"])
+            log("the banner was not the pinned message (it was %s); it is now, and it is the only one"
                 % pin.get("message_id"))
         except TgError as e:
             log("the banner is not pinned and could not be re-pinned: %s" % e.description)
