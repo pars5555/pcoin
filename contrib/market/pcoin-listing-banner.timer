@@ -1,0 +1,16 @@
+[Unit]
+Description=Refresh the PCoin listing-progress banner every 10 minutes
+
+[Timer]
+# Ten minutes is the read cadence, not the edit cadence: the script edits the
+# pinned card only when the count changes, or every BANNER_MAX_STALE_H hours so
+# the "as of" line stays honest. So this can be frequent without the channel
+# seeing a stream of no-op edits.
+OnBootSec=3min
+OnUnitActiveSec=10min
+RandomizedDelaySec=60
+AccuracySec=30s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

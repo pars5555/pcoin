@@ -1,0 +1,585 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""pcoin-listing-banner -- a PINNED, self-updating progress card in a Telegram channel.
+
+What it shows: how many $20+ purchases market.pc.am has DELIVERED, against a
+public target. When the target is reached PCoin lists on a tracked exchange.
+The number is read from the market's own database every run; nothing here is
+typed in by hand, so the banner cannot drift from the truth the way a number on
+a page does (CLAUDE.md 8b: a number on a public page is a promise).
+
+Shape of one run:
+
+    take an exclusive lock                            (one run at a time, always)
+      -> count delivered orders with usd >= MIN_USD   (MySQL, read-only)
+      -> render a 1200x630 card (Pillow)              (house style, figures read live)
+      -> first run:  adopt an existing pinned banner if one is there,
+                     otherwise sendPhoto + pinChatMessage, remember message_id
+         later runs: editMessageMedia on that pinned message, and re-pin it
+                     if a human unpinned it
+      -> exit 0
+
+Deliberate properties, each of which guards a real failure:
+
+* THE CHAT ID HAS NO DEFAULT, and the PUBLIC CHANNEL and the OPS ALERT CHANNEL
+  are both refused -- the public one unless BANNER_ALLOW_PUBLIC=1, the ops one
+  at any setting, because a progress card is not an alert and that channel has
+  received a public-looking message by accident once already. A default here is
+  how "test" becomes "live" by accident.
+* A DB failure NEVER edits the banner. Exit 1 and let OnFailure= page the ops
+  channel. A banner showing 0 because MySQL was down for a minute is a lie that
+  readers would remember. But a genuine count of ZERO is a number, not a
+  failure, and must render (see parse_row).
+* NO SECRET EVER REACHES AN ERROR MESSAGE. The DB password is passed in the
+  environment, never on argv (/proc/<pid>/cmdline is world-readable), and no
+  exception object that could carry argv or the token URL is ever stringified
+  into a log line -- OnFailure= forwards the last journal lines to Telegram and
+  records them in a sqlite log, so one leaked line becomes three permanent copies.
+* Edits only when the FIGURES changed, or after MAX_STALE_H hours so the "as of"
+  stays honest. A banner re-edited every ten minutes with only its timestamp
+  changing trains people to ignore it.
+* "message is not modified" from Telegram is SUCCESS, not failure.
+* A DELETED banner (message to edit not found / MESSAGE_ID_INVALID) clears the
+  state so the next run re-posts. A banner the bot merely CANNOT EDIT any more
+  ("message can't be edited" -- lost rights) does NOT clear state: re-posting
+  would leave two banners, one of them stale and pinned. That case is fatal and
+  pages ops, because a human has to restore the rights.
+* Telegram is retried on transport and 5xx/429 errors before anything is called
+  a failure: at a ten-minute cadence a single network blip would otherwise page
+  ops, and an alert that fires on nothing is an alert people learn to ignore.
+
+Run by hand with --dry-run to see the card and caption and send nothing.
+"""
+
+import errno
+import fcntl
+import io
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+# ----------------------------------------------------------------- config ---
+ALERT_CONF     = os.environ.get("ALERT_CONF", "/etc/pcoin/alert.conf")
+MARKET_CONFIG  = os.environ.get("MARKET_CONFIG", "/opt/pcoin-market/config.json")
+STATE_DIR      = os.environ.get("BANNER_STATE_DIR", "/var/lib/pcoin-listing-banner")
+STATE_PATH     = os.environ.get("BANNER_STATE", os.path.join(STATE_DIR, "state.json"))
+LOCK_PATH      = os.environ.get("BANNER_LOCK", os.path.join(STATE_DIR, "lock"))
+HEARTBEAT_PATH = os.environ.get("BANNER_HEARTBEAT", os.path.join(STATE_DIR, "last-run"))
+MARK_PATH      = os.environ.get("BANNER_MARK", os.path.join(STATE_DIR, "mark.png"))
+FONT_BOLD      = os.environ.get("BANNER_FONT", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
+FONT_REG       = os.environ.get("BANNER_FONT_REGULAR", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+
+CHAT_ID        = os.environ.get("BANNER_CHAT_ID", "").strip()       # NO default. See docstring.
+TARGET         = int(os.environ.get("BANNER_TARGET", "1000"))
+MIN_USD        = float(os.environ.get("BANNER_MIN_USD", "20"))
+MAX_STALE_H    = float(os.environ.get("BANNER_MAX_STALE_H", "6"))
+ALLOW_PUBLIC   = os.environ.get("BANNER_ALLOW_PUBLIC", "0") == "1"
+MARKET_URL     = os.environ.get("BANNER_MARKET_URL", "https://market.pc.am")
+
+# The public announcement channel. Hardcoded so it can never be reached by a
+# typo in an env file: reaching it requires BOTH this id AND an explicit flag.
+PUBLIC_CHANNEL_ID = "-1003712285504"
+PUBLIC_USERNAMES  = ("@pcoinpcn", "pcoinpcn", "t.me/pcoinpcn")
+# The private ops channel. Refused at ANY setting -- it is for automated alerts
+# only (CLAUDE.md 8b) and a card posted there is noise in the one place noise
+# must not be.
+ALERT_CHANNEL_ID  = "-1004340510788"
+
+# The first line of the caption. Used to recognise OUR banner when adopting an
+# existing pinned message, so a lost sendPhoto response cannot produce a second.
+BANNER_MARKER = "Road to the exchange listing"
+
+DRY_RUN = "--dry-run" in sys.argv
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
+def die(msg, code=1):
+    print("ERROR: " + msg, file=sys.stderr, flush=True)
+    sys.exit(code)
+
+
+# ----------------------------------------------------------------- secrets --
+def read_token():
+    """The bot token, from the same 0600 file every other PCoin tool uses."""
+    try:
+        with open(ALERT_CONF) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("TELEGRAM_TOKEN"):
+                    tok = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    if not tok:
+                        die("TELEGRAM_TOKEN in %s is empty" % ALERT_CONF)
+                    return tok
+    except OSError as e:
+        # e.strerror, never e: the full exception repr carries the path and, for
+        # some OSError subclasses, attributes nobody has audited.
+        die("cannot read %s: %s" % (ALERT_CONF, e.strerror))
+    die("no TELEGRAM_TOKEN in %s" % ALERT_CONF)
+
+
+# ----------------------------------------------------------------- locking --
+def take_lock():
+    """One run at a time. A hand run overlapping a timer run posts TWO banners
+    on the first run and races the state file on every later one."""
+    os.makedirs(os.path.dirname(LOCK_PATH), exist_ok=True)
+    fh = open(LOCK_PATH, "a+")
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as e:
+        if e.errno in (errno.EACCES, errno.EAGAIN):
+            die("another pcoin-listing-banner run holds the lock; not running twice", code=0)
+        raise
+    return fh            # returned so the caller holds it open for the process's life
+
+
+# ----------------------------------------------------------------- the count -
+def parse_row(out):
+    """Parse one tab-separated mysql row into (count, usd, last_day).
+
+    NOT out.strip().split(TAB): the third column is a date that is EMPTY when no
+    order matches, so a genuine zero count arrives as "0<TAB>0.00<TAB>" and a
+    .strip() eats the trailing tab, giving two fields and a spurious 'unexpected
+    mysql output' -- which would page ops every ten minutes for the entirely
+    ordinary state of having no purchases yet.
+    """
+    row = out.split("\n", 1)[0].rstrip("\r")
+    parts = row.split("\t")
+    if len(parts) != 3:
+        die("unexpected mysql output: %r" % out[:120])
+    try:
+        return int(parts[0]), float(parts[1]), parts[2]
+    except ValueError:
+        die("mysql output not numeric: %r" % out[:120])
+
+
+def count_orders():
+    """Delivered orders worth at least MIN_USD, plus the dollars they represent.
+
+    Read-only, through the mysql client so this script carries no driver
+    dependency. 'delivered' is the only terminal success status the market
+    writes (expired and test_completed are not purchases). A failure here is
+    fatal on purpose -- see the module docstring.
+    """
+    try:
+        with open(MARKET_CONFIG) as f:
+            db = json.load(f)["db"]
+    except (OSError, KeyError, ValueError) as e:
+        die("cannot read market config %s: %s" % (MARKET_CONFIG, type(e).__name__))
+
+    user = str(db.get("user", ""))
+    pw   = str(db.get("password") or db.get("pass") or "")
+    name = str(db.get("database") or db.get("name") or "")
+    host = str(db.get("host", "127.0.0.1"))
+    port = str(db.get("port") or "")
+    sock = str(db.get("socketPath") or db.get("socket") or "")
+    if not (user and name):
+        die("market config has no db user/name")
+    if not pw:
+        # An empty password makes the client PROMPT, which under systemd means a
+        # 30 s hang and then a timeout that reads as a database problem.
+        die("market config has no db password; refusing to run a client that would prompt")
+
+    sql = ("SELECT COUNT(*), COALESCE(ROUND(SUM(usd),2),0), "
+           "COALESCE(DATE_FORMAT(MAX(delivered_at), '%%Y-%%m-%%d'), '') "
+           "FROM orders WHERE status='delivered' AND usd >= %s;" % (MIN_USD,))
+
+    # The password goes in the ENVIRONMENT, never on argv: /proc/<pid>/cmdline is
+    # readable by every uid on this shared host, and any exception carrying argv
+    # would otherwise reach the journal and, through OnFailure=, the ops channel.
+    argv = ["mysql"]
+    if sock:
+        argv += ["--protocol=SOCKET", "--socket", sock]
+    else:
+        argv += ["--protocol=TCP", "-h", host] + (["-P", port] if port else [])
+    argv += ["-u", user, "-N", "-B", name, "-e", sql]
+    env = dict(os.environ, MYSQL_PWD=pw)
+
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=30, env=env)
+    except subprocess.TimeoutExpired:
+        # NEVER "% e": TimeoutExpired.__str__ embeds the full argv list.
+        die("mysql did not answer within 30 s")
+    except OSError as e:
+        die("mysql did not run: %s" % e.strerror)
+    if r.returncode != 0:
+        # stderr from mysql never contains the password; it echoes host/user only
+        die("mysql failed (rc %d): %s" % (r.returncode, r.stderr.strip()[:200]))
+    return parse_row(r.stdout)
+
+
+# ----------------------------------------------------------------- state ----
+def load_state():
+    try:
+        with open(STATE_PATH) as f:
+            s = json.load(f)
+        if not isinstance(s, dict):
+            s = {}
+    except (OSError, ValueError):
+        s = {}
+    # Normalise rather than trust: a state file that parses but lacks a key must
+    # not throw on first use (the wrapdesk lesson, twice).
+    s.setdefault("chat_id", None)
+    s.setdefault("message_id", None)
+    s.setdefault("last_count", None)
+    s.setdefault("last_usd", None)
+    s.setdefault("last_edit", 0)
+    return s
+
+
+def save_state(s):
+    d = os.path.dirname(STATE_PATH)
+    os.makedirs(d, exist_ok=True)
+    tmp = STATE_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(s, f, indent=1)
+        f.flush()
+        os.fsync(f.fileno())          # a rename is atomic; the CONTENT still has to reach the disk
+    os.replace(tmp, STATE_PATH)
+    try:
+        dfd = os.open(d, os.O_DIRECTORY)
+        try:
+            os.fsync(dfd)             # ...and so does the directory entry
+        finally:
+            os.close(dfd)
+    except OSError:
+        pass                          # best effort; the rename itself is still atomic
+
+
+def touch_heartbeat():
+    """A file a monitor can age. Nothing reads it yet -- but a banner whose timer
+    was stopped goes on claiming 'this card updates itself' while its figures
+    quietly rot, and nothing else in the estate would ever say so."""
+    try:
+        os.makedirs(os.path.dirname(HEARTBEAT_PATH), exist_ok=True)
+        with open(HEARTBEAT_PATH, "w") as f:
+            f.write(time.strftime("%Y-%m-%dT%H:%M:%SZ\n", time.gmtime()))
+    except OSError:
+        pass
+
+
+# ----------------------------------------------------------------- card -----
+def load_font(size, bold=True):
+    """No silent fallback. Pillow's load_default() is a 10 px bitmap face: the
+    card would still render, still post, still be pinned, and be unreadable -- a
+    broken picture published as a success. Refuse instead."""
+    from PIL import ImageFont
+    path = FONT_BOLD if bold else FONT_REG
+    try:
+        return ImageFont.truetype(path, size)
+    except OSError:
+        die("font not found: %s -- install fonts-dejavu-core, or set BANNER_FONT / "
+            "BANNER_FONT_REGULAR. Refusing to publish a card in a fallback bitmap face." % path)
+
+
+def render_card(count, usd, target, as_of_utc):
+    """1200x630, house style: dark ground, round mark, headline, coloured
+    tagline, a real progress bar, a row of live figures, and the timestamp the
+    figures were read at. Every number on it comes from count_orders()."""
+    from PIL import Image, ImageDraw
+
+    W, H = 1200, 630
+    BG, PANEL, LINE = (10, 11, 16), (17, 19, 29), (40, 42, 56)
+    TEXT, MUTED, DIM = (233, 235, 244), (154, 162, 184), (107, 114, 136)
+    TEAL, AMBER = (45, 212, 191), (251, 191, 36)
+
+    font = load_font
+
+    im = Image.new("RGB", (W, H), BG)
+    d = ImageDraw.Draw(im)
+
+    # mark (falls back to a drawn disc so a missing file never blanks the card)
+    try:
+        mark = Image.open(MARK_PATH).convert("RGBA").resize((96, 96))
+        im.paste(mark, (64, 56), mark)
+    except (OSError, ValueError):
+        d.ellipse((64, 56, 160, 152), fill=TEAL)
+        d.text((97, 82), "P", fill=BG, font=font(48))
+
+    d.text((184, 62), "PCoin", fill=TEXT, font=font(40))
+    d.text((184, 112), BANNER_MARKER, fill=TEAL, font=font(26))
+
+    # headline figure
+    pct = min(100.0, 100.0 * count / target) if target else 0.0
+    d.text((64, 200), "%d" % count, fill=TEXT, font=font(120))
+    w_num = d.textlength("%d" % count, font=font(120))
+    d.text((64 + w_num + 22, 262), "of %s purchases" % format(target, ","), fill=MUTED, font=font(38))
+
+    # progress bar
+    x0, y0, x1, y1 = 64, 372, W - 64, 372 + 34
+    d.rounded_rectangle((x0, y0, x1, y1), radius=17, fill=PANEL, outline=LINE)
+    fill_w = int((x1 - x0) * pct / 100.0)
+    if fill_w > 34:
+        d.rounded_rectangle((x0, y0, x0 + fill_w, y1), radius=17, fill=TEAL)
+    elif count > 0:
+        # any progress at all draws the nub -- "some" must never look like "none"
+        d.ellipse((x0, y0, x0 + 34, y1), fill=TEAL)
+    d.text((x1 - 8 - d.textlength("%.1f%%" % pct, font=font(24)), y1 + 12),
+           "%.1f%%" % pct, fill=MUTED, font=font(24))
+
+    # figures row
+    cards = [
+        ("$20+ purchases", format(count, ",")),
+        ("bought so far", "$%s" % format(usd, ",.0f")),
+        ("to go", format(max(0, target - count), ",")),
+    ]
+    cw, gap, cy = 340, 16, 452
+    for i, (label, value) in enumerate(cards):
+        cx = 64 + i * (cw + gap)
+        d.rounded_rectangle((cx, cy, cx + cw, cy + 104), radius=14, fill=PANEL, outline=LINE)
+        d.text((cx + 22, cy + 16), label.upper(), fill=DIM, font=font(16))
+        d.text((cx + 22, cy + 44), value, fill=AMBER if i == 0 else TEXT, font=font(40))
+
+    d.text((64, H - 44), "Read live from market.pc.am at %s UTC  -  every $20+ purchase counts" % as_of_utc,
+           fill=DIM, font=font(18, bold=False))
+
+    buf = io.BytesIO()
+    im.save(buf, "PNG", optimize=True)
+    return buf.getvalue()
+
+
+def caption(count, usd, target, as_of_utc):
+    pct = min(100.0, 100.0 * count / target) if target else 0.0
+    filled = int(round(20 * pct / 100.0))
+    if count > 0:
+        filled = max(1, filled)      # 10 of 1,000 is not an empty bar
+    bar = "▰" * filled + "▱" * (20 - filled)
+    return (
+        "<b>%s</b>\n\n"
+        "%s  <b>%s</b> / %s\n\n"
+        "Every purchase of $20 or more on <a href=\"%s\">market.pc.am</a> counts as one. "
+        "When it reaches <b>%s</b>, PCoin gets listed on a tracked exchange, which is the "
+        "gate CoinGecko, CoinMarketCap and the mining calculators all sit behind.\n\n"
+        "So far: <b>%s purchases</b>, <b>$%s</b> bought. This card updates itself from the "
+        "market's own records; nobody types the number in.\n\n"
+        "No promises about price, now or later.\n"
+        "<i>as of %s UTC</i>"
+    ) % (BANNER_MARKER, bar, format(count, ","), format(target, ","), MARKET_URL,
+         format(target, ","), format(count, ","), format(usd, ",.0f"), as_of_utc)
+
+
+# ----------------------------------------------------------------- telegram -
+class TgError(Exception):
+    def __init__(self, description, code=None, retryable=False):
+        super().__init__(description)
+        self.description = description or ""
+        self.code = code
+        self.retryable = retryable
+
+
+def _tg_once(token, method, fields, photo=None):
+    url = "https://api.telegram.org/bot%s/%s" % (token, method)
+    if photo is None:
+        data = urllib.parse.urlencode(fields).encode()
+        req = urllib.request.Request(url, data=data)
+    else:
+        boundary = "----pcoinbanner%d" % int(time.time() * 1000)
+        body = io.BytesIO()
+        for k, v in fields.items():
+            body.write(("--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n%s\r\n"
+                        % (boundary, k, v)).encode())
+        body.write(("--%s\r\nContent-Disposition: form-data; name=\"%s\"; filename=\"card.png\"\r\n"
+                    "Content-Type: image/png\r\n\r\n" % (boundary, photo[0])).encode())
+        body.write(photo[1])
+        body.write(("\r\n--%s--\r\n" % boundary).encode())
+        req = urllib.request.Request(url, data=body.getvalue(),
+                                     headers={"Content-Type": "multipart/form-data; boundary=" + boundary})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            j = json.load(r)
+    except urllib.error.HTTPError as e:
+        try:
+            j = json.loads(e.read().decode("utf-8", "replace"))
+        except ValueError:
+            raise TgError("HTTP %d from Telegram" % e.code, e.code,
+                          retryable=(e.code >= 500 or e.code == 429))
+    except (urllib.error.URLError, OSError) as e:
+        raise TgError("cannot reach Telegram (%s)" % type(e).__name__, retryable=True)
+    except Exception as e:
+        # Anything else -- http.client.InvalidURL among them -- can carry the URL,
+        # and the URL carries the bot token. Report the TYPE and nothing else.
+        raise TgError("Telegram call failed (%s)" % type(e).__name__, retryable=False)
+    if not j.get("ok"):
+        code = j.get("error_code")
+        raise TgError(j.get("description", "unknown Telegram error"), code,
+                      retryable=(code in (429, 500, 502, 503, 504)))
+    return j.get("result")
+
+
+def tg(token, method, fields, photo=None, tries=3):
+    """One Bot API call, retried on transport and 5xx/429 only. The token appears
+    only in the URL handed to urlopen -- never in a log line or an exception.
+
+    Retrying matters: this runs every ten minutes behind OnFailure=, so without
+    it one dropped packet pages the ops channel, and an alert that fires on
+    nothing is an alert people learn to ignore."""
+    last = None
+    for attempt in range(tries):
+        try:
+            return _tg_once(token, method, fields, photo)
+        except TgError as e:
+            last = e
+            if not e.retryable or attempt == tries - 1:
+                raise
+            time.sleep(2 ** attempt)
+    raise last
+
+
+def pinned_message(token, chat_id):
+    """The chat's currently pinned message, or None. Used for two things: to
+    adopt a banner posted by a run whose sendPhoto reply was lost, and to notice
+    that a human unpinned the one we keep editing."""
+    try:
+        chat = tg(token, "getChat", {"chat_id": chat_id})
+    except TgError as e:
+        log("could not read the chat to check the pin: %s" % e.description)
+        return None
+    return (chat or {}).get("pinned_message")
+
+
+# ----------------------------------------------------------------- main -----
+def guard_chat():
+    low = CHAT_ID.lower()
+    if not CHAT_ID:
+        die("BANNER_CHAT_ID is not set. There is deliberately no default: name the channel explicitly.")
+    if CHAT_ID == ALERT_CHANNEL_ID:
+        die("BANNER_CHAT_ID is the private OPS ALERT channel. Refusing at any setting: that "
+            "channel is for automated alerts only, and a progress card there is noise in the "
+            "one place noise must not be.")
+    if (CHAT_ID == PUBLIC_CHANNEL_ID or low in PUBLIC_USERNAMES) and not ALLOW_PUBLIC:
+        die("BANNER_CHAT_ID names the PUBLIC channel and BANNER_ALLOW_PUBLIC is not 1. Refusing. "
+            "The owner's instruction is that nothing reaches @PCoinPCN until the banner is "
+            "finished in the test channel.")
+    if TARGET <= 0:
+        die("BANNER_TARGET must be positive")
+
+
+def main():
+    guard_chat()
+
+    lock = None
+    if not DRY_RUN:
+        lock = take_lock()           # noqa: F841 -- held open for the life of the process
+
+    count, usd, last_day = count_orders()
+    as_of = time.strftime("%Y-%m-%d %H:%M", time.gmtime())
+    png = render_card(count, usd, TARGET, as_of)
+    cap = caption(count, usd, TARGET, as_of)
+
+    if DRY_RUN:
+        out = "/tmp/pcoin-listing-banner.png"
+        with open(out, "wb") as f:
+            f.write(png)
+        log("DRY RUN -- nothing sent. count=%d usd=%.2f last_delivered=%s target=%d chat=%s"
+            % (count, usd, last_day or "-", TARGET, CHAT_ID))
+        log("card written to %s (%d bytes)" % (out, len(png)))
+        log("caption:\n" + cap)
+        return 0
+
+    token = read_token()
+    st = load_state()
+
+    # A state file from a different chat is not this banner: start fresh rather
+    # than edit a message in the wrong channel. Say so loudly -- the OLD channel
+    # still has a pinned card that will now never update, and it still claims it
+    # updates itself. Somebody has to go and delete it.
+    if st["chat_id"] != CHAT_ID:
+        if st["chat_id"] and st["message_id"]:
+            log("WARNING: the banner has MOVED from chat %s to %s. Message %s is still pinned in "
+                "the old channel, is now frozen, and still says it updates itself -- delete it by hand."
+                % (st["chat_id"], CHAT_ID, st["message_id"]))
+        st = {"chat_id": CHAT_ID, "message_id": None, "last_count": None,
+              "last_usd": None, "last_edit": 0}
+
+    # A lost sendPhoto RESPONSE is not a failed send (CLAUDE.md 7.6). Before
+    # posting a first banner, look at what is actually pinned: if it is one of
+    # ours, adopt it instead of posting a second one beside it.
+    if not st["message_id"]:
+        pin = pinned_message(token, CHAT_ID)
+        if pin and BANNER_MARKER in (pin.get("caption") or "") and pin.get("photo"):
+            st["message_id"] = pin.get("message_id")
+            log("adopted the banner already pinned in this chat (message %s) rather than posting a second"
+                % st["message_id"])
+            save_state(st)
+
+    now = time.time()
+    unchanged = (st["last_count"] == count and st["last_usd"] == usd)
+    fresh_enough = (now - float(st["last_edit"] or 0)) < MAX_STALE_H * 3600
+    if st["message_id"] and unchanged and fresh_enough:
+        log("no change (count=%d, $%.2f) and banner is %.1fh old; not editing"
+            % (count, usd, (now - float(st["last_edit"])) / 3600))
+        touch_heartbeat()
+        return 0
+
+    if st["message_id"]:
+        media = json.dumps({"type": "photo", "media": "attach://card", "caption": cap, "parse_mode": "HTML"})
+        try:
+            tg(token, "editMessageMedia",
+               {"chat_id": CHAT_ID, "message_id": st["message_id"], "media": media},
+               photo=("card", png))
+            log("edited pinned banner: count=%d (was %s)" % (count, st["last_count"]))
+        except TgError as e:
+            desc = e.description.lower()
+            if "message is not modified" in desc:
+                log("banner already current (Telegram: not modified)")
+            elif "message to edit not found" in desc or "message_id_invalid" in desc:
+                # A human DELETED it. Forget it and re-post next run.
+                log("pinned message %s no longer exists; clearing state so the next run re-posts"
+                    % st["message_id"])
+                st["message_id"] = None
+                save_state(st)
+                return 1
+            elif "message can't be edited" in desc or "not enough rights" in desc:
+                # NOT a deleted message: the bot lost the rights it needs. Clearing
+                # state here would post a SECOND banner and leave the stale one
+                # pinned above it. Fail, and let a human restore the rights.
+                die("the banner exists but this bot can no longer edit it (%s). Not re-posting -- "
+                    "that would leave two banners, the pinned one stale. Restore the bot's "
+                    "post/edit rights in the channel." % e.description)
+            else:
+                die("editMessageMedia: %s" % e.description)
+    else:
+        res = tg(token, "sendPhoto",
+                 {"chat_id": CHAT_ID, "caption": cap, "parse_mode": "HTML"},
+                 photo=("photo", png))
+        mid = (res or {}).get("message_id")
+        if not mid:
+            die("sendPhoto returned no message_id")
+        st["message_id"] = mid
+        save_state(st)   # save BEFORE pinning: a pin failure must not orphan the post
+        try:
+            tg(token, "pinChatMessage", {"chat_id": CHAT_ID, "message_id": mid, "disable_notification": "true"})
+            log("posted and pinned banner as message %s: count=%d" % (mid, count))
+        except TgError as e:
+            log("posted banner as message %s but could not pin it: %s -- pin it by hand, "
+                "later runs will still edit it" % (mid, e.description))
+
+    # An edit succeeds whether or not the message is still pinned, so a human who
+    # unpins the banner leaves it being faithfully updated somewhere nobody looks.
+    pin = pinned_message(token, CHAT_ID)
+    if pin is not None and pin.get("message_id") != st["message_id"]:
+        try:
+            tg(token, "pinChatMessage",
+               {"chat_id": CHAT_ID, "message_id": st["message_id"], "disable_notification": "true"})
+            log("the banner had been unpinned (pinned message was %s); re-pinned it"
+                % pin.get("message_id"))
+        except TgError as e:
+            log("the banner is not pinned and could not be re-pinned: %s" % e.description)
+
+    st["last_count"] = count
+    st["last_usd"] = usd
+    st["last_edit"] = now
+    save_state(st)
+    touch_heartbeat()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

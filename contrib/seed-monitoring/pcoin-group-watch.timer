@@ -1,7 +1,9 @@
 [Unit]
-Description=PCoin — check the discussion group every minute
+Description=PCoin -- check the discussion group every minute
 
 [Timer]
+# A minute, not five. This is the path a bug report arrives on, and getUpdates
+# is cheap: one HTTP call that returns an empty list when nothing was said.
 OnBootSec=90
 OnUnitActiveSec=60
 AccuracySec=15

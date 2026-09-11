@@ -1,10 +1,29 @@
 [Unit]
-Description=PCoin — relay @PCoinPCNChat to the ops channel
-Documentation=https://github.com/pars5555/pcoin
+Description=PCoin -- relay @PCoinPCNChat to the ops channel
+Documentation=https://github.com/pars5555/pcoin/blob/main/contrib/seed-monitoring/pcoin-group-watch
+
+# A relay that stops silently is the exact failure it exists to prevent: the
+# group goes quiet-looking while people are actually talking into it.
+OnFailure=pcoin-alert@%n.service
 
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/pcoin-group-watch
+
+# The local transcript lives in the STATE directory, not /var/log: under
+# ProtectSystem=strict /var/log is read-only unless it is a LogsDirectory, and
+# the script wants a FILE there, not a directory. Its log write is non-fatal, so
+# getting this wrong would silently cost the only searchable record of what the
+# group actually said.
+Environment=GROUP_WATCH_LOG=/var/lib/pcoin-group-watch/relay.log
 Nice=10
 MemoryMax=128M
 TimeoutStartSec=180
+
+# Its own state directory, and nothing else writable.
+ProtectSystem=strict
+StateDirectory=pcoin-group-watch
+StateDirectoryMode=0750
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectProc=invisible

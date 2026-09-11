@@ -1,0 +1,46 @@
+[Unit]
+Description=PCoin listing-progress banner -- edit the pinned card from live market data
+Documentation=https://github.com/pars5555/pcoin/blob/main/contrib/market/pcoin-listing-banner
+
+# Fires when the SCRIPT fails -- MySQL unreadable, Telegram unreachable, a
+# deleted pin -- never when the count is merely unchanged (that exits 0 and
+# logs one line). A banner that silently stops updating is worse than none:
+# readers assume the last number is current.
+OnFailure=pcoin-alert@%n.service
+
+[Service]
+Type=oneshot
+
+# BANNER_CHAT_ID lives here and ONLY here. The script has no default and refuses
+# the public channel unless BANNER_ALLOW_PUBLIC=1 is also set in this file. So
+# moving the banner from the test channel to @PCoinPCN is a deliberate two-line
+# edit of this file, never a side effect of anything else.
+EnvironmentFile=/etc/default/pcoin-listing-banner
+ExecStart=/usr/local/bin/pcoin-listing-banner
+
+# Renders one 1200x630 PNG with Pillow and makes two HTTP calls. Must never be
+# the thing that loads the market host.
+Nice=10
+MemoryMax=192M
+CPUQuota=25%
+TimeoutStartSec=120
+
+# Read-only against everything except its own state directory. StateDirectory=
+# (not ReadWritePaths=) because systemd CREATES it: under ProtectSystem=strict a
+# ReadWritePaths entry naming a directory that does not exist yet fails namespace
+# setup before the script runs at all, so its own os.makedirs could never help.
+ProtectSystem=strict
+StateDirectory=pcoin-listing-banner
+StateDirectoryMode=0700
+PrivateTmp=true
+NoNewPrivileges=true
+
+# /proc/<pid>/cmdline and /environ are how a credential leaves a process on a
+# shared host. This host also runs the market, the price oracle and the GPU
+# earner under other identities.
+ProtectProc=invisible
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
