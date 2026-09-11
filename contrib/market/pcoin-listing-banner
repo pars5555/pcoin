@@ -15,8 +15,12 @@ Shape of one run:
       -> render a 1200x630 card (Pillow)              (house style, figures read live)
       -> first run:  adopt an existing pinned banner if one is there,
                      otherwise sendPhoto + pinChatMessage, remember message_id
-         later runs: editMessageMedia on that pinned message, and re-pin it
-                     if a human unpinned it
+         figures changed: REPOST at the bottom, pin the new one, delete the old
+                     (see KEEP_AT_BOTTOM -- a pinned message sits at the TOP of
+                     the chat, and the only way to sit at the BOTTOM is to be
+                     the newest post)
+         only stale:  editMessageMedia in place, and re-pin it if a human
+                     unpinned it. No churn for a timestamp.
       -> exit 0
 
 Deliberate properties, each of which guards a real failure:
@@ -80,6 +84,19 @@ MIN_USD        = float(os.environ.get("BANNER_MIN_USD", "20"))
 MAX_STALE_H    = float(os.environ.get("BANNER_MAX_STALE_H", "6"))
 ALLOW_PUBLIC   = os.environ.get("BANNER_ALLOW_PUBLIC", "0") == "1"
 MARKET_URL     = os.environ.get("BANNER_MARKET_URL", "https://market.pc.am")
+
+# KEEP IT AT THE BOTTOM OF THE CHAT.
+#
+# Telegram has no sticky footer. A pinned message lives in a bar at the TOP, and
+# the only way a post sits at the BOTTOM is to be the newest one. So when the
+# figures actually change, this REPOSTS rather than edits: new photo, pinned,
+# old one deleted. The card is then both the pinned message and the last thing
+# in the channel, which is what a reader scrolling to the end sees.
+#
+# It reposts ONLY on a real change. The periodic "as of" refresh still edits in
+# place, because moving the card to the bottom every few hours to say nothing
+# new is how a banner teaches people to scroll past it.
+KEEP_AT_BOTTOM = os.environ.get("BANNER_KEEP_AT_BOTTOM", "1") == "1"
 
 # The public announcement channel. Hardcoded so it can never be reached by a
 # typo in an env file: reaching it requires BOTH this id AND an explicit flag.
@@ -365,6 +382,21 @@ def caption(count, usd, target, as_of_utc):
          format(target, ","), format(count, ","), format(usd, ",.0f"), as_of_utc)
 
 
+def keyboard():
+    """The row of buttons under the card.
+
+    A URL keyboard, not a callback one: every button is a link, so the bot needs
+    no callback handler, nothing can queue up unanswered, and the buttons keep
+    working even if this script never runs again. A card that asks people to do
+    something should carry the thing to press."""
+    return json.dumps({"inline_keyboard": [[
+        {"text": "\U0001F6D2  Buy PCN  \u2014  $20+ counts", "url": MARKET_URL},
+    ], [
+        {"text": "\U0001F4CA  Live count", "url": MARKET_URL},
+        {"text": "\U0001F50D  Explorer", "url": "https://explorer.pc.am"},
+    ]]})
+
+
 # ----------------------------------------------------------------- telegram -
 class TgError(Exception):
     def __init__(self, description, code=None, retryable=False):
@@ -518,13 +550,44 @@ def main():
         touch_heartbeat()
         return 0
 
-    if st["message_id"]:
+    figures_changed = (st["last_count"] != count or st["last_usd"] != usd)
+
+    if st["message_id"] and KEEP_AT_BOTTOM and figures_changed:
+        # REPOST so the card is the newest message, then pin it, then delete the
+        # old one. That order matters: if anything fails after the new post, the
+        # channel still has exactly one PINNED banner and at worst an unpinned
+        # stale copy that scrolls away. Deleting first and failing to post would
+        # leave the channel with no banner at all.
+        old_id = st["message_id"]
+        res = tg(token, "sendPhoto",
+                 {"chat_id": CHAT_ID, "caption": cap, "parse_mode": "HTML",
+                  "reply_markup": keyboard()},
+                 photo=("photo", png))
+        mid = (res or {}).get("message_id")
+        if not mid:
+            die("sendPhoto returned no message_id")
+        st["message_id"] = mid
+        save_state(st)          # before the pin and the delete: a crash here must not orphan it
+        try:
+            tg(token, "pinChatMessage",
+               {"chat_id": CHAT_ID, "message_id": mid, "disable_notification": "true"})
+        except TgError as e:
+            log("posted %s but could not pin it: %s" % (mid, e.description))
+        try:
+            tg(token, "deleteMessage", {"chat_id": CHAT_ID, "message_id": old_id})
+            log("reposted at the bottom as %s (count=%d, was %s); removed the old card %s"
+                % (mid, count, st["last_count"], old_id))
+        except TgError as e:
+            log("reposted as %s but could not delete the old card %s: %s -- delete it by hand"
+                % (mid, old_id, e.description))
+    elif st["message_id"]:
         media = json.dumps({"type": "photo", "media": "attach://card", "caption": cap, "parse_mode": "HTML"})
         try:
             tg(token, "editMessageMedia",
-               {"chat_id": CHAT_ID, "message_id": st["message_id"], "media": media},
+               {"chat_id": CHAT_ID, "message_id": st["message_id"], "media": media,
+                "reply_markup": keyboard()},
                photo=("card", png))
-            log("edited pinned banner: count=%d (was %s)" % (count, st["last_count"]))
+            log("edited pinned banner in place: count=%d (was %s)" % (count, st["last_count"]))
         except TgError as e:
             desc = e.description.lower()
             if "message is not modified" in desc:
@@ -547,7 +610,8 @@ def main():
                 die("editMessageMedia: %s" % e.description)
     else:
         res = tg(token, "sendPhoto",
-                 {"chat_id": CHAT_ID, "caption": cap, "parse_mode": "HTML"},
+                 {"chat_id": CHAT_ID, "caption": cap, "parse_mode": "HTML",
+                  "reply_markup": keyboard()},
                  photo=("photo", png))
         mid = (res or {}).get("message_id")
         if not mid:
