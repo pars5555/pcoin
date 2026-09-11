@@ -103,7 +103,30 @@ MARKET_URL     = os.environ.get("BANNER_MARKET_URL", "https://market.pc.am")
 # It reposts ONLY on a real change. The periodic "as of" refresh still edits in
 # place, because moving the card to the bottom every few hours to say nothing
 # new is how a banner teaches people to scroll past it.
-KEEP_AT_BOTTOM = os.environ.get("BANNER_KEEP_AT_BOTTOM", "1") == "1"
+KEEP_AT_BOTTOM = os.environ.get("BANNER_KEEP_AT_BOTTOM", "0") == "1"
+
+# text | card
+#
+# TEXT IS THE DEFAULT, AND THE PHOTO CARD WAS THE WRONG SHAPE FOR THIS JOB.
+#
+# The one thing Telegram keeps permanently on screen in a channel is the PINNED
+# MESSAGE BAR at the top. It is always there, however many messages arrive, and
+# it shows a ONE-LINE PREVIEW of whatever is pinned. That bar is the widget.
+#
+# A 1200x630 photo previews in that bar as a thumbnail plus a clipped caption:
+# bulky, and the number -- the only thing anyone wants from it -- is not on the
+# first line. A short text message previews as exactly its first line, so
+# putting the figure there makes the pin bar read as a live status strip:
+#
+#     PCoin listing: 10 / 1,000 purchases
+#
+# It also removes the need to repost. The pin bar does not scroll away, so
+# chasing the bottom of the chat buys nothing and costs a deleted-and-reposted
+# message every sale. Hence KEEP_AT_BOTTOM now defaults OFF; set it to 1 only if
+# you deliberately want the card style chasing the newest position.
+STYLE = os.environ.get("BANNER_STYLE", "text").strip().lower()
+if STYLE not in ("text", "card"):
+    STYLE = "text"
 
 # The public announcement channel. Hardcoded so it can never be reached by a
 # typo in an env file: reaching it requires BOTH this id AND an explicit flag.
@@ -414,6 +437,27 @@ def keyboard():
     ]]})
 
 
+def widget_text(count, usd, target, as_of_utc):
+    """Three short lines. The FIRST one is the whole point.
+
+    Telegram's pinned bar shows the first line and clips the rest, so the figure
+    goes there and nothing else competes with it. Lines two and three are for
+    someone who taps through to the message itself.
+    """
+    pct = min(100.0, 100.0 * count / target) if target else 0.0
+    filled = int(round(10 * pct / 100.0))
+    if count > 0:
+        filled = max(1, filled)          # 10 of 1,000 is not an empty bar
+    bar = "\u25b0" * filled + "\u25b1" * (10 - filled)
+    return (
+        "\U0001F4CA <b>%s</b> \u2014 <b>%s</b> / %s\n"
+        "%s  %.1f%%  \u00b7  <b>$%s</b> bought  \u00b7  as of %s UTC\n"
+        "<i>Every $20+ purchase on <a href=\"%s\">market.pc.am</a> counts as one. "
+        "Read live, never typed in. No price promises.</i>"
+    ) % (BANNER_MARKER, format(count, ","), format(target, ","),
+         bar, pct, format(usd, ",.0f"), as_of_utc, MARKET_URL)
+
+
 # ----------------------------------------------------------------- telegram -
 class TgError(Exception):
     def __init__(self, description, code=None, retryable=False):
@@ -581,17 +625,21 @@ def main():
 
     count, usd, last_day = count_orders()
     as_of = time.strftime("%Y-%m-%d %H:%M", time.gmtime())
-    png = render_card(count, usd, TARGET, as_of)
-    cap = caption(count, usd, TARGET, as_of)
+    text = widget_text(count, usd, TARGET, as_of)
+    png = render_card(count, usd, TARGET, as_of) if STYLE == "card" else None
+    cap = caption(count, usd, TARGET, as_of) if STYLE == "card" else None
 
     if DRY_RUN:
-        out = "/tmp/pcoin-listing-banner.png"
-        with open(out, "wb") as f:
-            f.write(png)
-        log("DRY RUN -- nothing sent. count=%d usd=%.2f last_delivered=%s target=%d chat=%s"
-            % (count, usd, last_day or "-", TARGET, CHAT_ID))
-        log("card written to %s (%d bytes)" % (out, len(png)))
-        log("caption:\n" + cap)
+        log("DRY RUN -- nothing sent. style=%s count=%d usd=%.2f last_delivered=%s target=%d chat=%s"
+            % (STYLE, count, usd, last_day or "-", TARGET, CHAT_ID))
+        if STYLE == "card":
+            out = "/tmp/pcoin-listing-banner.png"
+            with open(out, "wb") as f:
+                f.write(png)
+            log("card written to %s (%d bytes)" % (out, len(png)))
+            log("caption:\n" + cap)
+        else:
+            log("widget text (the pinned bar shows line 1):\n" + text)
         return 0
 
     token = read_token()
@@ -614,7 +662,8 @@ def main():
     # ours, adopt it instead of posting a second one beside it.
     if not st["message_id"]:
         pin = pinned_message(token, CHAT_ID)
-        if pin and BANNER_MARKER in (pin.get("caption") or "") and pin.get("photo"):
+        body = (pin or {}).get("caption") or (pin or {}).get("text") or ""
+        if pin and BANNER_MARKER in body and (pin.get("photo") or pin.get("text")):
             st["message_id"] = pin.get("message_id")
             log("adopted the banner already pinned in this chat (message %s) rather than posting a second"
                 % st["message_id"])
@@ -660,13 +709,23 @@ def main():
             log("reposted as %s but could not delete the old card %s: %s -- delete it by hand"
                 % (mid, old_id, e.description))
     elif st["message_id"]:
-        media = json.dumps({"type": "photo", "media": "attach://card", "caption": cap, "parse_mode": "HTML"})
         try:
-            tg(token, "editMessageMedia",
-               {"chat_id": CHAT_ID, "message_id": st["message_id"], "media": media,
-                "reply_markup": keyboard()},
-               photo=("card", png))
-            log("edited pinned banner in place: count=%d (was %s)" % (count, st["last_count"]))
+            if STYLE == "card":
+                media = json.dumps({"type": "photo", "media": "attach://card",
+                                    "caption": cap, "parse_mode": "HTML"})
+                tg(token, "editMessageMedia",
+                   {"chat_id": CHAT_ID, "message_id": st["message_id"], "media": media,
+                    "reply_markup": keyboard()},
+                   photo=("card", png))
+            else:
+                # Editing the pinned message updates the pin BAR too, which is
+                # the whole mechanism: the strip at the top of every member's
+                # screen changes without a single new message being sent.
+                tg(token, "editMessageText",
+                   {"chat_id": CHAT_ID, "message_id": st["message_id"], "text": text,
+                    "parse_mode": "HTML", "disable_web_page_preview": "true",
+                    "reply_markup": keyboard()})
+            log("edited the pinned widget in place: count=%d (was %s)" % (count, st["last_count"]))
         except TgError as e:
             desc = e.description.lower()
             if "message is not modified" in desc:
@@ -688,13 +747,20 @@ def main():
             else:
                 die("editMessageMedia: %s" % e.description)
     else:
-        res = tg(token, "sendPhoto",
-                 {"chat_id": CHAT_ID, "caption": cap, "parse_mode": "HTML",
-                  "reply_markup": keyboard()},
-                 photo=("photo", png))
+        if STYLE == "card":
+            res = tg(token, "sendPhoto",
+                     {"chat_id": CHAT_ID, "caption": cap, "parse_mode": "HTML",
+                      "reply_markup": keyboard()},
+                     photo=("photo", png))
+        else:
+            res = tg(token, "sendMessage",
+                     {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML",
+                      "disable_web_page_preview": "true",
+                      "disable_notification": "true",
+                      "reply_markup": keyboard()})
         mid = (res or {}).get("message_id")
         if not mid:
-            die("sendPhoto returned no message_id")
+            die("the send returned no message_id")
         st["message_id"] = mid
         save_state(st)   # save BEFORE pinning: a pin failure must not orphan the post
         try:
