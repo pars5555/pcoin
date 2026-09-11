@@ -160,17 +160,37 @@ def main():
         print("  group       : %d" % GROUP_ID)
         return 0
 
-    try:
-        j = api(token, "getUpdates", {
-            "offset": st["offset"], "timeout": 0, "limit": 100,
-            "allowed_updates": json.dumps(["message", "edited_message"])})
-    except urllib.error.HTTPError as e:
-        if e.code == 409:
-            sys.exit("CONFLICT (409): something else is polling getUpdates for this bot. "
-                     "Only one consumer may. Find it and stop it -- do not retry.")
-        sys.exit("getUpdates failed: %s" % e)
-    except Exception as e:
-        sys.exit("getUpdates failed: %s" % e)
+    # RETRY THE TRANSPORT, NEVER THE 409. This runs every sixty seconds behind
+    # OnFailure=, so without a retry one reset connection pages the ops channel --
+    # which happened at 2026-09-11 03:23 UTC, "[Errno 104] Connection reset by
+    # peer", on a run that had nothing to report. An alert that fires on a dropped
+    # packet is an alert people stop reading. A 409 is the opposite: it means a
+    # SECOND consumer is stealing updates, each of you seeing half a conversation,
+    # and retrying is what makes the two of you fight. That one is fatal, loudly.
+    j = None
+    for attempt in range(3):
+        try:
+            j = api(token, "getUpdates", {
+                "offset": st["offset"], "timeout": 0, "limit": 100,
+                "allowed_updates": json.dumps(["message", "edited_message"])})
+            break
+        except urllib.error.HTTPError as e:
+            if e.code == 409:
+                sys.exit("CONFLICT (409): something else is polling getUpdates for this bot. "
+                         "Only one consumer may. Find it and stop it -- do not retry.")
+            if e.code >= 500 and attempt < 2:
+                time.sleep(2 ** attempt)
+                continue
+            sys.exit("getUpdates failed: HTTP %d" % e.code)
+        except (urllib.error.URLError, OSError) as e:
+            # Transport only. Report the TYPE, never the exception object: a URL
+            # error can carry the request URL, and the URL carries the bot token.
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+                continue
+            sys.exit("getUpdates unreachable after 3 tries (%s)" % type(e).__name__)
+        except Exception as e:
+            sys.exit("getUpdates failed (%s)" % type(e).__name__)
 
     if not j.get("ok"):
         sys.exit("getUpdates said: %s" % j.get("description"))

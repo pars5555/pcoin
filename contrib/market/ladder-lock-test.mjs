@@ -141,5 +141,59 @@ console.log('\n5. a payment that lands first is left alone');
      `rolled ${conn.rolledBack} committed ${conn.committed}`);
 }
 
+console.log('\n6. a customer cancelling their OWN order');
+{
+  // The customer-facing cancel is expireWithRelease with an `owner`. The point
+  // of the owner argument is that the authorisation and the race guard are the
+  // SAME statement: `WHERE order_id = ? AND email = ? AND status = 'pending'`.
+  // Checking ownership in a separate SELECT would leave a window in which the
+  // order stops being pending -- or, worse, would let a check against a stale
+  // read authorise a write.
+  const conn = recorder({ fills: [{ rung_no: 3, qty: '2.00000000' }], affected: 1 });
+  const pool = poolFrom(conn);
+  const L = makeLadder(pool);
+  const out = await L.expireWithRelease('MINE-1', { owner: 'buyer@example.com' });
+
+  const expire = conn.sql.findIndex(s => /UPDATE orders SET status = 'expired'/.test(s));
+  const release = conn.sql.findIndex(s => /UPDATE ladder_fills SET state = \?/.test(s));
+  const begin = conn.sql.indexOf('BEGIN');
+  const commit = conn.sql.indexOf('COMMIT');
+
+  ok('it reports what it did', out.expired === true && out.released === 1,
+     JSON.stringify(out));
+  ok('the email is IN the UPDATE, not a separate check',
+     /AND email = \? AND status = 'pending'/.test(conn.sql[expire] || ''),
+     conn.sql[expire]);
+  ok('the expire and the release are one transaction',
+     begin >= 0 && begin < expire && release > expire && commit > release,
+     `begin@${begin} expire@${expire} release@${release} commit@${commit}`);
+  ok('exactly one COMMIT, no rollback',
+     conn.committed === 1 && conn.rolledBack === 0,
+     `committed ${conn.committed} rolled ${conn.rolledBack}`);
+}
+
+console.log('\n7. cancelling somebody else\'s order changes nothing');
+{
+  // affected 0 = the WHERE matched no row, which is what a wrong email looks
+  // like and what an already-paid order looks like. Both must be the same
+  // outcome: touch nothing, release nothing, report expired:false. In
+  // particular this must NOT be an exception -- "a payment got there first" is
+  // an ordinary result, and a route that threw would turn it into a 500 on a
+  // money path.
+  const conn = recorder({ fills: [{ rung_no: 3, qty: '2.00000000' }], affected: 0 });
+  const pool = poolFrom(conn);
+  const L = makeLadder(pool);
+  const out = await L.expireWithRelease('NOT-MINE', { owner: 'attacker@example.com' });
+
+  ok('it reports that nothing happened', out.expired === false && out.released === 0,
+     JSON.stringify(out));
+  ok('no inventory is released',
+     !conn.sql.some(s => /UPDATE ladder_fills SET state = \?/.test(s)),
+     conn.sql.join(' | '));
+  ok('rolled back, not committed',
+     conn.rolledBack === 1 && conn.committed === 0,
+     `rolled ${conn.rolledBack} committed ${conn.committed}`);
+}
+
 console.log(`\n  ${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);

@@ -929,11 +929,18 @@ ${left !== undefined ? `<p class="s" style="color:var(--dim)">${left} attempt(s)
             ok ? `Waiver #${wid} revoked.` : `Waiver #${wid} was already used, revoked or gone.`);
         } else if (act === 'order/expire') {
           const id = f.get('order_id');
-          const r = await q(`UPDATE orders SET status='expired' WHERE order_id=? AND status='pending'`, [id]);
-          if (r.affectedRows === 1) await ladder.releaseLadder(id);
+          // One transaction, via the shared primitive. As two autocommit
+          // statements there is a window where the order is already 'expired'
+          // and its rungs are already back on sale -- and the IPN handler
+          // accepts a payment for an 'expired' order on purpose, so a payment
+          // landing in that window is recorded against inventory somebody else
+          // can now buy at those prices. The sweeper was fixed for this in
+          // ladder.mjs; this copy was not.
+          const r = await ladder.expireWithRelease(id, { reason: 'expired by admin' });
           await audit(email, 'order.expire', id, ip);
           return done('/admin/orders', 'ok',
-                      r.affectedRows ? 'Expired, inventory released.' : 'Not pending — nothing done.');
+                      r.expired ? `Expired, ${r.released} rung reservation(s) released.`
+                                : 'Not pending — nothing done.');
         } else if (act === 'totp/enrol') {
           // Generate, store, then REDIRECT to a page that shows what is stored.
           // Rendering it straight from the POST meant a refresh hit a route with

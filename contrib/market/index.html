@@ -1,3 +1,10 @@
+<style>
+.btn-sm{display:inline-block;padding:3px 9px;border-radius:6px;border:1px solid var(--line,#334);
+  background:var(--accent,#2dd4bf);color:#08121a;font-size:12px;font-weight:600;text-decoration:none;
+  cursor:pointer;line-height:1.6}
+.btn-sm[disabled]{opacity:.5;cursor:default}
+.btn-quiet{background:transparent;color:var(--dim,#9aa2b8)}
+</style>
 <div class="wrap">
   <header>
     <div class="brand">PCoin <span>market</span></div>
@@ -121,7 +128,15 @@ function showTab(m) {
 async function api(path, opts) {
   const r = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+  if (!r.ok) {
+    // Carry the BODY, not just the message. A 429 from /api/buy names the unpaid
+    // orders that are blocking it, and throwing that away is what left people
+    // reading "pay or cancel one" with nothing to click.
+    const e = new Error(j.error || ('HTTP ' + r.status));
+    e.status = r.status;
+    e.data = j;
+    throw e;
+  }
   return j;
 }
 
@@ -162,17 +177,54 @@ async function refresh() {
   }
 }
 
+const escAttr = s => String(s).replace(/[&<>"']/g, c =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
 function renderOrders(list) {
   if (!list.length) { $('orders').innerHTML = '<span style="color:var(--dim)">None yet.</span>'; return; }
+  // A pending row gets the two things it never had: the invoice it was given,
+  // and a way to let the coins go. An unpaid order holds ladder rungs for its
+  // whole TTL, so the customer's own abandoned order is what prices their next
+  // attempt 5.7-8.2% worse -- and until now the page told them to cancel while
+  // offering nothing to cancel with.
   $('orders').innerHTML = '<table><thead><tr><th>When</th><th>USD</th><th>PCN</th>'
-    + '<th>Status</th><th>To</th></tr></thead><tbody>'
-    + list.map(o => '<tr>'
+    + '<th>Status</th><th>To</th><th></th></tr></thead><tbody>'
+    + list.map(o => {
+      const pending = o.status === 'pending';
+      let act = '';
+      if (pending && o.invoiceUrl) {
+        act += '<a class="btn-sm" href="' + escAttr(o.invoiceUrl) + '">Pay</a> ';
+      }
+      if (pending) {
+        act += '<button class="btn-sm btn-quiet" data-cancel="' + escAttr(o.orderId) + '">Cancel</button>';
+      }
+      return '<tr>'
       + '<td>' + new Date(o.createdAt).toLocaleString() + '</td>'
       + '<td>$' + o.usd + '</td>'
       + '<td>' + Math.round(o.quotedPcn).toLocaleString() + '</td>'
       + '<td>' + o.status.replace(/_/g, ' ') + '</td>'
       + '<td class="mono">' + o.address.slice(0, 14) + '…</td>'
-      + '</tr>').join('') + '</tbody></table>';
+      + '<td>' + act + '</td>'
+      + '</tr>';
+    }).join('') + '</tbody></table>';
+
+  $('orders').querySelectorAll('[data-cancel]').forEach(btn => {
+    btn.onclick = async () => {
+      const id = btn.getAttribute('data-cancel');
+      if (!confirm('Cancel order ' + id + '? The PCN it is holding goes back on sale.\n\n'
+                 + 'If you have already sent payment, do NOT cancel \u2014 it will still be credited.')) return;
+      btn.disabled = true;
+      try {
+        const r = await api('/api/order/' + encodeURIComponent(id) + '/cancel', { method: 'POST' });
+        show($('buyMsg'), 'ok', r.note || 'Cancelled.');
+        await refresh();
+        quote();
+      } catch (e) {
+        btn.disabled = false;
+        show($('buyMsg'), 'err', e.message);
+      }
+    };
+  });
 }
 
 const money = n => n < 0.01 ? '$' + n.toFixed(6) : '$' + n.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
@@ -344,7 +396,22 @@ async function buy() {
       usd: Number($('usd').value), address: cleanAddr($('addr').value) }) });
     show($('buyMsg'), 'ok', 'Order created. Opening payment…');
     location.href = r.invoiceUrl;
-  } catch (e) { show($('buyMsg'), 'err', e.message); }
+  } catch (e) {
+    // A 429 that names the blocking orders is not a dead end: say where the
+    // buttons are. Without this the customer's only visible option was to try
+    // again, which quotes them from dearer rungs -- their own.
+    const blocked = e.data && e.data.pendingOrders;
+    if (blocked && blocked.length) {
+      show($('buyMsg'), 'err', e.message
+        + ' Your unpaid order' + (blocked.length === 1 ? ' is' : 's are')
+        + ' listed under "Your orders" below \u2014 use Pay to finish it, or Cancel to put the'
+        + ' PCN back on sale.');
+      const el = $('orders');
+      if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } else {
+      show($('buyMsg'), 'err', e.message);
+    }
+  }
   // Re-quote rather than blindly re-enabling: if the refusal was the sale gate,
   // the button must stay down. quote() is what owns that state.
   quote();

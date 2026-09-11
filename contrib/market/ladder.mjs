@@ -313,6 +313,59 @@ export function makeLadder(pool, { notify = null, log = console, getSetting = nu
     } finally { if (!outerConn) conn.release(); }
   }
 
+  /** Take an order out of 'pending' and give its rungs back, in ONE transaction.
+   *
+   *  THE ONE PLACE THAT DOES THIS. There are three callers -- the sweeper below,
+   *  the customer's own cancel button, and the admin panel's Expire action --
+   *  and they were three separate implementations, of which only the sweeper had
+   *  been fixed. The window the other two still had:
+   *
+   *    1. commit status='expired'
+   *    2. release the rungs; someone else buys them
+   *    3. the original buyer's payment lands, the order moves to
+   *       awaiting_delivery, and settleLadder finds no 'reserved' fills
+   *
+   *  The IPN handler accepts a payment for an 'expired' order ON PURPOSE -- a
+   *  slow chain can confirm minutes after a timeout -- so that sequence is
+   *  reachable, and it ends with a buyer having paid for inventory that was
+   *  resold at those prices. Holding both writes in one transaction removes it:
+   *  a concurrent payment either sees the order still 'pending' and waits on the
+   *  row lock, or sees it expired with the inventory already handed back.
+   *
+   *  `owner` is optional. Passing it makes the UPDATE the authorisation check
+   *  and the race guard in a single statement, which is what the customer-facing
+   *  cancel needs: you cannot cancel somebody else's order, and you cannot
+   *  cancel one a payment has just moved.
+   *
+   *  Returns { expired, released }. expired:false means the order was not
+   *  pending (or not yours) and NOTHING was touched -- never an error, because
+   *  "a payment got there first" is a normal outcome, not a fault.
+   */
+  async function expireWithRelease(orderId, { owner = null, reason = 'expired' } = {}) {
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [r] = owner
+        ? await conn.query(
+            `UPDATE orders SET status = 'expired'
+              WHERE order_id = ? AND email = ? AND status = 'pending'`, [orderId, owner])
+        : await conn.query(
+            `UPDATE orders SET status = 'expired'
+              WHERE order_id = ? AND status = 'pending'`, [orderId]);
+      if (r.affectedRows !== 1) {
+        await conn.rollback();
+        return { expired: false, released: 0 };
+      }
+      const released = await releaseLadder(orderId, conn);
+      await conn.commit();
+      console.log(`[ladder] ${reason} ${orderId}, released ${released} rung reservation(s)`);
+      return { expired: true, released };
+    } catch (e) {
+      await conn.rollback();
+      throw e;
+    } finally { conn.release(); }
+  }
+
   /** Abandoned orders must give their inventory back, or the ladder slowly
    *  locks itself up behind invoices nobody ever paid. */
   async function sweepExpiredOrders() {
@@ -340,24 +393,14 @@ export function makeLadder(pool, { notify = null, log = console, getSetting = nu
         // transaction removes the window: a concurrent payment either sees the
         // order still 'pending' (and the row lock makes it wait), or sees it
         // expired with the inventory already given back.
-        const conn = await pool.getConnection();
+        // expireWithRelease holds both writes in one transaction; a return of
+        // expired:false means a payment landed first, which is normal and means
+        // touch nothing.
         try {
-          await conn.beginTransaction();
-          const [r] = await conn.query(
-            `UPDATE orders SET status = 'expired' WHERE order_id = ? AND status = 'pending'`,
-            [o.order_id]);
-          if (r.affectedRows === 1) {
-            const n = await releaseLadder(o.order_id, conn);
-            await conn.commit();
-            console.log(`[ladder] expired ${o.order_id}, released ${n} rung reservation(s)`);
-          } else {
-            // A payment landed first. Touch nothing.
-            await conn.rollback();
-          }
+          await expireWithRelease(o.order_id, { reason: 'swept' });
         } catch (e) {
-          await conn.rollback();
           console.error(`[ladder] could not expire ${o.order_id}: ${e.message}`);
-        } finally { conn.release(); }
+        }
       }
 
       // Self-heal. Everywhere an order leaves 'pending', the status change and
@@ -409,5 +452,5 @@ Inventory from unpaid orders is not ` +
   }
 
   return { rungsWithStock, ladderState, reserveLadder, settleLadder, releaseLadder,
-           sweepExpiredOrders, walkUsd, walkPcn };
+           expireWithRelease, sweepExpiredOrders, walkUsd, walkPcn };
 }

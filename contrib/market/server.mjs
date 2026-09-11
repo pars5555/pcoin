@@ -635,7 +635,12 @@ async function npCreateInvoice({ usd, orderId, address }) {
       order_description: `PCN to ${address}`,
       ipn_callback_url: `${cfg.publicUrl}/ipn`,
       success_url: `${cfg.publicUrl}/order/${orderId}`,
-      cancel_url: `${cfg.publicUrl}/`,
+      // The ORDER page, not the home page. Sending someone who pressed the
+      // gateway's cancel button back to the front door put them on the one
+      // screen that re-quotes -- against the rungs their own unpaid order was
+      // still holding. The order page is where the invoice and the cancel
+      // button are.
+      cancel_url: `${cfg.publicUrl}/order/${orderId}`,
     }),
     signal: AbortSignal.timeout(20000),
   });
@@ -1354,12 +1359,28 @@ createServer(async (req, res) => {
       // Checked inside the transaction below as well; this is the cheap early
       // answer so a user with three unpaid orders gets a clear message instead
       // of a rolled-back one.
-      const [{ pending }] = await q(
-        `SELECT COUNT(*) pending FROM orders WHERE email = ? AND status = 'pending'`, [email]);
-      if (Number(pending) >= S.get('maxPendingOrders')) {
-        return json(res, 429, { error:
-          `you already have ${pending} unpaid orders. Pay or cancel one before starting another — ` +
-          `unpaid orders hold PCN that nobody else can buy.` });
+      //
+      // IT RETURNS THE ORDERS THEMSELVES, not just a count. This used to answer
+      // a bare 429 telling the customer to "pay or cancel one" when there was no
+      // cancel route anywhere on the site, and no link to the invoice they had
+      // already been given. 17 of the 30 genuinely-expired orders were the same
+      // customer trying again in the same session -- and because their own unpaid
+      // order still holds the cheap rungs, the retry is quoted 5.7-8.2% WORSE
+      // than the attempt they abandoned. They are bidding against themselves and
+      // the page never told them so.
+      const pendingOrders = await q(
+        `SELECT order_id AS orderId, usd, quoted_pcn AS quotedPcn, invoice_url AS invoiceUrl,
+                created_at AS createdAt
+           FROM orders WHERE email = ? AND status = 'pending'
+          ORDER BY created_at DESC`, [email]);
+      if (pendingOrders.length >= S.get('maxPendingOrders')) {
+        return json(res, 429, {
+          error: `you already have ${pendingOrders.length} unpaid order` +
+            `${pendingOrders.length === 1 ? '' : 's'}. Finish paying it, or cancel it, before ` +
+            `starting another — an unpaid order holds PCN nobody else can buy, including you: ` +
+            `your next order would be quoted from dearer rungs because of it.`,
+          pendingOrders,
+        });
       }
 
       // Rate, not just concurrency. maxPendingOrders bounds how many unpaid
@@ -1376,6 +1397,11 @@ createServer(async (req, res) => {
         `SELECT COUNT(*) recent FROM orders
           WHERE email = ? AND created_at > (NOW() - INTERVAL 1 HOUR)`, [email]);
       if (Number(recent) >= S.get('maxOrdersPerHour')) {
+        // Deliberately counts cancelled orders too. Cancelling gives the RUNGS
+        // back immediately, which is the expensive half; this counter bounds
+        // churn against the ladder, and a cancel-and-retry loop is still churn.
+        // Do not "fix" it to exclude them without re-reading the 2026-09-03
+        // incident described just above.
         return json(res, 429, { error:
           `you have started ${recent} orders in the last hour, which is the limit. ` +
           `Try again later — each order holds PCN that nobody else can buy until it is paid ` +
@@ -1567,6 +1593,38 @@ createServer(async (req, res) => {
         note: 'Send the PCN to the address shown. Payout is released after it confirms.' });
     }
 
+    // ---- cancel an unpaid order of your own ----
+    //
+    // The counterpart to the 429 above. Without it the site told people to
+    // cancel and gave them no way to, so they abandoned instead -- and an
+    // abandoned order holds its rungs for the full TTL, where a cancelled one
+    // gives them back in the same second.
+    //
+    // The flip and the release happen inside ladder.expireWithRelease, which is
+    // one transaction and the only implementation of this operation; the reason
+    // that matters is written out in full there. Passing `owner` makes the
+    // UPDATE the authorisation check and the race guard at once.
+    //
+    // It lands the order in 'expired', NOT a new 'cancelled' status, and that is
+    // deliberate: the IPN handler credits a payment for an order in
+    // ('pending','expired') precisely because a slow chain can confirm after a
+    // timeout. A status this rail's money path does not know would turn a late
+    // payment into "unknown order ignored" -- money in, nothing recorded.
+    if (req.method === 'POST' && p.startsWith('/api/order/') && p.endsWith('/cancel')) {
+      if (!email) return json(res, 401, { error: 'sign in first' });
+      const orderId = p.slice('/api/order/'.length, -'/cancel'.length);
+      if (!/^[A-Za-z0-9]{1,40}$/.test(orderId)) return json(res, 400, { error: 'bad order id' });
+
+      const out = await L.expireWithRelease(orderId, { owner: email, reason: 'cancelled by buyer' });
+      if (!out.expired) {
+        return json(res, 409, { error:
+          'that order is not yours, or is no longer waiting to be paid. Nothing was changed.' });
+      }
+      return json(res, 200, { ok: true, orderId, released: out.released, note:
+        'Cancelled. The PCN it was holding is back on sale. If you have already sent payment ' +
+        'for it, it will still be credited — send nothing more.' });
+    }
+
     // ---- pages ----
     if (p === '/' || p.startsWith('/order/')) {
       return res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' })
@@ -1582,7 +1640,11 @@ createServer(async (req, res) => {
     // nothing will pick up, and the gateway retrying against a request that
     // fails the same way every time. Alert on the money paths only — a 500 on
     // a page request is noise, and this handler is publicly reachable.
-    if (p === '/ipn' || p === '/api/buy' || p.startsWith('/order/')) {
+    // /api/order/*/cancel is on this list because it MOVES LADDER INVENTORY.
+    // A throw inside it, after the status flip but before the release, is the
+    // orphaned-reservation shape the sweeper has to reconcile later.
+    if (p === '/ipn' || p === '/api/buy' || p.startsWith('/order/') ||
+        (p.startsWith('/api/order/') && p.endsWith('/cancel'))) {
       if (Date.now() - lastCrashAlert >= 10 * 60 * 1000) {
         lastCrashAlert = Date.now();
         notify(`🔴 <b>Request crashed on a money path</b>\n<code>${esc(p)}</code>\n` +
