@@ -53,6 +53,13 @@ Deliberate properties, each of which guards a real failure:
   ops, and an alert that fires on nothing is an alert people learn to ignore.
 
 Run by hand with --dry-run to see the card and caption and send nothing.
+Run once with --post-poll to add the pinned fun vote beside the card.
+
+WHY THERE IS NO "STICKY BANNER" HERE, since it will be asked again: Telegram has
+none. The only bottom-of-screen element in the Bot API is ReplyKeyboardMarkup,
+and its own documentation says "Not supported in channels" -- channel members
+have no input box for it to attach to. In a channel, being at the bottom means
+being the newest message, which is what KEEP_AT_BOTTOM does.
 """
 
 import errno
@@ -248,6 +255,7 @@ def load_state():
     s.setdefault("last_count", None)
     s.setdefault("last_usd", None)
     s.setdefault("last_edit", 0)
+    s.setdefault("poll_id", None)        # the fun vote, posted once and never again
     return s
 
 
@@ -485,6 +493,62 @@ def pinned_message(token, chat_id):
     return (chat or {}).get("pinned_message")
 
 
+POLL_QUESTION = "Just for fun \u2014 when do we hit 1,000 purchases?"
+POLL_OPTIONS = [
+    "Before the new year",
+    "Some time in 2027",
+    "Whenever \u2014 I am here for the mining",
+    "I just wanted to press a button",
+]
+
+
+def post_poll(token):
+    """Post the fun vote ONCE, pin it, and remember it forever.
+
+    WHY THIS IS A SEPARATE OBJECT FROM THE CARD, and cannot not be:
+
+      * A poll is the only native vote widget Telegram has, and the API gives no
+        way to edit one -- `stopPoll` is the only thing you can do to a poll
+        after sending it. So a poll can never carry a number that changes.
+      * The card carries numbers that change on every sale, and it REPOSTS to
+        stay at the bottom of the channel. Every repost is a new message, and a
+        new message has no votes on it.
+
+    One message therefore cannot both hold live figures and accumulate votes.
+    Two can: the poll is posted once, pinned, and left alone for as long as the
+    channel exists, so its votes only ever go up; the card moves underneath it.
+
+    Posting is guarded on state["poll_id"], so running this twice is a no-op
+    rather than a second poll splitting the votes.
+    """
+    st = load_state()
+    if st.get("poll_id"):
+        log("a poll already exists in this chat (message %s); not posting a second"
+            % st["poll_id"])
+        return 0
+    res = tg(token, "sendPoll", {
+        "chat_id": CHAT_ID,
+        "question": POLL_QUESTION,
+        "options": json.dumps(POLL_OPTIONS),
+        "is_anonymous": "true",          # nobody's vote is public. It is a toy, not a survey.
+        "allows_multiple_answers": "false",
+        "disable_notification": "true",
+    })
+    mid = (res or {}).get("message_id")
+    if not mid:
+        die("sendPoll returned no message_id")
+    st["poll_id"] = mid
+    st["chat_id"] = CHAT_ID
+    save_state(st)
+    try:
+        tg(token, "pinChatMessage",
+           {"chat_id": CHAT_ID, "message_id": mid, "disable_notification": "true"})
+        log("posted and pinned the vote as message %s" % mid)
+    except TgError as e:
+        log("posted the vote as %s but could not pin it: %s" % (mid, e.description))
+    return 0
+
+
 # ----------------------------------------------------------------- main -----
 def guard_chat():
     low = CHAT_ID.lower()
@@ -504,6 +568,12 @@ def guard_chat():
 
 def main():
     guard_chat()
+
+    # --post-poll is a one-off setup step, not part of the refresh. It takes the
+    # same lock so it cannot race a timer run writing the same state file.
+    if "--post-poll" in sys.argv:
+        lk = take_lock()            # noqa: F841
+        return post_poll(read_token())
 
     lock = None
     if not DRY_RUN:
