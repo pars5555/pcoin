@@ -22,9 +22,12 @@ wPCN from their own wallet to **one shared address**, then pastes the
 which proves the payment on chain and tells you what it is worth in USD. You
 credit your own user.
 
-**Paying in wPCN earns 10% more credit than the same value in PCN.** That
-discount is the entire commercial point: to get it, a customer has to buy wPCN
-on PancakeSwap, which is the demand this token does not otherwise have.
+**wPCN and PCN credit at exactly the same rate.** One wPCN is worth one PCN,
+because that is what wPCN is — a 1:1 claim on PCN in a public reserve. Both use
+`price.pc.am/credit-rate`. (Until 2026-09-11 wPCN earned 10% more; that bonus was
+removed because our own wrap desk sold wPCN for 5%, so it could be collected
+without anyone buying anything. `bonus_pct` is still in the response, and is
+now `0`.)
 
 ## 2. Why a transaction hash and not a deposit address per user
 
@@ -104,7 +107,7 @@ A successful reply looks like:
   "wpcn_total": 368.58,
   "transfers": [{
     "state": "credited", "txhash": "0x…", "logIndex": 139,
-    "wpcn": 368.58, "rate_usd": 0.035229587, "bonus_pct": 10, "usd": 14.2834
+    "wpcn": 368.58, "rate_usd": 0.035902421, "bonus_pct": 0, "usd": 13.2331
   }]
 }
 ```
@@ -121,7 +124,8 @@ $wpcn = new WpcnPay(WPCN_PAY_TOKEN);
 $r = $wpcn->verify($txhash, (string) $user->id);
 
 if (WpcnPay::isCredit($r)) {
-    // usd_total ALREADY includes the 10% bonus. Do not add it again.
+    // usd_total is the FINAL figure, bonus already applied (it is 0 today).
+    // Never recompute it from wpcn x rate yourself.
     creditUser($user->id, $r['usd_total'], [
         'source'    => 'wpcn',
         'txhash'    => $txhash,
@@ -211,7 +215,8 @@ Wherever you show the PCN deposit address, add a wPCN option:
 - **Token: wPCN, 8 decimals.** Not 18. Most BEP-20 tokens are 18 and wallets
   that guess will be wrong.
 - A single text field: *"Paste your transaction hash"*, plus a Verify button.
-- Tell them about the **10% bonus** — it is the reason to use this at all.
+- Say plainly that **wPCN credits the same as PCN**. There is no bonus to
+  explain and no arithmetic for them to check.
 
 After they submit, show `humanMessage($r)`. For `pending` and `confirming`,
 leave the field populated so they can retry without re-pasting.
@@ -229,7 +234,8 @@ Do not skip these. Each one has failed in production somewhere in this estate.
 - [ ] With a **wrong token**, the same. A misconfigured deployment must never
       resolve a customer's payment.
 - [ ] A hash that paid a **different address** shows "did not pay us".
-- [ ] The credited amount **includes the 10% bonus exactly once**.
+- [ ] The credited amount is **`usd_total` as returned, never recomputed**.
+      Trust the field; do not multiply `wpcn` by `rate_usd` yourself.
 
 That fourth item is the one that separates a working integration from one that
 will eventually tell a paying customer they did not pay. Test it deliberately —

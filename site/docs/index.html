@@ -819,9 +819,20 @@ bitcoin-cli unloadwallet sweep-tmp</code></pre>
     in a public reserve. Taking it is a second, much smaller integration, and it does
     <em>not</em> reuse the deposit-address model above.</p>
 
-    <p><strong>Paying in wPCN earns 10% more credit than the same value in PCN.</strong>
-    That is deliberate: to get the bonus a customer has to buy wPCN on PancakeSwap, which
-    is demand the token does not otherwise have.</p>
+    <p><strong>wPCN and PCN credit at exactly the same rate.</strong> One wPCN is worth
+    one PCN, because that is what wPCN <em>is</em> &mdash; a 1:1 claim on PCN held in a
+    public reserve, redeemable 1:1. Both are credited at
+    <a href="https://price.pc.am/credit-rate">price.pc.am/credit-rate</a>, the same number
+    as any PCN deposit.</p>
+
+    <p class="note">This changed on 11 September 2026. Paying in wPCN used to earn
+    <strong>10% more</strong> credit, on the reasoning that to collect the bonus a customer had
+    to buy wPCN on PancakeSwap, which is demand the token does not otherwise have. It did not
+    work that way: our own wrap desk sells wPCN for a 5% fee, so the bonus could be collected by
+    wrapping PCN we already held &mdash; no purchase, no demand, and a round trip that paid
+    about 9.5% for doing nothing. An asset whose entire claim is parity should not be credited
+    at anything other than parity. If we want to create demand for wPCN we will do it with
+    something that cannot be arbitraged by our own machinery.</p>
 
     <h3>Why a transaction hash, not an address per customer</h3>
     <p>This is the first question everyone asks, so: we tried, and the chain will not

@@ -13,8 +13,8 @@
   "minConfirmations": 15,
   "_minConfirmations":"BSC finalises in roughly 15 blocks (~45s). This is not the PCN rails' 3 -- different chain, different risk.",
 
-  "bonusPercent":     10,
-  "_bonusPercent":    "Extra credit for paying in wPCN rather than PCN. This is the demand lever: it is why somebody buys wPCN on PancakeSwap instead of only selling it.",
+  "bonusPercent":     0,
+  "_bonusPercent":    "Extra credit for paying in wPCN rather than PCN. ZERO since 2026-09-11: wPCN is a 1:1 claim on PCN and should credit like one. It was 10, as a demand lever meant to force a PancakeSwap buy, but the wrap desk sells wPCN for a 5% fee so the bonus could be collected by wrapping coins you already held -- a +9.5% round trip that created no demand at all. Before setting this above the wrap fee again, work out who can mint the input cheaper than the bonus is worth.",
 
   "rpcUrls": [
     "https://bsc-dataseed.binance.org/",

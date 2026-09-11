@@ -77,7 +77,7 @@ Not a description of intent — this is what ran, against a real BSC transfer
 |---|---|
 | no bearer token | `401` |
 | malformed hash | `bad_request` |
-| real transfer | **`credited`**, rate stamped `$0.035230`, +10% → `$14.2834` |
+| real transfer | **`credited`**, rate stamped `$0.035902`, no bonus → `$13.2318` |
 | the same hash again | `already_claimed`, `yours=true`, no second row |
 | a **different project** claiming the same hash | `already_claimed`, `yours=false`, `banked_by=checker.pc.am` |
 | a hash that does not exist | `pending` — **not** `no_payment` |
@@ -229,23 +229,30 @@ if ($r['state'] === 'credited') {
 
 ---
 
-## The bonus, and why it exists
+## The bonus is ZERO, and the story of why is worth keeping
 
-`bonusPercent` is **10**: paying in wPCN buys 10% more credit than the same
-value in PCN.
+`bonusPercent` is **0**. One wPCN credits exactly what one PCN credits, at
+`price.pc.am/credit-rate`, because that is what wPCN *is*: a 1:1 claim on PCN in
+a public reserve, redeemable 1:1. An asset whose entire proposition is parity
+should not be credited at anything other than parity.
 
-That is not generosity, it is the only demand this token has. Today the flow is
-one-directional — wrap PCN, sell it on PancakeSwap, and `pcoin-wpcn-keeper` buys
-it back out of a small float to defend the peg. Measured 2026-09-08 the keeper
-held **83.39 USDT**, and each wrap-and-dump cycle costs it about **$8.25**:
-roughly ten more cycles before there is nothing left defending the price.
+**It was 10 until 2026-09-11, and the reasoning was sound while it lasted.** The
+flow was one-directional — wrap PCN, sell it on PancakeSwap, and
+`pcoin-wpcn-keeper` buys it back out of a small float to defend the peg. A
+discount for paying in wPCN was meant to reverse the arrow: to pay a PCoin
+service at the best rate you would have to **buy wPCN on PancakeSwap**, which is
+a buy the pool has never seen, from someone who is not us.
 
-A discount for paying in wPCN reverses the arrow. To pay a PCoin service at the
-best rate you must **buy wPCN on PancakeSwap** — which is a buy the pool has
-never seen, from someone who is not us.
+**It never worked, because our own wrap desk undercut it.** The desk sells wPCN
+for a 5% fee, so nobody ever had to buy anything: wrap PCN you already hold, pay
+with the wPCN, collect a bonus worth more than the fee. Measured on the day it
+was removed, that round trip paid **+9.50%** — and it created exactly zero
+demand, because no purchase took place. A demand lever that can be satisfied by
+your own machinery is not a lever.
 
-Whether 10% is the right number is a commercial question. Whether the arrow
-needs reversing is not.
+The lesson generalises: **before pricing an incentive, check every route to the
+thing you are incentivising, including your own.** If wPCN needs demand, it
+needs something that cannot be arbitraged from inside the estate.
 
 ---
 

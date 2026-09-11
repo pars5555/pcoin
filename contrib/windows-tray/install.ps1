@@ -169,8 +169,78 @@ foreach ($old in $oldDirs) {
     $oldData = Join-Path $old 'data'
     if ((Test-Path $oldData) -and -not (Test-Path $DataDir)) {
         try { Move-Item $oldData $DataDir -Force -ErrorAction Stop; Write-Output '    moved the data directory (no re-sync)' }
-        catch { Write-Output ('    could not move the data dir (' + $_.Exception.Message + '); the node will re-sync') }
+        catch {
+            # NOT just a re-sync. This folder can hold wallet.dat, and the
+            # rescue below is what stands between a failed move and a deleted
+            # key. Say the expensive half out loud -- the old wording named
+            # only the cheap one, which is how a wallet delete gets reported as
+            # a benign inconvenience.
+            Write-Output ('    could not move the data dir (' + $_.Exception.Message + ')')
+            Write-Output '    the node will re-sync, and any wallet in there is rescued below'
+        }
     }
+
+    # --- RESCUE ANYTHING THAT DID NOT MIGRATE, BEFORE DELETING ANYTHING ------
+    #
+    # Both migrations above are CONDITIONAL: the seed moves only if the
+    # destination has none, and the data folder moves only if the destination
+    # does not exist. The delete underneath them was not conditional on
+    # anything. So a machine with two installs, each holding its own seed and
+    # its own wallet.dat, would migrate NEITHER and then remove the old folder
+    # outright -- and for a miner whose owner never wrote down a recovery
+    # phrase, which is the default state, that file IS the coins.
+    #
+    # uninstall.ps1 grew exactly this rescue after it deleted a wallet in the
+    # field. The installer, one file away, never got it. Copy, never move; check
+    # the copy is non-empty BEFORE any delete; and if anything was found, KEEP
+    # the old folder and print where the copy went. An install that leaves a
+    # stale directory behind is a small annoyance. The other outcome is not.
+    $leftBehind = @()
+    $oldSeedStill = Join-Path $old 'pcoin-seed.dat'
+    if (Test-Path $oldSeedStill) { $leftBehind += $oldSeedStill }
+    $oldCfg = Join-Path $old 'pcoin-tray.cfg'
+    if (Test-Path $oldCfg) { $leftBehind += $oldCfg }
+    # Where the node keeps the wallet is NOT fixed: Core uses <datadir>\wallets\
+    # only when that folder already existed at first start, so on a fresh
+    # install each wallet sits directly at data\<name>\wallet.dat. Guessing one
+    # path is what cost uninstall.ps1 its whole purpose once. Take every wallet
+    # wherever it is.
+    if (Test-Path $oldData) {
+        foreach ($d in (Get-ChildItem $oldData -Directory -ErrorAction SilentlyContinue)) {
+            if (Test-Path (Join-Path $d.FullName 'wallet.dat')) { $leftBehind += $d.FullName }
+        }
+        foreach ($w in (Get-ChildItem (Join-Path $oldData 'wallets') -Directory -ErrorAction SilentlyContinue)) {
+            if (Test-Path (Join-Path $w.FullName 'wallet.dat')) { $leftBehind += $w.FullName }
+        }
+    }
+
+    if ($leftBehind.Count -gt 0) {
+        $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+        $dest = Join-Path $env:USERPROFILE "PCoin-wallet-backup-$stamp"
+        $saved = $false
+        try {
+            New-Item -ItemType Directory -Path $dest -Force -ErrorAction Stop | Out-Null
+            foreach ($item in $leftBehind) { Copy-Item $item -Destination $dest -Recurse -Force -ErrorAction Stop }
+            # Count AFTER copying, so the message can only claim a rescue that
+            # actually happened.
+            $n = @(Get-ChildItem $dest -Recurse -File -ErrorAction SilentlyContinue).Count
+            if ($n -lt 1) { throw 'the copy is empty' }
+            $saved = $true
+        } catch {
+            Write-Output ('    WARNING could not copy them out: ' + $_.Exception.Message)
+        }
+        Write-Output ''
+        if ($saved) {
+            Write-Output "    KEY MATERIAL WAS LEFT IN THE OLD INSTALL AND HAS BEEN COPIED TO:"
+            Write-Output "      $dest"
+        } else {
+            Write-Output '    KEY MATERIAL IS STILL IN THE OLD INSTALL AND COULD NOT BE COPIED OUT.'
+        }
+        Write-Output "    $old has NOT been removed. Check the copy, then delete it yourself."
+        Write-Output ''
+        continue
+    }
+
     try { Remove-Item $old -Recurse -Force -ErrorAction Stop; Write-Output "    removed $old" }
     catch { Write-Output ('    could not fully remove ' + $old + ' (' + $_.Exception.Message + ') -- delete it by hand') }
 }
