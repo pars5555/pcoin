@@ -363,21 +363,30 @@ def render_card(count, usd, target, as_of_utc):
 
 
 def caption(count, usd, target, as_of_utc):
+    """Five lines. Deliberately.
+
+    The card above it already carries the headline number, the bar, the dollars
+    and the timestamp -- in large type, which is what people actually look at.
+    A caption that repeats all of it in prose is a wall of text under a picture
+    that already said it, and the long version explained the whole listing gate
+    every ten minutes to people who had read it the first time.
+
+    So: the title, the bar, one sentence of WHY, one line of figures. The
+    buttons carry the call to action; this does not need to. Everything cut from
+    here still lives on market.pc.am, one tap away.
+    """
     pct = min(100.0, 100.0 * count / target) if target else 0.0
     filled = int(round(20 * pct / 100.0))
     if count > 0:
         filled = max(1, filled)      # 10 of 1,000 is not an empty bar
     bar = "▰" * filled + "▱" * (20 - filled)
     return (
-        "<b>%s</b>\n\n"
+        "<b>%s</b>\n"
         "%s  <b>%s</b> / %s\n\n"
-        "Every purchase of $20 or more on <a href=\"%s\">market.pc.am</a> counts as one. "
-        "When it reaches <b>%s</b>, PCoin gets listed on a tracked exchange, which is the "
-        "gate CoinGecko, CoinMarketCap and the mining calculators all sit behind.\n\n"
-        "So far: <b>%s purchases</b>, <b>$%s</b> bought. This card updates itself from the "
-        "market's own records; nobody types the number in.\n\n"
-        "No promises about price, now or later.\n"
-        "<i>as of %s UTC</i>"
+        "Every <b>$20+</b> purchase on <a href=\"%s\">market.pc.am</a> counts as one. "
+        "At <b>%s</b>, PCoin goes on a tracked exchange.\n"
+        "<i>%s purchases · $%s bought · as of %s UTC · read live, not typed in · "
+        "no price promises</i>"
     ) % (BANNER_MARKER, bar, format(count, ","), format(target, ","), MARKET_URL,
          format(target, ","), format(count, ","), format(usd, ",.0f"), as_of_utc)
 
