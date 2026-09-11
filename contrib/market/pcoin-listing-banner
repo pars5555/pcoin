@@ -423,18 +423,21 @@ def caption(count, usd, target, as_of_utc):
 
 
 def keyboard():
-    """The row of buttons under the card.
+    """No buttons.
 
-    A URL keyboard, not a callback one: every button is a link, so the bot needs
-    no callback handler, nothing can queue up unanswered, and the buttons keep
-    working even if this script never runs again. A card that asks people to do
-    something should carry the thing to press."""
-    return json.dumps({"inline_keyboard": [[
-        {"text": "\U0001F6D2  Buy PCN  \u2014  $20+ counts", "url": MARKET_URL},
-    ], [
-        {"text": "\U0001F4CA  Live count", "url": MARKET_URL},
-        {"text": "\U0001F50D  Explorer", "url": "https://explorer.pc.am"},
-    ]]})
+    There were three -- "Buy PCN", "Live count", "Explorer" -- left over from a
+    version of this banner that was trying to look like a voting widget. The
+    owner asked why they were there and the honest answer was: no reason. Two of
+    them pointed at the SAME url, which is the tell that they were decoration
+    rather than navigation. The message already links market.pc.am in its own
+    text, one line down.
+
+    Returning an empty inline_keyboard rather than omitting reply_markup is
+    deliberate: an edit that omits the field LEAVES THE OLD BUTTONS IN PLACE, so
+    the only way to take them off a message that already has them is to send an
+    empty one.
+    """
+    return json.dumps({"inline_keyboard": []})
 
 
 def widget_text(count, usd, target, as_of_utc):
