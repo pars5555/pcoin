@@ -139,7 +139,7 @@ ALERT_CHANNEL_ID  = "-1004340510788"
 
 # The first line of the caption. Used to recognise OUR banner when adopting an
 # existing pinned message, so a lost sendPhoto response cannot produce a second.
-BANNER_MARKER = "Road to the exchange listing"
+BANNER_MARKER = "Road to exchange listing"
 
 DRY_RUN = "--dry-run" in sys.argv
 
@@ -438,11 +438,17 @@ def keyboard():
 
 
 def widget_text(count, usd, target, as_of_utc):
-    """Three short lines. The FIRST one is the whole point.
+    """Three short lines, and THE BAR AND THE PERCENTAGE COME FIRST.
 
-    Telegram's pinned bar shows the first line and clips the rest, so the figure
-    goes there and nothing else competes with it. Lines two and three are for
-    someone who taps through to the message itself.
+    The pinned bar on mobile shows far less than on desktop -- it clips to
+    roughly the width of the screen, one line, and anything after that is simply
+    not there. So the two things worth seeing at a glance, the bar and the
+    percentage, are the first characters of the message. A title first looked
+    fine on desktop and pushed the number off the edge on a phone, which is the
+    only place most people will ever see it.
+
+    No leading emoji either: it costs two columns of that one line and tells the
+    reader nothing the bar does not.
     """
     pct = min(100.0, 100.0 * count / target) if target else 0.0
     filled = int(round(10 * pct / 100.0))
@@ -450,12 +456,12 @@ def widget_text(count, usd, target, as_of_utc):
         filled = max(1, filled)          # 10 of 1,000 is not an empty bar
     bar = "\u25b0" * filled + "\u25b1" * (10 - filled)
     return (
-        "\U0001F4CA <b>%s</b> \u2014 <b>%s</b> / %s\n"
-        "%s  %.1f%%  \u00b7  <b>$%s</b> bought  \u00b7  as of %s UTC\n"
-        "<i>Every $20+ purchase on <a href=\"%s\">market.pc.am</a> counts as one. "
-        "Read live, never typed in. No price promises.</i>"
-    ) % (BANNER_MARKER, format(count, ","), format(target, ","),
-         bar, pct, format(usd, ",.0f"), as_of_utc, MARKET_URL)
+        "%s <b>%.1f%%</b> \u2014 %s\n"
+        "<b>%s</b> / %s purchases  \u00b7  <b>$%s</b> bought  \u00b7  as of %s UTC\n"
+        "<i>Every $20+ purchase on <a href=\"%s\">market.pc.am</a> counts. "
+        "No price promises.</i>"
+    ) % (bar, pct, BANNER_MARKER, format(count, ","), format(target, ","),
+         format(usd, ",.0f"), as_of_utc, MARKET_URL)
 
 
 # ----------------------------------------------------------------- telegram -
