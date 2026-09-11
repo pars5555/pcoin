@@ -875,6 +875,27 @@ createServer(async (req, res) => {
   const p = u.pathname.replace(/\/+$/, '') || '/';
   rollDay();
   try {
+    // The credit rate, on its own, as text. No object, no second number, no
+    // field to choose between -- the shape that cannot be integrated wrongly.
+    // (The explorer publishes its supply figures the same way and for the same
+    // reason: the smallest correct answer is the one nobody misreads.)
+    //
+    // It is deliberately NOT served when the feed is stale. A rate that may be
+    // hours old is not a rate, and an integrator who gets 503 here holds the
+    // credit instead of crediting at a number nobody stands behind -- which is
+    // the estate's oldest rule: a failed read resolves nothing.
+    if (p === '/credit-rate') {
+      const rate = st.serviceRate;
+      if (!Number.isFinite(rate) || rate <= 0 || (ROLE === 'replica' && !syncOk)) {
+        return res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8',
+                                    'Cache-Control': 'no-store' })
+          && res.end('unavailable\n');
+      }
+      return res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8',
+                                  'Cache-Control': 'no-store' })
+        && res.end(String(rate) + '\n');
+    }
+
     if (p === '/' || p === '/price') {
       const ladderAgeS = st.ladderAt ? Math.floor((Date.now() - st.ladderAt) / 1000) : null;
       return json(res, 200, {
@@ -884,6 +905,28 @@ createServer(async (req, res) => {
         // and a consumer must not use one for the other.
         price: Number(postedPrice().toFixed(9)),
         serviceRate: st.serviceRate,
+
+        // THE SAME TWO NUMBERS, NAMED BY WHAT THEY ARE FOR.
+        //
+        // `price` and `serviceRate` say what they ARE -- a ladder rung and a
+        // tracked rate -- and an integrator reading the feed cold has to already
+        // know which one credits a customer. One did not: contrib/wpcn-pay
+        // credited from `price` for weeks, and `price` is the ONE number that
+        // must never credit anything, because it is the ladder and the ladder
+        // does not follow the pool down. That is precisely the leak the comment
+        // at the top of this file describes -- buy wPCN cheap, redeem 1:1, spend
+        // it at a rail crediting above the pool -- and crediting at `price`
+        // re-opens it by hand.
+        //
+        // So the feed now also answers in the language of the question. Same
+        // values, no new state, nothing to keep in step:
+        //   creditRateUsd -- what you credit an INBOUND payment at. Always this one.
+        //   sellPriceUsd  -- what a buyer PAYS us. Never credits anything.
+        // The bare number alone is at GET /credit-rate, where there is nothing
+        // to pick wrong.
+        creditRateUsd: st.serviceRate,
+        sellPriceUsd: Number(postedPrice().toFixed(9)),
+        rateFieldToUse: 'creditRateUsd',
         // What the rate is tracking, and what is holding it up. Published
         // because "why is the credit rate below the ladder price" has to be
         // answerable from the feed itself, not from a server log.

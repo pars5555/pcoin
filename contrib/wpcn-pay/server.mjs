@@ -214,8 +214,30 @@ async function usdRate() {
   const r = await fetch(PRICE_URL, { signal: AbortSignal.timeout(12000) });
   if (!r.ok) throw new Error(`price feed HTTP ${r.status}`);
   const j = await r.json();
-  const rate = Number(j.price);
-  if (!Number.isFinite(rate) || rate <= 0) throw new Error('price feed gave no usable rate');
+
+  // `creditRateUsd`, NOT `price`. This read `Number(j.price)` from the day it
+  // was written, and `price` is the ladder's marginal rung -- what a BUYER pays
+  // us. It is the one number in the feed that must never credit anything.
+  //
+  // Why that is not a naming quibble: `creditRateUsd` (a.k.a. `serviceRate`)
+  // deliberately TRACKS THE PANCAKESWAP POOL DOWN, and the oracle's own header
+  // says why -- buy wPCN cheap in the pool, redeem 1:1 into PCN, spend it at a
+  // rail crediting above the pool, and every cent of the gap is free money out
+  // of market-hot. The rate follows the pool down precisely to close that. The
+  // ladder price does not follow it at all. So crediting wPCN at `price` was
+  // re-opening, by hand, the exact leak the rate exists to shut -- and then
+  // adding BONUS_PCT on top of it.
+  //
+  // Measured 2026-09-11 before the fix: price $0.037621 vs creditRate $0.035902
+  // = 4.79% over, then +10% bonus = 15.3% more credit than the same value paid
+  // in PCN. 7 claims, 130 wPCN, roughly $0.60 given away -- small only because
+  // almost nobody has used it yet.
+  //
+  // `serviceRate` is the older name for the same number and is still published;
+  // it is the fallback so a replica that has not been redeployed yet still
+  // answers correctly rather than refusing.
+  const rate = Number(j.creditRateUsd ?? j.serviceRate);
+  if (!Number.isFinite(rate) || rate <= 0) throw new Error('price feed gave no usable credit rate');
   // The feed says so itself when it is serving a remembered number. Rule 3.
   if (j.stale === true) throw new Error('price feed reports itself stale');
   return rate;
