@@ -1,0 +1,17 @@
+[Unit]
+Description=PCN rails daily activity report (checker, webbuilderbot, aicontrol, webai)
+Documentation=file:///usr/local/bin/pcoin-rails-daily
+# If the report itself fails, that must page. A daily report that silently
+# stops running is indistinguishable from a quiet estate, which is the exact
+# confusion the report exists to remove.
+OnFailure=pcoin-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pcoin-rails-daily
+Nice=10
+MemoryMax=128M
+CPUQuota=20%
+# Four rails over SSH, measured at about 12s. Generous, but bounded: a hung
+# SSH must not leave this unit running until the next day's trigger.
+TimeoutStartSec=300

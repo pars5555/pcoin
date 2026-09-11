@@ -1,0 +1,16 @@
+[Unit]
+Description=Send the PCN rails daily activity report each morning
+
+[Timer]
+# 05:00 UTC, which is 09:00 in Yerevan. Stated as UTC explicitly: this host
+# runs CEST, and a report whose window is described in one zone and scheduled
+# in another is the kind of thing nobody notices until the clocks change.
+OnCalendar=*-*-* 05:00:00 UTC
+# Spread the load a little, but not enough to move the report out of the morning.
+RandomizedDelaySec=300
+# If the box was down at 05:00, send it on boot rather than skipping the day.
+# A missing report is a signal, so it must only ever mean something real.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

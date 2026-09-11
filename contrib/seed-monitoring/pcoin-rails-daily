@@ -1,0 +1,577 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""pcoin-rails-daily -- one message a day about the four rails that matter.
+
+    checker.pc.am   webbuilderbot   aicontrol.pc.am   webai.pc.am
+
+WHY THIS EXISTS. Every existing monitor answers "is it ticking". None answers
+"did anything happen, and does it look right". `pcoin-deposit-watch` will report
+a rail healthy for a month while it credits nobody, because a rail with no
+customers and a rail that has silently stopped crediting look identical from
+outside. This tells those apart, and it is what the owner reads in the morning.
+
+THE RULES IT IS BUILT ON, each one from an incident in this estate:
+
+ 1. IT POSTS EVERY DAY, INCLUDING A COMPLETELY QUIET ONE. A monitor that only
+    speaks when something is wrong cannot be told apart from a monitor that has
+    died. The date is in the subject and REPEAT_HOURS=0, so pcoin-notify's
+    dedupe can never swallow a day whose numbers match yesterday's.
+
+ 2. A RAIL IT COULD NOT READ IS "UNKNOWN", NEVER OMITTED AND NEVER ZERO. The
+    deposit watcher once guarded each rail with `if [ -r <config> ]` and no
+    else, so on a host where a rail did not live the check did not fail, it
+    VANISHED -- and it logged "all healthy" for weeks having examined almost
+    nothing. Here an unreadable rail gets a line saying so, and the totals say
+    they are a floor rather than a total.
+
+ 3. NOTHING UNANSWERABLE BECOMES A NUMBER. "No deposits pending" yields NULL
+    for the oldest-pending age, not 0, because 0 reads as "stuck for zero
+    hours". "Never credited" yields NULL, not -1. A query that did not run
+    prints as a failure, never as zero.
+
+ 4. EVERY RAIL REPORTS ITS WATCHER'S OWN HEARTBEAT. Every stuck-money figure
+    here is derived from rows THE WATCHER WROTE. If the watcher is dead it
+    writes nothing, the pending count is 0, and the report would read perfectly
+    healthy while money piled up unseen. The heartbeat is what makes "0 stuck"
+    mean something. checker and aicontrol keep it in `settings.pcoin
+    .last_poll_at`; webbuilderbot and webai in a rate-cache/heartbeat timestamp.
+
+WHAT IT READS. checker is local to this host. The other three are reached over
+SSH with the fleet panel key, running read-only queries. That key already lives
+here so this adds no new exposure -- but it is fleet-wide root, so if this ever
+moves hosts, give it its own restricted key rather than copying the panel key.
+
+WHAT IT WRITES. One Telegram message through pcoin-notify, and one JSON file per
+day under STATE_DIR so the history exists off Telegram and "when did this rail
+last credit anything" has an answer that is not a chat search.
+
+    pcoin-rails-daily --dry-run     print the message, send nothing
+    pcoin-rails-daily               collect, save, send
+"""
+
+import json
+import os
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+
+STATE_DIR = os.environ.get("RAILS_DAILY_STATE", "/var/lib/pcoin-rails-daily")
+NOTIFY = os.environ.get("NOTIFY", "/usr/local/bin/pcoin-notify")
+PANEL_KEY = os.environ.get("PANEL_KEY", "/root/.ssh/pcam-panel")
+SSH_TIMEOUT = int(os.environ.get("SSH_TIMEOUT", "60"))
+DRY = "--dry-run" in sys.argv
+
+STUCK_HOURS = float(os.environ.get("STUCK_HOURS", "6"))
+QUIET_DAYS = float(os.environ.get("QUIET_DAYS", "7"))
+# A watcher that has not ticked in this long is broken, not slow. The watchers
+# poll every 60s; deposit-watch itself alerts at 15 min.
+WATCHER_STALE_MIN = float(os.environ.get("WATCHER_STALE_MIN", "20"))
+
+
+def log(msg):
+    try:
+        subprocess.run(["logger", "-t", "pcoin-rails-daily", "--", msg], check=False)
+    except Exception:
+        pass
+    print(msg, file=sys.stderr)
+
+
+def run(cmd, stdin_text=None, timeout=None):
+    """Run a command. Returns (ok, output_or_error). Never raises."""
+    try:
+        p = subprocess.run(cmd, input=stdin_text, capture_output=True, text=True,
+                           timeout=timeout or SSH_TIMEOUT)
+        if p.returncode != 0:
+            return False, (p.stderr or p.stdout or "").strip()[:250]
+        return True, p.stdout
+    except subprocess.TimeoutExpired:
+        # NEVER interpolate cmd into this message. TimeoutExpired.__str__
+        # embeds the full argv, which is exactly how a database password
+        # reached three separate logs on this estate.
+        return False, "timed out after %ds" % (timeout or SSH_TIMEOUT)
+    except Exception as e:
+        return False, str(e)[:250]
+
+
+def remote(host, interpreter, body, timeout=None):
+    """Ship a script over SSH ON STDIN and run it.
+
+    Not as an argument: four different interpreters with four different quoting
+    rules, wrapped in ssh's own layer, is how a query silently changes meaning
+    in transit. Stdin has no quoting rules.
+    """
+    tmp = "/tmp/pcoin-rails-daily.$$.job"
+    cmd = "cat > %s && %s %s; rc=$?; rm -f %s; exit $rc" % (tmp, interpreter, tmp, tmp)
+    return run(["ssh", "-i", PANEL_KEY, "-o", "BatchMode=yes",
+                "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=no",
+                host, cmd], stdin_text=body, timeout=timeout)
+
+
+def num(v):
+    """A float, or None for UNKNOWN. None must survive all the way to the
+    message: it is never allowed to become 0."""
+    if v is None or v == "" or v == "NULL":
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def blank(name, host):
+    return {"name": name, "host": host, "ok": False, "error": None,
+            "pcn_n": None, "pcn_usd": None, "wpcn_n": None, "wpcn_usd": None,
+            "pending_n": None, "pending_oldest_h": None, "rejected_lifetime": None,
+            "users_new": None, "users_active": None, "last_credit_h": None,
+            "watcher_age_min": None, "extra": {}}
+
+
+# ===========================================================================
+# checker.pc.am -- LOCAL to this host. MariaDB, root, no password.
+# ===========================================================================
+CHECKER_SQL = """
+SELECT
+ (SELECT COUNT(*) FROM pcn_deposits
+    WHERE status='credited' AND credited_at >= NOW() - INTERVAL 24 HOUR),
+ (SELECT COALESCE(SUM(credited_usd),0) FROM pcn_deposits
+    WHERE status='credited' AND credited_at >= NOW() - INTERVAL 24 HOUR),
+ (SELECT COALESCE(SUM(credited_credits),0) FROM pcn_deposits
+    WHERE status='credited' AND credited_at >= NOW() - INTERVAL 24 HOUR),
+ -- stuck = every NON-TERMINAL value of ENUM('seen','confirming','credited','rejected')
+ (SELECT COUNT(*) FROM pcn_deposits WHERE status IN ('seen','confirming')),
+ -- NULL, not 0, when nothing is pending: 0 reads as "stuck for zero hours"
+ (SELECT ROUND(TIMESTAMPDIFF(SECOND, MIN(first_seen_at), NOW())/3600,2)
+    FROM pcn_deposits WHERE status IN ('seen','confirming')),
+ (SELECT COUNT(*) FROM wpcn_payments WHERE credited_at >= NOW() - INTERVAL 24 HOUR),
+ (SELECT COALESCE(SUM(credited_usd),0) FROM wpcn_payments
+    WHERE credited_at >= NOW() - INTERVAL 24 HOUR),
+ -- NULL, not -1, when it has never credited anything
+ (SELECT ROUND(TIMESTAMPDIFF(SECOND, MAX(credited_at), NOW())/3600,2)
+    FROM pcn_deposits WHERE status='credited'),
+ (SELECT COUNT(*) FROM users WHERE created_at       >= NOW() - INTERVAL 24 HOUR),
+ (SELECT COUNT(*) FROM users WHERE last_activity_at >= NOW() - INTERVAL 24 HOUR),
+ -- LIFETIME: pcn_deposits has no rejected_at, so a 24h window on first_seen_at
+ -- would miss a deposit discovered days ago and rejected today
+ (SELECT COUNT(*) FROM pcn_deposits WHERE status='rejected'),
+ -- the watcher's own heartbeat: what makes "0 stuck" mean anything
+ (SELECT ROUND((UNIX_TIMESTAMP() - JSON_EXTRACT(value,'$.last_poll_at'))/60,1)
+    FROM settings WHERE `key`='pcoin'),
+ -- credits issued by deposits vs credits the ledger recorded. Must be 0.
+ (SELECT COALESCE(SUM(credited_credits),0) FROM pcn_deposits WHERE status='credited')
+  - (SELECT COALESCE(SUM(delta),0) FROM credit_ledger WHERE reason='topup_pcoin'),
+ (SELECT COALESCE(-SUM(delta),0) FROM credit_ledger
+    WHERE reason='debit' AND created_at >= NOW() - INTERVAL 24 HOUR)
+"""
+
+CHECKER_COLS = ["pcn_n", "pcn_usd", "credits_24h", "pending_n", "pending_oldest_h",
+                "wpcn_n", "wpcn_usd", "last_credit_h", "users_new", "users_active",
+                "rejected_lifetime", "watcher_age_min", "credit_drift", "credits_spent_24h"]
+
+
+def collect_checker():
+    r = blank("checker.pc.am", "local")
+    ok, out = run(["mysql", "checker_pc_am", "-N", "-B", "-e", CHECKER_SQL])
+    if not ok:
+        r["error"] = out
+        return r
+    line = (out or "").strip().split("\n")[0] if out.strip() else ""
+    parts = line.split("\t")
+    if len(parts) != len(CHECKER_COLS):
+        r["error"] = "expected %d columns, got %d" % (len(CHECKER_COLS), len(parts))
+        return r
+    d = dict(zip(CHECKER_COLS, parts))
+    for k in CHECKER_COLS:
+        d[k] = num(d[k])
+    r.update({k: d[k] for k in ("pcn_n", "pcn_usd", "wpcn_n", "wpcn_usd", "pending_n",
+                                "pending_oldest_h", "rejected_lifetime", "users_new",
+                                "users_active", "last_credit_h", "watcher_age_min")})
+    r["ok"] = True
+    if d["credits_24h"]:
+        r["extra"]["credits issued"] = "%d" % d["credits_24h"]
+    if d["credits_spent_24h"]:
+        r["extra"]["credits spent"] = "%d" % d["credits_spent_24h"]
+    if d["credit_drift"]:
+        r["extra"]["LEDGER DRIFT"] = "%d credits" % d["credit_drift"]
+    return r
+
+
+# ===========================================================================
+# webbuilderbot -- on 116, PHP + PDO from config/app.php
+# ===========================================================================
+WEBBUILDER_PHP = r"""<?php
+$c = require '/var/www/ai-bots/bots/webbuilderbot/config/app.php';
+$p = new PDO("mysql:host={$c['db_host']};port={$c['db_port']};dbname={$c['db_name']};charset=utf8mb4",
+             $c['db_user'], $c['db_pass'], [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+$q = function ($sql) use ($p) { $s = $p->query($sql); $r = $s->fetch(PDO::FETCH_NUM); return $r ? $r[0] : null; };
+$o = [];
+$o['pcn_n']   = $q("SELECT COUNT(*) FROM pcn_deposits WHERE status='credited' AND credited_at >= NOW() - INTERVAL 24 HOUR");
+$o['pcn_usd'] = $q("SELECT COALESCE(SUM(credited_usd),0) FROM pcn_deposits WHERE status='credited' AND credited_at >= NOW() - INTERVAL 24 HOUR");
+// stuck = NOT terminal, matching the watcher's own definition
+$o['pending_n'] = $q("SELECT COUNT(*) FROM pcn_deposits WHERE status NOT IN ('credited','rejected')");
+// NULL when nothing is pending -- 0 would read as "stuck for zero hours"
+$o['pending_oldest_h'] = $q("SELECT ROUND(MAX(TIMESTAMPDIFF(SECOND, first_seen_at, NOW()))/3600,2) FROM pcn_deposits WHERE status NOT IN ('credited','rejected')");
+$o['wpcn_n']   = $q("SELECT COUNT(*) FROM wpcn_payments WHERE credited_at >= NOW() - INTERVAL 24 HOUR");
+$o['wpcn_usd'] = $q("SELECT COALESCE(SUM(credited_usd),0) FROM wpcn_payments WHERE credited_at >= NOW() - INTERVAL 24 HOUR");
+// NULL, never -1, when it has never credited
+$o['last_credit_h'] = $q("SELECT ROUND(TIMESTAMPDIFF(SECOND, MAX(credited_at), NOW())/3600,2) FROM pcn_deposits WHERE status='credited'");
+$o['users_new'] = $q("SELECT COUNT(*) FROM users WHERE created_at >= NOW() - INTERVAL 24 HOUR");
+// role='user' only: counting every conversations row triples the figure with
+// the bot's own replies and the system prompt
+$o['users_active'] = $q("SELECT COUNT(DISTINCT chat_id) FROM conversations WHERE created_at >= NOW() - INTERVAL 24 HOUR AND role='user'");
+$o['user_msgs_24h'] = $q("SELECT COUNT(*) FROM conversations WHERE created_at >= NOW() - INTERVAL 24 HOUR AND role='user'");
+// LIFETIME: no rejected_at column exists, so no window is defensible
+$o['rejected_lifetime'] = $q("SELECT COUNT(*) FROM pcn_deposits WHERE status='rejected'");
+// the watcher writes pcoin_rate_cache.at every tick -- this is its heartbeat
+$o['watcher_age_min'] = $q("SELECT ROUND((UNIX_TIMESTAMP() - JSON_EXTRACT(value,'$.at'))/60,1) FROM settings WHERE `key`='pcoin_rate_cache'");
+// windowed on completed_at: a job that fails the next day must count on the
+// day it failed, not never
+$o['opus_failed_24h'] = $q("SELECT COUNT(*) FROM opus_queue WHERE status='failed' AND completed_at >= NOW() - INTERVAL 24 HOUR");
+$o['opus_jammed'] = $q("SELECT COUNT(*) FROM opus_queue WHERE status IN ('pending','running')");
+echo json_encode($o);
+"""
+
+
+def collect_webbuilder():
+    r = blank("webbuilderbot", "116.203.221.42")
+    ok, out = remote("root@116.203.221.42", "php", WEBBUILDER_PHP)
+    if not ok:
+        r["error"] = out
+        return r
+    try:
+        d = json.loads(out.strip().splitlines()[-1])
+    except Exception as e:
+        r["error"] = "unparseable output: %s" % str(e)[:120]
+        return r
+    for k in ("pcn_n", "pcn_usd", "wpcn_n", "wpcn_usd", "pending_n", "pending_oldest_h",
+              "rejected_lifetime", "users_new", "users_active", "last_credit_h",
+              "watcher_age_min"):
+        r[k] = num(d.get(k))
+    r["ok"] = True
+    if num(d.get("user_msgs_24h")):
+        r["extra"]["user messages"] = "%d" % num(d["user_msgs_24h"])
+    if num(d.get("opus_failed_24h")):
+        r["extra"]["opus failed"] = "%d" % num(d["opus_failed_24h"])
+    if num(d.get("opus_jammed")):
+        r["extra"]["opus jammed"] = "%d" % num(d["opus_jammed"])
+    return r
+
+
+# ===========================================================================
+# aicontrol.pc.am -- on 116, Node + the app's own pool
+# ===========================================================================
+AICONTROL_JS = r"""
+// The job file runs from /tmp, and node resolves modules relative to the
+// SCRIPT's directory, not the working directory -- process.chdir() does not
+// change that. Both requires are therefore absolute, and .env is named
+// explicitly rather than being found by walking up from the script.
+const APP = '/var/www/ai-control-server';
+require(APP + '/node_modules/dotenv').config({ path: APP + '/.env' });
+const { pool } = require(APP + '/src/db-pool');
+(async () => {
+  const one = async (sql) => { const [r] = await pool.query(sql); const k = Object.keys(r[0] || {})[0]; return r[0] ? r[0][k] : null; };
+  const o = {};
+  o.pcn_n   = await one("SELECT COUNT(*) v FROM pcn_deposits WHERE status='credited' AND credited_at >= NOW() - INTERVAL 24 HOUR");
+  o.pcn_usd = await one("SELECT COALESCE(SUM(credited_usd),0) v FROM pcn_deposits WHERE status='credited' AND credited_at >= NOW() - INTERVAL 24 HOUR");
+  o.pending_n = await one("SELECT COUNT(*) v FROM pcn_deposits WHERE status IN ('seen','confirming')");
+  // NULL when nothing is pending
+  o.pending_oldest_h = await one("SELECT ROUND(TIMESTAMPDIFF(SECOND, MIN(first_seen_at), NOW())/3600,2) v FROM pcn_deposits WHERE status IN ('seen','confirming')");
+  o.wpcn_n   = await one("SELECT COUNT(*) v FROM wpcn_payments WHERE credited_at >= NOW() - INTERVAL 24 HOUR");
+  o.wpcn_usd = await one("SELECT COALESCE(SUM(credited_usd),0) v FROM wpcn_payments WHERE credited_at >= NOW() - INTERVAL 24 HOUR");
+  o.last_credit_h = await one("SELECT ROUND(TIMESTAMPDIFF(SECOND, MAX(credited_at), NOW())/3600,2) v FROM pcn_deposits WHERE status='credited'");
+  o.users_new = await one("SELECT COUNT(*) v FROM users WHERE created_at >= NOW() - INTERVAL 24 HOUR");
+  // LIFETIME: the min-amount rejection fires AFTER the 100-block coinbase gate,
+  // so a rejected coinbase deposit can never land inside a 24h first_seen window
+  o.rejected_lifetime = await one("SELECT COUNT(*) v FROM pcn_deposits WHERE status='rejected'");
+  o.watcher_age_min = await one("SELECT ROUND((UNIX_TIMESTAMP() - JSON_EXTRACT(value,'$.at'))/60,1) v FROM settings WHERE `key`='pcoin_watcher_heartbeat'");
+  // the only figure that says "we paid USD for PCN that may no longer exist".
+  // A reorg-flagged row stays status='credited', so the stuck query cannot see it.
+  o.reorg_flagged = await one("SELECT COALESCE(SUM(reorg_flagged=1),0) v FROM pcn_deposits WHERE status='credited'");
+  o.reorg_usd = await one("SELECT COALESCE(SUM(CASE WHEN reorg_flagged=1 THEN credited_usd END),0) v FROM pcn_deposits WHERE status='credited'");
+  // one filter applied consistently: without it, 'online' and 'seen' disagree
+  // by a dozen devices because only one of them excluded revoked ones
+  o.devices_online = await one("SELECT COALESCE(SUM(last_active >= NOW() - INTERVAL 5 MINUTE AND is_revoked=0 AND is_disabled=0),0) v FROM device_sessions");
+  o.devices_24h = await one("SELECT COALESCE(SUM(last_active >= NOW() - INTERVAL 24 HOUR AND is_revoked=0 AND is_disabled=0),0) v FROM device_sessions");
+  o.users_active = o.devices_24h;
+  // a second money rail nothing else in the estate reads. status is
+  // ('pending','paid','failed','expired') -- 'paid', not 'completed'.
+  o.invoices_paid_24h = await one("SELECT COALESCE(SUM(status='paid' AND completed_at >= NOW() - INTERVAL 24 HOUR),0) v FROM payments");
+  o.invoices_paid_usd_24h = await one("SELECT COALESCE(SUM(CASE WHEN status='paid' AND completed_at >= NOW() - INTERVAL 24 HOUR THEN amount_usd END),0) v FROM payments");
+  o.invoices_pending = await one("SELECT COALESCE(SUM(status='pending'),0) v FROM payments");
+  console.log(JSON.stringify(o));
+  process.exit(0);
+})().catch(e => { console.error('ERR ' + e.message); process.exit(1); });
+"""
+
+
+def collect_aicontrol():
+    r = blank("aicontrol.pc.am", "116.203.221.42")
+    ok, out = remote("root@116.203.221.42", "node", AICONTROL_JS)
+    if not ok:
+        r["error"] = out
+        return r
+    try:
+        d = json.loads(out.strip().splitlines()[-1])
+    except Exception as e:
+        r["error"] = "unparseable output: %s" % str(e)[:120]
+        return r
+    for k in ("pcn_n", "pcn_usd", "wpcn_n", "wpcn_usd", "pending_n", "pending_oldest_h",
+              "rejected_lifetime", "users_new", "users_active", "last_credit_h",
+              "watcher_age_min"):
+        r[k] = num(d.get(k))
+    r["ok"] = True
+    dev = num(d.get("devices_online"))
+    if dev is not None:
+        r["extra"]["devices online"] = "%d" % dev
+    if num(d.get("invoices_paid_24h")):
+        r["extra"]["card paid"] = "%d / $%.2f" % (num(d["invoices_paid_24h"]),
+                                                  num(d.get("invoices_paid_usd_24h")) or 0)
+    if num(d.get("invoices_pending")):
+        r["extra"]["card invoices pending"] = "%d" % num(d["invoices_pending"])
+    if num(d.get("reorg_flagged")):
+        r["extra"]["REORG-FLAGGED CREDITS"] = "%d / $%.2f" % (
+            num(d["reorg_flagged"]), num(d.get("reorg_usd")) or 0)
+    return r
+
+
+# ===========================================================================
+# webai.pc.am -- on 35, inside the container, through the app's own db module
+# ===========================================================================
+WEBAI_JS = r"""
+(async () => {
+  const db = require('/app/src/db.js');
+  await db.init();
+  const pool = db.getPool();
+  const one = async (sql) => { const [r] = await pool.query(sql); const k = Object.keys(r[0] || {})[0]; return r[0] ? r[0][k] : null; };
+  const o = {};
+  o.pcn_n   = await one("SELECT COUNT(*) v FROM pcn_deposits WHERE status='credited' AND credited_at >= NOW() - INTERVAL 24 HOUR");
+  o.pcn_usd = await one("SELECT COALESCE(SUM(credited_usd),0) v FROM pcn_deposits WHERE status='credited' AND credited_at >= NOW() - INTERVAL 24 HOUR");
+  // status IN ('seen','confirming') is the exact non-terminal complement of the
+  // enum. NOT confirmations < 3: that column is a STALE SNAPSHOT on this rail --
+  // it stops refreshing once a deposit passes the gate, so credited rows sit at
+  // 2 with confirmations_at_credit = 3 and would be falsely flagged as stuck.
+  o.pending_n = await one("SELECT COUNT(*) v FROM pcn_deposits WHERE status IN ('seen','confirming')");
+  o.pending_oldest_h = await one("SELECT ROUND(TIMESTAMPDIFF(SECOND, MIN(first_seen_at), NOW())/3600,2) v FROM pcn_deposits WHERE status IN ('seen','confirming')");
+  o.wpcn_n   = await one("SELECT COUNT(*) v FROM wpcn_payments WHERE credited_at >= NOW() - INTERVAL 24 HOUR");
+  o.wpcn_usd = await one("SELECT COALESCE(SUM(credited_usd),0) v FROM wpcn_payments WHERE credited_at >= NOW() - INTERVAL 24 HOUR");
+  o.last_credit_h = await one("SELECT ROUND(TIMESTAMPDIFF(SECOND, MAX(credited_at), NOW())/3600,2) v FROM pcn_deposits WHERE status='credited'");
+  // a row in `users` is not a signup: a genuine one gets a signup_bonus.
+  // Publishing the raw count as growth is how test rows become a metric.
+  o.users_new = await one("SELECT COALESCE(SUM(EXISTS (SELECT 1 FROM payment_transactions t WHERE t.user_id = u.id AND t.type='signup_bonus')),0) v FROM users u WHERE u.created_at >= NOW() - INTERVAL 24 HOUR");
+  o.users_rows_24h = await one("SELECT COUNT(*) v FROM users WHERE created_at >= NOW() - INTERVAL 24 HOUR");
+  o.users_active = await one("SELECT COUNT(DISTINCT user_id) v FROM usage_records WHERE created_at >= NOW() - INTERVAL 24 HOUR");
+  // rejections have a real timestamp in system_logs even though pcn_deposits
+  // has no rejected_at, so this window is honest
+  o.rejected_24h = await one("SELECT COUNT(*) v FROM system_logs WHERE category='PCOIN_REJECTED' AND created_at >= NOW() - INTERVAL 24 HOUR");
+  o.rejected_lifetime = await one("SELECT COUNT(*) v FROM pcn_deposits WHERE status='rejected'");
+  o.watcher_age_min = await one("SELECT ROUND((UNIX_TIMESTAMP() - JSON_EXTRACT(value,'$.at'))/60,1) v FROM settings WHERE `key`='pcoin_watcher_heartbeat'");
+  // THE BILLING GAP. Cost incurred vs money actually taken. These are supposed
+  // to agree and do not; the delta is work given away. Reported daily so the
+  // trend is visible rather than discovered once a quarter.
+  o.usage_cost_24h = await one("SELECT COALESCE(SUM(cost_usd),0) v FROM usage_records WHERE created_at >= NOW() - INTERVAL 24 HOUR");
+  o.usage_reqs_24h = await one("SELECT COUNT(*) v FROM usage_records WHERE created_at >= NOW() - INTERVAL 24 HOUR");
+  o.charges_24h = await one("SELECT COALESCE(-SUM(amount_usd),0) v FROM payment_transactions WHERE type='usage_charge' AND created_at >= NOW() - INTERVAL 24 HOUR");
+  o.invoices_pending = await one("SELECT COALESCE(SUM(type='deposit_pending'),0) v FROM payment_transactions");
+  console.log(JSON.stringify(o));
+  process.exit(0);
+})().catch(e => { console.error('ERR ' + e.message); process.exit(1); });
+"""
+
+
+def collect_webai():
+    r = blank("webai.pc.am", "35.239.156.16")
+    # The container has no shell-friendly way to take a script as an argument
+    # without quoting it through three layers, so it goes in on stdin too.
+    inner = "sudo docker exec -i webai sh -c 'cat > /tmp/rd.js && node /tmp/rd.js; rc=$?; rm -f /tmp/rd.js; exit $rc'"
+    ok, out = run(["ssh", "-i", PANEL_KEY, "-o", "BatchMode=yes",
+                   "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=no",
+                   "rba@35.239.156.16", inner], stdin_text=WEBAI_JS)
+    if not ok:
+        r["error"] = out
+        return r
+    line = None
+    for ln in reversed((out or "").strip().splitlines()):
+        if ln.strip().startswith("{"):
+            line = ln.strip()
+            break
+    if not line:
+        r["error"] = "no JSON in output"
+        return r
+    try:
+        d = json.loads(line)
+    except Exception as e:
+        r["error"] = "unparseable output: %s" % str(e)[:120]
+        return r
+    for k in ("pcn_n", "pcn_usd", "wpcn_n", "wpcn_usd", "pending_n", "pending_oldest_h",
+              "rejected_lifetime", "users_new", "users_active", "last_credit_h",
+              "watcher_age_min"):
+        r[k] = num(d.get(k))
+    r["ok"] = True
+    cost = num(d.get("usage_cost_24h"))
+    charged = num(d.get("charges_24h"))
+    if cost is not None and charged is not None:
+        gap = cost - charged
+        r["extra"]["AI usage"] = "%d reqs, cost $%.2f, charged $%.2f" % (
+            num(d.get("usage_reqs_24h")) or 0, cost, charged)
+        if gap > 0.005:
+            r["extra"]["UNBILLED"] = "$%.2f given away in 24h" % gap
+    rows = num(d.get("users_rows_24h"))
+    if rows is not None and r["users_new"] is not None and rows > r["users_new"]:
+        r["extra"]["user rows without a signup bonus"] = "%d" % (rows - r["users_new"])
+    if num(d.get("rejected_24h")):
+        r["extra"]["rejected in 24h"] = "%d" % num(d["rejected_24h"])
+    if num(d.get("invoices_pending")):
+        r["extra"]["card invoices pending"] = "%d" % num(d["invoices_pending"])
+    return r
+
+
+COLLECTORS = [collect_checker, collect_webbuilder, collect_aicontrol, collect_webai]
+
+
+# ===========================================================================
+def fmt_usd(v):
+    return "-" if v is None else "$%.2f" % v
+
+
+def fmt_int(v):
+    return "-" if v is None else "%d" % int(v)
+
+
+def fmt_age(h):
+    if h is None:
+        return "never"
+    if h < 1:
+        return "%dm" % int(h * 60)
+    if h < 48:
+        return "%.0fh" % h
+    return "%.0fd" % (h / 24.0)
+
+
+def build_message(day, rows):
+    lines, problems, quiet = [], [], []
+    total_n, total_usd, any_unknown = 0, 0.0, False
+
+    for r in rows:
+        if not r["ok"]:
+            any_unknown = True
+            lines.append("%-15s UNKNOWN -- %s" % (r["name"], r["error"] or "no reason given"))
+            problems.append("%s could not be read at all" % r["name"])
+            continue
+
+        got = []
+        if r["pcn_n"] is not None:
+            got.append("PCN %s/%s" % (fmt_int(r["pcn_n"]), fmt_usd(r["pcn_usd"])))
+            total_n += int(r["pcn_n"] or 0)
+            total_usd += float(r["pcn_usd"] or 0)
+        if r["wpcn_n"]:
+            got.append("wPCN %s/%s" % (fmt_int(r["wpcn_n"]), fmt_usd(r["wpcn_usd"])))
+            total_n += int(r["wpcn_n"] or 0)
+            total_usd += float(r["wpcn_usd"] or 0)
+        if not got:
+            got = ["no deposits"]
+
+        bits = [" ".join(got)]
+        if r["users_new"] is not None or r["users_active"] is not None:
+            bits.append("users +%s / %s active" % (fmt_int(r["users_new"]),
+                                                   fmt_int(r["users_active"])))
+        bits.append("last credit %s" % fmt_age(r["last_credit_h"]))
+
+        flag = "ok"
+        # A dead watcher writes no rows, so "0 pending" would read as healthy.
+        # This is the check that gives every other number on the line meaning.
+        if r["watcher_age_min"] is None:
+            flag = "WATCHER?"
+            problems.append("%s: no watcher heartbeat could be read, so its "
+                            "'0 pending' means nothing" % r["name"])
+        elif r["watcher_age_min"] > WATCHER_STALE_MIN:
+            flag = "WATCHER"
+            problems.append("%s: watcher last ticked %s ago -- deposits are not being "
+                            "seen, and the figures on this line are stale"
+                            % (r["name"], fmt_age(r["watcher_age_min"] / 60.0)))
+        elif r["pending_n"] and r["pending_oldest_h"] is not None \
+                and r["pending_oldest_h"] >= STUCK_HOURS:
+            flag = "STUCK"
+            problems.append("%s: %d deposit(s) waiting, oldest %s"
+                            % (r["name"], int(r["pending_n"]),
+                               fmt_age(r["pending_oldest_h"])))
+        elif r["pending_n"]:
+            bits.append("%s pending" % fmt_int(r["pending_n"]))
+
+        if r["last_credit_h"] is not None and r["last_credit_h"] > QUIET_DAYS * 24:
+            quiet.append("%s has credited nothing for %s"
+                         % (r["name"], fmt_age(r["last_credit_h"])))
+        elif r["last_credit_h"] is None:
+            quiet.append("%s has never credited a deposit" % r["name"])
+
+        lines.append("%-15s %-8s %s" % (r["name"], flag, "  ".join(bits)))
+        for k, v in (r.get("extra") or {}).items():
+            lines.append("%-15s %-8s %s: %s" % ("", "", k, v))
+
+    subject = "PCN rails -- daily activity %s" % day
+    body = ["", "\n".join(lines), ""]
+    body.append("24h across all four: %d deposit(s), $%.2f credited" % (total_n, total_usd))
+    if any_unknown:
+        body.append("")
+        body.append("SOME RAILS COULD NOT BE READ, so the total above is a FLOOR, not a "
+                    "total. Treat the missing ones as unknown, never as zero.")
+    if problems:
+        body.append("")
+        body.append("Needs attention:")
+        body += ["  - " + p for p in problems]
+    if quiet:
+        body.append("")
+        body.append("Quiet, which is not an error:")
+        body += ["  - " + q for q in quiet]
+    return subject, "\n".join(body)
+
+
+def main():
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    rows = []
+    for c in COLLECTORS:
+        try:
+            rows.append(c())
+        except Exception as e:
+            # A collector that throws must still produce a line. A rail that
+            # vanishes from the report is the exact failure this file exists
+            # to prevent.
+            r = blank(getattr(c, "__name__", "unknown"), "?")
+            r["error"] = "collector raised: %s" % str(e)[:150]
+            rows.append(r)
+
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        snap = os.path.join(STATE_DIR, "%s.json" % day)
+        tmp = snap + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"day": day, "collected_at": int(time.time()), "rails": rows},
+                      f, indent=1, default=str)
+        os.replace(tmp, snap)
+    except Exception as e:
+        log("could not write the daily snapshot: %s" % e)
+
+    subject, body = build_message(day, rows)
+
+    if DRY:
+        print(subject)
+        print(body)
+        return 0
+
+    if not os.access(NOTIFY, os.X_OK):
+        log("no executable notifier at %s -- report NOT delivered" % NOTIFY)
+        print(subject)
+        print(body)
+        return 0
+
+    # REPEAT_HOURS=0 plus a dated subject. This must never be deduped away: a
+    # missing daily message is itself the signal that something broke, so the
+    # report must not be able to go quiet on a slow day.
+    env = dict(os.environ, REPEAT_HOURS="0")
+    p = subprocess.run([NOTIFY, subject, body], env=env, capture_output=True, text=True)
+    if p.returncode != 0:
+        log("notifier exited %d: %s" % (p.returncode, (p.stderr or "")[:200]))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
