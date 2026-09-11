@@ -365,12 +365,12 @@ WEBAI_JS = r"""
   o.rejected_24h = await one("SELECT COUNT(*) v FROM system_logs WHERE category='PCOIN_REJECTED' AND created_at >= NOW() - INTERVAL 24 HOUR");
   o.rejected_lifetime = await one("SELECT COUNT(*) v FROM pcn_deposits WHERE status='rejected'");
   o.watcher_age_min = await one("SELECT ROUND((UNIX_TIMESTAMP() - JSON_EXTRACT(value,'$.at'))/60,1) v FROM settings WHERE `key`='pcoin_watcher_heartbeat'");
-  // THE BILLING GAP. Cost incurred vs money actually taken. These are supposed
-  // to agree and do not; the delta is work given away. Reported daily so the
-  // trend is visible rather than discovered once a quarter.
-  o.usage_cost_24h = await one("SELECT COALESCE(SUM(cost_usd),0) v FROM usage_records WHERE created_at >= NOW() - INTERVAL 24 HOUR");
-  o.usage_reqs_24h = await one("SELECT COUNT(*) v FROM usage_records WHERE created_at >= NOW() - INTERVAL 24 HOUR");
-  o.charges_24h = await one("SELECT COALESCE(-SUM(amount_usd),0) v FROM payment_transactions WHERE type='usage_charge' AND created_at >= NOW() - INTERVAL 24 HOUR");
+  // AI usage and the billing gap are deliberately NOT collected. The owner
+  // dismissed the zero-request finding on 2026-09-11 and asked for that app's
+  // AI activity not to be tracked. The DEPOSIT rail stays reported -- he named
+  // webai as one of the four that matter -- so this drops the metric, not the
+  // rail. The unbilled-usage defect itself is unfixed and is written up in
+  // D:\pc.am\PROMPT-WEBAI.md; removing the daily number does not close it.
   o.invoices_pending = await one("SELECT COALESCE(SUM(type='deposit_pending'),0) v FROM payment_transactions");
   console.log(JSON.stringify(o));
   process.exit(0);
@@ -407,14 +407,6 @@ def collect_webai():
               "watcher_age_min"):
         r[k] = num(d.get(k))
     r["ok"] = True
-    cost = num(d.get("usage_cost_24h"))
-    charged = num(d.get("charges_24h"))
-    if cost is not None and charged is not None:
-        gap = cost - charged
-        r["extra"]["AI usage"] = "%d reqs, cost $%.2f, charged $%.2f" % (
-            num(d.get("usage_reqs_24h")) or 0, cost, charged)
-        if gap > 0.005:
-            r["extra"]["UNBILLED"] = "$%.2f given away in 24h" % gap
     rows = num(d.get("users_rows_24h"))
     if rows is not None and r["users_new"] is not None and rows > r["users_new"]:
         r["extra"]["user rows without a signup bonus"] = "%d" % (rows - r["users_new"])
