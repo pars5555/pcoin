@@ -1,4 +1,4 @@
-// Copyright (c) 2026 The PCoin developers
+﻿// Copyright (c) 2026 The PCoin developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 //
@@ -1834,9 +1834,10 @@ namespace PCoinTray
         // argument. Everything else is a statement about the moment.
         // =================================================================
 
-        static string Proves(PCoinTray.TrayApp.NodeStartFail why)
+        static string Proves(PCoinTray.TrayApp.NodeStartFail why,
+                             PCoinTray.TrayApp.OptionSupport support)
         {
-            return PCoinTray.TrayApp.FastModeFallback.ProvesUnsupported(why) ? "disable" : "keep";
+            return PCoinTray.TrayApp.FastModeFallback.ProvesUnsupported(why, support) ? "disable" : "keep";
         }
 
         static bool RunFastModeFallback(List<string> log)
@@ -1844,22 +1845,42 @@ namespace PCoinTray
             bool ok = true;
             Log(log, "--- sticky fast mode ---");
 
-            // The ONE case that is evidence: we started it, it quit on its own.
-            ok &= Check(log, "node exited by itself -> the option is unsupported", "disable",
-                        Proves(PCoinTray.TrayApp.NodeStartFail.Exited));
+            var EXITED  = PCoinTray.TrayApp.NodeStartFail.Exited;
+            var ABSENT  = PCoinTray.TrayApp.OptionSupport.Absent;
+            var PRESENT = PCoinTray.TrayApp.OptionSupport.Present;
+            var UNKNOWN = PCoinTray.TrayApp.OptionSupport.Unknown;
 
-            // The case that actually caused the incident: an upgrade left the
-            // previous bitcoind shutting down, so we never passed an argument
-            // at all. If this ever returns "disable" the bug is back.
-            ok &= Check(log, "a node already running that never answered -> KEEP fast mode", "keep",
-                        Proves(PCoinTray.TrayApp.NodeStartFail.AlreadyRunningNoRpc));
-            ok &= Check(log, "started, alive, RPC slow -> KEEP fast mode", "keep",
-                        Proves(PCoinTray.TrayApp.NodeStartFail.Timeout));
-            ok &= Check(log, "could not spawn the process at all -> KEEP fast mode", "keep",
-                        Proves(PCoinTray.TrayApp.NodeStartFail.SpawnFailed));
+            // The ONLY case that is evidence: it quit by itself AND the binary
+            // does not list the option. Both, or neither.
+            ok &= Check(log, "exited by itself AND binary lacks the option -> disable", "disable",
+                        Proves(EXITED, ABSENT));
+
+            // THE REAL INCIDENT, office02 on 2026-09-12. A second bitcoind was
+            // spawned while one still held the data directory lock, so it quit
+            // by itself - and `bitcoind -help` on that very machine LISTS
+            // -randomxfastmode. v1.4.26 read the exit alone and turned fast mode
+            // off on a node that supports it perfectly. If this ever returns
+            // "disable" again, that regression is back.
+            ok &= Check(log, "exited but the binary DOES list the option -> KEEP", "keep",
+                        Proves(EXITED, PRESENT));
+
+            // Could not ask the binary. Unknown resolves nothing, so a start
+            // failure on its own must never cost the preference.
+            ok &= Check(log, "exited but we could not ask the binary -> KEEP", "keep",
+                        Proves(EXITED, UNKNOWN));
+
+            // The v1.4.25 incident: an upgrade left the previous bitcoind
+            // shutting down, so we never passed an argument at all. Not even a
+            // binary that lacks the option makes this our argument's fault.
+            ok &= Check(log, "a node already running that never answered -> KEEP", "keep",
+                        Proves(PCoinTray.TrayApp.NodeStartFail.AlreadyRunningNoRpc, ABSENT));
+            ok &= Check(log, "started, alive, RPC slow -> KEEP", "keep",
+                        Proves(PCoinTray.TrayApp.NodeStartFail.Timeout, ABSENT));
+            ok &= Check(log, "could not spawn the process at all -> KEEP", "keep",
+                        Proves(PCoinTray.TrayApp.NodeStartFail.SpawnFailed, ABSENT));
             // "Nothing went wrong" must never disable anything either.
-            ok &= Check(log, "no failure recorded -> KEEP fast mode", "keep",
-                        Proves(PCoinTray.TrayApp.NodeStartFail.None));
+            ok &= Check(log, "no failure recorded -> KEEP", "keep",
+                        Proves(PCoinTray.TrayApp.NodeStartFail.None, ABSENT));
             return ok;
         }
 

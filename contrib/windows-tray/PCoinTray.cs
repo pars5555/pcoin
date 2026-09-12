@@ -1637,22 +1637,25 @@ namespace PCoinTray
                 _fastModeSuspended = true;        // session only; never written
                 EnsureNode();
 
-                if (_nodeUp && FastModeFallback.ProvesUnsupported(why))
+                OptionSupport support = ProbeFastModeOption();
+                if (_nodeUp && FastModeFallback.ProvesUnsupported(why, support))
                 {
-                    // It started once the flag was gone, and it had quit by
-                    // itself with the flag: that is evidence, not a guess.
+                    // Two independent facts agree: the process quit by itself
+                    // with the flag, and the binary does not list the option.
+                    // That is evidence, not a guess.
                     _fastMode = false;
                     _fastModeSuspended = false;
                     SaveConfig();
-                    Program.Note("fast mode turned OFF in the config: this node rejects -randomxfastmode");
+                    Program.Note("fast mode turned OFF in the config: this bitcoind does not support -randomxfastmode");
                 }
                 else
                 {
                     // Unknown stays unknown. The preference is untouched, so the
                     // next start tries fast mode again and a transient failure
                     // costs one session instead of every session after it.
-                    Program.Note("fast mode left ON in the config: that was a transient start failure (" +
-                                 why + "), not a rejected option - it will be retried next start");
+                    Program.Note("fast mode left ON in the config: start failed (" + why +
+                                 ") but the binary reports the option " + support +
+                                 " - not a rejected option, it will be retried next start");
                 }
             }
 
@@ -1785,17 +1788,73 @@ namespace PCoinTray
          * When a failed fast-mode start is evidence about the OPTION rather
          * than about the moment. Pure, so it can be checked with vectors.
          */
+        //! What the node BINARY says about an option, which is a different
+        //! question from what one start attempt did.
+        internal enum OptionSupport
+        {
+            Unknown,   // we could not ask - resolves nothing
+            Present,   // -help lists it
+            Absent     // -help ran and did not list it
+        }
+
         internal static class FastModeFallback
         {
-            public static bool ProvesUnsupported(NodeStartFail why)
+            public static bool ProvesUnsupported(NodeStartFail why, OptionSupport support)
             {
-                // Core exits immediately on an argument it does not recognise.
-                // Only a process that WE started and that quit by itself can
-                // testify to that. A pre-existing node that never answered, a
-                // spawn failure, or a node that is simply slow say nothing
-                // about our arguments (CLAUDE.md 7.1).
-                return why == NodeStartFail.Exited;
+                // An exit is NOT proof on its own, and believing it was cost
+                // office02 its fast mode on 2026-09-12. Core also exits
+                // immediately when another bitcoind holds the data directory
+                // lock - which is exactly what an upgrade produces, and is the
+                // very failure this fallback was written to survive. The two
+                // are indistinguishable from the exit alone.
+                //
+                // So the exit only says "something was wrong with this start".
+                // WHETHER the option exists is answered by the binary itself,
+                // and only when both agree do we persist anything. Unknown
+                // resolves nothing (CLAUDE.md 7.1).
+                return why == NodeStartFail.Exited && support == OptionSupport.Absent;
             }
+        }
+
+        //! Does this bitcoind know -randomxfastmode? Core lists every option it
+        //! recognises in -help and answers in well under a second, so this is a
+        //! direct answer where the exit code was only a correlation.
+        //!
+        //! Cached: the binary cannot change under a running tray, and an
+        //! upgrade restarts the app.
+        OptionSupport _fastModeOption = OptionSupport.Unknown;
+        OptionSupport ProbeFastModeOption()
+        {
+            if (_fastModeOption != OptionSupport.Unknown) return _fastModeOption;
+            try
+            {
+                var psi = new ProcessStartInfo(Path.Combine(_dir, "bitcoind.exe"), "-help")
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    WorkingDirectory = _dir
+                };
+                using (var p = Process.Start(psi))
+                {
+                    // Read BEFORE waiting: -help fills the pipe buffer and a
+                    // WaitForExit first would deadlock on a full pipe.
+                    string text = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
+                    p.WaitForExit(20000);
+                    _fastModeOption = text.IndexOf("randomxfastmode", StringComparison.OrdinalIgnoreCase) >= 0
+                        ? OptionSupport.Present
+                        : OptionSupport.Absent;
+                }
+            }
+            catch
+            {
+                // Could not ask. That is not a "no" - leave it Unknown so the
+                // preference is never turned off on the strength of a failure
+                // to measure.
+                _fastModeOption = OptionSupport.Unknown;
+            }
+            return _fastModeOption;
         }
 
         void EnsureNode()
