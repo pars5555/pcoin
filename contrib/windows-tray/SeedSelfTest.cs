@@ -158,6 +158,7 @@ namespace PCoinTray
 #if !PCOIN_WALLET   // Cpu lives in PCoinTray.cs; the wallet build (build-wallet.bat) defines PCOIN_WALLET
             ok &= RunSoloAdvice(log);
             ok &= RunStaleTip(log);
+            ok &= RunFastModeFallback(log);
 #endif
 
             Log(log, ok ? "ALL CHECKS PASSED" : "FAILURES ABOVE - DO NOT SHIP");
@@ -1815,6 +1816,51 @@ namespace PCoinTray
         {
             return TrayApp.StaleTip.ShouldProbe(solo, haveInfo, syncing, mining, still, sinceProbe)
                    ? "probe" : "wait";
+        }
+
+        // =================================================================
+        // The sticky fast-mode downgrade
+        //
+        // The tray turned fast mode off IN THE CONFIG the first time a node
+        // failed to start with -randomxfastmode, whatever the reason, and never
+        // retried. On 2026-09-12 that hit three of seven machines in one
+        // upgrade round - the previous bitcoind was still shutting down, the
+        // start timed out, and boxes whose nodes support the flag perfectly
+        // well were left in light mode at about an eighth of their rate. One
+        // sat at 215 H/s against a measured 1890 until somebody looked.
+        //
+        // Only a process that WE started and that quit BY ITSELF can testify
+        // that the option was rejected; that is how Core refuses an unknown
+        // argument. Everything else is a statement about the moment.
+        // =================================================================
+
+        static string Proves(PCoinTray.TrayApp.NodeStartFail why)
+        {
+            return PCoinTray.TrayApp.FastModeFallback.ProvesUnsupported(why) ? "disable" : "keep";
+        }
+
+        static bool RunFastModeFallback(List<string> log)
+        {
+            bool ok = true;
+            Log(log, "--- sticky fast mode ---");
+
+            // The ONE case that is evidence: we started it, it quit on its own.
+            ok &= Check(log, "node exited by itself -> the option is unsupported", "disable",
+                        Proves(PCoinTray.TrayApp.NodeStartFail.Exited));
+
+            // The case that actually caused the incident: an upgrade left the
+            // previous bitcoind shutting down, so we never passed an argument
+            // at all. If this ever returns "disable" the bug is back.
+            ok &= Check(log, "a node already running that never answered -> KEEP fast mode", "keep",
+                        Proves(PCoinTray.TrayApp.NodeStartFail.AlreadyRunningNoRpc));
+            ok &= Check(log, "started, alive, RPC slow -> KEEP fast mode", "keep",
+                        Proves(PCoinTray.TrayApp.NodeStartFail.Timeout));
+            ok &= Check(log, "could not spawn the process at all -> KEEP fast mode", "keep",
+                        Proves(PCoinTray.TrayApp.NodeStartFail.SpawnFailed));
+            // "Nothing went wrong" must never disable anything either.
+            ok &= Check(log, "no failure recorded -> KEEP fast mode", "keep",
+                        Proves(PCoinTray.TrayApp.NodeStartFail.None));
+            return ok;
         }
 
         static bool RunStaleTip(List<string> log)

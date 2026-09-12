@@ -20,6 +20,6 @@ namespace PCoinTray
     {
         //! Bump together with install.ps1's $Version and the release tag.
         //! pack-win64.py will not let you forget.
-        public const string Version = "1.4.25";
+        public const string Version = "1.4.26";
     }
 }

@@ -1096,7 +1096,7 @@ namespace PCoinTray
 
         //! Percentage of the machine -> worker threads. Always at least one
         //! thread, never more than the machine has.
-        int ThreadsFor(int percent) { return Cpu.ThreadsFor(percent, _cores, _fastMode); }
+        int ThreadsFor(int percent) { return Cpu.ThreadsFor(percent, _cores, FastModeActive); }
 
         public TrayApp() : this(false) { }
 
@@ -1613,12 +1613,47 @@ namespace PCoinTray
             // Turning the default off and trying once more cannot leave the
             // machine worse than it started, and it mines in light mode instead
             // of not at all.
+            // THE DOWNGRADE USED TO BE PERMANENT, AND THAT COST REAL HASH RATE.
+            // This wrote fastmode=0 to the config on the FIRST failure of any
+            // kind. One transient stumble and the machine mined in light mode
+            // for ever, at roughly an eighth of its rate, silently. On
+            // 2026-09-12 it hit three of seven machines in one upgrade round:
+            // the previous bitcoind was still shutting down, EnsureNode timed
+            // out waiting for it, and fast mode was disabled on boxes whose
+            // nodes support it perfectly well. One of them sat at 215 H/s
+            // against a measured 1890 until it was found by hand.
+            //
+            // The safety net itself is still right - a tray newer than its
+            // bitcoind must not leave a node that never starts. What was wrong
+            // is that it could not tell "this node rejects the option" from "the
+            // node did not come up just now", and treated both as proof.
+            // _nodeFail carries that distinction now: only Exited means the
+            // process we started quit by itself, which is how Core refuses an
+            // unknown argument.
             if (!_nodeUp && _fastMode)
             {
-                Program.Note("startup: node did not start with fast mode, retrying without it");
-                _fastMode = false;
-                SaveConfig();
+                NodeStartFail why = _nodeFail;
+                Program.Note("startup: node did not start with fast mode (" + why + "), retrying without it");
+                _fastModeSuspended = true;        // session only; never written
                 EnsureNode();
+
+                if (_nodeUp && FastModeFallback.ProvesUnsupported(why))
+                {
+                    // It started once the flag was gone, and it had quit by
+                    // itself with the flag: that is evidence, not a guess.
+                    _fastMode = false;
+                    _fastModeSuspended = false;
+                    SaveConfig();
+                    Program.Note("fast mode turned OFF in the config: this node rejects -randomxfastmode");
+                }
+                else
+                {
+                    // Unknown stays unknown. The preference is untouched, so the
+                    // next start tries fast mode again and a transient failure
+                    // costs one session instead of every session after it.
+                    Program.Note("fast mode left ON in the config: that was a transient start failure (" +
+                                 why + "), not a rejected option - it will be retried next start");
+                }
             }
 
             EnsureWalletLoaded();
@@ -1711,8 +1746,61 @@ namespace PCoinTray
             Cli("loadwallet \"main\" true");            // true => load on startup
         }
 
+        /**
+         * Why the last EnsureNode() failed to bring a node up.
+         *
+         * Only ONE of these is evidence that -randomxfastmode is unsupported:
+         * Exited, where the process we started quit on its own. Core rejects an
+         * unknown option by exiting immediately, so that is the signature the
+         * fast-mode safety net was written for. Every other value is a
+         * transient condition that says nothing about the flag.
+         */
+        internal enum NodeStartFail
+        {
+            None,
+            AlreadyRunningNoRpc,   // a bitcoind was already there and never answered
+            SpawnFailed,           // could not even start the process
+            Exited,                // we started it and it quit by itself
+            Timeout                // started, still alive, RPC never answered
+        }
+
+        NodeStartFail _nodeFail = NodeStartFail.None;
+
+        /**
+         * Fast mode is off for THIS SESSION ONLY, after a start failure that
+         * did not implicate the flag.
+         *
+         * Kept apart from _fastMode on purpose. _fastMode is the persisted
+         * PREFERENCE and SaveConfig writes it; this one is never written, so a
+         * transient stumble cannot outlive the process. Everything that decides
+         * whether the node actually gets -randomxfastmode reads FastModeActive,
+         * not _fastMode, so the display never claims fast mode while the node
+         * is running in light mode.
+         */
+        bool _fastModeSuspended;
+
+        bool FastModeActive { get { return _fastMode && !_fastModeSuspended; } }
+
+        /**
+         * When a failed fast-mode start is evidence about the OPTION rather
+         * than about the moment. Pure, so it can be checked with vectors.
+         */
+        internal static class FastModeFallback
+        {
+            public static bool ProvesUnsupported(NodeStartFail why)
+            {
+                // Core exits immediately on an argument it does not recognise.
+                // Only a process that WE started and that quit by itself can
+                // testify to that. A pre-existing node that never answered, a
+                // spawn failure, or a node that is simply slow say nothing
+                // about our arguments (CLAUDE.md 7.1).
+                return why == NodeStartFail.Exited;
+            }
+        }
+
         void EnsureNode()
         {
+            _nodeFail = NodeStartFail.None;
             if (Cli("getblockcount") != null) { _nodeUp = true; return; }
 
             // RPC silence does not mean there is no node.
@@ -1735,6 +1823,11 @@ namespace PCoinTray
                     catch { break; }
                     Thread.Sleep(1000);
                 }
+                // A node that was already here and never answered says NOTHING
+                // about our arguments - we never got to pass any. This is the
+                // case that fires during an upgrade, while the previous
+                // bitcoind is still shutting down.
+                _nodeFail = NodeStartFail.AlreadyRunningNoRpc;
                 return;
             }
 
@@ -1752,14 +1845,24 @@ namespace PCoinTray
                 _node = Process.Start(psi);
                 _startedNode = true;
             }
-            catch { return; }
+            catch { _nodeFail = NodeStartFail.SpawnFailed; return; }
 
             for (int i = 0; i < 90; i++)
             {
                 if (Cli("getblockcount") != null) { _nodeUp = true; return; }
-                if (_node != null && _node.HasExited) return; // it died; give up
+                if (_node != null && _node.HasExited)
+                {
+                    // It quit on its own. Core exits immediately on an option it
+                    // does not recognise, so THIS is the one failure that can
+                    // implicate -randomxfastmode.
+                    _nodeFail = NodeStartFail.Exited;
+                    return;
+                }
                 Thread.Sleep(1000);
             }
+            // Alive but silent: a slow disk, a big rescan, antivirus. Not an
+            // argument problem.
+            _nodeFail = NodeStartFail.Timeout;
         }
 
         //! Arguments applied to BOTH bitcoind and bitcoin-cli, so the two always
@@ -1796,7 +1899,7 @@ namespace PCoinTray
         string NodeArgs()
         {
             var args = CommonArgs();
-            if (_fastMode) args += " -randomxfastmode";
+            if (FastModeActive) args += " -randomxfastmode";
             return args;
         }
 
@@ -1956,7 +2059,7 @@ namespace PCoinTray
                 return;
             }
             _calibDeferred = false;
-            if (_fastMode && _cores > 1)
+            if (FastModeActive && _cores > 1)
             {
                 var t = new Thread(Calibrate) { IsBackground = true };
                 t.Start();
@@ -1995,7 +2098,7 @@ namespace PCoinTray
 
                 // Candidates: dense around the cache heuristic, with a low anchor
                 // and all-cores to bracket the peak from both sides.
-                int h = Cpu.Recommend(_cores, _fastMode);
+                int h = Cpu.Recommend(_cores, FastModeActive);
                 if (h <= 0) h = _cores;
                 var set = new SortedSet<int>();
                 foreach (int d in new[] { -2, -1, 0, 1, 2, 4 })
@@ -3156,6 +3259,10 @@ namespace PCoinTray
          */
         void SetFastMode(bool on)
         {
+            // Clearing the suspension is part of turning it on: a user ticking
+            // the box after a transient failure is asking for THIS session to
+            // use fast mode, not only the next one.
+            if (on) _fastModeSuspended = false;
             if (_fastMode == on) return;
             _fastMode = on;
             SaveConfig();
@@ -3293,7 +3400,7 @@ namespace PCoinTray
                     PhraseBalance = _balPhraseText,
                     OldBalance = _balOldText,
                     NodeVersion = _nodeVersion,
-                    FastMode = _fastMode,
+                    FastMode = FastModeActive,
                     AvailableMib = AvailableMib(),
                     Problem = _problem,
                     Forward = ForwardForDisplay(nodeUp)
