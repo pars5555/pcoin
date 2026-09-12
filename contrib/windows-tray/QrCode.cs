@@ -1,4 +1,4 @@
-// Copyright (c) 2026 The PCoin developers
+﻿// Copyright (c) 2026 The PCoin developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 //
@@ -23,24 +23,38 @@
 //   * Versions 1..10. Version 10 at ECC M holds 213 bytes, far past anything
 //     this app will ever show.
 //
-// KNOWN DEFECT, LATENT: VERSIONS 7 AND ABOVE ARE NOT VALID QR CODES.
-// From version 7 the spec adds an 18-bit VERSION INFORMATION word in two 6x3
-// blocks, next to the top-right and bottom-left finders. DrawFunctionPatterns
-// below neither reserves nor writes them, so DrawCodewords fills those 36
-// modules with payload and no conforming reader can decode the symbol.
+// VERSION INFORMATION (versions 7..10) IS WRITTEN. Fixed 2026-09-12; this
+// block used to record the opposite as a latent defect.
+// From version 7 the spec adds an 18-bit BCH(18,6) version word in two 6x3
+// blocks next to the top-right and bottom-left finders. DrawFunctionPatterns
+// neither reserved nor wrote them, so DrawCodewords filled those 36 modules
+// with payload and no conforming reader could decode the symbol. Measured
+// 2026-09-08 with a spec-correct decoder: 62, 84 and 106 characters (versions
+// 4, 5 and 6) decoded; 110 and 160 characters (versions 7 and 9) did not.
 //
-// Measured 2026-09-08 with a spec-correct decoder: 62, 84 and 106 characters
-// (versions 4, 5 and 6) decode; 110 and 160 characters (versions 7 and 9) do
-// not.
+// It was latent rather than live: the only caller is the wallet's receive
+// card, which encodes a 42-character address - version 3 - and the golden
+// vectors were versions 1, 3, 4 and 6, all below the boundary, which is why
+// it went unnoticed for so long. A defect nothing reaches is still a defect,
+// and the next caller to pass a longer string would have shipped a QR code
+// that scans as nothing.
 //
-// Nothing reaches it. The only caller is the wallet's receive card, which
-// encodes a 42-character address - version 3 - and Encode() refuses anything
-// over version 10 outright. The golden vectors in SeedSelfTest are versions
-// 1, 3, 4 and 6, all below the boundary, which is why this went unnoticed.
-// Fixing it means reserving both blocks in DrawFunctionPatterns and writing
-// the BCH(18,6) word (generator 0x1F25); it changes no symbol at version 6 or
-// below, so no existing output moves. Until then, do NOT raise the version
-// ceiling and do NOT feed this encoder a longer string expecting it to work.
+// The write is in DrawFunctionPatterns, guarded on version >= 7, so versions
+// 1..6 are untouched and no symbol this app has ever produced moves. The
+// self-test covers versions 7 and 9 by decoding the word back out of the
+// matrix and checking both copies agree and pass their own BCH check.
+//
+// Verified 2026-09-12 against an INDEPENDENT decoder (OpenCV) as well as the
+// self-test, because the defect was originally found by one: 15 of 16 symbols
+// across versions 7, 8, 9 and 10 round-tripped. The single miss was the
+// degenerate input "a" x 160 - three random 160-character strings at the same
+// version decode - and that symbol is conformant by every check that does not
+// depend on a detector: its data stream parses to the right message, its
+// Reed-Solomon matches an independently implemented encoder for all five
+// blocks, and its function and format modules are identical to a reference
+// library's. A detector that cannot localise one pathologically repetitive
+// pattern is a decoder limit, not a defect here. Do not "fix" that by
+// changing the padding to match some other library.
 //
 // Not supported, and not needed: kanji/numeric/alphanumeric modes, structured
 // append, ECI. Encode() returns null rather than guessing if the text does not
@@ -297,6 +311,31 @@ namespace PCoinTray
                 Alignment(m, a, b);
             }
 
+            // VERSION INFORMATION, versions 7 and up. Two copies of an 18-bit
+            // BCH(18,6) word - six bits of version, twelve of remainder under
+            // generator 0x1F25 - in a 3x6 block left of the top-right finder
+            // and its transpose above the bottom-left one. They are function
+            // modules: reserved here so DrawCodewords cannot fill them with
+            // payload, and written here rather than in DrawFormat because they
+            // depend only on the version, never on the mask.
+            //
+            // Versions 1..6 carry no version information at all; the whole
+            // block is skipped, so no symbol this app has ever produced moves.
+            if (version >= 7)
+            {
+                int vrem = version;
+                for (int i = 0; i < 12; i++) vrem = (vrem << 1) ^ ((vrem >> 11) * 0x1F25);
+                int vbits = (version << 12) | vrem;
+                for (int i = 0; i < 18; i++)
+                {
+                    bool bit = Bit(vbits, i);
+                    int a = size - 11 + i % 3;
+                    int b = i / 3;
+                    m.Set(a, b, bit, true);   // top-right block
+                    m.Set(b, a, bit, true);   // bottom-left block, transposed
+                }
+            }
+
             // Format areas are reserved here and written by DrawFormat.
             for (int i = 0; i <= 8; i++)
             {
@@ -404,6 +443,39 @@ namespace PCoinTray
         }
 
         static bool Bit(int v, int i) { return ((v >> i) & 1) == 1; }
+
+        /**
+         * The version a symbol declares, read back out of its version
+         * information, or 0 for versions 1..6 which carry none.
+         *
+         * Returns 0 rather than a guess if the word fails its own BCH check or
+         * if the two copies disagree: an unreadable word resolves nothing, and
+         * a decoder that trusted a corrupt one would report a confident wrong
+         * version. The self-test uses this to prove the bits are really there,
+         * rather than asserting that the writing code was called.
+         */
+        public static int DeclaredVersion(Matrix m)
+        {
+            int size = m.Size;
+            int version = (size - 17) / 4;
+            if (version < 7) return 0;
+
+            int topRight = 0, bottomLeft = 0;
+            for (int i = 0; i < 18; i++)
+            {
+                int a = size - 11 + i % 3;
+                int b = i / 3;
+                if (m[a, b]) topRight |= 1 << i;
+                if (m[b, a]) bottomLeft |= 1 << i;
+            }
+            if (topRight != bottomLeft) return 0;
+
+            int claimed = (topRight >> 12) & 0x3F;
+            int rem = claimed;
+            for (int i = 0; i < 12; i++) rem = (rem << 1) ^ ((rem >> 11) * 0x1F25);
+            if (((claimed << 12) | rem) != topRight) return 0;
+            return claimed;
+        }
 
         /** The mask a symbol declares, read back out of its format information. */
         public static int DeclaredMask(Matrix m)

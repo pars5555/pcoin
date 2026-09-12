@@ -1514,6 +1514,55 @@ namespace PCoinTray
                 ok &= Check(log, v.Name + ": declared mask is one of the eight", "True", (ourMask >= 0 && ourMask <= 7).ToString());
             }
 
+            // ---- version information, versions 7 and up -------------------
+            // The defect this covers was LATENT for weeks: nothing called the
+            // encoder with a string long enough to reach version 7, so every
+            // golden vector sat below the boundary and the symbols it did
+            // produce were fine. These assert the 18-bit BCH(18,6) word is
+            // really in the matrix by decoding it back out, both copies
+            // agreeing and passing their own check.
+            {
+                // 110 and 160 characters: the two lengths a spec-correct
+                // decoder rejected on 2026-09-08.
+                var cases = new[] {
+                    new { Text = new string('a', 110), Version = 7,  Size = 45 },
+                    new { Text = new string('a', 160), Version = 9,  Size = 53 },
+                };
+                foreach (var c in cases)
+                {
+                    var m = QrCode.Encode(c.Text);
+                    if (m == null) { ok &= Check(log, "v" + c.Version + ": encoder returned a symbol", "symbol", "null"); continue; }
+                    ok &= Check(log, "v" + c.Version + ": size", c.Size.ToString(CI), m.Size.ToString(CI));
+                    ok &= Check(log, "v" + c.Version + ": version word decodes back",
+                                c.Version.ToString(CI), QrCode.DeclaredVersion(m).ToString(CI));
+
+                    // Both blocks must be FUNCTION modules. If they are not
+                    // locked, DrawCodewords wrote payload over them - which is
+                    // exactly how the bug presented.
+                    int unlocked = 0;
+                    for (int i = 0; i < 18; i++)
+                    {
+                        int a = m.Size - 11 + i % 3;
+                        int b = i / 3;
+                        if (!m.IsLocked(a, b)) unlocked++;
+                        if (!m.IsLocked(b, a)) unlocked++;
+                    }
+                    ok &= Check(log, "v" + c.Version + ": version modules reserved (36 of them)", "0", unlocked.ToString(CI));
+                }
+
+                // Versions 1..6 carry NO version information, and must not
+                // have grown any: this is what proves the fix moved no
+                // existing symbol.
+                foreach (var t in new[] { "pc1", new string('a', 62), new string('a', 106) })
+                {
+                    var m = QrCode.Encode(t);
+                    if (m == null) continue;
+                    int ver = (m.Size - 17) / 4;
+                    if (ver >= 7) continue;
+                    ok &= Check(log, "v" + ver + " carries no version word", "0", QrCode.DeclaredVersion(m).ToString(CI));
+                }
+            }
+
             // 42 characters in byte mode. If this ever changes, the receive
             // card's layout assumptions change with it.
             {
