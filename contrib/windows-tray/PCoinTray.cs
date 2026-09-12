@@ -733,6 +733,257 @@ namespace PCoinTray
         {
             return !_haveChainInfo || _syncing || _syncOkPolls < SYNC_OK_POLLS_REQUIRED;
         }
+
+        // ---------- a wedged node, which the sync guard above CANNOT see ----------
+        //
+        // THE FAILURE, MEASURED TWICE ON THE SAME MACHINE. A node's networking
+        // stalls: it keeps its connections, answers RPC, reports no error, and
+        // simply stops advancing. Observed on office01 on 2026-09-08 stuck 85
+        // blocks back for FOURTEEN HOURS, and again on 2026-09-12 stuck 28
+        // blocks back. It mined solo the whole time, and every hash was spent
+        // extending a tip the network had left behind - work that can never pay.
+        //
+        // WHY SoloBlockedBySync() IS BLIND TO IT. That guard is built on
+        // `headers - blocks`, which is the only honest signal DURING a sync. But
+        // a wedged node stops receiving headers as well as blocks, so both
+        // counters freeze together: the node read `blocks=7592 headers=7592`
+        // while the network was at 7620. Zero difference, `initialblockdownload`
+        // false, `verificationprogress` 1.0 - every field says "current".
+        // A stall is indistinguishable from being caught up, from the inside.
+        //
+        // WHY A TIMER ALONE IS THE WRONG FIX. "Tip has not moved for N minutes"
+        // cannot tell a wedged node from a quiet chain, and stopping on a quiet
+        // chain throws away real work. Measured over the 300 blocks before
+        // 7620: median gap 427 s, p99 43 min, MAX 56.5 MIN, and 12 gaps over
+        // half an hour. An hour of silence is normal here.
+        //
+        // SO ASK THE NETWORK. `startingheight` is exchanged in the P2P version
+        // handshake, so a FRESH connection reports the peer's real height even
+        // when ours is frozen. `addnode <seed> onetry` forces that handshake on
+        // demand. This is exactly the manual diagnosis that identified both
+        // incidents: office01 said 7592 while a newly-connected peer said 7620.
+        // Existing peers are useless for this - their `startingheight` is from
+        // whenever they connected, which on a stuck node is long stale.
+        //
+        // Recovery is a node restart, which is what fixed it by hand both times.
+        // It is deliberately NOT "stop mining": a stalled node is the fault, and
+        // pausing would leave the machine idle instead of working again. Once
+        // restarted the node re-syncs, `headers - blocks` becomes large, and the
+        // ordinary guard above correctly holds solo back until it is current -
+        // so this composes with what is already there rather than duplicating it.
+
+        //! Tip unchanged this long: worth asking the network where it is. Well
+        //! inside the 56.5-minute maximum gap measured above, because the probe
+        //! is cheap and answers the question rather than guessing at it.
+        const int STALE_PROBE_MINUTES = 20;
+        //! Do not re-probe more often than this.
+        const int PROBE_COOLDOWN_MINUTES = 10;
+        //! Do not restart the node more often than this, however bad it looks. A
+        //! restart costs a RandomX dataset rebuild (minutes on a small box), so a
+        //! restart loop would be worse than the stall it is treating.
+        const int RESTART_COOLDOWN_MINUTES = 30;
+        //! How far ahead a peer must be before we call ourselves behind. Small,
+        //! because the probe answers a yes/no question, but not zero: a peer one
+        //! block ahead is ordinary propagation, not a stall.
+        const int BEHIND_BY_BLOCKS = 3;
+        //! Where to ask. The DNS seed, which is the same name a fresh node uses
+        //! to bootstrap, so it needs no new configuration to exist.
+        const string PROBE_SEED = "seed.pc.am:9444";
+
+        /**
+         * The two decisions above, as pure functions, so they can be checked
+         * with vectors instead of by waiting twenty minutes on a real machine.
+         * Everything that talks to the node stays outside.
+         */
+        internal static class StaleTip
+        {
+            /** Is it worth spending a probe right now? */
+            public static bool ShouldProbe(bool solo, bool haveChainInfo, bool syncing, bool mining,
+                                           double tipStillMinutes, double sinceLastProbeMinutes)
+            {
+                if (!solo) return false;              // pool work is unaffected by our tip
+                if (!haveChainInfo) return false;     // never looked: unknown is not "stuck"
+                if (syncing) return false;            // already known behind, ordinary guard has it
+                if (!mining) return false;            // nothing is being wasted
+                if (tipStillMinutes < STALE_PROBE_MINUTES) return false;
+                return sinceLastProbeMinutes >= PROBE_COOLDOWN_MINUTES;
+            }
+
+            /**
+             * What the probe proved. UNKNOWN is its own answer and must never
+             * collapse into "behind" - a seed we could not reach is not evidence
+             * that the network moved on (CLAUDE.md 7.1).
+             */
+            public enum Verdict { Unknown, Quiet, Behind }
+
+            public static Verdict Judge(long ourHeight, long bestPeerHeight)
+            {
+                if (ourHeight <= 0) return Verdict.Unknown;
+                if (bestPeerHeight < 0) return Verdict.Unknown;
+                return bestPeerHeight > ourHeight + BEHIND_BY_BLOCKS ? Verdict.Behind : Verdict.Quiet;
+            }
+        }
+
+        long _tipHeightSeen = -1;
+        DateTime _tipChangedUtc = DateTime.MinValue;
+        DateTime _lastProbeUtc = DateTime.MinValue;
+        DateTime _lastStaleRestartUtc = DateTime.MinValue;
+        //! A probe or a stale-restart is in flight on its own thread.
+        volatile bool _staleBusy;
+
+        /**
+         * Remember when the tip last moved. Called on every FULL poll.
+         *
+         * The clock is the TRAY's, not the block's. Block timestamps on this
+         * chain are not monotonic in height and may sit 15 minutes in the future
+         * (LWMA_MAX_FUTURE_BLOCK_TIME), so "age of the tip" computed from them
+         * can be negative or wildly wrong. How long WE have watched the height
+         * sit still has neither problem.
+         */
+        void NoteTipHeight(long height)
+        {
+            if (height <= 0) return;
+            if (height != _tipHeightSeen)
+            {
+                _tipHeightSeen = height;
+                _tipChangedUtc = DateTime.UtcNow;
+            }
+            else if (_tipChangedUtc == DateTime.MinValue)
+            {
+                _tipChangedUtc = DateTime.UtcNow;
+            }
+        }
+
+        /** Minutes the tip has sat still, or -1 when we have not watched long enough. */
+        double TipStillMinutes()
+        {
+            if (_tipChangedUtc == DateTime.MinValue) return -1;
+            return (DateTime.UtcNow - _tipChangedUtc).TotalMinutes;
+        }
+
+        /**
+         * If the tip has not moved for a while, ask the network whether it has
+         * moved on without us, and restart the node if it has.
+         *
+         * Solo only. A pool miner works on the job the pool hands it, so a
+         * stalled local node costs it nothing (see StartMining) - restarting the
+         * node underneath a pool miner would be pure loss.
+         */
+        void MaybeRecoverStaleTip()
+        {
+            if (_staleBusy) return;
+            double still = TipStillMinutes();
+            if (still < 0) return;                            // not watched long enough
+            double sinceProbe = _lastProbeUtc == DateTime.MinValue
+                ? double.MaxValue
+                : (DateTime.UtcNow - _lastProbeUtc).TotalMinutes;
+            if (!StaleTip.ShouldProbe(string.IsNullOrEmpty(_poolUrl), _haveChainInfo, _syncing,
+                                      _mining, still, sinceProbe)) return;
+
+            _lastProbeUtc = DateTime.UtcNow;
+            _staleBusy = true;
+            var t = new Thread(() =>
+            {
+                try { ProbeAndRecover(still); }
+                catch (Exception ex) { try { Program.Note("stale-tip check failed: " + ex.Message); } catch { } }
+                finally { _staleBusy = false; }
+            }) { IsBackground = true, Name = "pcoin-stale-tip" };
+            t.Start();
+        }
+
+        /**
+         * The probe itself, on its own thread because it sleeps.
+         *
+         * A failure to reach the seed resolves NOTHING and must not trigger a
+         * restart: "I could not ask" is not "the network has moved on"
+         * (CLAUDE.md 7.1). Only a peer that actually reports a greater height
+         * counts as evidence.
+         */
+        void ProbeAndRecover(double stillMinutes)
+        {
+            long mine = _height;
+            if (mine <= 0) return;
+
+            // onetry: connect once, do not add it to the permanent list.
+            _rpc.Call("addnode", "[" + Json.Quote(PROBE_SEED) + ",\"onetry\"]");
+            Thread.Sleep(9000);
+
+            long best = -1;
+            var pi = _rpc.Call("getpeerinfo", "[]");
+            if (pi.Ok)
+            {
+                var arr = Json.Arr(pi.Result);
+                if (arr != null)
+                    foreach (var p in arr)
+                    {
+                        double? sh = Json.Number(p, "startingheight");
+                        if (sh.HasValue && sh.Value > best) best = (long)sh.Value;
+                    }
+            }
+            var verdict = StaleTip.Judge(mine, best);
+            if (verdict == StaleTip.Verdict.Unknown)
+            {
+                Program.Note("stale-tip check: no peer answered, resolving nothing (tip still " +
+                             stillMinutes.ToString("0", CultureInfo.InvariantCulture) + " min)");
+                return;
+            }
+            if (verdict == StaleTip.Verdict.Quiet)
+            {
+                // The chain really is just quiet. Keep mining - this tip is the
+                // best one there is, and stopping would throw away real work.
+                Program.Note("stale-tip check: chain is quiet, not stuck (ours " + mine +
+                             ", network " + best + ", tip still " +
+                             stillMinutes.ToString("0", CultureInfo.InvariantCulture) + " min)");
+                return;
+            }
+
+            Program.Note("STALE TIP: ours " + mine + ", network " + best + " (" + (best - mine) +
+                         " behind) after " + stillMinutes.ToString("0", CultureInfo.InvariantCulture) +
+                         " min. Solo work on this tip cannot pay; restarting the node.");
+
+            if ((DateTime.UtcNow - _lastStaleRestartUtc).TotalMinutes < RESTART_COOLDOWN_MINUTES)
+            {
+                Program.Note("stale-tip: restart held off, one was done less than " +
+                             RESTART_COOLDOWN_MINUTES + " min ago");
+                return;
+            }
+            _lastStaleRestartUtc = DateTime.UtcNow;
+            RestartNodeForStall();
+        }
+
+        /**
+         * Stop the node cleanly and let EnsureNode bring it back.
+         *
+         * Same shape as the fast-mode restart: hold the watchdog off with
+         * _reviveBusy, because ReviveNode cannot tell a deliberate stop from a
+         * crash and would race this thread into starting a SECOND bitcoind on
+         * one data directory. `stop` rather than a kill, to avoid the
+         * unclean-shutdown rescan.
+         */
+        void RestartNodeForStall()
+        {
+            try
+            {
+                _reviveBusy = true;
+                Cli("stopmining");
+                Cli("stop");
+                for (int i = 0; i < 120; i++)
+                {
+                    try { if (Process.GetProcessesByName("bitcoind").Length == 0) break; }
+                    catch { }
+                    Thread.Sleep(1000);
+                }
+                _nodeUp = false;
+                EnsureNode();
+                // Force the sync gate to re-earn its run of agreeing polls, so
+                // solo cannot resume against a half-read chain.
+                _syncOkPolls = 0;
+                _tipHeightSeen = -1;
+                _tipChangedUtc = DateTime.MinValue;
+                Program.Note("stale-tip: node restarted");
+            }
+            finally { _reviveBusy = false; }
+        }
         //! A recovery-phrase window is open. Set only around the automatic
         //! wizard, which fires from the same node-ready path that starts
         //! auto-tuning.
@@ -2676,6 +2927,10 @@ namespace PCoinTray
                 _headers = r.Headers;
                 _progress = r.Progress;
                 _syncing = r.Syncing;
+                // Watch the tip with OUR clock. A node that wedges freezes
+                // headers and blocks together, so nothing below this line can
+                // tell it apart from a caught-up node - see MaybeRecoverStaleTip.
+                NoteTipHeight(r.Height);
                 // Count up on agreement, reset to zero on a single disagreement.
                 if (r.Syncing) _syncOkPolls = 0;
                 else if (_syncOkPolls < SYNC_OK_POLLS_REQUIRED) _syncOkPolls++;
@@ -2688,6 +2943,12 @@ namespace PCoinTray
             // Record the rate whether or not the window is open, so opening it
             // shows the hour that just passed instead of an empty graph.
             _history.Add(_hashing ? _hashrate : 0.0);
+
+            // A wedged node looks exactly like a caught-up one from every field
+            // above, so this is checked on its own schedule. Cheap: it returns
+            // immediately unless the tip has sat still for twenty minutes, and
+            // it is a no-op for pool miners.
+            MaybeRecoverStaleTip();
 
             // NOTE: _mining is the user's saved INTENT and must not be
             // overwritten from the node's observed state. An earlier version

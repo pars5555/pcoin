@@ -157,6 +157,7 @@ namespace PCoinTray
             ok &= RunWallet(log);
 #if !PCOIN_WALLET   // Cpu lives in PCoinTray.cs; the wallet build (build-wallet.bat) defines PCOIN_WALLET
             ok &= RunSoloAdvice(log);
+            ok &= RunStaleTip(log);
 #endif
 
             Log(log, ok ? "ALL CHECKS PASSED" : "FAILURES ABOVE - DO NOT SHIP");
@@ -1798,6 +1799,89 @@ namespace PCoinTray
 
 #if !PCOIN_WALLET
         static string Days(double v) { return v.ToString("0.000", CI); }
+
+        // =================================================================
+        // A wedged node
+        //
+        // The failure this guards is a node that keeps its connections, answers
+        // RPC, reports no error and silently stops advancing. It cost one
+        // machine fourteen hours of solo mining onto a tip 85 blocks stale on
+        // 2026-09-08, and 28 blocks again on 2026-09-12. Nothing in
+        // getblockchaininfo can see it: headers and blocks freeze TOGETHER, so
+        // `headers - blocks` is zero and every field reads "current".
+        // =================================================================
+
+        static string Probe(bool solo, bool haveInfo, bool syncing, bool mining, double still, double sinceProbe)
+        {
+            return TrayApp.StaleTip.ShouldProbe(solo, haveInfo, syncing, mining, still, sinceProbe)
+                   ? "probe" : "wait";
+        }
+
+        static bool RunStaleTip(List<string> log)
+        {
+            bool ok = true;
+            Log(log, "--- wedged node ---");
+
+            // The gate. Twenty minutes of a still tip, solo, actually mining.
+            ok &= Check(log, "still tip, solo, mining -> probe", "probe",
+                        Probe(true, true, false, true, 25, 999));
+            ok &= Check(log, "tip moved recently -> wait", "wait",
+                        Probe(true, true, false, true, 5, 999));
+            ok &= Check(log, "exactly at the threshold -> probe", "probe",
+                        Probe(true, true, false, true, 20, 999));
+
+            // POOL MINERS ARE NOT AFFECTED and must never be disturbed: a pool
+            // miner works on the job the pool hands it, so a stalled local node
+            // costs it nothing and restarting underneath it is pure loss.
+            ok &= Check(log, "pool miner is never probed", "wait",
+                        Probe(false, true, false, true, 999, 999));
+
+            // Already-known states are somebody else's job.
+            ok &= Check(log, "still syncing -> the ordinary guard owns it", "wait",
+                        Probe(true, true, true, true, 999, 999));
+            ok &= Check(log, "not mining -> nothing is being wasted", "wait",
+                        Probe(true, true, false, false, 999, 999));
+            // "We have not read the chain yet" is not "we are stuck".
+            ok &= Check(log, "no chain info yet -> unknown is not stuck", "wait",
+                        Probe(true, false, false, true, 999, 999));
+            // A restart costs a RandomX dataset rebuild, so probes are rationed.
+            ok &= Check(log, "probed a minute ago -> wait for the cooldown", "wait",
+                        Probe(true, true, false, true, 999, 1));
+
+            // The verdict. This is what decides whether a node gets restarted.
+            ok &= Check(log, "peer far ahead -> behind", "Behind",
+                        TrayApp.StaleTip.Judge(7592, 7620).ToString());
+            ok &= Check(log, "peer level with us -> quiet", "Quiet",
+                        TrayApp.StaleTip.Judge(7620, 7620).ToString());
+            // One or two blocks ahead is ordinary propagation, not a stall.
+            ok &= Check(log, "peer 3 ahead is propagation, not a stall", "Quiet",
+                        TrayApp.StaleTip.Judge(7620, 7623).ToString());
+            ok &= Check(log, "peer 4 ahead crosses the line", "Behind",
+                        TrayApp.StaleTip.Judge(7620, 7624).ToString());
+            // THE ONE THAT PROTECTS THE MACHINE: an unreachable seed resolves
+            // nothing. If this ever returns Behind, a network blip restarts
+            // every solo node in the fleet (CLAUDE.md 7.1).
+            ok &= Check(log, "no peer answered -> UNKNOWN, never Behind", "Unknown",
+                        TrayApp.StaleTip.Judge(7620, -1).ToString());
+            ok &= Check(log, "our own height unknown -> Unknown", "Unknown",
+                        TrayApp.StaleTip.Judge(0, 7620).ToString());
+            // A peer BEHIND us is not evidence of anything; we may simply be
+            // ahead of that one peer.
+            ok &= Check(log, "peer behind us -> quiet", "Quiet",
+                        TrayApp.StaleTip.Judge(7620, 7000).ToString());
+
+            // The real incidents, replayed.
+            ok &= Check(log, "2026-09-08 office01: 6976 vs 7061", "Behind",
+                        TrayApp.StaleTip.Judge(6976, 7061).ToString());
+            ok &= Check(log, "2026-09-12 office01: 7592 vs 7620", "Behind",
+                        TrayApp.StaleTip.Judge(7592, 7620).ToString());
+            // And the case that must NOT trigger: the quietest real stretch
+            // measured on this chain was a 56.5-minute gap between blocks. A
+            // node sitting still that long with the network level is healthy.
+            ok &= Check(log, "56 min of silence with a level network -> quiet", "Quiet",
+                        TrayApp.StaleTip.Judge(7620, 7620).ToString());
+            return ok;
+        }
 
         static bool RunSoloAdvice(List<string> log)
         {
