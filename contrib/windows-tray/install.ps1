@@ -1,4 +1,4 @@
-# PCoin Windows installer.
+﻿# PCoin Windows installer.
 #
 # Installs the node, CLI and miner tray app, configures them, and starts the
 # tray app in the current desktop session.
@@ -37,8 +37,8 @@ param(
     # half-applied bump is impossible. The hash is of pcoin-win64-miner.zip
     # and the install aborts on a mismatch, so a forgotten bump here breaks
     # every new install rather than failing quietly.
-    [string]$Version = '1.4.26',
-    [string]$Sha256 = '3ab66025eee39da506e655ed753ef9c43bbac3ddd2a7e6888402ff63420b1d64',
+    [string]$Version = '1.4.27',
+    [string]$Sha256 = 'f1d46934b6f70e4e9f271ba1af0fe6e78dee8fcee34f7e672b867600a76944a6',
     # All three seeds, not just one. The node also carries them compiled in as
     # of v1.2.1, so this is belt and braces rather than the only route in.
     [string[]]$AddNode = @('35.239.156.16:9444', '178.105.3.51:9444', '152.53.171.190:9444'),
