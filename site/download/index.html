@@ -699,6 +699,45 @@ cmake --build build -j "$(nproc)"
   </details>
 
   <details class="faq">
+    <summary>A multi-engine scanner flags the wallet. Is that different?</summary>
+    <p>Yes, and it is the question worth asking carefully. Upload any PCoin release to a
+    service that runs seventy engines at once and a handful will flag it while the large
+    majority report nothing at all. <b>Read the labels, not the count.</b></p>
+    <p>The flags are machine-learning verdicts, and they say so in their own names.
+    Measured on the current wallet build, 2026-09-12: eight engines flagged it and
+    sixty-seven reported it undetected. Microsoft's label is
+    <code>Trojan:Win32/Wacatac.C!ml</code> &mdash; the <code>!ml</code> suffix
+    <em>means</em> machine learning. Malwarebytes calls it
+    <code>MachineLearning/Anomalous.100%</code>. CrowdStrike reports
+    <code>malicious_confidence_60%</code>, which is a probability, not an
+    identification. VirusTotal's own summary label for the file is
+    <code>trojan.anomalous/machinelearning</code>.</p>
+    <p>Meanwhile the engines that rely on actual signatures &mdash; Kaspersky, ESET,
+    Bitdefender, Sophos, Symantec, Google, Fortinet, Avast and AVG among them &mdash;
+    all report it clean. No engine names a malware family, because there is not one to
+    name.</p>
+    <p>We have been here before with the same family: an earlier PCoin installer was
+    quarantined as <code>Trojan:Script/Wacatac.H!ml</code>, which turned out to be a
+    reputation guess about the Inno Setup installer stub and nothing to do with our
+    code. Wacatac<code>!ml</code> is a well-known false-positive magnet for unsigned
+    software.</p>
+    <p>A second tell: scanners sometimes flag the <code>.exe</code> while reporting the
+    <code>.zip</code> that contains that identical <code>.exe</code> as clean. Two
+    verdicts that contradict each other are a reputation heuristic talking, not a
+    signature match.</p>
+    <p><b>What to do instead of trusting a scan someone else ran.</b> Check that the file
+    you hold is the file we published: compare its SHA-256 against
+    <a href="https://pc.am/dl/SHA256SUMS.txt">pc.am/dl/SHA256SUMS.txt</a> <em>and</em> the
+    <code>SHA256SUMS</code> asset on the GitHub release it came from. A scan of some other
+    build tells you nothing about the bytes on your disk.</p>
+    <p>The honest root cause is that our binaries are <b>not code-signed</b> yet. An
+    unsigned installer carrying a miner reliably draws heuristic flags and a SmartScreen
+    warning no matter how clean the code is. A certificate removes the whole class of
+    warning, and it is on the list. Until then the source is public and reproducible:
+    <a href="https://github.com/pars5555/pcoin" rel="noopener">github.com/pars5555/pcoin</a>.</p>
+  </details>
+
+  <details class="faq">
     <summary>How much can I earn?</summary>
     <p>Each block pays 50 PCN and arrives roughly every ten minutes, shared among
     everyone mining. Your share is your hashrate over the network&rsquo;s.
