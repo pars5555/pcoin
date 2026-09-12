@@ -117,8 +117,26 @@ New-Item -ItemType Directory -Force $InstallDir | Out-Null
 # Stop anything already running from this folder, otherwise the copy fails
 # with a sharing violation. The tray app re-launches bitcoin-cli every few
 # seconds, so it has to go first and be given time to die before the node.
+# WAIT FOR THE PROCESS TO ACTUALLY BE GONE, don't sleep a guess.
+# Stop-Process -Force is asynchronous: it returns before Windows has torn the
+# process down and released its file handles. The fixed sleeps here were a
+# guess at how long that takes, and on 2026-09-12 the guess was wrong -- a node
+# that had just caught up 456 blocks was still flushing, held bitcoind.exe, and
+# every one of the six copy retries below hit a sharing violation. The install
+# aborted having already verified the download, leaving the machine on the old
+# version with its tray stopped.
+function Wait-Gone {
+    param([string[]]$Names, [int]$Seconds = 90)
+    for ($i = 0; $i -lt $Seconds; $i++) {
+        $live = @(Get-Process -Name $Names -ErrorAction SilentlyContinue)
+        if ($live.Count -eq 0) { return $true }
+        Start-Sleep -Seconds 1
+    }
+    return $false
+}
+
 Get-Process PCoinTray -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 3
+Wait-Gone -Names 'PCoinTray' -Seconds 30 | Out-Null
 Get-Process bitcoin-cli -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 # A previous install may have used a different datadir, so a targeted
 # 'bitcoin-cli stop' can miss. Ask nicely, then insist.
@@ -126,10 +144,14 @@ $cliPath = Join-Path $InstallDir 'bitcoin-cli.exe'
 if (Test-Path $cliPath) {
     try { & $cliPath stop 2>&1 | Out-Null } catch { }
     try { & $cliPath -datadir="$DataDir" stop 2>&1 | Out-Null } catch { }
-    Start-Sleep -Seconds 8
+    # A clean shutdown flushes the chainstate; on a node that has just synced a
+    # few hundred blocks that is tens of seconds, not eight.
+    Wait-Gone -Names 'bitcoind' -Seconds 90 | Out-Null
 }
 Get-Process bitcoind -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 4
+if (-not (Wait-Gone -Names 'bitcoind','PCoinTray','bitcoin-cli' -Seconds 60)) {
+    Write-Output '  warning: something is still holding the install folder; the copy may retry'
+}
 
 # --- exactly one install, wherever it was -------------------------------
 # Every bitcoind / PCoinTray / bitcoin-cli was just stopped BY NAME above, so no
@@ -382,7 +404,10 @@ foreach ($attempt in 1..6) {
         if ($attempt -eq 6) { throw }
         Get-Process bitcoind, PCoinTray, bitcoin-cli -ErrorAction SilentlyContinue |
             Stop-Process -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 5
+        # Same reason as the stop block above: wait for the handle to go rather
+        # than sleeping a fixed amount and hoping.
+        Wait-Gone -Names 'bitcoind','PCoinTray','bitcoin-cli' -Seconds 30 | Out-Null
+        Start-Sleep -Seconds 2
     }
 }
 Write-Output "  installed to $InstallDir"
@@ -821,22 +846,60 @@ if (-not $NoStart) {
     # assigning a session id (1) to a [switch] throws
     # "Cannot convert 1 to SwitchParameter" -- aborting the install right before
     # the tray launches (which is why -NoStart, skipping this, never saw it).
+    # Launch it, THEN CHECK IT IS ACTUALLY RUNNING, and fall back to the
+    # interactive task if it is not.
+    #
+    # The session check below only fired when Get-Process explorer found
+    # something. When it did not -- no interactive shell at that moment, or the
+    # query failed under an elevated remote session -- this fell through to a
+    # plain Start-Process, which from an elevated remote install lands in
+    # session 0. The tray REFUSES to run there (PCoinTray.cs:75-99), so the
+    # install ended reporting success with nothing running at all. That is what
+    # happened to one machine on 2026-09-12; it sat idle until someone noticed
+    # and triggered the logon task by hand.
+    function Start-TrayViaTask {
+        param([string]$Exe)
+        try {
+            $who = (Get-CimInstance Win32_ComputerSystem).UserName
+            if (-not $who) { return $false }
+            schtasks /create /tn PCoinTrayLaunch /tr $Exe /sc once /st 23:59 /ru $who /it /f | Out-Null
+            schtasks /run /tn PCoinTrayLaunch | Out-Null
+            Start-Sleep -Seconds 8
+            schtasks /delete /tn PCoinTrayLaunch /f | Out-Null
+            return $true
+        } catch { return $false }
+    }
+
     $target = $null
     try { $target = (Get-Process explorer -ErrorAction SilentlyContinue | Select-Object -First 1).SessionId } catch { }
     $mySession = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
     if ($null -ne $target -and $mySession -ne $target) {
-        try {
-            $who = (Get-CimInstance Win32_ComputerSystem).UserName
-            schtasks /create /tn PCoinTrayLaunch /tr $exe /sc once /st 23:59 /ru $who /it /f | Out-Null
-            schtasks /run /tn PCoinTrayLaunch | Out-Null
-            Start-Sleep -Seconds 8
-            schtasks /delete /tn PCoinTrayLaunch /f | Out-Null
-            Write-Output "  started in desktop session $target"
-        } catch {
-            Write-Output ('  could not reach the desktop session: ' + $_.Exception.Message)
-        }
+        if (Start-TrayViaTask -Exe $exe) { Write-Output "  started in desktop session $target" }
+        else { Write-Output '  could not reach the desktop session' }
     } else {
         Start-Process -FilePath $exe -WorkingDirectory $InstallDir
+    }
+
+    # Verify. "I called Start-Process" is not "the tray is running" - the tray
+    # exits by design in session 0, so the only honest check is to look.
+    $up = $false
+    for ($i = 0; $i -lt 15; $i++) {
+        if (@(Get-Process PCoinTray -ErrorAction SilentlyContinue).Count -gt 0) { $up = $true; break }
+        Start-Sleep -Seconds 1
+    }
+    if (-not $up) {
+        Write-Output '  tray did not start (session 0 refuses it); retrying through the desktop session'
+        if (Start-TrayViaTask -Exe $exe) {
+            for ($i = 0; $i -lt 15; $i++) {
+                if (@(Get-Process PCoinTray -ErrorAction SilentlyContinue).Count -gt 0) { $up = $true; break }
+                Start-Sleep -Seconds 1
+            }
+        }
+        if ($up) { Write-Output '  tray started' }
+        else {
+            Write-Output '  WARNING: the tray is NOT running. The node and miner are installed;'
+            Write-Output '           sign in to this PC, or run:  schtasks /run /tn PCoinMiner'
+        }
     }
     Start-Sleep -Seconds 40
     $cli = Join-Path $InstallDir 'bitcoin-cli.exe'
