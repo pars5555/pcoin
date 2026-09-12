@@ -1,0 +1,19 @@
+-- Whether a model reasons before it answers.
+--
+-- MEASURED 2026-09-11 against the live gateway: at max_tokens=40, four of the
+-- ten sellable models returned a 200, consumed output tokens, BILLED IN FULL,
+-- and delivered an EMPTY answer -- every token had gone to reasoning. At
+-- max_tokens=1024 the same prompts answered correctly.
+--
+--   mimo-v2.5:free   blocks=[text, thinking]   out=22   "PCoin works."
+--   glm-5.3-flash    blocks=[thinking, text]   out=55   "PCoin works."
+--   gpt-5-mini       blocks=[text]             out=141  "PCoin works."
+--   gpt-5            blocks=[text]             out=141  "PCoin works."
+--
+-- This is pcnearner's incident exactly: "a 200-token cap on a reasoning model
+-- returning an empty answer: every token went to reasoning, real work, billed
+-- in full, nothing delivered."
+--
+-- ALL TEN sellable models declare supportsThinking, and 22 of the 24 in the
+-- pool do, so the reasoning minimum is the COMMON CASE, not the exception.
+ALTER TABLE model_prices ADD COLUMN supports_thinking INTEGER NOT NULL DEFAULT 0;

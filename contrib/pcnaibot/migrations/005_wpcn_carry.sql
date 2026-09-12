@@ -1,0 +1,18 @@
+-- Make the wPCN credit path arithmetically IDENTICAL to the PCN one.
+--
+-- checker_pc_am does this and it is the right shape: both paths floor to a
+-- sub-unit and CARRY the remainder, so flooring each payment independently does
+-- not eat a fraction every time. The only difference is where the carry lives,
+-- and that difference is forced by the asset:
+--
+--   PCN  -> pcn_addresses.remainder_nano_usd   (a deposit HAS an address)
+--   wPCN -> users.wpcn_remainder_nano_usd      (a BEP-20 transfer has none;
+--                                               checker calls this
+--                                               users.wpcn_remainder_milli)
+--
+-- Without this column the wPCN path rounded instead of flooring and carried
+-- nothing, so N wPCN and N PCN could credit different amounts at the sub-cent
+-- boundary -- and with bonusPercent now 0, wPCN is a 1:1 claim on PCN whose
+-- whole proposition is parity. Crediting it at any other number contradicts the
+-- one property that makes it work.
+ALTER TABLE users ADD COLUMN wpcn_remainder_nano_usd INTEGER NOT NULL DEFAULT 0;

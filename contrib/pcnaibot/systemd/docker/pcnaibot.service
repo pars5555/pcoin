@@ -1,0 +1,48 @@
+# /etc/systemd/system/pcnaibot.service -- DOCKER variant.
+#
+# Same contract as the native unit: OnFailure= lives IN THE UNIT, the config is
+# a read-only BIND MOUNT rather than -e (docker inspect prints Env in full to
+# anyone in the docker group), and state and logs are bind-mounted to the host
+# so the monitor can read them.
+[Unit]
+Description=PCoin AI bot (container)
+Documentation=https://github.com/pars5555/pcoin/tree/main/contrib/pcnaibot
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+OnFailure=pcoin-alert@%n.service
+
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+# A container stopped by systemd exits 143 (128 + SIGTERM). That is a CLEAN
+# shutdown, but a non-zero code, so without this line systemd calls every
+# ordinary restart a failure and fires OnFailure= -- paging a human for a
+# deploy. Observed on 2026-09-11: each redeploy alerted the ops channel.
+#
+# 143 only. A real crash still has its own exit code and still alerts, which is
+# the whole point of OnFailure= being here.
+SuccessExitStatus=143 SIGTERM
+Type=simple
+Restart=always
+RestartSec=5
+# --rm plus ExecStartPre rm so a hard kill cannot leave a stale name behind.
+ExecStartPre=-/bin/sh -c 'docker rm -f pcnaibot >/dev/null 2>&1 || true'
+ExecStart=/usr/bin/docker run --rm --name pcnaibot \
+    --network host \
+    --read-only \
+    --tmpfs /tmp:rw,noexec,nosuid,size=32m \
+    --memory 512m --memory-swap 512m \
+    --pids-limit 256 \
+    --security-opt no-new-privileges \
+    --cap-drop ALL \
+    -v /etc/pcoin/pcnaibot.conf:/etc/pcoin/pcnaibot.conf:ro \
+    -v /var/lib/pcnaibot:/var/lib/pcnaibot \
+    -v /var/log/pcnaibot:/var/log/pcnaibot \
+    pcnaibot:latest \
+    node /app/bot.mjs
+ExecStop=/usr/bin/docker stop -t 20 pcnaibot
+
+[Install]
+WantedBy=multi-user.target

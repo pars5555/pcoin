@@ -112,3 +112,16 @@ CLAUDE.md
 
 # Security audit report (names hosts, ports, firewall rules — team-shared, never public).
 /security-audit.md
+
+# The PCN AI bot's runtime config carries THREE credentials: the Telegram bot
+# token, the OonaCode API key and (when wPCN is switched on) the wpcn-pay bearer.
+# This repo is PUBLIC and has no generic *.conf rule -- the only .conf line above
+# is one hand-written path -- so a config dropped next to the source while
+# debugging would sail into `git add .` carrying all three.
+contrib/pcnaibot/*.conf
+!contrib/pcnaibot/*.conf.example
+contrib/pcnaibot/.env*
+contrib/pcnaibot/*.db
+contrib/pcnaibot/*.db-wal
+contrib/pcnaibot/*.db-shm
+contrib/pcnaibot/node_modules/

@@ -1,0 +1,33 @@
+# Add to the host's Caddyfile, then RELOAD -- never restart. That box serves the
+# pcoin-relay REST allow-list (the only public node surface PCoin has, and the
+# path the iOS wallet broadcasts through), the explorer and the wrap desk.
+#
+#   caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy
+
+pcoinaibot.pc.am {
+    encode gzip
+
+    # The API authenticates every route itself and answers 401 on anything
+    # unknown, so no allow-list is needed here -- but the body cap is enforced
+    # at the edge as well, so a flood never reaches node.
+    request_body {
+        max_size 1MB
+    }
+
+    reverse_proxy 127.0.0.1:8799 {
+        # A turn can legitimately run for minutes. Apache's /v1 ProxyPass in
+        # front of the gateway is timeout=660, and our own client idle timeout
+        # is 120s, so the proxy here must outlast ours or we would be handed a
+        # 504 we did not classify.
+        transport http {
+            read_timeout 300s
+            write_timeout 300s
+        }
+    }
+
+    header {
+        -Server
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options "nosniff"
+    }
+}

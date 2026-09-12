@@ -1,0 +1,10 @@
+[Unit]
+Description=Check the PCoin AI bot heartbeats every 5 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Unit=pcnaibot-heartbeat.service
+
+[Install]
+WantedBy=timers.target

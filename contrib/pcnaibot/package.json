@@ -1,0 +1,21 @@
+{
+  "name": "pcnaibot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "PCoin AI bot -- a Telegram bot selling paid AI models for PCN",
+  "engines": {
+    "node": ">=20.10.0"
+  },
+  "scripts": {
+    "migrate": "node migrate.mjs",
+    "bot": "node bot.mjs",
+    "watch": "node watch.mjs",
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.7.0",
+    "qrcode": "^1.5.4",
+    "@resvg/resvg-js": "^2.6.2"
+  }
+}

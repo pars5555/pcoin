@@ -1,0 +1,10 @@
+node_modules
+*.db
+*.db-wal
+*.db-shm
+*.conf
+!*.conf.example
+.env*
+test
+systemd
+README.md

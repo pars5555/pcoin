@@ -1,0 +1,47 @@
+# /etc/systemd/system/pcnaibot-api.service -- the public HTTP API.
+#
+# A THIRD PROCESS, deliberately: this is the only PUBLIC NETWORK SURFACE the
+# rail has, so it gets its own memory limit, its own restart behaviour and its
+# own blast radius. A flood here must not OOM the credit path, and the Telegram
+# bot must not depend on it to stay up.
+#
+# It binds to LOOPBACK and is fronted by the host's existing Caddy. No port is
+# opened and ufw needs no change.
+[Unit]
+Description=PCoin AI bot HTTP API
+Documentation=https://github.com/pars5555/pcoin/tree/main/contrib/pcnaibot
+After=network-online.target
+Wants=network-online.target
+OnFailure=pcoin-alert@%n.service
+
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+# A container stopped by systemd exits 143 (128 + SIGTERM). That is a CLEAN
+# shutdown, but a non-zero code, so without this line systemd calls every
+# ordinary restart a failure and fires OnFailure= -- paging a human for a
+# deploy. Observed on 2026-09-11: each redeploy alerted the ops channel.
+#
+# 143 only. A real crash still has its own exit code and still alerts, which is
+# the whole point of OnFailure= being here.
+SuccessExitStatus=143 SIGTERM
+Type=simple
+User=pcnaibot
+Group=pcnaibot
+Environment=PCNAIBOT_CONF=/etc/pcoin/pcnaibot.conf
+ExecStart=/usr/bin/node /opt/pcnaibot/api.mjs
+Restart=always
+RestartSec=5
+StateDirectory=pcnaibot
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6
+ReadWritePaths=/var/lib/pcnaibot /var/log/pcnaibot
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

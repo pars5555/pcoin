@@ -94,7 +94,7 @@ alert() {   # alert <subject> <body>
 # each one declares the rails it is RESPONSIBLE for and the union is what
 # covers the estate. That union is written down in this directory's README --
 # a per-host list nobody adds up is how a rail ends up owned by nobody.
-RAILS_EXPECTED="${RAILS_EXPECTED:-checker webbuilderbot aicontrol 3dmodels.pc.am 3dmodel.oonak.ai portrait2video webai}"
+RAILS_EXPECTED="${RAILS_EXPECTED:-checker webbuilderbot aicontrol 3dmodels.pc.am 3dmodel.oonak.ai portrait2video webai pcnaibot}"
 RAILS_SEEN=""
 seen_rail() { RAILS_SEEN="$RAILS_SEEN $1"; }
 
@@ -103,6 +103,20 @@ now=$(date +%s)
 # mysql_q <user> <pass> <db> <sql>  -- one scalar, empty on any failure.
 mysql_q() {
     mysql -h127.0.0.1 -u"$1" -p"$2" "$3" -N -B --raw -e "$4" 2>/dev/null
+}
+
+# sqlite_q <dbfile> <sql>  -- one scalar, empty on any failure.
+#
+# The MySQL twin above cannot serve every rail: pcnaibot runs on a host with no
+# mysql client and no server, and MariaDB must not be installed there. Without
+# this, that rail would get heartbeat-only monitoring -- exactly "asked 'is it
+# ticking', not 'is it settling anything'", which is the 2026-08-30 outage.
+#
+# -readonly so a monitor can never write to a money database, and the SAME
+# CONTRACT as mysql_q: EMPTY MEANS THE QUERY FAILED, never "zero rows".
+sqlite_q() {
+    [ -r "$1" ] || return 0
+    sqlite3 -readonly -noheader -batch "$1" "$2" 2>/dev/null
 }
 
 # ---------------------------------------------------------------- checks ----
@@ -206,6 +220,72 @@ check_deposits() {
     elif [ "$reorged" -gt 0 ]; then
         alert "PCN REORG on credited deposit: $label" \
               "$reorged credited deposit(s) flagged as reorged. Credit was NOT reversed automatically -- a human decides. Review before the balance is spent."
+    fi
+}
+
+# check_deposits_sqlite <label> <dbfile> <table> <first_seen_col>
+#
+# The SQLite twin of check_deposits, carrying the SAME THREE ALARMS: an empty
+# result is BROKEN, a stuck deposit is loud, and an unevaluable reorg marker is
+# BROKEN rather than a comfortable zero.
+#
+# Two differences from the MySQL version, both forced by the schema:
+#   * first_seen is an INTEGER UNIX EPOCH here, not a DATETIME, so the stuck
+#     predicate is arithmetic rather than `NOW() - INTERVAL n HOUR`;
+#   * the open set is `status NOT IN ('credited','rejected')` rather than an
+#     explicit ('seen','confirming'). That is deliberate and WIDER: this rail
+#     also has 'held' and 'dropped', and 'dropped' is NOT terminal -- the
+#     watcher keeps re-driving it. A monitor listing only two states would be
+#     blind to exactly the rows most likely to be stuck.
+check_deposits_sqlite() {
+    local label="$1" dbf="$2" tbl="$3" seen="$4"
+
+    if [ ! -r "$dbf" ]; then
+        alert "PCN monitor BROKEN: $label"               "Cannot read $label's deposit database at $dbf. Assume deposits are UNMONITORED on $label until this is fixed."
+        return
+    fi
+
+    local cutoff stuck
+    cutoff=$(( now - STUCK_HOURS * 3600 ))
+    stuck=$(sqlite_q "$dbf"         "SELECT COUNT(*) FROM $tbl WHERE status NOT IN ('credited','rejected') AND $seen < $cutoff;")
+    if [ -z "$stuck" ]; then
+        # An empty result is a FAILED query, not "no stuck deposits". Saying
+        # nothing here would be the monitor reproducing the bug it watches for.
+        alert "PCN monitor BROKEN: $label"               "The stuck-deposit query returned nothing against $dbf. Assume deposits are UNMONITORED on $label until this is fixed."
+    elif [ "$stuck" -gt 0 ]; then
+        local detail
+        detail=$(sqlite_q "$dbf"             "SELECT group_concat(s, '; ') FROM (SELECT substr(txid,1,12) || ' h' || COALESCE(block_height,'?') || ' ' || status AS s
+               FROM $tbl WHERE status NOT IN ('credited','rejected') AND $seen < $cutoff ORDER BY $seen ASC LIMIT 5);")
+        alert "PCN deposit STUCK: $label"               "$stuck deposit(s) open for over ${STUCK_HOURS}h (status not credited or rejected). The watcher may be running and still not settling -- check its log for a hold reason. $detail"
+    fi
+
+    # This rail marks a post-credit reorg with reorg_flagged_at -- the cleanest
+    # of the three shapes the MySQL twin accepts. Still: if it cannot be
+    # evaluated, SAY SO rather than returning a comfortable zero.
+    local reorged
+    reorged=$(sqlite_q "$dbf" "SELECT COUNT(*) FROM $tbl WHERE status='credited' AND reorg_flagged_at IS NOT NULL;")
+    if [ -z "$reorged" ]; then
+        alert "PCN monitor BROKEN: $label"               "The reorg marker on $dbf ($tbl.reorg_flagged_at) could not be evaluated. A credited deposit could leave the chain on $label and nothing would notice."
+    elif [ "$reorged" -gt 0 ]; then
+        alert "PCN REORG on credited deposit: $label"               "$reorged credited deposit(s) flagged as reorged. Credit was NOT reversed automatically -- a human decides. Review before the balance is spent."
+    fi
+
+    # Money that arrived at an address whose user is gone. The watcher records
+    # and holds it; nothing else would ever surface it.
+    local orphan
+    orphan=$(sqlite_q "$dbf" "SELECT COUNT(*) FROM $tbl WHERE chat_id IS NULL AND status NOT IN ('credited','rejected');")
+    if [ -n "$orphan" ] && [ "$orphan" -gt 0 ]; then
+        alert "PCN deposit ORPHANED: $label"               "$orphan deposit(s) arrived at an issued address with no user bound to it. The money is on chain and cannot be credited to anybody until a human decides whose it is."
+    fi
+
+    # A deposit credited over a 30-day cap, uncorroborated, or while floor
+    # parity was breached, is CREDITED AND FLAGGED by design -- the coins are
+    # already ours and refusing them is the worst of both outcomes. But a flag
+    # nobody reads is the same as no flag.
+    local flagged
+    flagged=$(sqlite_q "$dbf" "SELECT COUNT(*) FROM $tbl WHERE flagged_reason IS NOT NULL AND credited_at > $(( now - 86400 ));")
+    if [ -n "$flagged" ] && [ "$flagged" -gt 0 ]; then
+        alert "PCN deposit FLAGGED: $label"               "$flagged deposit(s) were credited WITH A FLAG in the last 24h (over-cap, uncorroborated or floor-parity). They were credited on purpose; a human should look at why."
     fi
 }
 
@@ -554,6 +634,82 @@ except Exception:
         fi
     fi
 fi
+# ------------------------------------------------------------ pcnaibot -----
+# The PCN AI bot: a Telegram bot selling paid AI models for PCN.
+#
+# The only SQLite rail in the estate. It lives on a host with no mysql client
+# and no server, and MariaDB must not be installed there -- hence sqlite_q()
+# and check_deposits_sqlite() above.
+#
+# Guarded by `[ -r ... ]` with no else, like every other rail here, which means
+# on any host where this rail does not live the check VANISHES rather than
+# failing. That is exactly why the rail must ALSO appear in that host's
+# RAILS_EXPECTED: the block and the RAILS_EXPECTED entry are two separate
+# obligations, and the second is what makes the first one's absence loud.
+# Overridable for the same reason CONF, NOTIFY and STATE_DIR are (see the
+# header): a check nobody can exercise against known-bad input is a check
+# nobody has tested, and "prove it FIRES" is a launch gate, not a nicety.
+PCNAI_CONF="${PCNAI_CONF:-/etc/pcoin/pcnaibot.conf}"
+PCNAI_DB="${PCNAI_DB:-/var/lib/pcnaibot/pcnaibot.db}"
+PCNAI_HB="${PCNAI_HB:-/var/lib/pcnaibot/heartbeat.json}"
+PCNAI_LOG="${PCNAI_LOG:-/var/log/pcnaibot/watcher.log}"
+if [ -r "$PCNAI_CONF" ] || [ -r "$PCNAI_DB" ]; then
+    seen_rail pcnaibot
+
+    # The heartbeat is a FILE written tmp+fsync+rename by the watcher unit, so
+    # a torn write can never be read as a stale one.
+    hb=""; [ -r "$PCNAI_HB" ] && hb=$(cat "$PCNAI_HB" 2>/dev/null)
+    last=""; okflag=""; err=""; skipped=""
+    if [ -n "$hb" ]; then
+        last=$(printf '%s' "$hb" | python3 -c "import json,sys;print(json.load(sys.stdin).get('at',''))" 2>/dev/null)
+        okflag=$(printf '%s' "$hb" | python3 -c "import json,sys;print(json.load(sys.stdin).get('ok'))" 2>/dev/null)
+        err=$(printf '%s' "$hb" | python3 -c "import json,sys;print(json.load(sys.stdin).get('last_error') or '')" 2>/dev/null)
+        skipped=$(printf '%s' "$hb" | python3 -c "import json,sys;print(','.join(json.load(sys.stdin).get('summary',{}).get('skipped',[])))" 2>/dev/null)
+    fi
+    age=""; [ -n "$last" ] && age=$((now - last))
+
+    # `at` is UNIX SECONDS. If it is ever milliseconds, age goes hugely negative
+    # and the staleness check CANNOT FIRE -- a dead watcher then reads as
+    # healthy. That is webai's 2026-09-06 bug; refuse to be quiet about it.
+    if [ -n "$age" ] && [ "$age" -lt -86400 ]; then
+        alert "PCN monitor BROKEN: pcnaibot"               "pcnaibot's heartbeat 'at' is $last, which is $((0 - age)) s in the future. It is almost certainly milliseconds instead of seconds, and while that is true the staleness check CANNOT fire. Treat pcnaibot as unmonitored until fixed."
+    else
+        check_heartbeat "pcnaibot" "$age" "systemd timer pcnaibot-watch.timer on this host -- 'systemctl start pcnaibot-watch.service' runs one tick."
+    fi
+
+    if [ "$okflag" = "False" ]; then
+        alert "PCN watcher ERRORING: pcnaibot"               "pcnaibot's watcher is ticking but its last tick threw: $err. Running-and-failing is a different fault from stopped."
+    fi
+
+    # A deliberately-off rail is not a crash, but it is also not fine once users
+    # hold addresses: their deposits land and are never credited. Before any
+    # address is issued the rail simply has not launched, and alerting every
+    # five minutes about that is how people learn to ignore this channel. So the
+    # POOL decides which it is -- issued means assigned_at IS NOT NULL, never
+    # chat_id IS NOT NULL, because a deleted user nulls chat_id and their
+    # address can still receive coin forever.
+    case ",$skipped," in
+        *,disabled,*)
+            issued=$(sqlite_q "$PCNAI_DB" "SELECT COUNT(*) FROM pcn_addresses WHERE assigned_at IS NOT NULL;")
+            if [ -n "$issued" ] && [ "$issued" -gt 0 ]; then
+                alert "PCN watcher DISABLED: pcnaibot"                       "pcnaibot's watcher reports itself disabled while $issued user(s) already hold a deposit address. Anything they send is landing on chain and is NOT being credited. Re-enable it, or take pcnaibot out of RAILS_EXPECTED."
+            else
+                log "pcnaibot: watcher disabled and no address issued yet -- rail not launched, not a fault"
+            fi
+            ;;
+    esac
+
+    # "Alive and crediting nothing." This rail gets a real log FILE for exactly
+    # this reason: check_holding is file-based (`[ -r "$logf" ] || return 0`)
+    # and journald is not a file, so every DB-heartbeat rail in this estate --
+    # checker, webbuilderbot, aicontrol, webai, portrait2video -- has NO holding
+    # check at all. That gap is the 2026-08-30 three-and-a-half-day outage.
+    check_holding "pcnaibot" "$PCNAI_LOG"
+
+    check_deposits_sqlite "pcnaibot" "$PCNAI_DB" pcn_deposits first_seen_at
+fi
+
+
 
 
 # ------------------------------------------------------ coverage report ----

@@ -1,0 +1,42 @@
+# /etc/systemd/system/pcnaibot-api.service -- DOCKER variant of the HTTP API.
+[Unit]
+Description=PCoin AI bot HTTP API (container)
+After=network-online.target docker.service
+Requires=docker.service
+OnFailure=pcoin-alert@%n.service
+
+[Service]
+# A container stopped by systemd exits 143 (128 + SIGTERM). That is a CLEAN
+# shutdown, but a non-zero code, so without this line systemd calls every
+# ordinary restart a failure and fires OnFailure= -- paging a human for a
+# deploy. Observed on 2026-09-11: each redeploy alerted the ops channel.
+#
+# 143 only. A real crash still has its own exit code and still alerts, which is
+# the whole point of OnFailure= being here.
+SuccessExitStatus=143 SIGTERM
+Type=simple
+Restart=always
+RestartSec=5
+ExecStartPre=-/bin/sh -c 'docker rm -f pcnaibot-api >/dev/null 2>&1 || true'
+# Published on LOOPBACK ONLY -- `-p 127.0.0.1:8799:8799`, never `-p 8799:8799`.
+# Docker writes its own DNAT rules straight into iptables and they are evaluated
+# BEFORE ufw's chains, so a bare -p would expose this to the internet with ufw
+# still reporting the port closed.
+ExecStart=/usr/bin/docker run --rm --name pcnaibot-api \
+    -p 127.0.0.1:8799:8799 \
+    --read-only \
+    --tmpfs /tmp:rw,noexec,nosuid,size=32m \
+    --memory 512m --memory-swap 512m \
+    --pids-limit 256 \
+    --security-opt no-new-privileges \
+    --cap-drop ALL \
+    -v /etc/pcoin/pcnaibot.conf:/etc/pcoin/pcnaibot.conf:ro \
+    -v /var/lib/pcnaibot:/var/lib/pcnaibot \
+    -v /var/log/pcnaibot:/var/log/pcnaibot \
+    -e API_BIND=0.0.0.0 \
+    pcnaibot:latest \
+    node /app/api.mjs
+ExecStop=/usr/bin/docker stop -t 20 pcnaibot-api
+
+[Install]
+WantedBy=multi-user.target

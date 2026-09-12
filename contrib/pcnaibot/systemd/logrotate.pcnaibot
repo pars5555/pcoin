@@ -1,0 +1,17 @@
+# /etc/logrotate.d/pcnaibot
+#
+# copytruncate, matching /etc/logrotate.d/pcoin-unrotated which already uses it
+# on this host: the watcher unit holds the file open via
+# StandardOutput=append:, so a rename would leave it writing to the rotated
+# inode and check_holding would read a file that stops growing -- which looks
+# exactly like a watcher that has stopped ticking.
+/var/log/pcnaibot/watcher.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su pcnaibot pcnaibot
+}

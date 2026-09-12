@@ -1,0 +1,45 @@
+# /etc/systemd/system/pcnaibot-watch.service -- the deposit watcher.
+#
+# A SEPARATE PROCESS, deliberately. Sharing MemoryMax= with the bot means a
+# conversation-history spike OOM-kills the CREDIT PATH, Restart=always hides
+# that behind `active (running)`, and OnFailure= can never fire for a dead
+# setInterval. It also means this process never needs the OonaCode key, and the
+# bot never needs the explorer or the rate oracle.
+[Unit]
+Description=PCoin AI bot deposit watcher
+Documentation=https://github.com/pars5555/pcoin/tree/main/contrib/pcnaibot
+After=network-online.target
+Wants=network-online.target
+OnFailure=pcoin-alert@%n.service
+
+[Service]
+# A container stopped by systemd exits 143 (128 + SIGTERM). That is a CLEAN
+# shutdown, but a non-zero code, so without this line systemd calls every
+# ordinary restart a failure and fires OnFailure= -- paging a human for a
+# deploy. Observed on 2026-09-11: each redeploy alerted the ops channel.
+#
+# 143 only. A real crash still has its own exit code and still alerts, which is
+# the whole point of OnFailure= being here.
+SuccessExitStatus=143 SIGTERM
+Type=oneshot
+User=pcnaibot
+Group=pcnaibot
+Environment=PCNAIBOT_CONF=/etc/pcoin/pcnaibot.conf
+ExecStart=/usr/bin/node /opt/pcnaibot/watch.mjs
+StateDirectory=pcnaibot
+# check_holding() in pcoin-deposit-watch is FILE-based: `[ -r "$logf" ] ||
+# return 0`. JOURNALD IS NOT A FILE. Without these two lines the one check that
+# catches "alive and crediting nothing" returns 0 on every run and this rail is
+# watched for liveness only -- which is precisely the 2026-08-30 outage, where
+# six rails refused every deposit for three and a half days while exiting clean.
+LogsDirectory=pcnaibot
+StandardOutput=append:/var/log/pcnaibot/watcher.log
+StandardError=append:/var/log/pcnaibot/watcher.log
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/var/lib/pcnaibot /var/log/pcnaibot
+MemoryMax=256M

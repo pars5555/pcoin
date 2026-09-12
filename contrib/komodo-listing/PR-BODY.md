@@ -9,7 +9,7 @@ allocation — the genesis output is unspendable, as in Bitcoin.
 - Source: https://github.com/pars5555/pcoin
 - Site: https://pc.am
 - Explorers: https://explorer.pc.am · https://explorer3.pc.am
-- BitcoinTalk ANN: https://bitcointalk.org/index.php?topic=5591113.0
+- Announcements: https://pc.am/news/ · https://t.me/PCoinPCN
 
 ---
 

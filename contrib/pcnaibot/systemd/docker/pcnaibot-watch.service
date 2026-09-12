@@ -1,0 +1,42 @@
+# /etc/systemd/system/pcnaibot-watch.service -- DOCKER variant.
+#
+# ITS OWN CONTAINER, not `docker exec` into the bot. That is the whole point of
+# the two-process split: a separate container gets its OWN --memory limit, so a
+# conversation-history spike in the bot cannot OOM-kill the CREDIT PATH. Under
+# `docker exec` they would share one cgroup and the split would be cosmetic.
+[Unit]
+Description=PCoin AI bot deposit watcher (container)
+Documentation=https://github.com/pars5555/pcoin/tree/main/contrib/pcnaibot
+After=network-online.target docker.service
+Requires=docker.service
+OnFailure=pcoin-alert@%n.service
+
+[Service]
+# A container stopped by systemd exits 143 (128 + SIGTERM). That is a CLEAN
+# shutdown, but a non-zero code, so without this line systemd calls every
+# ordinary restart a failure and fires OnFailure= -- paging a human for a
+# deploy. Observed on 2026-09-11: each redeploy alerted the ops channel.
+#
+# 143 only. A real crash still has its own exit code and still alerts, which is
+# the whole point of OnFailure= being here.
+SuccessExitStatus=143 SIGTERM
+Type=oneshot
+ExecStartPre=-/bin/sh -c 'docker rm -f pcnaibot-watch >/dev/null 2>&1 || true'
+# The watcher log is written INSIDE the container to the bind-mounted path, so
+# it lands on the host as a real FILE. check_holding is file-based
+# (`[ -r "$logf" ] || return 0`) and the Docker log driver is not a file --
+# without this mount the one check that catches "alive and crediting nothing"
+# returns 0 on every run and this rail is watched for liveness only.
+ExecStart=/usr/bin/docker run --rm --name pcnaibot-watch \
+    --network host \
+    --read-only \
+    --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+    --memory 256m --memory-swap 256m \
+    --pids-limit 128 \
+    --security-opt no-new-privileges \
+    --cap-drop ALL \
+    -v /etc/pcoin/pcnaibot.conf:/etc/pcoin/pcnaibot.conf:ro \
+    -v /var/lib/pcnaibot:/var/lib/pcnaibot \
+    -v /var/log/pcnaibot:/var/log/pcnaibot \
+    pcnaibot:latest \
+    node /app/watch.mjs

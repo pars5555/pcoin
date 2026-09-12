@@ -1,0 +1,27 @@
+# Staleness check for BOTH heartbeats.
+#
+# OnFailure= ALONE IS NOT ENOUGH FOR A DAEMON: with Restart=always, a bot that
+# dies and restarts every 30 seconds reports `active (running)` forever and
+# never fires it. This is the check that notices.
+#
+# IT RUNS AS ROOT, AND THAT IS LOAD-BEARING. pcoin-notify does:
+#     if [ ! -r "$CONF" ]; then log "no $CONF -- alert not delivered"; exit 0; fi
+# and /etc/pcoin/alert.conf is -rw------- root root. A NON-ROOT CALLER GETS
+# SILENT NON-DELIVERY THAT EXITS 0, and a timer unit that reports success --
+# the alarm on the money path dead, reporting healthy.
+[Unit]
+Description=PCoin AI bot heartbeat staleness check
+Documentation=https://github.com/pars5555/pcoin/tree/main/contrib/pcnaibot
+
+[Service]
+# A container stopped by systemd exits 143 (128 + SIGTERM). That is a CLEAN
+# shutdown, but a non-zero code, so without this line systemd calls every
+# ordinary restart a failure and fires OnFailure= -- paging a human for a
+# deploy. Observed on 2026-09-11: each redeploy alerted the ops channel.
+#
+# 143 only. A real crash still has its own exit code and still alerts, which is
+# the whole point of OnFailure= being here.
+SuccessExitStatus=143 SIGTERM
+Type=oneshot
+User=root
+ExecStart=/opt/pcnaibot/heartbeat-check.sh

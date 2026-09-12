@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the PCoin AI bot deposit watcher every minute
+Documentation=https://github.com/pars5555/pcoin/tree/main/contrib/pcnaibot
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=60
+AccuracySec=10s
+Unit=pcnaibot-watch.service
+
+[Install]
+WantedBy=timers.target

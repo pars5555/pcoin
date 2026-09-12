@@ -1,0 +1,242 @@
+# /etc/pcoin/pcnaibot.conf -- mode 0640 root:pcnaibot
+#
+# 0640, NOT 0600 root:root: the process runs as `pcnaibot` and reads this file
+# ITSELF, rather than having systemd inject it through EnvironmentFile=. That is
+# deliberate. This bot accepts arbitrary text from strangers and makes outbound
+# calls with `Authorization: Bearer`; putting three credentials in its
+# `process.env` means one `console.error(err)` on a fetch rejection, one crash
+# dump or one /proc/self/environ read leaks them. This project has had five
+# credentials leak into transcripts already.
+#
+# Do NOT add any of this to /etc/pcoin/alert.conf -- that file is sourced by
+# scripts that post publicly.
+#
+# Format: KEY=value, one per line. # starts a comment. Values are NOT shell-
+# expanded and are not quoted-stripped beyond one matching pair of quotes.
+
+# ---- secrets -------------------------------------------------------------
+# Telegram bot token from BotFather for @PcoinAiBot.
+TELEGRAM_TOKEN=REPLACE - BotFather token, shape 1234567890:AA...
+
+# OonaCode gateway API key. Sent as `x-api-key`.
+OONACODE_KEY=REPLACE - OonaCode API key
+
+# wpcn-pay project bearer. Leave as REPLACE while WPCN_ENABLED=0 (D3).
+WPCN_PAY_TOKEN=REPLACE - only when D3a is resolved and verified
+
+# ---- identity ------------------------------------------------------------
+RAIL_NAME=pcnaibot
+BOT_USERNAME=PcoinAiBot
+
+# ---- storage -------------------------------------------------------------
+DB_PATH=/var/lib/pcnaibot/pcnaibot.db
+# The derived (index, address) pool. ONLY this list is on the server -- never the
+# account xpub, never a child private key. See contrib/vault/README.md.
+ADDRESS_POOL_FILE=/var/lib/pcnaibot/pcnaibot-pool-1000-2999.txt
+HEARTBEAT_FILE=/var/lib/pcnaibot/heartbeat.json
+WATCHER_LOG=/var/log/pcnaibot/watcher.log
+
+# ---- money ---------------------------------------------------------------
+# Margin applied to the `oonacode` provider's own RETAIL inputPricePerM /
+# outputPricePerM in /api/registry. NOT to any vendor list price and NOT to the
+# SDK bundle's numbers -- those are `cost`, and the gap is 1.2x. See D2.
+MARGIN=3.0
+MIN_CONF=3
+MIN_CONF_COINBASE=100
+# Consensus floor: below 2800 difficulty was frozen under the legacy retarget,
+# so those blocks stay cheap to rewrite forever.
+MIN_BLOCK_HEIGHT=2800
+MIN_DEPOSIT_PCN=1
+PUBLISHED_MIN_USD=5
+# One-off grant on /start, in its own column, never fungible with paid balance.
+#
+# SET TO 0 AND OFF. It was designed to be spendable only on models whose registry
+# price is 0 -- but those models are free to the customer anyway, so the grant
+# had nothing to buy, was never actually spent by any code path, and /start was
+# promising a benefit that did not exist. If a real trial credit is wanted later
+# it should be spendable on PAID models, which is a different feature with a
+# different abuse profile (a fungible $0.10 is one expensive turn, and Telegram
+# accounts are free).
+GRANT_MICRO_USD=0
+CAP_30D_USD_PER_USER=2000
+CAP_30D_USD_GLOBAL=20000
+# Deposits at or above this USD value need a second, independent source.
+CORROBORATE_ABOVE_USD=250
+
+# ---- rate oracle ---------------------------------------------------------
+PRICE_URL=https://price.pc.am
+# Three independent clocks, three independent bounds. Reusing one bound for two
+# of them means tightening one destroys the other.
+RATE_MAX_STATE_AGE_S=900
+RATE_MAX_LADDER_AGE_S=900
+RATE_MAX_POOL_AGE_S=900
+RATE_CACHE_MAX_AGE_S=21600
+RATE_MAX_JUMP_FACTOR=10
+
+# ---- explorer ------------------------------------------------------------
+EXPLORER_URL=https://explorer.pc.am
+# D11: must be a DIFFERENT HOST from both EXPLORER_URL's host and the OonaCode
+# gateway's host, or one outage is two failures. explorer2.pc.am is
+# 178.105.178.27 and is recorded in servers.md as "corroboration source only".
+# Compared by HOSTNAME, never by string: HTTPS://, :443, //api and a trailing
+# dot all slip past a string compare and make the oracle corroborate itself.
+EXPLORER_CORROBORATE_URL=https://explorer2.pc.am
+# Per-tick HTTP request budget. The explorer runs WITHOUT --trust-proxy, so every
+# request through Caddy is keyed on 127.0.0.1 and shares ONE 20/s bucket with the
+# iOS wallet's POST /api/tx broadcasts.
+EXPLORER_REQ_BUDGET=40
+WATCH_POLL_SECONDS=60
+
+# ---- provider ------------------------------------------------------------
+# The DIRECT ORIGIN. The apex oonacode.oonak.ai is Cloudflare-proxied and cuts at
+# ~100s with an HTML 524 while the gateway keeps generating; `api.` is Apache on
+# the origin with `timeout=660`. openapi.json's `servers` names the apex, which is
+# what an SDK default picks. Pin it here; never let a client library choose.
+OONACODE_BASE=https://api.oonacode.oonak.ai
+OONACODE_REGISTRY_URL=https://api.oonacode.oonak.ai/api/registry
+# PROBE-VERIFIED 2026-09-11 with a real API key. Every id here was confirmed
+# callable AND confirmed to honour max_tokens. Three exclusions are load-bearing:
+#   * claude-opus-5 / claude-sonnet-5 / claude-haiku-4-5 are SUBSCRIPTION-ONLY
+#     and refuse an API key, even though /v1/models lists all three as reachable.
+#     The build brief's D9 named claude-sonnet-5; it cannot work.
+#   * the six TIERED models (grok-4.6/4.5/4.3/build-0.1, qwen3.7-plus,
+#     qwen3.6-flash) publish the HIGH tier, so a flat per-M price over-charges
+#     an ordinary chat turn 2-4.8x.
+#   * qwen3.7-max IGNORES max_tokens -- 9,085 output tokens against a cap of 32,
+#     a 284x overrun, while still reporting stop_reason "max_tokens".
+# The startup probe re-checks all of this and refuses to sell anything failing it.
+MODEL_ALLOWLIST=mimo-v2.5:free,nvidia/nemotron-3-super-120b-a12b,glm-5.3-flash,gpt-5-mini,qwen3.8-flash,deepseek-v4-flash,gpt-5,glm-5.3,qwen3.8-max,deepseek-v4-pro
+
+# WHAT THE CUSTOMER PAYS, which is a different question from what a model costs
+# us. Two pool models are priced 0/0 because the vendor gives that tier away;
+# that is a fact about our cost, not about what the service is worth.
+#
+# PRICE_MIRROR bills a zero-cost model at the LIVE registry price of a named
+# sibling. Deriving it from the feed rather than writing a number here is the
+# point: a hardcoded rate is how 3dmodels credited a batch at one fifteenth of
+# value, and a mirrored price follows the vendor automatically.
+PRICE_MIRROR=mimo-v2.5:free>mimo-v2.5
+#
+# The models that really are free TO THE CUSTOMER. An ALLOW-LIST, so a model is
+# billable unless it is named here -- the safe direction, because the failure
+# mode of the opposite default is giving work away silently.
+FREE_TO_USER=nvidia/nemotron-3-super-120b-a12b
+DEFAULT_MODEL=mimo-v2.5:free
+# Our own cap, not the gateway's. Protects the shared box that also runs seed 4,
+# checker.pc.am and the CRM -- see 4.1.
+MAX_CONCURRENT_UPSTREAM=4
+UPSTREAM_IDLE_TIMEOUT_MS=120000
+UPSTREAM_CONNECT_TIMEOUT_MS=10000
+RESERVATION_AGE_OUT_MINUTES=60
+HOUSE_INPUT_TOKEN_CAP=16000
+FREE_TURNS_PER_HOUR=10
+RATELIMIT_REMAINING_FLOOR=30
+REGISTRY_REFRESH_SECONDS=600
+REGISTRY_MAX_AGE_SECONDS=21600
+
+# ---- surface -------------------------------------------------------------
+# EMPTY until the 0.5 launch gate is complete and evidenced. Comma-separated
+# chat ids. Empty string = the bot answers nobody.
+ALLOWLIST_CHAT_IDS=
+ADMIN_CHAT_IDS=
+# wPCN. ENABLED as of 2026-09-11: the shared verifier now credits from
+# serviceRate (not the ladder `price`) AND bonusPercent is 0, so wPCN credits at
+# exact parity with PCN. That closes the arbitrage in both halves --
+#   this morning, bonus on the ladder price : +9.50% to wrap-and-pay
+#   after the rate fix, bonus still 10%     : +4.50%
+#   now                                     : -5.00%, i.e. wrapping to pay
+#                                             costs the wrap desk's own fee
+# Not reduced but INVERTED, which is right: there was never a reason anyone
+# should wrap in order to pay. The bot re-reads bonusPercent from /health on
+# every deposit screen and says whatever is true, and the credit path logs
+# loudly if it is ever non-zero again.
+WPCN_ENABLED=1
+WPCN_PAY_URL=https://wpcnpay.pc.am
+ENABLED=1
+
+# ---- the HTTP API (users calling their balance from outside Telegram) -----
+# Loopback ONLY. It is fronted by the host's existing Caddy, which already
+# terminates TLS -- so this opens no port and needs no ufw change, exactly like
+# the bot's long polling.
+API_BIND=127.0.0.1
+API_PORT=8799
+# The public URL Caddy maps to the above. Shown to users by /api. Leave unset to
+# disable key issuance entirely.
+API_PUBLIC_URL=https://pcoinaibot.pc.am
+API_MAX_BODY_BYTES=1048576
+# Per-key admission control, independent of money: a free-model call quotes $0,
+# so a balance check would admit it unconditionally.
+API_RATE_PER_MINUTE=60
+API_RATE_BURST=20
+# Flat token allowance added to the counted/estimated input before quoting.
+# count_tokens under-counts by a per-model constant (measured: +5 on
+# glm-5.3-flash, +48 on mimo-v2.5:free), so without this the reservation is not
+# a ceiling and a settle can overrun onto the customer's balance.
+INPUT_SAFETY_TOKENS=128
+
+# ---- streaming -----------------------------------------------------------
+# Stream answers live into Telegram via sendMessageDraft (Bot API 9.3), with a
+# stop button (can_stop, Bot API 10.3).
+#
+# This is not cosmetic. `message_start` carries the EXACT input token count
+# BEFORE any output is generated, which is the only mechanism that STOPS a
+# mid-answer overrun instead of discovering it on the bill -- and a settle that
+# overruns is billed IN FULL and never clamped.
+#
+# Set to 0 to fall back to the non-streamed path (correct, just not live).
+STREAMING=1
+# Log level: debug makes a tick explain itself without a code change.
+LOG_LEVEL=info
+# Turns handled at once. The poll loop never awaits a turn -- if it did, a long
+# stream would block getUpdates and the stop button could never be delivered in
+# time. Per-user serialisation is separate (the busy_at lock).
+MAX_CONCURRENT_TURNS=8
+
+# ---- stop control + diagnostics ------------------------------------------
+# An inline Stop button on a real message, because a DRAFT CANNOT CARRY A
+# KEYBOARD (sendMessageDraft takes no reply_markup). It appears only after a
+# turn has run this long, so a fast answer never grows an extra bubble.
+# Telegram's own can_stop button rides on the draft and whether a client renders
+# it is outside our control, so this does not depend on it. /stop does the same
+# thing and always works.
+STOP_BUTTON_AFTER_MS=4000
+
+# DIAGNOSTIC ONLY -- appended to every text chunk received from the provider so
+# the delivered answer shows where the SSE frame boundaries fell. It is inserted
+# into what the customer READS, so leave it empty in normal operation. It is
+# added after the provider's token counts are taken and so can never affect
+# what anybody is billed.
+DEBUG_CHUNK_MARKER=
+
+# ---- answer length -------------------------------------------------------
+# max_tokens for a turn, capped further by the model's own limit.
+#
+# This was hardcoded at 2048, which is about ONE MINUTE of output (mimo writes
+# ~741 tokens in 21s) -- so a long answer was arithmetically impossible however
+# well the streaming worked.
+#
+# max_tokens is the ONLY thing bounding the reservation, so raising it raises
+# what must be on the balance before a turn starts: at gpt-5's $36/1M output,
+# 8192 tokens reserves ~$0.29 up front. The settle returns whatever is unused.
+MAX_OUTPUT_TOKENS=8192
+# A reasoning model given less than this spends the whole allowance thinking and
+# returns nothing, billed in full. Measured at max_tokens=40: four of ten models
+# returned an empty answer.
+MIN_OUTPUT_TOKENS=1024
+# What to assume when the registry declares NO maxOutputTokens -- true for six
+# of the ten models we sell. Math.min() takes the smaller of this and the
+# configured cap, so a low value here silently becomes the REAL ceiling.
+# Probed 2026-09-11: all ten sellable models accept 32000.
+UNDECLARED_OUTPUT_CAP=32000
+
+# Allow a reservation to take the balance NEGATIVE.
+#
+# Off by default: a turn is refused unless the balance covers the worst case,
+# because max_tokens is the only thing bounding it. At a 32,000-token ceiling
+# that worst case is ~$1.15 on gpt-5, which locks out anyone holding less even
+# though a typical answer costs a fraction of a cent.
+#
+# ON, the balance must still be NON-NEGATIVE to start a turn -- so exposure is
+# bounded at one turn's ceiling per user, not unbounded. Telegram accounts are
+# free, so removing that second guard too would be an open tab for anybody.
+ALLOW_OVERDRAFT=1
