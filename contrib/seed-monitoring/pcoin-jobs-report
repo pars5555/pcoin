@@ -1,0 +1,481 @@
+#!/usr/bin/env python3
+"""Report this host's PCoin-related scheduled jobs to the unified admin panel.
+
+    pcoin-jobs-report                 collect and POST; run it from a timer
+    pcoin-jobs-report --dry-run       print exactly what would be sent, send nothing
+
+WHY THIS PUSHES INSTEAD OF THE PANEL PULLING. The panel would otherwise need an
+SSH key to every box in the estate, which would make the dashboard the single
+machine that can log into everything. It holds no such key today and this keeps
+it that way: each host reports only itself, through one route that can write
+nothing but two files in the panel's own data directory.
+
+CRON LIVES IN THREE PLACES and a collector that reads one of them silently
+reports a third of the truth: the per-user spools, /etc/cron.d, and /etc/crontab
+itself. All three are read here. (The /etc/cron.{hourly,daily,...} run-parts
+directories are read too, because a script dropped there is a scheduled job even
+though nothing in it states a schedule.)
+
+NO COMMAND LINE IS EVER SENT WHOLE. A cron line on a shared box is a secrets
+file -- /etc/cron.d/checker_pc_am carries an API key inside the URL it curls --
+so arguments survive only if they look like plain paths or words, URLs lose
+their query strings, and anything else becomes a placeholder. That is an
+allow-list, not a blocklist: a pattern that tries to spot secrets will miss one,
+and on this estate it already has, five times.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+CONF = os.environ.get("JOBS_REPORT_CONF", "/etc/pcoin/jobs-report.conf")
+DRY = "--dry-run" in sys.argv
+
+# What counts as ours. Deliberately generous: a job wrongly included is noise on
+# one page, a job wrongly excluded is a scheduled task nobody can see.
+PCOIN = re.compile(
+    r"pcoin|\bpcn\b|wpcn|wrapdesk|wrap-desk|market\.pc|explorer|electrumx|"
+    r"earner|pcnearner|keeper|redeem|ladder|bootstrap|concentration|"
+    r"seed-watch|fork-watch|deposit-watch|payment-report|price\.pc|"
+    r"announce|pcnaibot|group-watch|disk-watch|caddy-cert-sync|"
+    # --- added after the 2026-09-13 audit ---------------------------------
+    # These are PCN CREDIT PATHS whose command strings contain none of the
+    # words above, so they were being counted as somebody else's job and
+    # dropped. checker_pc_am is the busiest of the lot at 1,440 runs a day,
+    # and 1min.php's own comment calls itself "the only path that turns PCN
+    # into balance". The comment above is right that a wrongly-excluded job is
+    # a scheduled task nobody can see; these were the proof.
+    r"checker|webbuilder|aicontrol|3dmodel|webai|portrait2video|"
+    r"1min\.php|cron\?key|pcn-watch|pcn-sweep|approve|ai-report", re.I)
+
+
+def conf():
+    out = {}
+    try:
+        with open(CONF, encoding="utf-8") as fh:
+            for line in fh:
+                m = re.match(r"^\s*([A-Z_]+)\s*=\s*(.*?)\s*$", line)
+                if m:
+                    out[m.group(1)] = m.group(2).strip().strip('"').strip("'")
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def run(*args):
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=30).stdout
+    except Exception:
+        return ""
+
+
+# ---- redaction -----------------------------------------------------------
+SECRETISH = re.compile(r"(?i)key|token|secret|pass|pw|auth|bearer|cred|sig")
+PLAIN = re.compile(r"^[-\w./:@]{1,40}$")
+LONG_RANDOM = re.compile(r"^[A-Za-z0-9_\-+/=]{24,}$")
+
+
+def safe_arg(tok):
+    """Keep a token only if it is obviously not a secret. Everything else is a
+    placeholder -- including things that are probably harmless, because the cost
+    of being wrong is asymmetric."""
+    if tok.startswith(("http://", "https://")):
+        # The path is useful ("which endpoint does this poke"), the query string
+        # is where the credential lives.
+        base = tok.split("?", 1)[0]
+        return base + ("?<query>" if "?" in tok else "")
+    if "=" in tok or SECRETISH.search(tok):
+        return "<arg>"
+    if LONG_RANDOM.match(tok) and len(tok) >= 24:
+        return "<arg>"
+    if not PLAIN.match(tok):
+        return "<arg>"
+    return tok
+
+
+def safe_command(cmd):
+    toks = cmd.split()
+    if not toks:
+        return ""
+    return " ".join([toks[0]] + [safe_arg(t) for t in toks[1:]])[:300]
+
+
+def services():
+    """Every systemd service that is RUNNING and is not a oneshot.
+
+    A timer list answers "what will run later". It does not answer "what is
+    running now", and on this estate almost everything that matters is the
+    second kind: every pcoind, the pool, the indexers, ElectrumX, the DNS seed,
+    the market, the price oracle. The page claimed to show what runs by itself
+    and showed none of them.
+
+    Type is read per unit rather than inferred from the name, because
+    oneshot-vs-simple is exactly the distinction being drawn and guessing it
+    would put the timer-backed units in both lists.
+    """
+    out = []
+    txt = run("systemctl", "list-units", "--type=service", "--state=running",
+              "--no-legend", "--plain", "--no-pager")
+    for line in txt.splitlines():
+        unit = line.split()[0] if line.split() else ""
+        if not unit.endswith(".service"):
+            continue
+        props = {}
+        for kv in run("systemctl", "show", unit, "-p", "Type", "-p", "ExecStart",
+                      "-p", "Description", "-p", "ActiveEnterTimestamp",
+                      "-p", "MemoryCurrent", "-p", "Restart").splitlines():
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                props[k] = v
+        if props.get("Type") == "oneshot":
+            continue          # it belongs to a timer, and is already reported there
+        cmd = ""
+        ex = props.get("ExecStart", "")
+        if "argv[]=" in ex:
+            cmd = ex.split("argv[]=", 1)[1].split(" ; ")[0].strip()
+        out.append({
+            "unit": unit,
+            "description": props.get("Description", "")[:160],
+            "runs": safe_command(cmd),
+            "since": props.get("ActiveEnterTimestamp", ""),
+            "restart": props.get("Restart", ""),
+            "pcoin_related": bool(PCOIN.search(unit + " " + cmd + " "
+                                               + props.get("Description", ""))),
+        })
+    return out
+
+
+def containers():
+    """Docker containers, because a restart policy IS a scheduler.
+
+    `unless-stopped` brings a container back after a crash or a reboot with
+    nothing in cron or systemd naming it, and two PCN rails live exactly that
+    way. A page about what runs by itself that omits them is wrong.
+    """
+    txt = run("docker", "ps", "-a", "--no-trunc",
+              "--format", "{{.Names}}\t{{.Image}}\t{{.Status}}")
+    if not txt.strip():
+        return []
+    out = []
+    for line in txt.splitlines()[:120]:
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        name, image, status = parts[0], parts[1], parts[2]
+        policy = run("docker", "inspect", "-f", "{{.HostConfig.RestartPolicy.Name}}",
+                     name).strip()
+        out.append({
+            "name": name, "image": image[:80], "status": status[:60],
+            "restart": policy,
+            "pcoin_related": bool(PCOIN.search(name + " " + image)),
+        })
+    return out
+
+
+def inprocess():
+    """Work scheduled INSIDE a long-running process, as DECLARED on this host.
+
+    A setInterval cannot be discovered from outside the process that owns it, so
+    this is a written record rather than a reading -- the same honest shape as
+    the Telegram directory. It matters because the two least visible things on
+    this estate are also two of the most important: webai's and aicontrol's PCN
+    deposit watchers are both 60-second setIntervals that credit real money and
+    appear in no systemctl, no crontab and no docker inspect.
+
+    Each entry carries `verified` (a date) so a declaration that has drifted
+    shows as OLD rather than being quietly believed. A missing file is reported
+    as an empty list, and the panel says which hosts have never declared any --
+    "nothing declared" and "nothing running" must not render the same.
+    """
+    try:
+        with open("/etc/pcoin/inprocess.json", encoding="utf-8") as fh:
+            d = json.load(fh)
+    except OSError:
+        return None            # never declared -- NOT the same as none
+    except ValueError as e:
+        return [{"owner": "(unreadable)", "what": "inprocess.json does not parse: %s" % e,
+                 "interval": "", "verified": ""}]
+    rows = d.get("timers") if isinstance(d, dict) else d
+    return rows[:60] if isinstance(rows, list) else []
+
+
+# ---- systemd timers ------------------------------------------------------
+def timers():
+    out = []
+    rows = []
+    # --output=json carries `last` and `next` as real microseconds. Prefer it
+    # over `systemctl show`, whose *USec timestamp properties are human strings.
+    txt = run("systemctl", "list-timers", "--all", "--no-pager", "--output=json")
+    try:
+        if txt.strip().startswith("["):
+            rows = json.loads(txt)
+    except Exception:
+        rows = []
+    if not rows:
+        # Older systemd has no JSON output. Fall back to the unit list; last and
+        # next are then genuinely unavailable and are reported as unknown rather
+        # than invented.
+        for line in run("systemctl", "list-units", "--type=timer", "--all",
+                        "--no-legend", "--plain", "--no-pager").splitlines():
+            parts = line.split()
+            if parts and parts[0].endswith(".timer"):
+                rows.append({"unit": parts[0]})
+
+    for r in rows:
+        unit = r.get("unit") or ""
+        if not unit:
+            continue
+        svc = unit[:-6] + ".service"
+        if not (PCOIN.search(unit) or PCOIN.search(svc)):
+            continue
+
+        # One line PER timer setting, so these must be collected as LISTS. A dict
+        # keyed on the property name silently keeps only the last one.
+        mono, cal, show = [], [], {}
+        for line in run("systemctl", "show", unit,
+                        "-p", "Description", "-p", "TimersCalendar",
+                        "-p", "TimersMonotonic").splitlines():
+            if line.startswith("TimersMonotonic="):
+                mono.append(line.split("=", 1)[1])
+            elif line.startswith("TimersCalendar="):
+                cal.append(line.split("=", 1)[1])
+            elif "=" in line:
+                k, v = line.split("=", 1)
+                show[k] = v
+
+        sched = ""
+        for c in cal:
+            m = re.search(r"OnCalendar=([^;}]+)", c)
+            if m:
+                sched = m.group(1).strip()
+                break
+        if not sched:
+            # OnUnitActive is the repeat interval; OnBoot is only the first delay
+            # after a reboot. Showing the second as "the schedule" is what made
+            # a five-minute job read as a three-minute one.
+            active = boot = ""
+            for mo in mono:
+                m = re.search(r"OnUnitActiveUSec=([^;}]+)", mo)
+                if m:
+                    active = "every " + m.group(1).strip()
+                m = re.search(r"OnBootUSec=([^;}]+)", mo)
+                if m:
+                    boot = "boot +" + m.group(1).strip()
+            sched = active or boot or "monotonic"
+
+        sshow = {}
+        for line in run("systemctl", "show", svc, "-p", "Result",
+                        "-p", "Description").splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                sshow[k] = v
+
+        enabled = (run("systemctl", "is-enabled", unit) or "").strip()
+        active = (run("systemctl", "is-active", unit) or "").strip()
+
+        out.append({
+            "unit": unit,
+            "description": (sshow.get("Description") or show.get("Description") or "")[:160],
+            "schedule": sched[:80],
+            "next": iso_usec(r.get("next")),
+            "last": iso_usec(r.get("last")),
+            # "Result" belongs to the SERVICE, not the timer. A timer is always
+            # "active"; whether the work succeeded lives on the unit it triggers.
+            "result": sshow.get("Result") or "",
+            "enabled": enabled,
+            "active": active,
+            "pcoin": True,
+        })
+    return out
+
+
+def iso_usec(v):
+    """Microseconds since the epoch -> an ISO string. Zero, None and anything
+    unparseable mean NEVER, which is its own state: rendering it as 1970 turns
+    "this has not run" into "this last ran 56 years ago", and the second one
+    looks like a fact."""
+    try:
+        v = int(v)
+    except (TypeError, ValueError):
+        return ""
+    if v <= 0:
+        return ""
+    import datetime
+    return datetime.datetime.fromtimestamp(
+        v / 1_000_000, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ---- cron, from all three places ----------------------------------------
+CRON_LINE = re.compile(r"^\s*([-\d*/,]+\s+[-\d*/,]+\s+[-\d*/,]+\s+[-\d*/,a-zA-Z]+\s+[-\d*/,a-zA-Z]+|@\w+)\s+(.*)$")
+
+
+# Debian cron REFUSES any /etc/cron.d file whose name is not solely letters,
+# digits, underscores and hyphens -- a dot is enough -- and it skips it SILENTLY,
+# logging nothing. A collector that reads the directory with a bare listdir
+# therefore reports files cron will never execute as live scheduled jobs. That
+# happened here: /etc/cron.d/pcoin-ops.bak was counted as a running */4 job on
+# 35.239.156.16 and has never once run.
+#
+# The error runs in the dangerous direction too: a file named
+# `pcoin-deposit-watch.bak` would be reported as watching a payment rail while
+# cron ignores it -- a job that quietly does not run while the dashboard shows
+# green, which is this estate's most expensive failure mode. So apply cron's own
+# rule, and report what was skipped AS skipped. An ignored job must not look
+# like an absent one.
+CRON_D_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def cron():
+    out = []
+    other = 0
+    skipped = []
+
+    def add(source, user, line):
+        nonlocal other
+        line = line.strip()
+        if not line or line.startswith("#"):
+            return
+        m = CRON_LINE.match(line)
+        if not m:
+            return
+        sched, rest = m.group(1), m.group(2)
+        if user is None:                      # /etc/cron.d and /etc/crontab carry a user column
+            parts = rest.split(None, 1)
+            if len(parts) == 2:
+                user, rest = parts
+            else:
+                user = "?"
+        if not PCOIN.search(rest) and not PCOIN.search(source):
+            other += 1
+            return
+        out.append({
+            "program": safe_command(rest).split()[0][:80],
+            "args": safe_command(rest),
+            "schedule": sched,
+            "source": source,
+            "user": user,
+            "pcoin": True,
+        })
+
+    # 1. per-user spools
+    for d in ("/var/spool/cron/crontabs", "/var/spool/cron"):
+        if os.path.isdir(d):
+            for name in sorted(os.listdir(d)):
+                try:
+                    with open(os.path.join(d, name), encoding="utf-8", errors="replace") as fh:
+                        for line in fh:
+                            add(f"crontab:{name}", name, line)
+                except OSError:
+                    pass
+
+    # 2. /etc/cron.d
+    if os.path.isdir("/etc/cron.d"):
+        for name in sorted(os.listdir("/etc/cron.d")):
+            p = os.path.join("/etc/cron.d", name)
+            if not os.path.isfile(p):
+                continue
+            if not CRON_D_NAME.match(name):
+                try:
+                    with open(p, encoding="utf-8", errors="replace") as fh:
+                        body = fh.read()
+                    live = sum(1 for l in body.splitlines()
+                               if l.strip() and not l.strip().startswith("#"))
+                except OSError:
+                    body, live = "", -1
+                if live != 0:
+                    skipped.append({
+                        "file": p,
+                        "why": "cron ignores /etc/cron.d filenames containing anything but "
+                               "letters, digits, _ and - . This file has NEVER run.",
+                        "lines": live,
+                        "pcoin": bool(PCOIN.search(name) or PCOIN.search(body)),
+                    })
+                continue
+            try:
+                with open(p, encoding="utf-8", errors="replace") as fh:
+                    for line in fh:
+                        add(f"/etc/cron.d/{name}", None, line)
+            except OSError:
+                pass
+
+    # 3. /etc/crontab -- the one people forget, and the reason a previous audit
+    #    of "every cron job" on this estate was wrong.
+    try:
+        with open("/etc/crontab", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                add("/etc/crontab", None, line)
+    except OSError:
+        pass
+
+    # 4. run-parts directories: a script here IS scheduled, though it says no schedule
+    for d, sched in (("/etc/cron.hourly", "hourly"), ("/etc/cron.daily", "daily"),
+                     ("/etc/cron.weekly", "weekly"), ("/etc/cron.monthly", "monthly")):
+        if os.path.isdir(d):
+            for name in sorted(os.listdir(d)):
+                if name.startswith(".") or name in ("run-parts",):
+                    continue
+                if PCOIN.search(name):
+                    out.append({"program": name, "args": f"{d}/{name}", "schedule": sched,
+                                "source": d, "user": "root", "pcoin": True})
+                else:
+                    other += 1
+
+    return out, other, skipped
+
+
+def main():
+    c = conf()
+    url = os.environ.get("JOBS_REPORT_URL", c.get("JOBS_REPORT_URL", ""))
+    token = os.environ.get("JOBS_REPORT_TOKEN", c.get("JOBS_REPORT_TOKEN", ""))
+    host = os.environ.get("JOBS_REPORT_HOST", c.get("JOBS_REPORT_HOST", ""))
+    if not host:
+        sys.exit("JOBS_REPORT_HOST is not set. Refusing to guess which host this is -- "
+                 "a wrong answer overwrites another host's row.")
+
+    t = timers()
+    cr, other, skipped = cron()
+    svc = services()
+    dkr = containers()
+    inp = inprocess()
+    payload = {"host": host, "hostname": os.uname().nodename,
+               "timers": t, "cron": cr, "other_count": other,
+               "skipped_cron_files": skipped,
+               "services": svc, "docker": dkr,
+               # None means "this host has never declared any", which the panel
+               # renders differently from an empty list. Unknown is its own state.
+               "inprocess": inp}
+
+    if DRY:
+        print(json.dumps(payload, indent=2))
+        print(f"\n  would POST to {url or '<unset>'} as {host}: "
+              f"{len(t)} timers, {len(cr)} cron, {len(svc)} running services, "
+              f"{len(dkr)} containers, "
+              f"{'no inprocess.json' if inp is None else str(len(inp)) + ' declared in-process timers'}, "
+              f"{len(skipped)} cron.d file(s) cron REFUSES to read, "
+              f"{other} unrelated jobs not sent")
+        return 0
+
+    if not url or not token:
+        sys.exit("JOBS_REPORT_URL or JOBS_REPORT_TOKEN is not set -- nothing to report to.")
+
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode(),
+        headers={"content-type": "application/json", "authorization": "Bearer " + token},
+        method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            print(f"  {host}: {r.read().decode().strip()}")
+    except urllib.error.HTTPError as e:
+        # A 404 here is the panel refusing the token, not a missing route: the
+        # ingest endpoint answers 404 for a bad token on purpose.
+        sys.exit(f"  POST failed: HTTP {e.code} ({'bad token?' if e.code == 404 else e.reason})")
+    except Exception as e:
+        sys.exit(f"  POST failed: {e}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

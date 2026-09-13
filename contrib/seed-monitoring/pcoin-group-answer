@@ -133,6 +133,17 @@ MAX_AGE_SECONDS = int(os.environ.get("ANSWER_MAX_AGE", 6 * 3600))
 # answers everything -- these are what stop it happening sixty times.
 MAX_PER_RUN = int(os.environ.get("ANSWER_MAX_PER_RUN", 3))
 USER_COOLDOWN = int(os.environ.get("ANSWER_USER_COOLDOWN", 300))
+
+# At most this many answers to the SAME person per hour. A single timestamp
+# could only ever measure the gap between the last two answers; a window can see
+# a burst, which is what "spam" actually looks like.
+PER_USER_HOUR = int(os.environ.get("ANSWER_PER_USER_HOUR", 2))
+
+# And a cap on the whole group. A per-user limit does nothing against ten
+# accounts, and every answer costs an API call and a slot in the owner's
+# approval queue.
+PER_HOUR = int(os.environ.get("ANSWER_PER_HOUR", 10))
+WINDOW = 3600
 MAX_TOKENS = int(os.environ.get("ANSWER_MAX_TOKENS", 3000))
 
 
@@ -159,6 +170,11 @@ def load_state():
     # but lacks a key is what crashed a sibling script on its first real run.
     st.setdefault("handled", {})
     st.setdefault("last_user_answer", {})
+    # Timestamps of answers given, per user and overall, trimmed to the window.
+    # Lists rather than counters: a counter cannot expire, so it would either
+    # reset on a boundary (letting a burst straddle two hours) or never reset.
+    st.setdefault("user_window", {})
+    st.setdefault("all_window", [])
     st.setdefault("last_run", 0)
     st.setdefault("answered", 0)
     st.setdefault("held", 0)
@@ -434,7 +450,15 @@ def main():
               time.gmtime(st["last_run"])) if st["last_run"] else "never"))
         return 0
 
-    mode = cfg.get("ANSWER_MODE", "shadow").lower()
+    # ENVIRONMENT WINS. This read the config file only, so
+    # `ANSWER_MODE=shadow ./pcoin-group-answer` looked like it was
+    # disabling posting and was not -- a rate-limit test run that way
+    # queued two real answers for the public group. That is CLAUDE.md
+    # 7.14 from the other direction: "I set something that looks like a
+    # kill switch" is not evidence, and the only fix is to make the
+    # switch real.
+    mode = (os.environ.get("ANSWER_MODE")
+            or cfg.get("ANSWER_MODE", "shadow")).lower()
     live = (mode == "live") and not DRY
 
     try:
@@ -484,6 +508,29 @@ def main():
         if now - float(st["last_user_answer"].get(uid, 0)) < USER_COOLDOWN:
             continue                                # not marked handled: try again later
 
+        # --- sliding windows ------------------------------------------------
+        st["all_window"] = [t for t in st.get("all_window", []) if now - t < WINDOW]
+        uw = [t for t in (st.get("user_window", {}).get(uid) or []) if now - t < WINDOW]
+        st.setdefault("user_window", {})[uid] = uw
+
+        if len(st["all_window"]) >= PER_HOUR:
+            # NOT marked handled. A quiet person who asked during somebody
+            # else's flood did nothing wrong and must still get an answer once
+            # the window clears -- otherwise one spammer silences the group,
+            # which is worse than the spam.
+            print("  global cap reached (%d/h) -- %s left for later" % (PER_HOUR, mid))
+            continue
+
+        if len(uw) >= PER_USER_HOUR:
+            # MARKED handled: this is that person's own doing, and retrying it
+            # every run for an hour is the spam arriving twice.
+            st["handled"][mid] = int(now)
+            act(action="rate-limited", message_id=mid, who=author,
+                asked=text[:300],
+                reason="%s has already had %d answers this hour" % (author, len(uw)))
+            print("  rate-limited %s (%s: %d answers this hour)" % (mid, author, len(uw)))
+            continue
+
         try:
             out, used_model = ask_model_with_fallback(cfg, system, text, author)
         except Exception as e:
@@ -531,6 +578,8 @@ def main():
                 # to one person over and over, and a queued draft has already
                 # used that person's turn.
                 st["last_user_answer"][uid] = int(now)
+                st.setdefault("user_window", {}).setdefault(uid, []).append(int(now))
+                st.setdefault("all_window", []).append(int(now))
                 print("  queued %s for approval" % mid)
             else:
                 # A send failure here is almost never a blip -- it is the bot not
@@ -582,7 +631,18 @@ def main():
                 "detail": detail,
                 "from": author,
                 "link": "https://t.me/PCoinPCNChat/%s" % mid,
-                "answered": bool(answer and not held_why),
+                # QUEUED, not answered. This said `answered: True` the moment a
+                # draft was handed to the approval gate -- but a queued draft can
+                # still be cancelled, and one already had been, so the panel was
+                # claiming a group question had been answered when nothing had
+                # been posted. Same error as the counter this file already fixed:
+                # an unresolved outcome recorded as a resolved one.
+                #
+                # `answered` now means what it says. Whether the queued draft
+                # ever reached the group is a fact the approval queue owns, and
+                # it is on /approvals.
+                "answered": False,
+                "queued_for_approval": bool(answer and not held_why),
                 "model": used_model,
             })
 
