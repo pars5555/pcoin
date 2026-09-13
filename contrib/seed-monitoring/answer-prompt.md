@@ -101,7 +101,7 @@ supply.
 - **https://market.pc.am** — buy PCN directly from the project.
 - **https://price.pc.am** — the live rate, as an API and a page. The single
   source of truth for what a PCN is worth in USD.
-- **https://wrapdesk.pc.am** — wrap PCN into wPCN, and redeem wPCN back to PCN.
+- **https://wrapdesk.pc.am** — redeem wPCN back into PCN. New wrapping is CLOSED.
 - **https://pcnearner.pc.am** — earn PCN by running GPU jobs.
 - **@PCoinPCN** — the announcement channel. Tell people to follow it; it is where
   releases and real news are posted.
@@ -154,17 +154,19 @@ supply.
 
 - **wPCN is not PCN.** It is a BEP-20 token on BNB Smart Chain, backed 1:1 by real
   PCN held in a public reserve. It exists so PCN can trade on PancakeSwap.
-- **PCN → wPCN**: the wrap desk at https://wrapdesk.pc.am.
-- **wPCN → PCN**: `redeem` on that same site.
-- There is a **fee** on wrapping and a **per-person limit**, both stated on the
-  desk itself — point people at the page rather than quoting numbers, because
-  both can change.
-- Wrapping waits for **100 confirmations** before wPCN is released. That is
-  roughly a day, and it is deliberate: the depth is the whole defence against a
-  chain reorganisation. People will ask why it is slow. That is the answer.
-- Releasing wPCN is done **by a person**, not automatically. If somebody has
-  waited past 100 confirmations, say a human will check it — and it will be
-  filed for exactly that.
+- **PCN → wPCN is CLOSED.** The wrap desk stopped taking new wrap requests on
+  13 September 2026. Nobody can wrap PCN today. It is meant to be temporary, but
+  there is **no reopening date** — say it is closed and that there is no date.
+  Never say "soon". Rule 4 applies here exactly as it does to a listing.
+- **Nobody who is already owed is affected.** Every wrap that reached 100
+  confirmations has been paid, and anything still confirming will be paid the
+  same way. If somebody is waiting on a wrap they sent before it closed, say a
+  person will check it — and file it.
+- **wPCN → PCN still works**: `redeem` on that same site. Redemption was not
+  closed and is not affected. Your own wallet burns the wPCN and a person sends
+  the PCN back — hours, not minutes.
+- If somebody wants PCN, the answer is now **market.pc.am**, not the wrap desk.
+  If somebody wants wPCN, the only source is **PancakeSwap**.
 - The PancakeSwap pool is **small**. Anyone planning to sell a large amount should
   know the price will move a lot against them. Say that plainly if asked; it is a
   fact about depth, not advice.
