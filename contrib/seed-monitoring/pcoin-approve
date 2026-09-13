@@ -77,6 +77,31 @@ CONF = os.environ.get("PCOIN_ALERT_CONF", "/etc/pcoin/alert.conf")
 QUEUE = os.environ.get("APPROVE_QUEUE", "/var/lib/pcoin-approve/queue.json")
 
 # The owner's Telegram user id. The ONLY account whose button press counts.
+def _groups_conf(path="/etc/pcoin/groups.conf"):
+    """Chat ids from a file the PROGRAM reads, not only from systemd.
+
+    CLAUDE.md 7.14: a script configured by its unit file is a different program
+    when run by hand. Set through an EnvironmentFile alone, `--status` reported
+    the test group as unconfigured while the service had it -- the same shape as
+    the false 50,000 PCN wrap alert that came from a bare run losing its floor.
+    The environment still wins where it is set, so a one-off override works.
+    """
+    out = {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return out
+
+
+_G = _groups_conf()
+
 OWNER = int(os.environ.get("APPROVE_OWNER", "508669931"))
 
 # Destination allow-list. A name maps to a chat id here and nowhere else, so a
@@ -85,6 +110,16 @@ OWNER = int(os.environ.get("APPROVE_OWNER", "508669931"))
 DESTS = {
     "channel": {"chat": "-1003712285504", "label": "@PCoinPCN (public channel)"},
     "group": {"chat": "-1003975107618", "label": "@PCoinPCNChat (public group)"},
+    # The owner's PRIVATE test group. `auto` publishes without asking him,
+    # and that is not the bypass this file forbids: a caller passes a
+    # destination NAME and this allow-list decides whether that name is
+    # automatic -- `auto` is a property of the destination, never a flag on a
+    # message. Nothing a model emits can mark its own message automatic, and
+    # the only chat that carries it is a private sandbox containing one person.
+    # @PCoinPCN and @PCoinPCNChat are not automatic and never will be.
+    "testgroup": {"chat": (os.environ.get("APPROVE_TEST_GROUP")
+                           or _G.get("GROUP_TEST_CHAT_ID") or ""),
+                  "label": "the private test group", "auto": True},
     # A private channel the owner keeps for development. It is a REAL channel
     # send -- same code path, same permissions, same failure modes as the public
     # one -- with nobody watching but him. Testing the publish path against the
@@ -106,6 +141,19 @@ AGENT_FLAGS = os.environ.get("AGENT_FLAG_DIR", "/etc/pcoin/agents")
 
 MAX_PENDING = int(os.environ.get("APPROVE_MAX_PENDING", "12"))
 EXPIRE_HOURS = float(os.environ.get("APPROVE_EXPIRE_HOURS", "48"))
+
+# HOW LONG AN UNDECIDED MESSAGE WAITS BEFORE IT PUBLISHES ITSELF.
+#
+# Set to 0 to restore the original behaviour, which was to publish NOTHING
+# without a human. That default was what made "nothing gets posted publicly
+# until i confirm" literally true, and a timeout trades it away deliberately:
+# a message nobody looked at now goes out by itself.
+#
+# What still stands: the output guard rejects a bad draft BEFORE it is ever
+# queued, the content hash means an auto-delivered item is published exactly as
+# submitted, and MAX_PENDING stops a process in a loop delivering a flood. What
+# no longer stands is that a person sees every public message first.
+AUTO_DELIVER_SECONDS = int(os.environ.get("APPROVE_AUTO_SECONDS", "900"))
 MAX_TEXT = 3900          # Telegram's own limit is 4096; leave room for the footer.
 MAX_CAPTION = 1000       # Telegram caps a photo caption at 1024.
 
@@ -336,6 +384,36 @@ def keyboard(item_id):
     ]]})
 
 
+def update_prompt(item, note=None):
+    """Rewrite the Telegram prompt so it shows the outcome and loses its buttons.
+
+    Called from the ONE function every decision route goes through, plus the
+    auto-deliver path. It used to be done by each caller, so a decision made any
+    other way left a live "APPROVAL NEEDED" with working buttons for something
+    already settled -- which invites a press that does nothing and makes the DM
+    an unreliable record of what is outstanding.
+
+    Cosmetic by construction: it must never turn a recorded decision into a
+    failure, so every error is swallowed after the state has been saved.
+    """
+    if not item.get("dm_message_id"):
+        return
+    if note is None:
+        note = ("CONFIRMED - publishing now." if item["state"] == "confirmed"
+                else "CANCELLED - nothing will be published.")
+    try:
+        tok = conf().get("TELEGRAM_TOKEN", "")
+        if not tok:
+            return
+        api(tok, "editMessageText", {
+            "chat_id": str(OWNER),
+            "message_id": str(item["dm_message_id"]),
+            "text": note + NL + "item " + str(item["id"]),
+        })
+    except Exception as e:
+        print("  (could not update the Telegram prompt: %s)" % type(e).__name__)
+
+
 def cmd_tick(a):
     """One step of the gate. Run from a timer.
 
@@ -350,6 +428,28 @@ def cmd_tick(a):
 
     d = load()
     changed = False
+
+    # ---- auto-deliver ----------------------------------------------------
+    # BEFORE expiry, deliberately: an item that has been waiting long enough to
+    # auto-deliver has, by definition, been waiting a while, and the two windows
+    # must not race. It is recorded as auto and NEVER merged with a real
+    # approval -- the day somebody asks who approved a particular post, that
+    # distinction is the whole answer.
+    if AUTO_DELIVER_SECONDS > 0:
+        for i in d["items"]:
+            if i["state"] != "awaiting":
+                continue
+            waited = now() - int(i.get("dm_at") or i["created"])
+            if waited < AUTO_DELIVER_SECONDS:
+                continue
+            i["state"] = "confirmed"
+            i["decided_at"] = now()
+            i["decided_by"] = "auto after %d min, NOT reviewed" % (AUTO_DELIVER_SECONDS // 60)
+            changed = True
+            print("auto-delivering %s -> %s (waited %d s undecided)"
+                  % (i["id"], i["dest"], waited))
+            update_prompt(i, note=("NO DECISION IN %d MINUTES - publishing anyway."
+                                   % (AUTO_DELIVER_SECONDS // 60)))
 
     # ---- expire ----------------------------------------------------------
     for i in d["items"]:
@@ -366,6 +466,16 @@ def cmd_tick(a):
         if i["state"] != "pending":
             continue
         dest = DESTS[i["dest"]]
+        if dest.get("auto"):
+            # Straight to confirmed, and recorded as such. It still goes through
+            # publish, so it is still hash-checked against what was submitted --
+            # automatic means nobody is ASKED, not that nothing is verified.
+            i["state"] = "confirmed"
+            i["decided_at"] = now()
+            i["decided_by"] = "auto (test destination)"
+            changed = True
+            print("auto-confirmed %s -> %s" % (i["id"], i["dest"]))
+            continue
         header = ("⚠️ APPROVAL NEEDED\n"
                   "Destination: %s\nFrom: %s\nQueued: %s\n"
                   "──────────\n"
@@ -379,24 +489,46 @@ def cmd_tick(a):
             # the post is worse than no preview: it is a preview of something
             # that will not be published.
             pm = i.get("parse_mode") or ""
+            body = ""
             if i.get("photo_b64"):
+                # A picture stays its own message -- a caption is capped at
+                # 1,024 characters and the picture IS what is being approved.
+                # The prompt then SAYS which bubble he is agreeing to rather
+                # than leaving him to work it out.
                 p = {"chat_id": str(OWNER), "caption": i["text"][:MAX_CAPTION]}
                 if pm:
                     p["parse_mode"] = pm
                 api(token, "sendPhoto", p,
                     files={"photo": ("card.png", base64.b64decode(i["photo_b64"]))})
+                body = "The picture above, with that caption, is what will be published." + NL + NL
             else:
-                p = {"chat_id": str(OWNER), "text": i["text"],
-                     "disable_web_page_preview": "true"}
-                if pm:
-                    p["parse_mode"] = pm
-                api(token, "sendMessage", p)
+                # ONE MESSAGE: header, the full text, then the buttons.
+                # Telegram caps a message at 4,096 and a submission at 3,900, so
+                # this fits almost always. When it does not, fall back to two
+                # messages and say which one is the message.
+                tail = NL + "----------" + NL + "Publish this to %s?" % dest["label"]
+                if len(header + i["text"] + tail) <= 4000:
+                    body = i["text"] + NL + "----------" + NL
+                else:
+                    p = {"chat_id": str(OWNER), "text": i["text"],
+                         "disable_web_page_preview": "true"}
+                    if pm:
+                        p["parse_mode"] = pm
+                    api(token, "sendMessage", p)
+                    body = ("The message above is what will be published -- it was "
+                            "too long to include here." + NL + NL)
             r = api(token, "sendMessage", {
                 "chat_id": str(OWNER),
-                "text": header + "Publish this to %s?" % dest["label"],
+                "text": header + body + "Publish this to %s?" % dest["label"],
                 "reply_markup": keyboard(i["id"]),
+                "disable_web_page_preview": "true",
             })
             i["dm_message_id"] = (r.get("result") or {}).get("message_id")
+            # WHEN HE WAS ASKED, not when it was queued. The auto-deliver window
+            # must start from the moment the question reached him: if the gate
+            # was down for an hour, the message he has only just seen must still
+            # get its full window rather than publishing itself immediately.
+            i["dm_at"] = now()
             i["state"] = "awaiting"
             changed = True
             print("asked %s -> %s" % (i["id"], i["dest"]))
@@ -410,6 +542,17 @@ def cmd_tick(a):
     # ---- publish ---------------------------------------------------------
     for i in d["items"]:
         if i["state"] != "confirmed":
+            continue
+        if not (DESTS.get(i["dest"]) or {}).get("chat"):
+            # A destination in the allow-list with no chat id configured. Refuse
+            # rather than send nowhere: an empty chat_id would make Telegram
+            # error and the item would look undeliverable for a reason nobody
+            # could read.
+            i["state"] = "failed"
+            i["error"] = ("destination %r has no chat id configured on this host"
+                          % i["dest"])
+            changed = True
+            print("REFUSED %s: %s" % (i["id"], i["error"]))
             continue
         if digest(i) != i.get("digest"):
             # Before calling this a compromise, rule out the boring explanation:
@@ -512,6 +655,7 @@ def cmd_decide(a):
         i["decided_by"] = int(a.by)
         save(d)
         print("%s -> %s" % (i["id"], i["state"]))
+        update_prompt(i)
         return 0
     sys.exit("no such item: %s" % a.id)
 

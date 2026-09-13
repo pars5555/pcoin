@@ -38,7 +38,39 @@ import urllib.request
 
 CONF = os.environ.get("PCOIN_ALERT_CONF", "/etc/pcoin/alert.conf")
 STATE = os.environ.get("GROUP_WATCH_STATE", "/var/lib/pcoin-group-watch/state.json")
-GROUP_ID = int(os.environ.get("GROUP_CHAT_ID", "-1003975107618"))
+def _groups_conf(path="/etc/pcoin/groups.conf"):
+    """Chat ids from a file the PROGRAM reads, not only from systemd.
+
+    CLAUDE.md 7.14: a script configured by its unit file is a different program
+    when run by hand. Set through an EnvironmentFile alone, `--status` reported
+    the test group as unconfigured while the service had it -- the same shape as
+    the false 50,000 PCN wrap alert that came from a bare run losing its floor.
+    The environment still wins where it is set, so a one-off override works.
+    """
+    out = {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return out
+
+
+_G = _groups_conf()
+
+GROUP_ID = int(os.environ.get("GROUP_CHAT_ID") or _G.get("GROUP_CHAT_ID")
+                or "-1003975107618")
+
+# A second, PRIVATE group the owner uses to try the bot out. 0 means there is
+# none, and then nothing about this file's behaviour changes.
+TEST_GROUP_ID = int(os.environ.get("GROUP_TEST_CHAT_ID")
+                    or _G.get("GROUP_TEST_CHAT_ID") or "0")
+WATCHED = {GROUP_ID} | ({TEST_GROUP_ID} if TEST_GROUP_ID else set())
 LOG = os.environ.get("GROUP_WATCH_LOG", "/var/log/pcoin-group-watch.log")
 # Every group message, one JSON object per line, for pcoin-group-answer to read.
 # It exists because getUpdates is EXCLUSIVE: anything else that wants to see the
@@ -301,6 +333,7 @@ def main():
         print("  last run    : %s" % (time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime(st["last_run"]))
                                       if st["last_run"] else "never"))
         print("  group       : %d" % GROUP_ID)
+        print("  test group  : %s" % (TEST_GROUP_ID or "not configured"))
         return 0
 
     # RETRY THE TRANSPORT, NEVER THE 409. This runs every sixty seconds behind
@@ -382,7 +415,7 @@ def main():
         # Everything not from OUR group is consumed and ignored on purpose: this
         # is the only poller, so leaving them unconsumed would stall the offset
         # for ever behind traffic from the bot's other chats.
-        if chat != GROUP_ID:
+        if chat not in WATCHED:
             delivered_through = uid
             continue
         if (msg.get("from") or {}).get("is_bot"):
@@ -419,6 +452,10 @@ def main():
                 with open(SPOOL, "a", encoding="utf-8") as fh:
                     fh.write(json.dumps({
                         "update_id": uid,
+                        # WHICH CHAT. Absent until there were two of them, and a
+                        # row that does not say where it came from is a row that
+                        # can be answered into the wrong group.
+                        "chat": chat,
                         "message_id": msg.get("message_id"),
                         "date": msg.get("date", int(time.time())),
                         "from": who(msg),

@@ -69,7 +69,59 @@ def act(**row):
         os.replace(tmp, ACTIONS)
     except Exception:
         pass
-GROUP_ID = int(os.environ.get("GROUP_CHAT_ID", "-1003975107618"))
+def _groups_conf(path="/etc/pcoin/groups.conf"):
+    """Chat ids from a file the PROGRAM reads, not only from systemd.
+
+    CLAUDE.md 7.14: a script configured by its unit file is a different program
+    when run by hand. Set through an EnvironmentFile alone, `--status` reported
+    the test group as unconfigured while the service had it -- the same shape as
+    the false 50,000 PCN wrap alert that came from a bare run losing its floor.
+    The environment still wins where it is set, so a one-off override works.
+    """
+    out = {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return out
+
+
+_G = _groups_conf()
+
+GROUP_ID = int(os.environ.get("GROUP_CHAT_ID") or _G.get("GROUP_CHAT_ID")
+                or "-1003975107618")
+TEST_GROUP_ID = int(os.environ.get("GROUP_TEST_CHAT_ID")
+                    or _G.get("GROUP_TEST_CHAT_ID") or "0")
+
+
+def dest_for(chat):
+    """Which approval destination a message from `chat` may be answered into.
+
+    Returns None for anything unrecognised, and the caller then does not answer
+    at all. Fail closed: an unknown chat is not a reason to guess, and guessing
+    means a reply landing in a group it was never meant for.
+
+    A row with NO chat id predates this function. Those can only have come from
+    the one group that existed then, so they map to it -- stated here rather
+    than left implicit, because it is an assumption and assumptions rot.
+    """
+    if chat is None:
+        return "group"
+    try:
+        chat = int(chat)
+    except (TypeError, ValueError):
+        return None
+    if chat == GROUP_ID:
+        return "group"
+    if TEST_GROUP_ID and chat == TEST_GROUP_ID:
+        return "testgroup"
+    return None
 
 DRY = "--dry-run" in sys.argv
 
@@ -272,7 +324,7 @@ def ask_model(cfg, system, message, author, model=None):
 APPROVE = "/usr/local/bin/pcoin-approve"
 
 
-def reply(token, message_id, text):
+def reply(token, message_id, text, dest="group"):
     """QUEUE a reply for the owner's approval. This function no longer publishes.
 
     It used to POST straight into the public group. It does not any more, and the
@@ -301,7 +353,7 @@ def reply(token, message_id, text):
         return False
     try:
         r = subprocess.run(
-            [APPROVE, "submit", "--dest", "group",
+            [APPROVE, "submit", "--dest", dest,
              "--reply-to", str(message_id),
              "--source", "pcoin-group-answer",
              "--key", "answer-%s" % message_id,
@@ -456,7 +508,16 @@ def main():
 
         send_failed = False
         if answer and not held_why:
-            if reply(tg, r.get("message_id"), answer):
+            dest = dest_for(r.get("chat"))
+            if dest is None:
+                # Relayed from a chat this bot is not allowed to answer. Say so
+                # loudly rather than silently dropping it: it means the poller
+                # and this script disagree about which chats exist.
+                held_why = ("it arrived from a chat this bot has no destination for "
+                            "(chat %s) -- NOT answered" % r.get("chat"))
+                st["held"] += 1
+                print("  held %s: %s" % (mid, held_why), file=sys.stderr)
+            elif reply(tg, r.get("message_id"), answer, dest):
                 act(action="queued-for-approval", message_id=mid, who=author,
                     asked=text[:300], answer=answer[:600],
                     model=used_model, confidence=conf_level)
