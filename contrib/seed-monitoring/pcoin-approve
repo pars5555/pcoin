@@ -117,9 +117,20 @@ DESTS = {
     # message. Nothing a model emits can mark its own message automatic, and
     # the only chat that carries it is a private sandbox containing one person.
     # @PCoinPCN and @PCoinPCNChat are not automatic and never will be.
+    # NOT automatic, since 2026-09-13. It was, for about an hour, so testing
+    # would have a fast feedback loop -- and that was the wrong trade. The
+    # owner posted his first test question, got an answer with no approval
+    # prompt, and asked why. He was right to: a sandbox that skips the gate
+    # cannot test the gate, and a test environment that behaves differently
+    # from production rehearses the wrong thing. It now goes through exactly
+    # the same path as @PCoinPCNChat, prompt and buttons and all.
+    #
+    # The `auto` mechanism stays in the code because it is still the right
+    # shape -- a property of the DESTINATION, never a flag a caller can set --
+    # but nothing carries it now.
     "testgroup": {"chat": (os.environ.get("APPROVE_TEST_GROUP")
                            or _G.get("GROUP_TEST_CHAT_ID") or ""),
-                  "label": "the private test group", "auto": True},
+                  "label": "the private test group"},
     # A private channel the owner keeps for development. It is a REAL channel
     # send -- same code path, same permissions, same failure modes as the public
     # one -- with nobody watching but him. Testing the publish path against the
