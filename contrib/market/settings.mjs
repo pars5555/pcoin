@@ -84,6 +84,35 @@ export const DEFS = {
     label: 'Retire confirmations',
     help: 'How deep a block must be before its payments count. Reorgs are routine on this chain, ' +
           'and inventory retired for a payment that later vanishes cannot be un-retired quietly.' },
+  ammK:                { type: 'num', def: 0, min: 0, max: 1e15, step: 0.00000001,
+    label: 'Constant-product k \u2014 0 = off, fall back to rung pricing',
+    help: 'The invariant of the pricing curve: price = k / X^2 where X is the PCN still for ' +
+          'sale plus ammVirtualPcn. Set ONCE, from the inventory and price at the moment it is ' +
+          'switched on, so the price does not jump. Selling lowers X and raises the price; so ' +
+          'does retire-on-spend, which is how spending PCN at a service moves the price with no ' +
+          'separate mechanism. 0 disables the curve and the ladder prices by rungs again.' },
+  ammVirtualPcn:       { type: 'num', def: 0, min: 0, max: 1e9, step: 0.00000001,
+    label: 'Constant-product virtual depth (PCN)',
+    help: 'Added to the real inventory when pricing, and to nothing else \u2014 it is never ' +
+          'sold and never delivered. It is the only knob on steepness: larger means a gentler ' +
+          'price impact per dollar, smaller means orders move the price harder and hit the ' +
+          'divergence gate sooner. It does NOT change the current price, only the slope.' },
+  ladderMaxPriceUsd:   { type: 'num', def: 0, min: 0, max: 10, step: 0.0000000001,
+    label: 'Ladder price cap (USD) — 0 = off',
+    help: 'Sell at min(rung price, this). PCN can only be SOLD by wrapping it and selling wPCN, ' +
+          'so when that pool trades below the ladder the rungs are asking more than the market ' +
+          'pays, and a buyer here would lose the difference the moment they spent the coins. ' +
+          'Set this to about the wPCN price to close that gap. It is a NUMBER YOU SET, never ' +
+          'read from the pool: the pool holds ~$1,300 and a dump into it is reversible, so ' +
+          'letting it drive this would sell the book at a 98% discount for under a dollar.' },
+  ladderMinPriceUsd:   { type: 'num', def: 0.025, min: 0, max: 10, step: 0.0000000001,
+    label: 'Ladder price FLOOR (USD) — the cap can never go below this',
+    help: 'A hard clamp under ladderMaxPriceUsd. The cap is maintained against the wPCN pool, ' +
+          'which holds about $1,300 — pushing it down is cheap and reversible, so without a ' +
+          'floor a manufactured collapse would sell the whole remaining book at a fraction of ' +
+          'its value. This is the bound on that loss. Raise it to be more conservative; only ' +
+          'lower it deliberately, knowing it is the last line between the ladder and a dumped ' +
+          'pool. 0 disables the clamp entirely — do not.' },
   retireSystems:       { type: 'list', def: '', max: 20, kind: 'names',
     label: 'Systems whose spending counts',
     help: 'Which address pools count as customers SPENDING. The market’s own pool must never ' +

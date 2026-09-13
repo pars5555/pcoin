@@ -373,6 +373,46 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
       `UPDATE orders SET status='delivered', delivered_txid=?, delivered_at=NOW(),
               delivery_error=NULL
         WHERE order_id=? AND delivered_txid IS NULL`, [txid, orderId]);
+    if (r.affectedRows === 1) {
+      // A genuine first-time delivery. Say thank you, publicly, once.
+      // Wrapped whole: an announcement must never be able to affect a delivery
+      // that has already left the wallet.
+      try {
+        // Accounts the PROJECT owns. A purchase from one of these is us.
+        const OWN_ACCOUNTS = ['pcoin@pc.am', 'pcoinpcn@gmail.com'];
+        const [[who]] = await q('SELECT email FROM orders WHERE order_id=?', [orderId]);
+        const buyer = String(who?.email || '').trim().toLowerCase();
+        if (OWN_ACCOUNTS.includes(buyer)) {
+          log.error('[announce] not announcing ' + orderId + ': project-owned account');
+        } else {
+        const [[c]] = await q(
+          `SELECT COUNT(*) AS n FROM orders WHERE status='delivered' AND usd >= 20`);
+        const n = Number(c?.n || 0);
+        const text =
+          'Someone just bought PCN on market.pc.am \u2014 thank you. \uD83C\uDF89\n\n' +
+          'That\u2019s ' + n + ' purchase' + (n === 1 ? '' : 's') +
+          ' on the road to a listing. Every one counts, and it\u2019s real people ' +
+          'choosing PCN that gets us there.\n\n' +
+          'market.pc.am is open if you\u2019d like to be next.';
+        const { execFile } = await import('node:child_process');
+        await new Promise(resolve => {
+          execFile('/usr/local/bin/pcoin-approve',
+            ['submit', '--dest', 'channel', '--source', 'market-purchase',
+             // Keyed on the order, so a re-run can never queue the same
+             // thank-you twice even if this line is reached again.
+             '--key', 'purchase-' + orderId, '--text', text],
+            { timeout: 20000 },
+            (err, out, errOut) => {
+              if (err) log.error('[announce] purchase post failed: ' + (errOut || err.message));
+              else log.info?.('[announce] queued purchase post for ' + orderId);
+              resolve();
+            });
+        });
+        }
+      } catch (e) {
+        log.error('[announce] purchase post threw: ' + e.message);
+      }
+    }
     if (r.affectedRows !== 1) {
       const [row] = await q(`SELECT delivered_txid FROM orders WHERE order_id=?`, [orderId]);
       const existing = row?.delivered_txid;

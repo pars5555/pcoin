@@ -87,9 +87,16 @@ const HCAPTCHA_SITEKEY = cfg.hcaptchaSitekey || '';
 const HCAPTCHA_SECRET  = cfg.hcaptchaSecret  || '';
 const HCAPTCHA_ON = Boolean(HCAPTCHA_SITEKEY && HCAPTCHA_SECRET);
 
+// The SLOT only. The script that fills it is loaded by the page, lazily, the
+// first time the sign-in panel is actually shown (see ensureCaptcha() in
+// index.html). Emitting the <script> here meant every visitor -- including
+// every signed-in one, on every refresh -- fetched js.hcaptcha.com and watched
+// a checkbox render into a panel that was about to be hidden.
+//
+// The page detects "captcha configured" by the presence of this div, so when
+// HCAPTCHA_ON is false nothing is emitted and the button is never gated.
 const HCAPTCHA_TAG = HCAPTCHA_ON
-  ? '<script src="https://js.hcaptcha.com/1/api.js" async defer></script>'
-    + '<div class="h-captcha" data-sitekey="' + HCAPTCHA_SITEKEY + '" style="margin:.8rem 0"></div>'
+  ? '<div class="h-captcha" data-sitekey="' + HCAPTCHA_SITEKEY + '" style="margin:.8rem 0"></div>'
   : '';
 
 // Returns {ok} or {ok:false, why}. 'unreachable' is deliberately distinct from
@@ -357,6 +364,11 @@ function tooMuchPcn(rungs, pcn) {
 // enough to track demand, far less often than blocks arrive, and the scan is
 // idempotent so a missed run costs nothing but lag.
 import { makeRetire } from './retire.mjs';
+// Constant-product pricing. Pure functions; nothing here can spend or
+// reserve. The ladder itself now prices on this curve (ladder.mjs);
+// this import is kept so anything here can compute a quote without
+// going through the database.
+import * as AMM from './amm.mjs';
 const R = makeRetire({ pool, node, settings: S, notify });
 setInterval(() => R.scan().catch(e => console.error('[retire]', e.message)),
             10 * 60 * 1000).unref?.();
@@ -1161,6 +1173,74 @@ createServer(async (req, res) => {
     // ---- the ladder, in public ----
     // Read-only and unauthenticated on purpose: this is the price, and the
     // price oracle on this same box polls it to drive `serviceRate`.
+    // Read-only operator summary for the unified admin panel. Token-gated with
+    // its own credential -- a customer session must never reach it, and this
+    // token opens nothing else. GET only; it writes nothing anywhere.
+    if (p === '/api/ops/summary') {
+      const want = cfg.readToken;
+      const m = (req.headers.authorization || '').match(/^Bearer\s+(.+)$/i);
+      if (!want || !m || m[1] !== want) {
+        return json(res, 401, { error: 'the operator summary requires the read-only token' });
+      }
+
+      // Each of these can fail independently, and a failure must not take the
+      // whole reply down -- a dashboard that shows nothing because one RPC
+      // hiccuped is worse than one that shows three of four panels.
+      const settle = p2 => p2.then(v => ({ ok: true, v })).catch(e => ({ ok: false, e: e.message }));
+      const [st, hr, fl, counts] = await Promise.all([
+        settle(L.ladderState()),
+        settle(B.headroomPcn()),
+        settle(D.floatBalance()),
+        settle(pool.query(
+          'SELECT status, COUNT(*) AS n, COALESCE(SUM(usd),0) AS usd FROM orders GROUP BY status')),
+      ]);
+
+      const byStatus = {};
+      if (counts.ok) for (const r of counts.v[0]) {
+        byStatus[r.status] = { count: Number(r.n), usd: Number(r.usd) };
+      }
+
+      return json(res, 200, {
+        ok: true,
+        service: 'pcoin-market',
+        at: new Date().toISOString(),
+        uptimeSeconds: Math.round(process.uptime()),
+
+        ladder: st.ok ? {
+          marginalPrice: st.v.marginalPrice, askCapUsd: st.v.askCapUsd,
+          rungMarginalPrice: st.v.rungMarginalPrice, floorPrice: st.v.floorPrice,
+          soldPcn: st.v.soldPcn, reservedPcn: st.v.reservedPcn,
+          retiredPcn: st.v.retiredPcn, remainingPcn: st.v.remainingPcn,
+          deliverablePcn: hr.ok ? hr.v.pcn : null,
+          sellableNowPcn: (hr.ok && Number.isFinite(Number(st.v.remainingPcn)))
+            ? Math.min(Number(st.v.remainingPcn), hr.v.pcn) : null,
+          pctSold: st.v.pctSold,
+        } : null,
+        ladderError: st.ok ? null : st.e,
+
+        backing: hr.ok ? {
+          headroomPcn: hr.v.pcn, ownerPcn: hr.v.ownerPcn, owedPcn: hr.v.owed,
+          ageMs: hr.v.ageMs ?? null, degraded: !!hr.v.degraded, manual: !!hr.v.manual,
+        } : null,
+        backingError: hr.ok ? null : hr.e,
+
+        float: fl.ok ? { hotWalletPcn: fl.v } : null,
+        floatError: fl.ok ? null : fl.e,
+
+        orders: counts.ok ? byStatus : null,
+        ordersError: counts.ok ? null : counts.e,
+
+        settings: {
+          saleOpen: S.get('saleOpen'), buybackOpen: S.get('buybackOpen'),
+          minOrderUsd: S.get('minOrderUsd'), maxOrderUsd: S.get('maxOrderUsd'),
+          maxOrderPcn: S.get('maxOrderPcn'), autoMaxUsd: S.get('autoMaxUsd'),
+          maxDivergencePct: S.get('maxDivergencePct'),
+          ladderMaxPriceUsd: S.get('ladderMaxPriceUsd'),
+          ladderMinPriceUsd: S.get('ladderMinPriceUsd'),
+        },
+      });
+    }
+
     if (p === '/api/ladder/state') {
       // The page renders its limits from here rather than hardcoding them. A
       // number typed into the HTML is a number that goes stale the first time
@@ -1172,8 +1252,28 @@ createServer(async (req, res) => {
       const capPcn = S.get('maxOrderPcn');
       let capUsd = null;
       try { capUsd = Number(L.walkPcn(await L.rungsWithStock(), capPcn).cost.toFixed(2)); } catch {}
+      const ladSt = await L.ladderState();
+      // What is LEFT on the ladder and what we will actually SELL are different
+      // numbers, and only the second one is a promise we can keep. The book runs
+      // to 84,538 PCN while the deliverable cap is 50,000 -- set by hand against
+      // coins that exist, and enforced on the buy path below. Advertising the
+      // larger figure over-promises by 69%.
+      //
+      // null means UNKNOWN and must stay null: zero would read as sold out, and
+      // falling back to remainingPcn would put the over-promise straight back.
+      let deliverablePcn = null, sellableNowPcn = null;
+      try {
+        const hr = await B.headroomPcn();
+        if (hr && hr.pcn !== null && Number.isFinite(Number(hr.pcn))) {
+          deliverablePcn = Number(hr.pcn);
+          const rem = Number(ladSt.remainingPcn);
+          sellableNowPcn = Number.isFinite(rem) ? Math.min(rem, deliverablePcn) : deliverablePcn;
+        }
+      } catch { /* unreadable backing stays unknown, never a number */ }
       return json(res, 200, {
-        ...(await L.ladderState()),
+        ...ladSt,
+        deliverablePcn,
+        sellableNowPcn,
         // The oracle mirrors this so it can stop advertising a buyback that is
         // switched off. The market owns the switch; one source of truth.
         buybackOpen: S.get('buybackOpen'),

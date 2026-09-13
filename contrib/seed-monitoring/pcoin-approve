@@ -73,6 +73,18 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+# A newline, as a name.
+#
+# It exists because this file is edited by patch scripts, and a literal
+# backslash-n inside a nested heredoc has been mangled into a REAL newline
+# three separate times today -- twice producing an unterminated string
+# literal that took the service down until it was noticed. The last time,
+# the constant was defined in the PATCH and not in the file it wrote, so
+# every emitted reference was a NameError: the gate could not ask for a
+# single approval for eight minutes. Naming it here ends that class of
+# mistake -- chr(10) survives any amount of quoting.
+NL = chr(10)
+
 CONF = os.environ.get("PCOIN_ALERT_CONF", "/etc/pcoin/alert.conf")
 QUEUE = os.environ.get("APPROVE_QUEUE", "/var/lib/pcoin-approve/queue.json")
 
@@ -148,6 +160,11 @@ DESTS = {
 # process signal: a disabled agent must stay disabled across a reboot, a
 # redeploy and a crash, and the agent itself must be able to check it with a
 # single stat call before it does anything else.
+# Sources whose messages publish WITHOUT being asked. See the note at the top of
+# this file: only fixed templates built in code belong here, never anything that
+# can carry model-generated or user-supplied text.
+AUTO_SOURCES = {"market-purchase"}
+
 AGENT_FLAGS = os.environ.get("AGENT_FLAG_DIR", "/etc/pcoin/agents")
 
 MAX_PENDING = int(os.environ.get("APPROVE_MAX_PENDING", "12"))
@@ -477,13 +494,15 @@ def cmd_tick(a):
         if i["state"] != "pending":
             continue
         dest = DESTS[i["dest"]]
-        if dest.get("auto"):
+        if dest.get("auto") or i.get("source") in AUTO_SOURCES:
             # Straight to confirmed, and recorded as such. It still goes through
             # publish, so it is still hash-checked against what was submitted --
             # automatic means nobody is ASKED, not that nothing is verified.
             i["state"] = "confirmed"
             i["decided_at"] = now()
-            i["decided_by"] = "auto (test destination)"
+            i["decided_by"] = ("auto (test destination)" if dest.get("auto")
+                               else "auto (fixed template from %s, no review asked)"
+                                    % i.get("source"))
             changed = True
             print("auto-confirmed %s -> %s" % (i["id"], i["dest"]))
             continue

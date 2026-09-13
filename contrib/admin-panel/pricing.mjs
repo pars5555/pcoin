@@ -5,24 +5,31 @@
 // WHY THIS PAGE EXISTS.
 //
 // On 2026-09-13 the owner asked, repeatedly and with good reason, why buying
-// PCN no longer moves the price when it used to. Answering it took an hour and
-// produced several WRONG answers on the way -- including "spending at a service
-// never affected the price", which is false: retire-on-spend is shipped and
-// running. The chain that sets the price runs through four components on three
-// hosts, each individually documented, and the JOIN was written down nowhere.
+// PCN no longer moved the price when it used to. Answering it took an hour and
+// produced several WRONG answers on the way, because the chain that sets the
+// price runs through four components on three hosts and nothing described the
+// JOIN. This page is that description, kept beside the live figures so it
+// cannot quietly go stale the way prose does.
 //
-//   PancakeSwap pool -> cap-policy.mjs -> the ladder -> price.pc.am -> the rails
+// WHAT CHANGED THAT EVENING. The ladder used to charge min(rungPrice, askCap),
+// and the cap had sat below its own cheapest remaining rung since the wPCN pool
+// fell behind the schedule — so every order size paid exactly the same price
+// and buying moved nothing. Pricing is now a CONSTANT-PRODUCT CURVE, the same
+// shape PancakeSwap uses:
 //
-// THE ONE SENTENCE: both mechanisms that let usage move the price ARE BUILT AND
-// RUNNING. They are pinned, not missing. Every rung is charged at
-// min(rungPrice, askCap), and while the cap sits below the ladder's own next
-// rung, neither buying nor spending can move the number.
+//     X = PCN still for sale + ammVirtualPcn      (virtual depth, a constant)
+//     Y = ammK / X
+//     price = Y / X = ammK / X²
 //
-// The two figures that prove it are on this page side by side:
-// `rungMarginalPrice` (what the ladder wants) and `askCapUsd` (what it may
-// charge). While the first exceeds the second, the price is flat at any size.
+// Three properties came with it, and they are the reason it is the right shape:
+//   * impact is CONTINUOUS, so every order moves the price a little;
+//   * it CANNOT BE GAMED BY SPLITTING — one $100 order and five sequential $20
+//     orders return the identical PCN to the satoshi, which is a property of
+//     x·y=k rather than an approximation;
+//   * RETIRE-ON-SPEND works again for free: spending PCN at a service retires
+//     ladder inventory, X falls, and the price rises. No separate mechanism.
 //
-// Everything is read live. Nothing is hardcoded but the explanations.
+// The rungs still exist and still record inventory. They no longer set price.
 import { esc, num, N, USD, PCT, card, note, kv, tbl, tiles, failed, DASH } from './ui.mjs';
 
 const TTL_MS = 60_000;
@@ -49,7 +56,12 @@ export async function pricingData() {
     get('https://market.pc.am/api/ladder/state'),
     get('https://market.pc.am/api/ladder/gate'),
   ]);
-  return { price, state, gate };
+  // Quote a few real sizes, so the page SHOWS that size changes the price
+  // instead of asserting it.
+  const sizes = [20, 50, 100, 200, 380];
+  const quotes = await Promise.all(
+    sizes.map(u => get('https://market.pc.am/api/quote?usd=' + u).then(r => ({ usd: u, r }))));
+  return { price, state, gate, quotes };
 }
 
 export function pricingPage(d) {
@@ -59,151 +71,137 @@ export function pricingPage(d) {
 
   if (!p && !s) {
     return failed('the price oracle and the market', 'both unreadable')
-      + note('Every figure on this page is read live from price.pc.am and '
-             + 'market.pc.am. A page of zeros would be a lie rather than a gap, so '
-             + 'nothing is shown.');
+      + note('Every figure here is read live. A page of zeros would be a lie '
+             + 'rather than a gap, so nothing is shown.');
   }
 
-  const pool    = p ? Number(p.pool?.spotUsd) : null;
-  const median  = p ? Number(p.pool?.medianUsd) : null;
-  const ask     = s ? Number(s.marginalPrice) : (p ? Number(p.sellPriceUsd) : null);
-  const cap     = s ? Number(s.askCapUsd) : null;
-  const wants   = s ? Number(s.rungMarginalPrice) : null;   // the UNCAPPED rung price
-  const credit  = p ? Number(p.creditRateUsd) : null;
+  const pool   = p ? Number(p.pool?.spotUsd) : null;
+  const median = p ? Number(p.pool?.medianUsd) : null;
+  const ask    = s ? Number(s.marginalPrice) : (p ? Number(p.sellPriceUsd) : null);
+  const credit = p ? Number(p.creditRateUsd) : null;
   const premium = (pool > 0 && ask > 0) ? (ask / pool - 1) * 100 : null;
-  const pinned  = (wants > 0 && cap > 0) ? wants > cap * 1.0001 : null;
-  const gapPct  = (wants > 0 && cap > 0) ? (wants / cap - 1) * 100 : null;
 
   const top = tiles([
-    ['PCN — you pay',         USD(ask, 8)],
+    ['PCN — you pay now',     USD(ask, 8)],
     ['wPCN — PancakeSwap',    USD(pool, 8)],
     ['PCN — rails credit at', USD(credit, 8)],
     ['PCN premium over wPCN', premium === null ? DASH : PCT(premium, 2)],
   ]);
 
-  // ── THE ANSWER TO "why is the price the same for $20 and $200" ────────────
-  const pin = card(
-    pinned ? 'Why the price is the same at every order size' : 'The ladder is pricing normally',
-    kv([
-      ['What the ladder WANTS for the next coin', USD(wants, 8),
-       'rungMarginalPrice — the real price of the cheapest rung that still has stock.'],
-      ['What it is ALLOWED to charge', USD(cap, 8),
-       'askCapUsd — set by cap-policy.mjs to the 24-hour pool median x 1.05.'],
-      ['The gap', gapPct === null ? DASH : PCT(gapPct, 1),
-       pinned
-         ? 'The ladder wants more than the cap allows, so <b>every rung is charged at '
-           + 'the cap</b> — min(rungPrice, askCap). That is why $20 and $200 cost the '
-           + 'same per coin. It is the cap working, not a broken calculator.'
-         : 'The cap is above the next rung, so rungs charge their own prices and '
-           + 'bigger orders pay more.'],
-      ['It un-pins when', pool > 0 && wants > 0 ? USD(wants / 1.05, 8) : DASH,
-       'the 24-hour pool MEDIAN reaches this, so that median x 1.05 clears the rung. '
-       + 'Nothing needs rebuilding — it resumes by itself.'],
-    ]))
-    + note(pinned
-      ? '<b>Both usage mechanisms are built, correct and running.</b> They are pinned '
-        + 'by this one number, not missing.'
-      : '');
+  // ── the thing people come here to check ──────────────────────────────────
+  const rows = (d.quotes || []).map(({ usd, r }) => {
+    if (!r.ok || r.data?.error) {
+      return [`$${usd}`, `<span class="bad">${esc(String(r.data?.error || r.error))}</span>`, '', ''];
+    }
+    const q = r.data;
+    return [
+      `$${usd}`,
+      N(q.pcn, 2) + ' PCN',
+      USD(q.effectivePrice, 8),
+      q.newPrice ? USD(q.newPrice, 8) : DASH,
+    ];
+  });
 
-  // ── the chain in order ────────────────────────────────────────────────────
-  const chain = card('The chain that sets the price, in order', kv([
-    ['1. wPCN pool (PancakeSwap)', USD(pool, 8),
-     'The only market with outside participants. Everything below derives from it.'],
-    ['2. 24-hour pool MEDIAN', USD(median, 8),
-     'cap-policy uses the median, never the spot. One trade is a single sample '
-     + 'against ~1,440, so nobody drags the price with one cheap trade — it takes a '
-     + 'sustained, visible campaign of more than 12 hours. This is also why buying '
-     + 'wPCN raises the posted price SLOWLY.'],
-    ['3. the ask cap', USD(cap, 8),
-     'median x 1.05. PCN sits 5% ABOVE wPCN deliberately: below it, people buy PCN '
-     + 'cheap from us, wrap it, and dump it into the pool.'],
-    ['4. what the ladder charges', USD(ask, 8),
-     'min(rungPrice, askCap), per rung.'],
-    ['5. posted PCN price', USD(ask, 8), 'price.pc.am publishes the ladder marginal price.'],
-    ['6. serviceRate — the rails credit at', USD(credit, 8),
-     'min(ladder, pool). The pool may only ever LOWER this, never raise it — a pool '
-     + 'trading ABOVE the ladder changes nothing at all.'],
+  const sizeCard = card('What each order size costs, right now', tbl(
+    ['Order', 'PCN you get', 'Price you pay', 'Price the NEXT buyer pays'], rows,
+    'No quote could be read.')
+    + note('These are live quotes from market.pc.am, fetched when this page loaded — '
+           + 'not a model of what it should charge. <b>The price rises with size, and '
+           + 'each purchase raises it for whoever comes next.</b> Before 2026-09-13 '
+           + 'every row here showed the same price, which is the bug this replaced.'));
+
+  // ── the curve itself ─────────────────────────────────────────────────────
+  const curve = card('The curve', kv([
+    ['Shape', 'price = k / X&sup2;, where X = PCN for sale + virtual depth',
+     'Constant product, the same shape PancakeSwap uses. Buying lowers X, so the '
+     + 'price rises; retiring inventory lowers X too, which is why spending at a '
+     + 'service moves the price with no separate mechanism.'],
+    ['PCN still for sale', s ? N(s.remainingPcn, 2) + ' PCN' : DASH, ''],
+    ['Current price', USD(ask, 8), 'What the next buyer pays for their first coin.'],
+    ['Cannot be split-gamed', 'one $100 order = five sequential $20 orders, exactly',
+     'A property of x&middot;y=k, not an approximation. Verified to 0.00000000 PCN.'],
   ]));
 
-  // ── the four cases ────────────────────────────────────────────────────────
-  const live = x => `<span class="ok">${x}</span>`;
-  const pinnedTag = '<span class="bad">built &amp; running, but PINNED by the cap</span>';
+  // ── the four cases ───────────────────────────────────────────────────────
+  const ok = x => `<span class="ok">${x}</span>`;
   const cases = card('The four things a user can do, and whether each moves the price', tbl(
-    ['User action', 'Mechanism', 'Status now'],
+    ['User action', 'Mechanism', 'Does it move the price?'],
     [
       ['Buys PCN from market.pc.am',
-       'consumes rungs, so the marginal price rises',
-       pinned ? pinnedTag : live('moves the price')],
+       'walks the curve — X falls, so price = k/X&sup2; rises',
+       ok('yes, immediately')],
       ['Spends PCN at one of the six services',
-       '<b>retire-on-spend</b> — retireRatioPct of every PCN spent is withdrawn from '
-       + 'the ladder, so less inventory means a higher price. Runs as an in-process '
-       + '10-minute scan inside the market server, which is why it appears in no '
-       + 'systemctl, no crontab and no docker inspect.',
-       pinned ? pinnedTag : live('moves the price')],
+       '<b>retire-on-spend</b>: retireRatioPct of every PCN spent is withdrawn from '
+       + 'the ladder, which lowers X. Runs as an in-process 10-minute scan inside the '
+       + 'market server, so it appears in no systemctl, no crontab and no docker '
+       + 'inspect — finding no unit is not evidence it is missing.',
+       ok('yes, via the same curve')],
       ['Buys wPCN on PancakeSwap',
-       'raises the pool, so the cap and the rate follow',
-       live('moves it UP — slowly, via the 24h median')],
+       'raises the pool, so the credit rate and the ceiling follow',
+       ok('yes — slowly, via the 24h median')],
       ['Sells wPCN on PancakeSwap',
        'lowers the pool; serviceRate = min(ladder, pool) follows it down',
-       live('moves it DOWN — immediately')],
+       ok('yes — immediately')],
     ])
-    + note('<b>The asymmetry is deliberate.</b> Falling is automatic because pushing '
-           + 'the pool down costs an attacker money and only reduces what we credit — '
-           + 'there is no attack in that direction, so none is guarded. Rising is slow '
-           + 'because linking the ASK to the pool is what would make a dump '
-           + 'profitable; that was proposed, built and REVERTED on 2026-09-11 after '
-           + 'being measured at a 98.6% write-down for about $1 of attacker cost.'));
+    + note('<b>All four now work.</b> Before 2026-09-13 the first two were inert: the '
+           + 'ask cap clamped every rung to the pool price, so neither buying nor '
+           + 'spending could move the published number. Both mechanisms were built and '
+           + 'running the whole time — they were pinned, not missing.'));
 
-  // ── proof retire-on-spend is real ────────────────────────────────────────
-  const retire = s ? card('Retire-on-spend — the proof it is running', kv([
-    ['PCN retired so far', N(s.retiredPcn, 4) + ' PCN',
-     'Withdrawn from the ladder because customers spent PCN at the services. '
-     + 'NOTHING IS DESTROYED — those coins sit in the treasury exactly as before. '
-     + '"Retired" describes the ladder inventory, not the coins.'],
-    ['as a share of the ladder', PCT(s.pctRetired, 3), ''],
-    ['PCN sold', N(s.soldPcn, 2) + ' PCN', PCT(s.pctSold, 2) + ' of the ladder'],
-    ['PCN remaining', N(s.remainingPcn, 2) + ' PCN',
-     (s.rungCount ? s.rungCount + ' rungs, ' : '') + 'step ' + N(s.stepPct, 3) + '% per rung, '
-     + 'floor ' + USD(s.floorPrice, 4) + ', top ' + USD(s.topPrice, 2)],
-  ])) : '';
+  // ── what still anchors it ────────────────────────────────────────────────
+  const anchor = card('What still anchors the price to the outside world', kv([
+    ['The wPCN pool', USD(pool, 8),
+     'The only market with participants who are not us.'],
+    ['24-hour pool median', USD(median, 8),
+     'The ceiling is derived from the MEDIAN, never the spot. One trade is a single '
+     + 'sample against ~1,440, so nobody can drag the price with one cheap trade — it '
+     + 'takes a sustained, visible campaign of more than 12 hours.'],
+    ['serviceRate — what the rails credit', USD(credit, 8),
+     'min(ladder, pool). The pool may only ever LOWER this, never raise it: a pool '
+     + 'trading ABOVE the ladder changes nothing at all.'],
+    ['The sale gate', g && g.divergencePct !== undefined ? PCT(g.divergencePct, 2) + ' of 20%' : DASH,
+     'An order whose AVERAGE price sits more than 20% from serviceRate is REFUSED. '
+     + 'Measured on |ask − rate| / rate, so it is symmetric. <b>This is the real limit '
+     + 'on how far the curve may lead the pool</b>, and it is what stops the price '
+     + 'running away from the only external market there is.'],
+  ]));
 
-  // ── limits and the sale gate ─────────────────────────────────────────────
-  const limits = s ? card('Live limits, and the gate that can refuse an order', kv([
+  const limits = s ? card('Live limits', kv([
     ['Minimum order', USD(s.minOrderUsd, 2), ''],
     ['Maximum order', USD(s.maxOrderUsd, 2),
-     'or ' + N(s.maxOrderPcn, 0) + ' PCN (' + USD(s.maxOrderUsdNow, 2) + ' today) — '
-     + 'whichever binds first.'],
+     'or ' + N(s.maxOrderPcn, 0) + ' PCN — whichever binds first.'],
     ['Released automatically up to', USD(s.autoMaxUsd, 2),
-     'Anything larger is delivered BY HAND. This is the main thing standing between '
-     + 'the ladder and anyone trying to drain it quickly.'],
-    ['Current divergence', g && g.divergencePct !== undefined ? PCT(g.divergencePct, 2) : DASH,
-     'How far the price a buyer would pay sits from serviceRate. <b>At 20% the order '
-     + 'is REFUSED.</b> It is measured on |ask - rate| / rate, so it is symmetric, and '
-     + 'it is the real limit on how far the ladder may lead the pool.'],
-    ['Market open?', g ? (g.open ? '<span class="ok">yes</span>' : '<span class="bad">no</span>') : DASH, ''],
-    ['Buyback (we buy PCN back)', s.buybackOpen ? '<span class="ok">open</span>' : 'closed', ''],
+     'Anything larger is delivered BY HAND. With 3 orders per hour and 3 pending at '
+     + 'once, this is the main thing between the ladder and anyone trying to drain it.'],
+    ['PCN retired by spending', N(s.retiredPcn, 4) + ' PCN',
+     'Withdrawn from the ladder because customers spent PCN at the services. NOTHING '
+     + 'IS DESTROYED — those coins sit in the treasury; "retired" describes the ladder.'],
+    ['Sold', N(s.soldPcn, 2) + ' PCN', PCT(s.pctSold, 2) + ' of the original 100,000'],
   ])) : '';
 
   const gotchas = card('Mistakes this page exists to prevent', note(
     '<ul>'
-    + '<li><b>"The same price for $20 and $200" is not a bug.</b> Recompute from '
-    + '<code>ladder_rungs</code> against min(rungPrice, askCap) — it matches to the cent.</li>'
     + '<li><b>The market rounds cost UP to the next cent</b> '
     + '(<code>Math.ceil(n*100)/100</code>), so a quote is never below what is charged. '
     + 'Comparing against ordinary rounding produces a false one-cent mismatch.</li>'
-    + '<li><b>Spending PCN at a service DOES affect the price</b>, through '
-    + 'retire-on-spend. Finding no systemd unit is not evidence it is missing — it is '
-    + 'an in-process timer.</li>'
-    + '<li><b>The keeper being off is a decision, not a fault.</b> Capped, out of float, '
-    + 'and switched off look identical in a screenshot; only the log distinguishes them.</li>'
-    + '<li><b>The ask cap exists only on the servers.</b> The repo copy of '
-    + '<code>ladder.mjs</code> has no cap, so deploying the market from git would '
-    + 'silently remove it and perform the change that was deliberately reverted.</li>'
-    + '<li><b>serviceRate moving is usually the POOL, not a customer.</b> Check the pool '
-    + 'history before attributing it to a service payment — the rate walks toward the '
-    + 'pool over hours, so the alert can arrive long after the trade that caused it.</li>'
+    + '<li><b>Spending PCN at a service DOES affect the price.</b> Finding no systemd '
+    + 'unit for retire-on-spend is not evidence it is missing — it is an in-process '
+    + 'timer inside the market server.</li>'
+    + '<li><b>A serviceRate alert is usually the POOL, not a customer.</b> The rate '
+    + 'walks toward the pool over hours, so the alert can arrive long after the trade. '
+    + 'On 2026-09-13 the pool moved at 12:06 and the alert fired at 14:58, with no '
+    + 'service payment that day at all.</li>'
+    + '<li><b>The keeper being off is a decision, not a fault.</b> Capped, out of '
+    + 'float, and switched off look identical in a screenshot; only the log tells them '
+    + 'apart. <code>KEEPER_BUY</code> and <code>KEEPER_SELL</code> are both off.</li>'
+    + '<li><b>The market code lives only on its server.</b> Deploying from git without '
+    + 'checking would overwrite the curve and the cap together. Diff before deploying.</li>'
+    + '<li><b>Never wire the ask to the pool.</b> It was built and reverted on '
+    + '2026-09-11: a reversible dump lets a stranger buy the whole remaining book at a '
+    + '98.6% discount for about a dollar. The curve is anchored to inventory, not to '
+    + 'the pool, which is what makes it safe.</li>'
     + '</ul>'));
 
-  return top + pin + chain + cases + retire + limits + gotchas
+  return top + sizeCard + curve + cases + anchor + limits + gotchas
     + note('Read live from price.pc.am and market.pc.am at page load.');
 }

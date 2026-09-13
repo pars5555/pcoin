@@ -59,13 +59,79 @@ const availUnits = r =>
   toUnits(Number(r.qty_total)) - toUnits(Number(r.qty_sold))
   - toUnits(Number(r.qty_reserved)) - toUnits(Number(r.qty_retired ?? 0));
 
-function finish(rungs, fills, gotUnits, cost, usdLeft, pcnShort = 0) {
+/** Constant-product pricing over the rung inventory.
+ *
+ *  Returns the SAME shape as finish(), because every caller expects it -- but
+ *  `marginalAfter` is the curve's next price, not a rung price. Reporting a rung
+ *  price while charging a curve price is exactly how a quote and an invoice come
+ *  to disagree, which is the one failure this file already guards against.
+ */
+function ammWalk(rungs, { usd = null, pcn = null }, k, virt) {
+  let remUnits = 0;
+  for (const r of rungs) { const a = availUnits(r); if (a > 0) remUnits += a; }
+  const rem = fromUnits(remUnits);
+  if (!(rem > 0 && k > 0)) return null;          // caller falls back to the rungs
+
+  const X = rem + virt;
+  const Y = k / X;
+  let wantPcn, cost;
+  if (usd !== null) {
+    const Y1 = Y + usd;
+    wantPcn = X - (k / Y1);
+    cost = usd;
+  } else {
+    if (!(pcn > 0 && pcn < X)) return null;
+    wantPcn = pcn;
+    cost = (k / (X - pcn)) - Y;
+  }
+  if (!(wantPcn > 0 && isFinite(wantPcn) && cost > 0 && isFinite(cost))) return null;
+
+  // Allocate the inventory. Cheapest rung first, exactly as before -- this is
+  // bookkeeping now, not pricing.
+  let wantUnits = toUnits(wantPcn);
+  const unitPrice = cost / fromUnits(wantUnits || 1);
+  let left = wantUnits, gotUnits = 0;
+  const fills = [];
+  for (const r of rungs) {
+    if (left <= 0) break;
+    const avail = availUnits(r);
+    if (avail <= 0) continue;
+    const take = Math.min(avail, left);
+    fills.push({ rungNo: r.rung_no, units: take, price: unitPrice });
+    gotUnits += take; left -= take;
+  }
+
+  // Inventory ran out mid-order: charge only for what was actually allocated.
+  const filledPcn = fromUnits(gotUnits);
+  const paid = left > 0 ? cost * (gotUnits / (wantUnits || 1)) : cost;
+  const X1 = X - filledPcn;
+  const priceAfter = X1 > 0 ? (k / X1) / X1 : null;
+
+  return {
+    pcn: filledPcn,
+    cost: paid,
+    fills,
+    rungsConsumed: fills.length,
+    avgPrice: gotUnits ? paid / filledPcn : 0,
+    marginalAfter: priceAfter,
+    usdUnfilled: usd !== null && left > 0 ? usd - paid : 0,
+    pcnUnfilled: pcn !== null && left > 0 ? fromUnits(left) : 0,
+    exhausted: X1 <= 0,
+  };
+}
+
+function finish(rungs, fills, gotUnits, cost, usdLeft, pcnShort = 0, askCap = Infinity) {
   // Marginal price AFTER this walk: the first rung still holding stock once
   // these fills are applied.
   const taken = new Map(fills.map(f => [f.rungNo, f.units]));
   let marginalAfter = null;
   for (const r of rungs) {
-    if (availUnits(r) - (taken.get(r.rung_no) || 0) > 0) { marginalAfter = Number(r.price); break; }
+    if (availUnits(r) - (taken.get(r.rung_no) || 0) > 0) {
+      // Capped too, so what a buyer is quoted NEXT matches what they would be
+      // charged. Reporting a rung price while charging a capped one is how a
+      // quote and an invoice come to disagree.
+      marginalAfter = Math.min(Number(r.price), askCap); break;
+    }
   }
   const pcn = fromUnits(gotUnits);
   return {
@@ -80,11 +146,13 @@ function finish(rungs, fills, gotUnits, cost, usdLeft, pcnShort = 0) {
 }
 
 /** Spend `usd` across the rungs. Pure — decides nothing, writes nothing. */
-export function walkUsd(rungs, usd) {
+export function walkUsd(rungs, usd, askCap = Infinity) {
   let left = usd, gotUnits = 0, cost = 0;
   const fills = [];
   for (const r of rungs) {
-    const price = Number(r.price);
+    // The cap only ever LOWERS a rung, never raises one, and defaults to
+    // Infinity so an uncapped caller is charged exactly as before.
+    const price = Math.min(Number(r.price), askCap);
     const avail = availUnits(r);
     if (avail <= 0) continue;
     const want = Math.floor((left / price) * UNITS);
@@ -94,16 +162,16 @@ export function walkUsd(rungs, usd) {
     fills.push({ rungNo: r.rung_no, units: take, price });
     gotUnits += take; cost += c; left -= c;
   }
-  return finish(rungs, fills, gotUnits, cost, left);
+  return finish(rungs, fills, gotUnits, cost, left, 0, askCap);
 }
 
 /** Take `pcn` across the rungs. Pure. This is what the calculator uses. */
-export function walkPcn(rungs, pcn) {
+export function walkPcn(rungs, pcn, askCap = Infinity) {
   let needUnits = toUnits(pcn), gotUnits = 0, cost = 0;
   const fills = [];
   for (const r of rungs) {
     if (needUnits <= 0) break;
-    const price = Number(r.price);
+    const price = Math.min(Number(r.price), askCap);
     const avail = availUnits(r);
     if (avail <= 0) continue;
     const take = Math.min(avail, needUnits);
@@ -111,7 +179,7 @@ export function walkPcn(rungs, pcn) {
     fills.push({ rungNo: r.rung_no, units: take, price });
     gotUnits += take; needUnits -= take; cost += c;
   }
-  return finish(rungs, fills, gotUnits, cost, 0, fromUnits(needUnits));
+  return finish(rungs, fills, gotUnits, cost, 0, fromUnits(needUnits), askCap);
 }
 
 export function makeLadder(pool, { notify = null, log = console, getSetting = null } = {}) {
@@ -132,6 +200,48 @@ export function makeLadder(pool, { notify = null, log = console, getSetting = nu
     let v = NaN;
     try { if (getSetting) v = Number(getSetting('orderTtlHours')); } catch { /* fall back */ }
     return Number.isFinite(v) && v > 0 ? v : ORDER_TTL_HOURS;
+  };
+
+  // THE MANUAL PRICE CAP. Re-read per call so an admin edit takes effect with
+  // no restart, exactly like ttlHours above. 0 or unset means no cap at all.
+  //
+  // This is deliberately NOT wired to the wPCN pool. The pool holds about
+  // $1,300 and a dump into it is reversible, so letting it set this number
+  // would sell the remaining book at a 98% discount for under a dollar of swap
+  // fees. A number a human sets is the whole defence.
+  const askCap = () => {
+    let v = NaN, floor = NaN;
+    try { if (getSetting) v = Number(getSetting('ladderMaxPriceUsd')); } catch { /* no cap */ }
+    if (!(Number.isFinite(v) && v > 0)) return Infinity;          // no cap set
+    try { if (getSetting) floor = Number(getSetting('ladderMinPriceUsd')); } catch { /* none */ }
+    // The cap may never sink below the floor, whoever set it and however. The
+    // schedule that maintains the cap tracks a ~$1,300 pool; a clamp here is
+    // what stops a pushed-down pool, a typo, or a stale automation selling the
+    // remaining book for a fraction of what it is worth.
+    return (Number.isFinite(floor) && floor > 0) ? Math.max(v, floor) : v;
+  };
+  // CONSTANT-PRODUCT PRICING. Falls back to the old capped rung walk if the
+  // curve is not configured or cannot price this order -- an unconfigured
+  // curve must never mean 'free', and a market that refuses every order is a
+  // worse outcome than one priced the old way.
+  const ammParams = () => {
+    let k = 0, v = 0;
+    try {
+      k = Number(getSetting ? getSetting('ammK') : 0);
+      v = Number(getSetting ? getSetting('ammVirtualPcn') : 0);
+    } catch { /* unset -> fall back */ }
+    return (Number.isFinite(k) && k > 0 && Number.isFinite(v) && v >= 0)
+      ? { k, v } : null;
+  };
+  const walkUsdCapped = (rungs, usd) => {
+    const p = ammParams();
+    if (p) { const r = ammWalk(rungs, { usd }, p.k, p.v); if (r) return r; }
+    return walkUsd(rungs, usd, askCap());
+  };
+  const walkPcnCapped = (rungs, pcn) => {
+    const p = ammParams();
+    if (p) { const r = ammWalk(rungs, { pcn }, p.k, p.v); if (r) return r; }
+    return walkPcn(rungs, pcn, askCap());
   };
 
   // sweepExpiredOrders is what returns inventory from orders nobody paid for.
@@ -198,8 +308,27 @@ export function makeLadder(pool, { notify = null, log = console, getSetting = nu
          FROM ladder_rungs`);
     const p1 = Number(shape?.p1), p2 = Number(shape?.p2);
     return {
-      marginalPrice: marg ? Number(marg.price) : null,   // null = inventory gone
-      nextFillPrice: next ? Number(next.price) : null,   // what a buyer pays next
+      // Both capped, so the published price is the price charged. The rate
+      // oracle reads marginalPrice into st.ladderPrice and computes
+      // min(ladder, pool) -- safe here because the cap is a constant an
+      // operator set, not a pool read, so nothing is circular.
+      // On the curve when it is configured. marginalPrice still ignores
+      // reservations, for the reason given above the two queries: an unpaid
+      // order must never be able to move the published price.
+      marginalPrice: (() => {
+        const p = ammParams();
+        if (p) { const X = (tot - sold - retd) + p.v; if (X > 0) return (p.k / X) / X; }
+        return marg ? Math.min(Number(marg.price), askCap()) : null;
+      })(),
+      // What the next REAL buyer would be charged, so this one does include
+      // everyone else's outstanding holds.
+      nextFillPrice: (() => {
+        const p = ammParams();
+        if (p) { const X = (tot - sold - resv - retd) + p.v; if (X > 0) return (p.k / X) / X; }
+        return next ? Math.min(Number(next.price), askCap()) : null;
+      })(),
+      rungMarginalPrice: marg ? Number(marg.price) : null,  // uncapped, for reference
+      askCapUsd: Number.isFinite(askCap()) ? askCap() : null,
       floorPrice: shape ? Number(shape.lo) : null,       // the first rung, ever
       topPrice: shape ? Number(shape.hi) : null,         // the last rung
       rungCount: shape ? Number(shape.n) : null,
@@ -224,7 +353,7 @@ export function makeLadder(pool, { notify = null, log = console, getSetting = nu
    *  those prices than the rungs hold. */
   async function reserveLadder(conn, orderId, usd) {
     const rungs = await rungsWithStock(conn, true);
-    const w = walkUsd(rungs, usd);
+    const w = walkUsdCapped(rungs, usd);
     // Refuse a partial fill rather than take money for coins that do not exist.
     // A tenth of a cent of rounding dust is not a shortfall.
     if (w.usdUnfilled > 0.001) {
@@ -451,6 +580,10 @@ Inventory from unpaid orders is not ` +
     }
   }
 
+  // walkUsd/walkPcn are exposed CAPPED: every consumer (quote, calc,
+  // maxOrderUsdNow, the backing check) must see the price actually charged.
+  // The uncapped originals stay importable for the test harnesses.
   return { rungsWithStock, ladderState, reserveLadder, settleLadder, releaseLadder,
-           expireWithRelease, sweepExpiredOrders, walkUsd, walkPcn };
+           expireWithRelease, sweepExpiredOrders,
+           walkUsd: walkUsdCapped, walkPcn: walkPcnCapped };
 }
