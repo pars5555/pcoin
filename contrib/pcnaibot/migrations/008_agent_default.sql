@@ -1,0 +1,11 @@
+-- Agentic is the mode, not a mode.
+--
+-- It was opt-in per chat because it costs ~20-50x a plain answer. But a bot
+-- where some chats have memory, files and tools and others do not is two
+-- products wearing one name, and the toggle only existed because the feature
+-- was new. Every chat is agentic.
+--
+-- The plain /v1/messages path is NOT deleted: it remains the fallback when
+-- AGENT_ENABLED is off or no agent key is configured, and it is still what the
+-- HTTP API serves (an agent run has no max_tokens contract to offer callers).
+UPDATE users SET agent_mode = 1;

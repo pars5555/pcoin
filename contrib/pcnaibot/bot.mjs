@@ -36,6 +36,9 @@ import { probeAll } from './lib/probe.mjs';
 import { issueKey, listKeys, revokeKey } from './lib/apikeys.mjs';
 import QRCode from 'qrcode';
 import { extractSvgs, svgToPng, unknownBlockTypes } from './lib/render.mjs';
+import { newDeliverables, deliverFiles, noteUploaded } from './lib/deliver.mjs';
+import { AgentClient, AgentUnavailable, AgentRefused, creditsToMicroUsd, runOutcome } from './lib/agent.mjs';
+import { liveSession, recordSession, touchSession, retireSession, sweepDeletions, reconcileRemote } from './lib/agentstore.mjs';
 import { streamMessages, StreamStage } from './lib/stream.mjs';
 import { DraftStream } from './lib/drafts.mjs';
 import { tokensToMicroUsd } from './lib/money.mjs';
@@ -117,6 +120,23 @@ const STREAMING = cfg.bool('STREAMING', true);
 // a gateway that shares a box with seed 4 and checker.pc.am.
 const MAX_CONCURRENT_TURNS = cfg.int('MAX_CONCURRENT_TURNS', 8);
 const ALLOW_OVERDRAFT = cfg.bool('ALLOW_OVERDRAFT', false);
+
+// ---- agentic mode --------------------------------------------------------
+// A SEPARATE KEY. /v1/messages keys are refused by the agent API with a clear
+// 403 ("this is an API key for /v1/messages"), and vice versa.
+const AGENT_ENABLED = cfg.bool('AGENT_ENABLED', false);
+const AGENT_MAX_TURNS = cfg.int('AGENT_MAX_TURNS', 12);
+// The reservation ceiling for one agentic run, in CREDITS. Unlike a plain turn
+// there is no max_tokens to price a worst case from -- an agent may make many
+// model calls -- so the ceiling is declared rather than derived, and max_turns
+// is what actually bounds it. Measured: a trivial run costs 1.1-2.7 credits.
+const AGENT_MAX_CREDITS = cfg.num('AGENT_MAX_CREDITS_PER_RUN', 400);
+const agent = (() => {
+  if (!AGENT_ENABLED) return null;
+  const k = cfg.strOr('OONACODE_AGENT_KEY', null);
+  if (!k) { log.warn('AGENT_ENABLED but no OONACODE_AGENT_KEY; agentic mode is off'); return null; }
+  return new AgentClient(cfg.strOr('OONACODE_BASE', 'https://api.oonacode.oonak.ai'), k);
+})();
 
 // DIAGNOSTIC ONLY. When set, this string is appended to every text chunk
 // received from the provider, so the delivered answer shows exactly where the
@@ -208,8 +228,12 @@ function sellableModels() {
 function ensureUser(chatId) {
   const u = db.prepare('SELECT * FROM users WHERE chat_id = ?').get(chatId);
   if (u) return u;
-  db.prepare('INSERT INTO users (chat_id, model, created_at) VALUES (?,?,?)')
-    .run(chatId, DEFAULT_MODEL, nowSec());
+  // agent_mode is set EXPLICITLY rather than left to the column default. The
+  // default is 0 for historical reasons and cannot be changed in SQLite without
+  // rebuilding the table -- and a new user silently arriving in the wrong mode
+  // is precisely the bug that produced this comment.
+  db.prepare('INSERT INTO users (chat_id, model, agent_mode, created_at) VALUES (?,?,?,?)')
+    .run(chatId, DEFAULT_MODEL, agent ? 1 : 0, nowSec());
   // The one-off grant, in its OWN column. NOT fungible with the paid balance:
   // a fungible $0.10 is exactly one claude-opus-5 turn, and Telegram accounts
   // are free.
@@ -244,7 +268,9 @@ const ONE_WAY = 'Deposits are <b>one-way</b>: PCN in, credit out. Balances are h
 
 function startScreen(u) {
   return [
-    '<b>PCoin AI</b> — talk to paid AI models and pay in PCN.',
+    '<b>PCoin AI</b> — an AI <b>agent</b> you pay for in PCN.',
+    '',
+    'It remembers your conversation, keeps files, and can use tools to actually do things — not just answer.',
     '',
     `Balance: <b>$${escapeHtml(microUsdToString(u.balance_micro_usd, 4))}</b>`,
     GRANT_MICRO > 0
@@ -431,9 +457,14 @@ function setModel(chatId, model) {
     const c = chargePriceFor(db, row, PRICE_MIRRORS);
     price = `$${(Number(c.inputPerM) * cfg.num('MARGIN', 3)).toFixed(4)} in / $${(Number(c.outputPerM) * cfg.num('MARGIN', 3)).toFixed(4)} out per 1M tokens`;
   }
-  return { ok: true, model: row.model, msg: `Model set to <b>${escapeHtml(row.model)}</b> — ${escapeHtml(price)}.
+  return {
+    ok: true,
+    model: row.model,
+    msg: `Model set to <b>${escapeHtml(row.model)}</b> — ${escapeHtml(price)}.`
+      + `
 
-Just send a message to use it.` };
+The agent starts a fresh session on your next message, because a session keeps the model it was created with.`,
+  };
 }
 
 function modelsScreen() {
@@ -532,7 +563,7 @@ function balanceScreen(u) {
 // ---------------------------------------------------------------------------
 // The AI turn.
 // ---------------------------------------------------------------------------
-async function runTurn(chatId, updateId, text) {
+async function runTurn(chatId, updateId, text, attachments = []) {
   const u = ensureUser(chatId);
 
   const s = sellableModels();
@@ -621,12 +652,23 @@ async function runTurn(chatId, updateId, text) {
     inputPricePerMe9: parseScaled(charge.inputPerM, 9),
     outputPricePerMe9: parseScaled(charge.outputPerM, 9),
   };
-  const quote = isFree ? 0n : quoteTurn({
-    inputTokens: BigInt(inputTokens + INPUT_SAFETY_TOKENS),
-    maxTokens: BigInt(maxTokens),
-    priceRow,
-    marginE6: MARGIN_E6,
-  });
+  // ONE reservation, whichever mode this is. Two reserve() calls with the same
+  // update_id would be idempotent by design -- the second returns the first as
+  // a duplicate -- and the turn would then be silently dropped.
+  const isAgentic = !!(agent && u.agent_mode);
+  const quote = isFree
+    ? 0n
+    : isAgentic
+      // An agentic run has no max_tokens to price a worst case from: the agent
+      // may make many model calls. The ceiling is declared instead, and
+      // max_turns is what actually bounds it.
+      ? creditsToMicroUsd(AGENT_MAX_CREDITS, MARGIN_E6, parseScaled)
+      : quoteTurn({
+        inputTokens: BigInt(inputTokens + INPUT_SAFETY_TOKENS),
+        maxTokens: BigInt(maxTokens),
+        priceRow,
+        marginE6: MARGIN_E6,
+      });
 
   let res;
   try {
@@ -640,6 +682,126 @@ async function runTurn(chatId, updateId, text) {
   }
   if (res.duplicate) {
     log.warn('duplicate reservation for an update we already claimed', { update: updateId });
+    return null;
+  }
+
+  // THE AGENTIC PATH, when this chat has opted in.
+  //
+  // Settles from run.credits -- what the pool actually charged -- rather than
+  // from a token count priced off an undocumented registry.
+  if (isAgentic) {
+    let r;
+    try {
+      // RETRY A SANDBOX FAILURE. It is transient and common -- measured at
+      // 0/5 then 6/8 within minutes as the provider worked on it -- and a
+      // user should not have to resend their message because a container
+      // did not start. A poisoned session is NOT retried into: it is replaced,
+      // because one of those never recovers.
+      r = await withSandboxRetry(() => runTurnAgentic({ chatId, updateId, model: row.model, text, resv: res, attachments }), chatId);
+    } catch (e) {
+      if (e instanceof AgentRefused) {
+        release(db, res.reservationId, `agent refused: ${e.message}`);
+        return `The agent refused that request. <b>Nothing has been charged.</b>
+
+<i>${escapeHtml(e.message.slice(0, 200))}</i>`;
+      }
+      if (e instanceof AgentUnavailable) {
+        release(db, res.reservationId, `agent unavailable: ${e.message}`);
+        // A poisoned session never recovers -- replace it rather than let the
+        // user retry into something that will fail forever.
+        if (e.poisoned) {
+          try { await retireSession(db, agent, chatId, { reason: 'poisoned session' }); }
+          catch (e2) { log.warn('could not retire the poisoned session', errFields(e2)); }
+          return 'That conversation could not be resumed, so it has been reset. <b>Nothing has been charged.</b> Please send your message again.';
+        }
+        return 'The agent service is busy or starting up. <b>Nothing has been charged.</b> Please try again in a moment.';
+      }
+      release(db, res.reservationId, `agent internal: ${e.message}`);
+      throw e;
+    }
+
+    const { draft: adraft, out } = r;
+
+    if (!out.readable || out.running) {
+      // We never saw a terminal run. It MAY still be running on their side --
+      // their own docs say a dropped stream never stops a run -- so this is
+      // UNKNOWN and is held, not released.
+      hold(db, res.reservationId, `agent run never reported a terminal status`);
+      try { await adraft.clear(); } catch { /* ephemeral anyway */ }
+      log.error('agent run produced no terminal status; reservation HELD');
+      return 'We lost contact with the agent part-way through. Nothing has been settled; the amount is held and released automatically if no usage is recorded.';
+    }
+
+    if (out.credits === null) {
+      // `credits` is the ONLY cost signal here. Without it we cannot settle,
+      // and inventing a number is exactly what this codebase refuses to do.
+      hold(db, res.reservationId, 'agent run reported no credits');
+      try { await adraft.clear(); } catch { /* ignore */ }
+      log.error('agent run had no credits field; reservation HELD', { status: out.status });
+      return 'The agent finished but did not report what it cost, so nothing has been settled. This has been logged and will be reconciled.';
+    }
+
+    // A FAILED run still reports credits -- measured as 0 for a sandbox
+    // failure. Settle whatever it actually charged, which for a failure is
+    // usually nothing.
+    const actual = creditsToMicroUsd(out.credits, MARGIN_E6, parseScaled);
+    const settled = settle(db, res.reservationId, actual, {
+      note: `agent ${row.model} status=${out.status} credits=${out.credits} requests=${out.modelRequests}`,
+    });
+    if (settled.overran) {
+      log.error('AGENT SETTLE OVERRAN THE RESERVATION -- billed in full, not clamped',
+        { reserved: String(settled.reserved), actual: String(settled.actual), credits: out.credits });
+    }
+    if (out.sessionId) touchSession(db, out.sessionId, { credits: out.credits, failed: !out.ok });
+
+    const answer = (out.text || r.text || '').trim();
+
+    if (!out.ok) {
+      try { await adraft.clear(); } catch { /* ignore */ }
+      if (out.stopReason === 'max_turns') {
+        return `${escapeHtml(answer) || '(no answer)'}
+
+<i>stopped at the ${AGENT_MAX_TURNS}-step limit</i>`;
+      }
+      const why = out.error?.message ? escapeHtml(String(out.error.message).slice(0, 180)) : 'the run failed';
+      // The sandbox failing is their side and costs nothing; say so plainly
+      // rather than leaving the user wondering what they paid for.
+      return `The agent could not finish: <i>${why}</i>
+
+You were charged $${escapeHtml(microUsdToString(actual, 6))} for this.`;
+    }
+
+    // Send BEFORE clearing the draft, so the answer is never absent.
+    await tg.sendLong(chatId, escapeHtml(answer) || '(the agent returned no text)');
+    try { await adraft.clear(); } catch { /* ignore */ }
+
+    // WHAT THE AGENT MADE, not just what it said about it.
+    //
+    // This is the difference between an assistant and a chat: asked for a logo
+    // the agent installed an image library, worked around a sandbox with no
+    // fontconfig, rendered a PNG and reported success -- and the user got a
+    // paragraph of prose, because nothing ever looked in the workspace.
+    //
+    // It runs AFTER settlement and cannot change what anybody was charged: the
+    // work is already paid for, so failing to deliver it costs the user money
+    // for nothing, and that is the failure worth avoiding here.
+    if (out.sessionId) {
+      try {
+        const produced = await newDeliverables(db, agent, out.sessionId);
+        if (produced && produced.length) {
+          await deliverFiles(db, agent, tg, chatId, out.sessionId, produced);
+        }
+      } catch (e) {
+        log.warn('could not deliver the files the agent produced', errFields(e));
+      }
+    }
+
+    for (const svg of extractSvgs(answer).slice(0, 3)) {
+      const png = await svgToPng(svg);
+      if (!png) continue;
+      try { await tg.sendPhoto(chatId, png, { filename: 'render.png', caption: 'Rendered from the SVG in the answer above.' }); }
+      catch (e) { log.warn('could not send the rendered image', errFields(e)); }
+    }
     return null;
   }
 
@@ -781,6 +943,206 @@ async function runTurn(chatId, updateId, text) {
   } finally {
     stopTyping();
   }
+}
+
+// Tool names as a person would say them. The engine emits identifiers -- Read,
+// Bash, Glob -- and "<i>Read…</i>" sitting above an answer is both meaningless
+// to a reader and ugly.
+//
+// Anything unmapped falls back to a plain "Working…" rather than leaking an
+// internal name into a stranger's chat.
+const TOOL_VERBS = {
+  Read: 'Reading', Write: 'Writing', Edit: 'Editing', MultiEdit: 'Editing',
+  NotebookEdit: 'Editing', Bash: 'Running a command', BashOutput: 'Running a command',
+  Glob: 'Looking through files', Grep: 'Searching', LS: 'Looking through files',
+  WebFetch: 'Reading a page', WebSearch: 'Searching the web',
+  TodoWrite: 'Planning', Task: 'Working', Agent: 'Working',
+};
+function toolVerb(name) {
+  return TOOL_VERBS[name] ?? 'Working';
+}
+
+const SANDBOX_RETRIES = 3;
+const SANDBOX_BACKOFF_MS = 4000;
+
+// Retry an agentic run through a sandbox failure.
+//
+// `agent_sandbox_failed` is the provider's own container not starting. It is
+// transient: measured 0 of 5 at one moment and 6 of 8 twenty minutes later. A
+// user should not have to resend because of it.
+//
+// A POISONED session is the exception. The first session created during
+// testing had its first run fail with ECONNREFUSED and then EVERY subsequent
+// run into it failed forever -- retrying there is an infinite loop, so it is
+// retired and the next attempt starts a fresh one.
+async function withSandboxRetry(fn, chatId) {
+  let last = null;
+  for (let attempt = 1; attempt <= SANDBOX_RETRIES; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (!(e instanceof AgentUnavailable)) throw e;
+      last = e;
+      if (e.poisoned) {
+        try { await retireSession(db, agent, chatId, { reason: 'poisoned session' }); }
+        catch (e2) { log.warn('could not retire a poisoned session', errFields(e2)); }
+      }
+      if (attempt < SANDBOX_RETRIES) {
+        log.warn('agent sandbox failed; retrying', { attempt, code: e.code });
+        await new Promise((r) => setTimeout(r, SANDBOX_BACKOFF_MS * attempt));
+      }
+    }
+  }
+  throw last;
+}
+
+// ---------------------------------------------------------------------------
+// AN AGENTIC turn.
+//
+// The conversation, the workspace and the transcript live on OonaCode's side,
+// addressed by a session id, so NO HISTORY IS SENT -- measured, input tokens
+// grow ~20 per run rather than by the whole conversation.
+//
+// Billing settles from `run.credits`, which is what the pool actually charged.
+// That is the one thing the plain /v1/messages path cannot do at all.
+//
+// THE SANDBOX IS FLAKY: `agent_sandbox_failed` hit 5 of ~11 runs when measured,
+// and a session whose run failed that way can stay poisoned forever. So a
+// failure replaces the session rather than retrying into it.
+// ---------------------------------------------------------------------------
+async function runTurnAgentic({ chatId, updateId, model, text, resv, attachments = [] }) {
+  const draft = new DraftStream(tg, chatId, draftIdFor(updateId), { canStop: true });
+  const stopper = new AbortController();
+  activeStreams.set(chatId, stopper);
+  await draft.push('');
+
+  // A SESSION KEEPS THE MODEL IT WAS CREATED WITH -- their own docs: "the
+  // session keeps it for later runs". So a user who picks a new model and keeps
+  // talking would still be answered by the OLD one, which is exactly what was
+  // reported: nvidia selected, mimo replied.
+  //
+  // The check compares the SESSION'S model against the user's current choice,
+  // rather than remembering that a switch happened. An in-memory note would not
+  // survive a restart, and the fact is already in the database.
+  {
+    const cur = liveSession(db, chatId);
+    if (cur && cur.model !== model) {
+      log.info('model changed; replacing the agent session', { from: cur.model, to: model });
+      try { await retireSession(db, agent, chatId, { reason: `model ${cur.model} -> ${model}` }); }
+      catch (e) { log.warn('could not retire the session after a model change', errFields(e)); }
+    }
+  }
+
+  let sess = liveSession(db, chatId);
+
+  // ATTACHMENTS GO IN BEFORE THE RUN THAT NEEDS THEM.
+  //
+  // AgentRunRequest.message is a plain STRING -- no content blocks, no
+  // attachment field -- so the only way to give an agent an image is to put it
+  // in the workspace and name the path in the message. (The plain /v1/messages
+  // API does take Anthropic image blocks; the agent API does not.)
+  //
+  // A file needs a session to live in, so one is created explicitly here rather
+  // than waiting for the run to make it. Their docs: creating a session "costs
+  // nothing; the sandbox starts on the first run or file operation".
+  let uploaded = [];
+  if (attachments.length) {
+    if (!sess) {
+      const created = await agent.createSession({ model, title: `pcnaibot ${chatId}` });
+      sess = recordSession(db, chatId, { sessionId: created.id, model });
+      log.info('session created for an upload', { session: created.id.slice(0, 8) });
+    }
+    activity = 'Reading your file';
+    await draft.push(render());
+    for (const a of attachments) {
+      const dl = await tg.downloadFile(a.fileId);
+      if (!dl.ok) { log.warn('could not download an attachment', { reason: dl.reason }); continue; }
+      const up = await agent.uploadFile(sess.session_id, a.name, dl.buffer, a.contentType);
+      if (up.ok) {
+        uploaded.push({ name: up.path, size: up.size, kind: a.kind });
+        // Write it down as OURS. It lands in the same listing as whatever the
+        // agent goes on to produce, and without this the user's own photo
+        // would be handed straight back to them as though it were a result.
+        try { noteUploaded(db, sess.session_id, up.path, up.size); }
+        catch (e) { log.warn('could not record an upload', errFields(e)); }
+      }
+      else log.warn('could not upload an attachment to the workspace', { status: up.status, reason: up.reason });
+    }
+    log.info('attachments uploaded', { count: uploaded.length, of: attachments.length });
+  }
+
+  // Name the paths in the message, because that is how the agent learns they
+  // exist. Without this the file sits in the workspace unmentioned.
+  let message = text;
+  if (uploaded.length) {
+    const list = uploaded.map((u) => `${u.name} (${u.size} bytes)`).join(', ');
+    const preamble = uploaded.length === 1
+      ? `I have uploaded a file to your workspace: ${list}.`
+      : `I have uploaded these files to your workspace: ${list}.`;
+    message = text ? `${preamble}
+
+${text}` : `${preamble}
+
+Please look at it and describe what you see.`;
+  }
+
+  let shown = '';
+  let activity = null;
+  let run = null;
+  let sessionIdSeen = sess?.session_id ?? null;
+
+  // ONE line of status, and ONLY while there is nothing better to show.
+  //
+  // The moment real text arrives the status disappears: the answer is what the
+  // user is waiting for, and a running commentary above it is noise that ends
+  // up embedded in what they read.
+  const render = () => {
+    if (shown !== '') return escapeHtml(shown);
+    return activity ? `<i>${escapeHtml(activity)}…</i>` : '';
+  };
+
+  try {
+    for await (const ev of agent.streamRun({
+      sessionId: sess?.session_id ?? null,
+      message,
+      model: sess ? null : model,
+      maxTurns: AGENT_MAX_TURNS,
+      title: sess ? null : `pcnaibot ${chatId}`,
+    }, { abortSignal: stopper.signal })) {
+      if (ev.type === 'session') {
+        // WRITE THE ID DOWN THE MOMENT WE LEARN IT. A session id we lose is a
+        // sandbox on their server we can never delete.
+        sessionIdSeen = ev.sessionId;
+        if (!sess) {
+          try { sess = recordSession(db, chatId, { sessionId: ev.sessionId, model }); }
+          catch (e) { log.error('could not record the agent session', errFields(e)); }
+        }
+      } else if (ev.type === 'text') {
+        shown += ev.delta;
+        await draft.maybePush(render());
+      } else if (ev.type === 'tool') {
+        // `tool.finished` does not reliably carry the tool's name -- observed
+        // arriving as the literal "tool" -- so only `started` sets the status,
+        // and finishing simply clears it.
+        activity = ev.phase === 'started' ? toolVerb(ev.name) : null;
+        await draft.maybePush(render());
+      } else if (ev.type === 'run') {
+        run = ev.run;
+      }
+    }
+  } finally {
+    activeStreams.delete(chatId);
+  }
+
+  // If we never recorded the session (the stream died before run.started), ask
+  // for it rather than leak it.
+  if (!sess && sessionIdSeen) {
+    try { sess = recordSession(db, chatId, { sessionId: sessionIdSeen, model }); }
+    catch (e) { log.error('late session record failed', errFields(e)); }
+  }
+
+  const out = runOutcome(run);
+  return { draft, out, sessionId: sessionIdSeen, text: shown };
 }
 
 // ---------------------------------------------------------------------------
@@ -1003,8 +1365,45 @@ async function runTurnStreamed({ chatId, updateId, row, upstream, priceRow, isFr
 const COMMANDS = new Set([
   '/start', '/help', '/models', '/model', '/balance', '/topup',
   '/pcn', '/topup_pcn', '/wpcn', '/topup_wpcn', '/clear',
-  '/apikey', '/apikeys', '/revoke', '/api', '/stats', '/stop',
+  '/apikey', '/apikeys', '/revoke', '/api', '/stats', '/stop', '/agent',
 ]);
+
+// What a message is carrying besides words.
+//
+// `photo` is an ARRAY of sizes, smallest first -- the last entry is the largest
+// and is the one worth sending; taking [0] would hand the agent a thumbnail.
+// A photo sent as a `document` keeps its original bytes and filename, which is
+// what a user does when they care about quality.
+function collectAttachments(msg) {
+  const out = [];
+  if (Array.isArray(msg.photo) && msg.photo.length) {
+    const biggest = msg.photo[msg.photo.length - 1];
+    if (biggest?.file_id) {
+      out.push({ fileId: biggest.file_id, name: `photo-${biggest.file_unique_id ?? 'image'}.jpg`, contentType: 'image/jpeg', kind: 'photo' });
+    }
+  }
+  if (msg.document?.file_id) {
+    out.push({
+      fileId: msg.document.file_id,
+      name: safeName(msg.document.file_name) || `document-${msg.document.file_unique_id ?? 'file'}`,
+      contentType: msg.document.mime_type || 'application/octet-stream',
+      kind: 'document',
+    });
+  }
+  return out;
+}
+
+// A filename from a stranger becomes a PATH on somebody else's filesystem.
+// Strip directories and anything that could climb out of the workspace; the
+// API rejects an escape, but not sending one is better than being refused.
+function safeName(name) {
+  if (typeof name !== 'string') return null;
+  const base = name.replace(/[/\\]/g, '_')   // both separators, explicitly
+    .replace(/^[.\s]+/, '')                   // no leading dots: no ../ and no hidden files
+    .trim();
+  const cleaned = base.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 80);
+  return cleaned === '' ? null : cleaned;
+}
 
 async function handleMessage(msg) {
   // `from` CAN BE ABSENT -- channel posts and anonymous admins carry
@@ -1015,8 +1414,12 @@ async function handleMessage(msg) {
   if (msg.is_automatic_forward) return;                  // nor our own announcements
   const chatId = chat.id;
 
-  const text = typeof msg.text === 'string' ? msg.text.trim() : '';
-  if (text === '') return;
+  // A photo or a document arrives with its words in `caption`, not `text`. The
+  // bot used to read only `text`, so an image with a question attached looked
+  // like an empty message and was dropped in silence.
+  const attachments = collectAttachments(msg);
+  const text = (typeof msg.text === 'string' ? msg.text : (typeof msg.caption === 'string' ? msg.caption : '')).trim();
+  if (text === '' && attachments.length === 0) return;
 
   // DISPATCH ON EXACT MATCH OF THE FIRST TOKEN, so /topup_pcn cannot be
   // swallowed by /topup.
@@ -1053,9 +1456,22 @@ async function handleMessage(msg) {
       return `${startScreen(u)}\n\nPrices are per 1M tokens and include our margin. Reasoning tokens are billed as output. Use /models to see the current list.`;
     case '/balance':
       return balanceScreen(u);
-    case '/clear':
+    case '/clear': {
       db.prepare('DELETE FROM conversations WHERE chat_id = ?').run(chatId);
+      // AND DELETE THE REMOTE SESSION. Dropping only our local history would
+      // leave a sandbox, a workspace and a transcript on OonaCode's server
+      // until it expired -- and the user would still be talking to the same
+      // agent memory they just asked to clear.
+      if (agent) {
+        const r = await retireSession(db, agent, chatId, { reason: '/clear' });
+        if (r.had) {
+          return r.deleted
+            ? 'Conversation cleared, and the agent session was deleted from the server.'
+            : 'Conversation cleared. The agent session could not be confirmed deleted just now; it will be retried automatically.';
+        }
+      }
       return 'Conversation cleared.';
+    }
     case '/stop': {
       // Works because the poll loop no longer awaits a turn -- this update is
       // read WHILE the stream it stops is still running.
@@ -1121,6 +1537,24 @@ Scan or copy. It is yours permanently.`,
         `deposits: ${dep.length ? dep.map((d) => `${d.status}=${d.n}`).join(' ') : 'none yet'}`,
         `models sellable: ${sm.expired ? 'PRICE TABLE EXPIRED' : sm.models.length}`,
         `wPCN: ${WPCN_ENABLED ? 'enabled' : 'off'}`,
+        `agent: ${agent ? 'enabled' : 'off'}` + (agent ? ` — live sessions ${db.prepare('SELECT COUNT(*) n FROM agent_sessions WHERE deleted_at IS NULL').get().n}, owed deletes ${db.prepare('SELECT COUNT(*) n FROM agent_sessions WHERE deleted_at IS NULL AND (expires_at = 0 OR failures >= 3)').get().n}` : ''),
+      ].join(NEWLINE);
+    }
+    case '/agent': {
+      // Every chat is agentic; this reports state rather than toggling it.
+      if (!agent) return 'The agent service is not configured on this deployment.';
+      const sess = liveSession(db, chatId);
+      return [
+        'This chat runs an <b>agent</b>, not a plain model.',
+        '',
+        'It keeps its own memory, files and tools on the server, so your conversation is never re-sent — and it can do things, not only answer.',
+        '',
+        sess
+          ? `Session active since ${new Date(sess.created_at * 1000).toISOString().slice(0, 16).replace('T', ' ')}Z — ${sess.runs} message(s).`
+          : 'A session starts on your next message.',
+        `Model: <code>${escapeHtml(u.model)}</code> · up to <b>${AGENT_MAX_TURNS} steps</b> per message.`,
+        '',
+        '/clear starts fresh and deletes the session, its files and its transcript from the server.',
       ].join(NEWLINE);
     }
     case '/api':
@@ -1171,7 +1605,7 @@ Scan or copy. It is yours permanently.`,
     throw e;
   }
   try {
-    return await runTurn(chatId, msg.__update_id, text);
+    return await runTurn(chatId, msg.__update_id, text, attachments);
   } finally {
     unlock();
   }
@@ -1212,6 +1646,7 @@ const PUBLIC_COMMANDS = [
   { command: 'apikeys',    description: 'List your API keys' },
   { command: 'revoke',     description: 'Revoke an API key by its prefix' },
   { command: 'api',        description: 'How to call the API' },
+  { command: 'agent',      description: 'About this agent and its session' },
   { command: 'stop',       description: 'Stop the answer being generated' },
   { command: 'clear',      description: 'Clear this conversation' },
   { command: 'help',       description: 'How it works' },
@@ -1253,7 +1688,10 @@ async function main() {
   // reachability -- all three Claude models are listed and refuse at call time
   // -- and nothing anywhere says whether a model honours max_tokens. Both are
   // only knowable by asking. Costs a few hundredths of a cent.
-  const probes = await probeAll(db, oona, ALLOWLIST_MODELS);
+  // Probe on the path that will actually serve the turn. Probing the plain API
+  // and then serving agent runs is how mimo-v2.5:free passed a probe and then
+  // refused every real request.
+  const probes = await probeAll(db, oona, ALLOWLIST_MODELS, { agentClient: agent });
   const usable = probes.filter((p) => p.ok === true && p.bounded === true).map((p) => p.model);
   log.info('model probe complete', {
     usable: usable.join(',') || '(none)',
@@ -1275,6 +1713,21 @@ async function main() {
     try { ageOutReservations(db, { olderThanMinutes: cfg.int('RESERVATION_AGE_OUT_MINUTES', 60) }); }
     catch (e) { log.error('age-out failed', errFields(e)); }
   }, 300000);
+
+  if (agent) {
+    // A session we failed to delete is still ours to clean up -- it does not
+    // stop being our sandbox because one HTTP call did not land.
+    setInterval(() => {
+      sweepDeletions(db, agent).catch((e) => log.error('agent delete sweep failed', errFields(e)));
+    }, 600000);
+    // And anything on their side we have NO record of is, by definition, a
+    // leak: nothing else will ever remove it.
+    setInterval(() => {
+      reconcileRemote(db, agent).catch((e) => log.error('agent reconcile failed', errFields(e)));
+    }, 3600000);
+    sweepDeletions(db, agent).catch(() => {});
+    reconcileRemote(db, agent).catch(() => {});
+  }
 
   let offset = (kvGetJson(db, 'tg:offset') ?? { offset: 0 }).offset;
   let processed = 0;

@@ -195,18 +195,33 @@ export class TelegramClient {
   // A photo with a caption. Telegram caps a CAPTION at 1024 characters where a
   // message is 4096, so anything longer must be a photo plus a short caption
   // followed by the rest as its own message -- never silently truncated.
-  async sendPhoto(chatId, buffer, { filename = 'qr.png', caption = null, parseMode = 'HTML' } = {}) {
+  async sendPhoto(chatId, buffer, { filename = 'qr.png', caption = null, parseMode = 'HTML', contentType = 'image/png' } = {}) {
+    return this.#sendFile('sendPhoto', 'photo', chatId, buffer, { filename, caption, parseMode, contentType });
+  }
+
+  // A file, sent as a FILE rather than a picture.
+  //
+  // Telegram renders a photo inline and a document as an attachment, and the
+  // choice is not cosmetic: it re-encodes and downscales a photo, and it
+  // refuses image types it cannot display. So anything that is not a plain
+  // raster the user wants to LOOK at -- an SVG, a PDF, a zip, an oversized
+  // render -- goes this way, where the bytes arrive intact.
+  async sendDocument(chatId, buffer, { filename = 'file.bin', caption = null, parseMode = 'HTML', contentType = 'application/octet-stream' } = {}) {
+    return this.#sendFile('sendDocument', 'document', chatId, buffer, { filename, caption, parseMode, contentType });
+  }
+
+  async #sendFile(method, field, chatId, buffer, { filename, caption, parseMode, contentType }) {
     if (caption !== null && telegramLength(caption) > CAPTION_LIMIT) {
       throw new Error(`caption is ${telegramLength(caption)} units, over Telegram's ${CAPTION_LIMIT} limit`);
     }
     const { boundary, body } = multipartBody(
       { chat_id: chatId, caption, parse_mode: caption ? parseMode : undefined },
-      { field: 'photo', filename, contentType: 'image/png', buffer }
+      { field, filename, contentType, buffer }
     );
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
     try {
-      const res = await this.fetchImpl(`${this.apiBase}/sendPhoto`, {
+      const res = await this.fetchImpl(`${this.apiBase}/${method}`, {
         method: 'POST',
         signal: ctrl.signal,
         headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
@@ -219,6 +234,35 @@ export class TelegramClient {
       return { ok: true, result: j.result };
     } catch (e) {
       return { ok: false, unknown: true, description: e.name === 'AbortError' ? 'timeout' : e.message };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // Resolve a file_id to a downloadable path, then fetch the bytes.
+  //
+  // Telegram caps a BOT download at 20 MB regardless of what the user could
+  // upload, so that is the real limit -- the agent files API's 32 MB is never
+  // the binding one.
+  async downloadFile(fileId, { maxBytes = 20 * 1024 * 1024 } = {}) {
+    const meta = await this.call('getFile', { file_id: fileId });
+    if (!meta.ok) return { ok: false, reason: meta.description ?? 'getFile failed' };
+    const path = meta.result?.file_path;
+    if (typeof path !== 'string') return { ok: false, reason: 'no file_path in getFile' };
+    const size = Number(meta.result?.file_size);
+    if (Number.isFinite(size) && size > maxBytes) {
+      return { ok: false, reason: `file is ${size} bytes, over the ${maxBytes} limit` };
+    }
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 120000);
+    try {
+      const res = await this.fetchImpl(`https://api.telegram.org/file/bot${this.#token}/${path}`, { signal: ctrl.signal });
+      if (!res.ok) return { ok: false, reason: `download HTTP ${res.status}` };
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length > maxBytes) return { ok: false, reason: `downloaded ${buf.length} bytes, over the limit` };
+      return { ok: true, buffer: buf, path, size: buf.length };
+    } catch (e) {
+      return { ok: false, reason: e.name === 'AbortError' ? 'download timeout' : e.message };
     } finally {
       clearTimeout(timer);
     }

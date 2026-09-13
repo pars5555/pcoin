@@ -1,6 +1,6 @@
 // Model probing -- asking each model whether it can actually be used.
 //
-// THE TWO THINGS NOTHING ELSE TELLS YOU, both measured live on 2026-09-11:
+// THE THINGS NOTHING ELSE TELLS YOU, measured live:
 //
 // 1. /v1/models IS NOT AUTHORITATIVE FOR REACHABILITY. It listed all 24 pool
 //    models, and the diff against registry.oonacode was EMPTY -- yet all three
@@ -14,7 +14,17 @@
 //    reservation, and a settle that overruns is BILLED IN FULL and never
 //    clamped, that overrun lands on the customer's balance.
 //
-// Neither is in the registry, in /v1/models, or in `notes`. So we ask.
+// 3. THE AGENT API REFUSES MODELS /v1/models LISTS (2026-09-13). Both keys
+//    return the identical 24 ids, yet an agent run with `mimo-v2.5:free` comes
+//    back "unknown model 'mimo-v2.5:free' — GET /v1/models lists what this key
+//    may ask for", while mimo-v2.5, glm-5.3-flash and gpt-5-mini all complete.
+//    The error names /v1/models as the authority, and /v1/models is wrong.
+//
+//    So a model must be probed ON THE PATH IT WILL ACTUALLY BE USED. Probing
+//    the plain API and then serving agent runs passes exactly this model
+//    through to a user as a refusal every time.
+//
+// None of it is in the registry, in /v1/models, or in `notes`. So we ask.
 //
 // A check that only prints is not a check: a model that fails either probe is
 // removed from the billable set, not merely logged.
@@ -33,6 +43,38 @@ const PROBE_PROMPT = 'Write a detailed 500-word essay about the history of the b
 // whitespace token beyond the cap. 2x is far below the 284x we are guarding
 // against and far above any honest off-by-a-few.
 export const OVERRUN_TOLERANCE = 2;
+
+// Probe a model on the AGENT path. A run that completes proves the model is
+// usable there; the max_tokens question does not arise, because an agent run is
+// bounded by max_turns instead.
+export async function probeAgentModel(agentClient, modelId) {
+  const at = nowSec();
+  let sessionId = null;
+  try {
+    let run = null;
+    for await (const e of agentClient.streamRun({ message: 'say ok', model: modelId, maxTurns: 1, title: 'probe' })) {
+      if (e.type === 'session') sessionId = e.sessionId;
+      else if (e.type === 'run') run = e.run;
+    }
+    const status = run?.status;
+    if (status === 'completed') return { ok: true, bounded: true, overrun: null, at, note: null, sessionId };
+    // A run that FAILED is the sandbox, not the model -- inconclusive.
+    return { ok: null, bounded: null, overrun: null, at, note: `agent probe did not complete (status ${status})`, sessionId };
+  } catch (e) {
+    const msg = String(e?.message ?? e);
+    // "unknown model" is a real verdict: the agent API will never accept it.
+    if (/unknown model/i.test(msg)) {
+      return { ok: false, bounded: null, overrun: null, at, sessionId,
+               note: `the agent API refuses this model: ${msg.slice(0, 120)}` };
+    }
+    if (e?.name === 'AgentRefused') {
+      return { ok: false, bounded: null, overrun: null, at, sessionId, note: `agent refused: ${msg.slice(0, 140)}` };
+    }
+    // AgentUnavailable and anything else is the sandbox being flaky, which says
+    // nothing about the model.
+    return { ok: null, bounded: null, overrun: null, at, sessionId, note: `agent probe inconclusive: ${msg.slice(0, 120)}` };
+  }
+}
 
 export async function probeModel(client, modelId) {
   const at = nowSec();
@@ -111,10 +153,18 @@ export function storeProbe(db, modelId, r) {
   return true;
 }
 
-export async function probeAll(db, client, modelIds, { retryInconclusive = true } = {}) {
+// `agentClient`, when given, makes the probe use the AGENT path -- which is the
+// one that will actually serve the turn. Sessions the probe creates are deleted
+// immediately; a probe that leaked sandboxes would be worse than no probe.
+export async function probeAll(db, client, modelIds, { retryInconclusive = true, agentClient = null } = {}) {
   const results = [];
   for (const id of modelIds) {
-    let r = await probeModel(client, id);
+    const one = () => (agentClient ? probeAgentModel(agentClient, id) : probeModel(client, id));
+    let r = await one();
+    if (r.sessionId && agentClient) {
+      try { await agentClient.deleteSession(r.sessionId); } catch { /* the sweeper will get it */ }
+      await new Promise((res) => setTimeout(res, 1500));
+    }
 
     // One retry on an inconclusive result, after a short pause. A model that is
     // merely never probed stays unsellable (billableSet requires probe_ok === 1),
@@ -123,7 +173,11 @@ export async function probeAll(db, client, modelIds, { retryInconclusive = true 
     // "absent all day".
     if (r.ok === null && retryInconclusive) {
       await new Promise((res) => setTimeout(res, 3000));
-      const again = await probeModel(client, id);
+      const again = await one();
+      if (again.sessionId && agentClient) {
+        try { await agentClient.deleteSession(again.sessionId); } catch { /* swept later */ }
+        await new Promise((res) => setTimeout(res, 1500));
+      }
       if (again.ok !== null) r = again;
     }
 
