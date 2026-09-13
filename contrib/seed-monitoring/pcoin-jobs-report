@@ -28,6 +28,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -461,20 +462,50 @@ def main():
     if not url or not token:
         sys.exit("JOBS_REPORT_URL or JOBS_REPORT_TOKEN is not set -- nothing to report to.")
 
-    req = urllib.request.Request(
-        url, data=json.dumps(payload).encode(),
-        headers={"content-type": "application/json", "authorization": "Bearer " + token},
-        method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            print(f"  {host}: {r.read().decode().strip()}")
-    except urllib.error.HTTPError as e:
-        # A 404 here is the panel refusing the token, not a missing route: the
-        # ingest endpoint answers 404 for a bad token on purpose.
-        sys.exit(f"  POST failed: HTTP {e.code} ({'bad token?' if e.code == 404 else e.reason})")
-    except Exception as e:
-        sys.exit(f"  POST failed: {e}")
-    return 0
+    # RETRY TRANSIENT FAILURES; NEVER RETRY A REFUSAL.
+    #
+    # The panel is reached through Cloudflare, and on 2026-09-13 the origin was
+    # restarted eleven times in one day by another project's watchdog on the
+    # same box. Each restart is a handful of seconds of connection-refused,
+    # which Cloudflare renders as HTTP 521. One of those windows caught this
+    # POST, the unit exited 1, and its OnFailure handler paged the owner about
+    # an outage that was over before the message arrived.
+    #
+    # An inventory POST is idempotent -- it REPLACES this host's rows -- so
+    # retrying is free and correct. The split is what matters:
+    #   * a 404 is the panel refusing the TOKEN. It is a decision, not a blip;
+    #     retrying it only delays an alert that is telling the truth.
+    #   * 5xx (Cloudflare's 520-527 included), a timeout and a refused socket
+    #     are all "ask again in a moment".
+    # And a retry that SUCCEEDS still prints why it had to -- a silently
+    # absorbed transient is how a slowly-dying origin stays invisible.
+    attempts = [0, 5, 15, 30]          # ~50s of cover for a ~10s restart window
+    last = ""
+    for i, delay in enumerate(attempts):
+        if delay:
+            time.sleep(delay)
+        req = urllib.request.Request(
+            url, data=json.dumps(payload).encode(),
+            headers={"content-type": "application/json",
+                     "authorization": "Bearer " + token},
+            method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                if i:
+                    print(f"  (recovered after {i} retry(s): {last})", file=sys.stderr)
+                print(f"  {host}: {r.read().decode().strip()}")
+                return 0
+        except urllib.error.HTTPError as e:
+            last = f"HTTP {e.code} ({'bad token?' if e.code == 404 else e.reason})"
+            if e.code < 500:
+                # A refusal. Fail now and let the alert say so.
+                sys.exit(f"  POST failed: {last}")
+        except Exception as e:
+            last = str(e)
+        if i < len(attempts) - 1:
+            print(f"  transient: {last} -- retrying in {attempts[i + 1]}s",
+                  file=sys.stderr)
+    sys.exit(f"  POST failed after {len(attempts)} attempts: {last}")
 
 
 if __name__ == "__main__":

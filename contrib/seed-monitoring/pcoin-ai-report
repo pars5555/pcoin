@@ -25,6 +25,7 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.request
 
 CONF = os.environ.get("JOBS_REPORT_CONF", "/etc/pcoin/jobs-report.conf")
@@ -200,15 +201,45 @@ def main():
         print("no AI agents on this host; nothing sent")
         return 0
 
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode(),
-        headers={"content-type": "application/json", "authorization": "Bearer " + token},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=30) as r:
-        print("%s: %s" % (r.status, r.read().decode().strip()))
-    return 0
+    # Same retry as pcoin-jobs-report, and for the same measured reason: the
+    # panel sits behind Cloudflare, and on 2026-09-13 another project's
+    # watchdog restarted the origin ELEVEN times in one day. Each restart is a
+    # few seconds of connection-refused, which arrives here as HTTP 521. This
+    # call was completely unguarded -- any blip raised a traceback, the unit
+    # exited non-zero, and OnFailure paged the owner about an outage that had
+    # already ended.
+    #
+    # Retry the transient, never the refusal: a 404 is the panel rejecting the
+    # token, which is a decision that deserves an alert immediately.
+    attempts = [0, 5, 15, 30]
+    last = ""
+    for i, delay in enumerate(attempts):
+        if delay:
+            time.sleep(delay)
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode(),
+            headers={"content-type": "application/json",
+                     "authorization": "Bearer " + token},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                if i:
+                    print("  (recovered after %d retry(s): %s)" % (i, last),
+                          file=sys.stderr)
+                print("%s: %s" % (r.status, r.read().decode().strip()))
+                return 0
+        except urllib.error.HTTPError as e:
+            last = "HTTP %s (%s)" % (e.code, "bad token?" if e.code == 404 else e.reason)
+            if e.code < 500:
+                sys.exit("  POST failed: " + last)
+        except Exception as e:
+            last = str(e)
+        if i < len(attempts) - 1:
+            print("  transient: %s -- retrying in %ds" % (last, attempts[i + 1]),
+                  file=sys.stderr)
+    sys.exit("  POST failed after %d attempts: %s" % (len(attempts), last))
 
 
 if __name__ == "__main__":
