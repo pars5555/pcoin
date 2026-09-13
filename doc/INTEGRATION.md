@@ -83,7 +83,11 @@ use SLIP-44's universal coin type 1.
 
 ```bash
 # Linux — the archive unpacks to pcoin-<ver>/ with the binaries at its top level
-curl -fLO https://github.com/pars5555/pcoin/releases/download/v1.3.0/pcoin-linux-x86_64-miner.tar.gz
+# v1.4.4 is the release pc.am/dl/SHA256SUMS.txt currently covers for this file.
+# Keep the two in step: the verify step below checks against that list, so a
+# tag here that the list does not cover produces a checksum MISMATCH, which is
+# indistinguishable from a tampered download.
+curl -fLO https://github.com/pars5555/pcoin/releases/download/v1.4.4/pcoin-linux-x86_64-miner.tar.gz
 tar xzf pcoin-linux-x86_64-miner.tar.gz && cd pcoin-*/
 ./bitcoind -datadir=/var/lib/pcoin -daemon
 ./bitcoin-cli -datadir=/var/lib/pcoin getblockchaininfo
@@ -110,7 +114,16 @@ fallbackfee=0.00001
 changetype=bech32
 ```
 
-Verify your download first — checksums at <https://pc.am/dl/SHA256SUMS.txt>.
+Verify your download **before running it** — checksums at
+<https://pc.am/dl/SHA256SUMS.txt>:
+
+```bash
+curl -fLO https://pc.am/dl/SHA256SUMS.txt
+sha256sum -c SHA256SUMS.txt --ignore-missing    # must print: OK
+```
+
+That list is pinned per release tag and the comment above each checksum says
+which tag it came from, so verify against the tag you actually downloaded.
 
 **Resource note.** The whole chain is still tiny (tens of MB — `size_on_disk` in
 `getblockchaininfo` is the real figure; `du` on `blocks/` overstates it because Core

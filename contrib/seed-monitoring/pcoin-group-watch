@@ -39,6 +39,12 @@ CONF = os.environ.get("PCOIN_ALERT_CONF", "/etc/pcoin/alert.conf")
 STATE = os.environ.get("GROUP_WATCH_STATE", "/var/lib/pcoin-group-watch/state.json")
 GROUP_ID = int(os.environ.get("GROUP_CHAT_ID", "-1003975107618"))
 LOG = os.environ.get("GROUP_WATCH_LOG", "/var/log/pcoin-group-watch.log")
+# Every group message, one JSON object per line, for pcoin-group-answer to read.
+# It exists because getUpdates is EXCLUSIVE: anything else that wants to see the
+# group must read what this poller already fetched, not poll it again. Two
+# pollers were live on two hosts until 2026-09-13 and each saw half the room.
+SPOOL = os.environ.get("GROUP_SPOOL", "/var/lib/pcoin-group-watch/spool.jsonl")
+SPOOL_MAX_BYTES = 2_000_000
 
 # Words that turn a relay into something worth waking up for. Deliberately about
 # a person being STUCK, not about sentiment -- "this is great" needs no operator.
@@ -239,11 +245,39 @@ def main():
 
         try:
             with open(LOG, "a", encoding="utf-8") as fh:
-                fh.write("%s\t%s\t%s\n" % (
+                fh.write("%s\t%s\t%s\t%s\n" % (
                     time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(msg.get("date", time.time()))),
-                    who(msg), text.replace("\n", " ")[:600]))
+                    who(msg), text.replace("\n", " ")[:600], msg.get("message_id", 0)))
         except OSError as e:
             print("  log write failed: %s" % e, file=sys.stderr)
+
+        # Wrapped like the log write above, and for the same reason: the relay is
+        # the load-bearing path and must survive anything that goes wrong here.
+        if not DRY:
+            try:
+                os.makedirs(os.path.dirname(SPOOL), exist_ok=True)
+                with open(SPOOL, "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps({
+                        "update_id": uid,
+                        "message_id": msg.get("message_id"),
+                        "date": msg.get("date", int(time.time())),
+                        "from": who(msg),
+                        "from_id": (msg.get("from") or {}).get("id"),
+                        "text": msg.get("text") or "",
+                        "described": text,
+                        "urgent": urgent,
+                    }, ensure_ascii=False) + "\n")
+                # Trim by SIZE, not on every run: rewriting the file each minute to
+                # keep it tidy costs more than the file ever will.
+                if os.path.getsize(SPOOL) > SPOOL_MAX_BYTES:
+                    with open(SPOOL, encoding="utf-8") as fh:
+                        keep = fh.readlines()[-1000:]
+                    tmp = SPOOL + ".tmp"
+                    with open(tmp, "w", encoding="utf-8") as fh:
+                        fh.writelines(keep)
+                    os.replace(tmp, SPOOL)
+            except OSError as e:
+                print("  spool write failed: %s" % e, file=sys.stderr)
 
         if not send(token, alert_to, body):
             # Stop here. Everything before this update was delivered; everything
