@@ -967,10 +967,14 @@ namespace PCoinTray
                 _reviveBusy = true;
                 Cli("stopmining");
                 Cli("stop");
+                // OURS, not any bitcoind. Watching for every bitcoind to
+                // disappear means this loop can never break on a PC that also
+                // runs PCoinWallet -- it would burn the full 120 seconds on
+                // every stall restart, waiting for a node that was never going
+                // to stop because it is not ours and we never asked it to.
                 for (int i = 0; i < 120; i++)
                 {
-                    try { if (Process.GetProcessesByName("bitcoind").Length == 0) break; }
-                    catch { }
+                    if (!NodeOwnsOurDatadir()) break;
                     Thread.Sleep(1000);
                 }
                 _nodeUp = false;
@@ -1857,6 +1861,72 @@ namespace PCoinTray
             return _fastModeOption;
         }
 
+        /*
+         * Is a node already using OUR data directory?
+         *
+         * This replaces `Process.GetProcessesByName("bitcoind").Length > 0`,
+         * which matched ANY bitcoind on the machine -- including PCoinWallet's,
+         * which runs on its own datadir and its own port 9543. On a PC where
+         * the wallet started first, that made EnsureNode wait five minutes for
+         * an answer on 9443 the wallet's node could never give, then return
+         * without ever spawning. The miner did not mine at all, permanently,
+         * and ReviveNode could not recover it because it asked the same
+         * question. Miner-first was harmless; wallet-first was fatal. Which app
+         * the user happened to open first decided whether mining worked.
+         *
+         * The danger the old check guarded is real and is kept: two bitcoinds
+         * on ONE data directory corrupt it, and Core answers no RPC while it
+         * loads, so spawning a second during a slow start can cost a wallet.
+         * That hazard is datadir-shaped, not machine-shaped, so this asks about
+         * the data directory instead -- the same question Core itself asks.
+         */
+        bool NodeOwnsOurDatadir()
+        {
+            string dd = string.IsNullOrEmpty(_datadir) ? RpcClient.DefaultDataDir() : _datadir;
+
+            // 1. The lock Core holds while it owns a datadir. On Windows an
+            //    open with FileShare.None fails while any process holds it.
+            try
+            {
+                string lk = Path.Combine(dd, ".lock");
+                if (File.Exists(lk))
+                {
+                    try
+                    {
+                        using (new FileStream(lk, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                        {
+                        }
+                    }
+                    catch (IOException)
+                    {
+                        return true;            // somebody is holding it
+                    }
+                }
+            }
+            catch { }
+
+            // 2. A bitcoind running from OUR directory. Catches the case where
+            //    the lock could not be read, and cannot be fooled by another
+            //    install because it compares the whole path.
+            try
+            {
+                string mine = Path.Combine(_dir, "bitcoind.exe");
+                foreach (var p in Process.GetProcessesByName("bitcoind"))
+                {
+                    try
+                    {
+                        if (string.Equals(p.MainModule.FileName, mine,
+                                          StringComparison.OrdinalIgnoreCase))
+                            return true;
+                    }
+                    catch { }   // another user's process: not ours to judge
+                }
+            }
+            catch { }
+
+            return false;
+        }
+
         void EnsureNode()
         {
             _nodeFail = NodeStartFail.None;
@@ -1870,16 +1940,13 @@ namespace PCoinTray
             // the data directory lock) and would mark this app as the node's
             // owner, so it would try to shut down a node it never started.
             // Wait for the one that is already there instead.
-            bool already;
-            try { already = Process.GetProcessesByName("bitcoind").Length > 0; }
-            catch { already = false; }
+            bool already = NodeOwnsOurDatadir();
             if (already)
             {
                 for (int i = 0; i < 300; i++)
                 {
                     if (Cli("getblockcount") != null) { _nodeUp = true; return; }
-                    try { if (Process.GetProcessesByName("bitcoind").Length == 0) break; }
-                    catch { break; }
+                    if (!NodeOwnsOurDatadir()) break;
                     Thread.Sleep(1000);
                 }
                 // A node that was already here and never answered says NOTHING
@@ -2861,9 +2928,14 @@ namespace PCoinTray
             if (!File.Exists(exe))
                 return "bitcoind.exe is missing from " + _dir + ". Reinstall PCoin.";
 
-            bool processAlive;
-            try { processAlive = Process.GetProcessesByName("bitcoind").Length > 0; }
-            catch { processAlive = false; }
+            // OUR node, not any bitcoind. This whole function exists because
+            // "a blocked port, a missing binary, a wrong data directory and a
+            // crashed process all looked identical" -- and asking about every
+            // bitcoind on the machine put it straight back there: on a PC that
+            // also runs PCoinWallet this was ALWAYS true, so the diagnosis
+            // confidently named the wrong cause. A wrong diagnosis is worse
+            // than none; it sends the reader somewhere else entirely.
+            bool processAlive = NodeOwnsOurDatadir();
 
             string datadir = string.IsNullOrEmpty(_datadir) ? RpcClient.DefaultDataDir() : _datadir;
             if (!Directory.Exists(datadir))
@@ -3248,11 +3320,13 @@ namespace PCoinTray
             if (--_reviveCooldown > 0) return;
             _reviveCooldown = 30;
 
-            // Only start one if there really is no process. A node that is
-            // alive but slow to answer must be waited for, never duplicated:
-            // two bitcoind instances on one data directory corrupt it.
-            try { if (Process.GetProcessesByName("bitcoind").Length > 0) return; }
-            catch { return; }
+            // Only start one if nothing is using OUR data directory. A node
+            // that is alive but slow to answer must be waited for, never
+            // duplicated: two bitcoind instances on one data directory corrupt
+            // it. It must be OUR datadir, though -- asking whether any bitcoind
+            // exists made this return immediately on every PC that also runs
+            // PCoinWallet, so nothing ever revived the miner there.
+            if (NodeOwnsOurDatadir()) return;
 
             _reviveBusy = true;
             var t = new Thread(() =>
@@ -3349,9 +3423,11 @@ namespace PCoinTray
                     // EnsureNode already has to wait minutes for.
                     Cli("stopmining");
                     Cli("stop");
+                    // Same correction as RestartNodeForStall: wait for OUR
+                    // node to go, not for every bitcoind on the machine.
                     for (int i = 0; i < 120; i++)
                     {
-                        if (Process.GetProcessesByName("bitcoind").Length == 0) break;
+                        if (!NodeOwnsOurDatadir()) break;
                         Thread.Sleep(1000);
                     }
                     _nodeUp = false;
