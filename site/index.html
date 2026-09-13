@@ -662,11 +662,14 @@
         </p>
         <pre style="margin:10px 0 0;padding:12px 14px;overflow-x:auto;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid var(--line-soft)"><code>stratum  198.244.169.49:3333      RandomX, PPLNS, no registration
 fee      1% for the first 15 days, then 2%
-stats    http://198.244.169.49/api/pools/pcoin</code></pre>
+stats    not answering today &mdash; the stratum works, the web stats do not</code></pre>
         <p style="margin:10px 0 0">
-          <b>We do not run it and we cannot vouch for it.</b> We have checked that it accepts
-          connections from outside and reports live statistics, and that is the whole of what
-          we know. It is a bare IP without TLS today. Mine there with the same judgement you
+          <b>We do not run it and we cannot vouch for it.</b> We have checked, today, that its
+          stratum accepts a login from outside, answers with the <code>rx/pcoin</code>
+          algorithm, and hands out work for the height above our own tip &mdash; so it is
+          building on this chain and is current. Its web stats page does <b>not</b> answer:
+          every path on port 80 returns 404. We are saying so rather than quietly dropping
+          the link, because a pool you cannot see the statistics of is a real thing to weigh. It is a bare IP without TLS today. Mine there with the same judgement you
           would apply to any pool holding your shares before it pays them.
         </p>
         <p style="margin:10px 0 0">
