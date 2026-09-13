@@ -128,10 +128,36 @@ Pull the five txids from the finished swap's events — `TakerFeeSent`,
 here are ours, so the resulting number means nothing about what PCN is worth, and
 nothing on pc.am may ever quote it. The first real price comes from a stranger.
 
-### The two wallets still hold money
+### The two wallets are now EMPTY -- swept 2026-09-13
 
-The swap is done and its five txids are recorded, but both wallets were funded
-and only part of it moved. Read live rather than trusting this paragraph:
+~~The swap is done and its five txids are recorded, but both wallets were funded
+and only part of it moved.~~ **Both were swept to the owner's treasury on
+2026-09-13, on his instruction**, because the paragraph below named the risk and
+sweeping is one of the two answers it allowed:
+
+| from | amount | fee | txid |
+|---|---|---|---|
+| taker `PRGuUXFz…twy6q6` | 99.99993150 PCN | 0.0000189 | `d364b647924a5d723c4c6df8c54c89f3e780d48b1a566931e0b8a7892128f1b1` |
+| maker `PNX1j3p4…f13tx` | 399.99986570 PCN | 0.0000337 | `6c2b6d36f06367dc9e6b6bf3b9341510aa712b49e2cdb56f2ac71b09e41af931` |
+
+Both paid `pc1qlvw6kx8wkcz8f6p0d6kswv69fjt33ll079f64e`, 499.99979720 PCN in
+total. **Neither transaction has a change output**, so nothing was left behind.
+
+The safety step worth copying: KDF's `withdraw` signs but does NOT broadcast, so
+each transaction was built first, decoded by a **PCoin node** (`bitcoin-cli
+decoderawtransaction`) to confirm the output script really paid the intended
+address, and only then handed to `send_raw_transaction`. KDF's own `to` field
+was never the evidence -- the destination was read back off the signed bytes by
+something that had no stake in the answer.
+
+**This does not affect the listing.** Komodo's requirement is *one completed
+atomic swap*, which is done and whose five txids are already in
+`swaps/PCN-DOGE.md` and in PR #1964. If a future swap is ever needed, refund
+either wallet -- the passphrases still exist (see the warning below, which is
+now the ONLY reason that file still matters).
+
+The original reasoning, kept because the passphrase risk it describes is
+unchanged:
 
 ```sh
 /opt/kdf/rpc maker '{"method":"my_balance","coin":"PCN"}'
