@@ -131,7 +131,11 @@ namespace PCoinTray
         public long Height;
         public long Headers;
         public long BlocksFound;
-        public double Progress = 1.0;   // verificationprogress, 0..1
+        // verificationprogress, 0..1. DO NOT SHOW THIS TO ANYBODY: PCoin
+        // ships chainTxData zeroed, so Core cannot estimate progress and
+        // returns 1.0 from the very first block. It read 1.0 at height 32
+        // of 7,806. Use Height/Headers for anything a user sees.
+        public double Progress = 1.0;
         public bool Syncing;
         public double Difficulty;
         public double NetworkHashps;    // whole-network H/s, fallback input for the advice
@@ -1205,12 +1209,26 @@ namespace PCoinTray
             {
                 _syncCard.Visibility = Visibility.Visible;
                 long behind = Math.Max(0, s.Headers - s.Height);
+
+                // Height over headers, NEVER verificationprogress. Core returns
+                // 1.0 for that on this chain from the first block onward, so
+                // this card used to draw a full bar beside the words "7,774
+                // blocks to go (100.0%)" -- a contradiction in one sentence that
+                // reads as broken software rather than as a busy one. The
+                // mining gate has always used headers-minus-blocks for exactly
+                // this reason (PCoinTray.cs:714-722); this is the same signal,
+                // finally shown to the person waiting on it.
+                double frac = s.Headers > 0
+                    ? Math.Max(0.0, Math.Min(1.0, (double)s.Height / (double)s.Headers))
+                    : 0.0;
+
                 _syncLine.Text = behind > 0
                     ? string.Format(CultureInfo.InvariantCulture,
-                        "Catching up with the network - {0:#,##0} blocks to go ({1:0.0}%). Rewards found before this finishes may not survive.",
-                        behind, s.Progress * 100.0)
+                        "Catching up with the network - block {0:#,##0} of {1:#,##0}, {2:#,##0} to go ({3:0.0}%). "
+                        + "This is normal on a new install and can take a while. Mining starts by itself when it finishes.",
+                        s.Height, s.Headers, behind, frac * 100.0)
                     : "Catching up with the network.";
-                _syncBar.Value = Math.Max(0, Math.Min(1, s.Progress));
+                _syncBar.Value = frac;
             }
             else
             {
