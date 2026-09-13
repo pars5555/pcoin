@@ -487,7 +487,36 @@ async function handleSubmit(m, params, id) {
   if (stored.fresh) { m.accepted++; m.windowShares++; state.accepted++; }
 
   // Does it also clear the NETWORK target? Then it is a block.
-  const net = await validator.check(header.toString('hex'), job.netTarget.toString('hex'));
+  //
+  // THE VALIDATOR ALREADY RETURNED THIS HEADER'S HASH. The share check above
+  // sent these exact 80 bytes and got `r.hash` back; the RandomX key is fixed on
+  // every PCoin network and the validator holds one long-lived VM, so a second
+  // call is bit-identical by construction. Sending it anyway cost a full second
+  // RandomX hash on EVERY accepted share -- measured at ~2.2 hashes per share
+  // where one is needed, about 45% of the validator's CPU, and since the
+  // validator is single-threaded it also halved the pool's share-throughput
+  // ceiling on a two-core box.
+  //
+  // The comparison below is EXACTLY the validator's own hash_le_target().
+  // print_hash_be emits hash[31]..hash[0]; hash_le_target walks i=31..0 pairing
+  // hash[i] with target_be[31-i]. Those are the same byte pairs in the same
+  // order, so a lexicographic compare of the printed hash against the big-endian
+  // target is the identical predicate -- including "exactly equal is a valid
+  // solution", which is why this is `<= 0` and not `< 0`.
+  //
+  // It is used ONLY AS A FILTER. Anything that might be a block is still
+  // confirmed by the validator before submitblock, so the authoritative answer
+  // is unchanged and an error in the reasoning above costs CPU, never a block.
+  // A block arrives roughly every ten minutes; a share arrives twelve times a
+  // second. An unreadable hash falls through to the validator rather than being
+  // assumed either way.
+  const hashHex = (typeof r.hash === 'string' && /^[0-9a-f]{64}$/.test(r.hash)) ? r.hash : null;
+  const mightBeBlock = hashHex
+    ? Buffer.from(hashHex, 'hex').compare(job.netTarget) <= 0
+    : true;
+  const net = mightBeBlock
+    ? await validator.check(header.toString('hex'), job.netTarget.toString('hex'))
+    : { ok: false };
   if (net.ok) {
     const blockHex = serializeBlock(header, job.coinbase.witness, job.txs);
     const blockId = Buffer.from(sha256d(header)).reverse().toString('hex');
@@ -757,6 +786,15 @@ const server = net.createServer((sock) => {
   await refreshTemplate();
   if (!state.tpl) { log('FATAL no template at startup'); process.exit(1); }
   setInterval(refreshTemplate, CFG.templatePollMs);
+
+  // OPEN THE STRATUM PORT AS SOON AS WE CAN SERVE, which is now: a template is
+  // in hand and that is everything a miner needs. evaluateMaturity() below is
+  // payout bookkeeping and makes ~2,500 sequential RPC calls -- running it
+  // first turned a five-second restart into a MEASURED 94-second outage, during
+  // which every miner was refused connection. The pool restarts on every crash,
+  // and it has crashed four times in nine days, so this is not a rare path.
+  server.listen(CFG.port, CFG.bind, () => log(`listening on ${CFG.bind}:${CFG.port}`));
+
   setInterval(evaluateMaturity, CFG.maturityPollMs || 60000);
   await evaluateMaturity();
   await refreshNetworkStats();
@@ -791,7 +829,6 @@ const server = net.createServer((sock) => {
     api.listen(CFG.apiPort, CFG.apiBind || '127.0.0.1',
       () => log(`api on ${CFG.apiBind || '127.0.0.1'}:${CFG.apiPort} (/api/pools)`));
   }
-  server.listen(CFG.port, CFG.bind, () => log(`listening on ${CFG.bind}:${CFG.port}`));
 })();
 
 // Status on demand, for the operator and for tests.

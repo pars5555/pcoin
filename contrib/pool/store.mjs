@@ -222,6 +222,26 @@ class Sqlite {
       }
     });
     this.p.stderr.on('data', (d) => { this.errBuf += d.toString(); });
+
+    // A WRITE TO A DEAD PIPE MUST NOT KILL THE POOL. run() writes SQL to this
+    // child's stdin; if sqlite3 has died, that write raises EPIPE as a stream
+    // 'error' event, and an unhandled 'error' on a stream is an uncaught
+    // exception -- pool.mjs installs no process-level handler, so the whole pool
+    // dies with it, mid-share, for a child process that is supposed to be
+    // recoverable. pool.mjs:90 already does exactly this for the bitcoin-cli
+    // child; the store was simply missed.
+    //
+    // Swallowing it is correct rather than lazy: the 'exit' handler below is
+    // what actually resolves the situation -- it marks the store dead, rejects
+    // every queued request so no caller hangs, and calls onFatal. Refusing to
+    // acknowledge a share the pool cannot store is the intended behaviour and it
+    // already exists. This just stops the process dying before it can happen.
+    this.p.stdin.on('error', () => { /* handled by the exit handler below */ });
+    this.p.on('error', (e) => {
+      this.alive = false;
+      if (this.onFatal) this.onFatal(e);
+    });
+
     this.p.on('exit', (code) => {
       this.alive = false;
       const e = new Error(`sqlite3 exited (${code})`);
