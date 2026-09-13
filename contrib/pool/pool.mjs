@@ -99,6 +99,18 @@ class Validator {
   constructor(bin) {
     this.p = spawn(bin, ['--serve'], { stdio: ['pipe', 'pipe', 'pipe'] });
     this.q = [];
+    // THE QUEUE WAS THE LEAK: unbounded, no timeout, no backpressure. A queued
+    // check pins the whole handleSubmit frame behind it -- the job, its coinbase,
+    // its payout set, two headers and their hex, about 1.2 kB a share, all of it
+    // reachable. One RandomX hash is ~22 ms, so this child verifies ~46 shares/s
+    // with a whole core and fewer when it does not have one; everything offered
+    // above that rate was accepted into memory and never refused.
+    //
+    // 2000 is about 45 seconds of work at full speed: long enough to ride out a
+    // template refresh or an overlapping maturity pass, far too short to reach
+    // the 768 MB heap cap.
+    this.maxQueue = 2000;
+    this.shed = 0;              // lifetime shares refused for backlog
     this.alive = true;
     let buf = '';
     this.p.stdout.on('data', (d) => {
@@ -122,8 +134,22 @@ class Validator {
       this.p.stderr.on('data', (d) => { if (d.toString().includes('ready')) res(); });
     });
   }
-  check(headerHex, targetHex) {
+  // `force` exists for ONE caller: the block-confirmation check below. That call
+  // is the authoritative "is this a block", it runs about once every ten minutes,
+  // and its caller tests only `net.ok` -- so a shed answer there would read as
+  // "not a block" and a found block would be dropped silently, with no log and no
+  // retry, at exactly the moment the pool is overloaded. Never shed it.
+  check(headerHex, targetHex, force = false) {
     if (!this.alive) return Promise.resolve({ ok: false, dead: true });
+    // SHED, DO NOT BUFFER. A share the validator cannot reach for 45 s is a share
+    // whose job is stale anyway, so queueing it helps nobody and costs memory
+    // until it is finally hashed. Refusing resolves NOTHING about the share --
+    // neither accepted nor rejected -- and the caller says exactly that, so an
+    // honest retry can land.
+    if (!force && this.q.length >= this.maxQueue) {
+      this.shed++;
+      return Promise.resolve({ ok: false, busy: true });
+    }
     return new Promise((res) => {
       this.q.push((line) => {
         const [verdict, hash] = line.split(' ');
@@ -353,6 +379,17 @@ function retune(m) {
   //
   // So an empty window eases by the maximum step. rate is unknown, not zero;
   // what is known is that it is below target, and which way to move.
+  // ZERO ACCEPTED IS NOT ZERO OFFERED. If the miner sent work and none of it came
+  // back accepted, the difficulty is not too hard -- the pool could not verify or
+  // record it (backlog, a shed share, a store that timed out), or the miner is
+  // sending work that does not hash. Easing is the one move that must not happen
+  // then, because it multiplies the load that caused it. Hold, and let the next
+  // window decide. A genuinely-too-slow miner still offers nothing, still falls
+  // through to the 4x ease below, and that case is untouched.
+  if (rate === 0 && m.windowOffered > 0) {
+    m.windowStart = now; m.windowShares = 0; m.windowOffered = 0;
+    return;
+  }
   if (rate === 0) {
     const chainCap = state.netTarget ? maxFactorForWeight(state.netTarget) : CFG.vardiff.maxFactor;
     const next = Math.min(CFG.vardiff.maxFactor, chainCap, m.diffFactor * 4);
@@ -362,7 +399,7 @@ function retune(m) {
       const j = makeJob(m);
       if (j) send(m.sock, { jsonrpc: '2.0', method: 'job', params: j });
     }
-    m.windowStart = now; m.windowShares = 0;
+    m.windowStart = now; m.windowShares = 0; m.windowOffered = 0;
     return;
   }
 
@@ -391,7 +428,7 @@ function retune(m) {
       if (j) send(m.sock, { jsonrpc: '2.0', method: 'job', params: j });
     }
   }
-  m.windowStart = now; m.windowShares = 0;
+  m.windowStart = now; m.windowShares = 0; m.windowOffered = 0;
 }
 
 // ── share handling ──────────────────────────────────────────────────────────
@@ -408,6 +445,13 @@ async function handleSubmit(m, params, id) {
   // index in the store is what actually makes it true across a restart.
   if (job.seen.has(nonce)) return { error: { code: -1, message: 'duplicate share' } };
   job.seen.add(nonce);
+  // OFFERED, not accepted. vardiff reads m.windowShares, which is incremented
+  // only after the validator AND the store have both said yes. So when the pool
+  // fell behind, every miner looked like it had found nothing and was eased 4x a
+  // minute -- which made each of them submit ~4x more work into the queue that
+  // was already the bottleneck. That is the positive feedback that took the heap
+  // from ~100 MB to 765 MB in twenty minutes on 2026-09-13.
+  m.windowOffered++;
 
   // THE NONCE HEX MEANS TWO DIFFERENT THINGS DEPENDING ON WHO IS MINING.
   //
@@ -453,6 +497,11 @@ async function handleSubmit(m, params, id) {
     cand.bytes.copy(h, 76);
     r = await validator.check(h.toString('hex'), job.target.toString('hex'));
     if (r.dead) { job.seen.delete(nonce); return { error: { code: -1, message: 'pool validator unavailable' } }; }
+    // The nonce comes back OUT of the seen-set, same reasoning as the store
+    // failure path below: a retry must not then be refused as a duplicate.
+    // Deliberately does not touch m.rejected -- that counter is the miner's
+    // honesty record and this is the pool's fault, not theirs.
+    if (r.busy) { job.seen.delete(nonce); return { error: { code: -1, message: 'pool is behind; retry this share' } }; }
     if (r.err) return { error: { code: -1, message: 'malformed share' } };
     if (r.ok) { header = h; order = cand.name; break; }
   }
@@ -515,7 +564,7 @@ async function handleSubmit(m, params, id) {
     ? Buffer.from(hashHex, 'hex').compare(job.netTarget) <= 0
     : true;
   const net = mightBeBlock
-    ? await validator.check(header.toString('hex'), job.netTarget.toString('hex'))
+    ? await validator.check(header.toString('hex'), job.netTarget.toString('hex'), true)
     : { ok: false };
   if (net.ok) {
     const blockHex = serializeBlock(header, job.coinbase.witness, job.txs);
@@ -734,7 +783,7 @@ const server = net.createServer((sock) => {
           jobCounter: 0,
           diffFactor: CFG.vardiff.startFactor,
           accepted: 0, rejected: 0,
-          windowStart: Date.now(), windowShares: 0,
+          windowStart: Date.now(), windowShares: 0, windowOffered: 0,
         };
         state.miners.set(miner.id, miner);
         log(`login ${login} from ${sock.remoteAddress} (session ${miner.id})`);
@@ -833,8 +882,15 @@ const server = net.createServer((sock) => {
 
 // Status on demand, for the operator and for tests.
 process.on('SIGUSR2', async () => {
+  // Snapshot BEFORE awaiting the store. Under the exact backlog these numbers
+  // exist to expose, store.stats() can take its full 15 s timeout, and a queue
+  // depth read after that is not the depth that mattered.
+  const mu = process.memoryUsage();
+  const q = `miners=${state.miners.size} vq=${validator.q.length} `
+    + `shed=${validator.shed} `
+    + `rss=${Math.round(mu.rss / 1048576)}MB heap=${Math.round(mu.heapUsed / 1048576)}MB`;
   const s = await store.stats().catch(() => null);
-  if (!s) { log(`miners=${state.miners.size} store=UNREADABLE`); return; }
-  log(`miners=${state.miners.size} shares=${s.shares} blocks=${s.blocks} `
+  if (!s) { log(`${q} store=UNREADABLE`); return; }
+  log(`${q} shares=${s.shares} blocks=${s.blocks} `
     + `(pending ${s.pending}, mature ${s.mature}, orphaned ${s.orphaned}) computed=${pcn(s.computed)} PCN, sent 0`);
 });
