@@ -1832,7 +1832,7 @@ namespace PCoinTray
             if (_fastModeOption != OptionSupport.Unknown) return _fastModeOption;
             try
             {
-                var psi = new ProcessStartInfo(Path.Combine(_dir, "bitcoind.exe"), "-help")
+                var psi = new ProcessStartInfo(NodeExe(), "-help")
                 {
                     UseShellExecute = false,
                     CreateNoWindow = true,
@@ -1880,6 +1880,38 @@ namespace PCoinTray
          * That hazard is datadir-shaped, not machine-shaped, so this asks about
          * the data directory instead -- the same question Core itself asks.
          */
+        /*
+         * Where bitcoind.exe actually is.
+         *
+         * The published miner zip unpacks as
+         *     pcoin-1.4.28/PCoinTray.exe
+         *     pcoin-1.4.28/bin/bitcoind.exe
+         * and every lookup in this file used to be Path.Combine(_dir,
+         * "bitcoind.exe") -- next to the tray and nowhere else. So anybody who
+         * unzipped the release and ran PCoinTray.exe got a tray that could not
+         * find its node, and the only way to make it work was to copy the
+         * contents of bin\ up a level by hand.
+         *
+         * Reported in the group on 2026-09-13: "the files in bin folder, always
+         * has to copy and paste where miner exe is. Or it doesn't work." Exactly
+         * right, and reproducible straight from the published artifact.
+         *
+         * install.ps1 flattens the two together, which is why this was invisible
+         * to anyone who used the installer -- and why the zip, which the site
+         * also offers, was broken on its own terms.
+         *
+         * PCoinWallet.FindNodeExe has had this fallback all along. Same layout,
+         * same zip shape, same fix.
+         */
+        string NodeExe()
+        {
+            string a = Path.Combine(_dir, "bitcoind.exe");
+            if (File.Exists(a)) return a;
+            string b = Path.Combine(Path.Combine(_dir, "bin"), "bitcoind.exe");
+            if (File.Exists(b)) return b;
+            return a;        // report the expected place when it is nowhere
+        }
+
         bool NodeOwnsOurDatadir()
         {
             string dd = string.IsNullOrEmpty(_datadir) ? RpcClient.DefaultDataDir() : _datadir;
@@ -1910,7 +1942,7 @@ namespace PCoinTray
             //    install because it compares the whole path.
             try
             {
-                string mine = Path.Combine(_dir, "bitcoind.exe");
+                string mine = NodeExe();
                 foreach (var p in Process.GetProcessesByName("bitcoind"))
                 {
                     try
@@ -1962,7 +1994,7 @@ namespace PCoinTray
                 // NOTE: -daemon/-daemonwait are Unix-only; on Windows bitcoind
                 // always runs in the foreground. Start it as a hidden child
                 // process instead and poll until RPC answers.
-                var psi = new ProcessStartInfo(Path.Combine(_dir, "bitcoind.exe"), NodeArgs())
+                var psi = new ProcessStartInfo(NodeExe(), NodeArgs())
                 {
                     UseShellExecute = false,
                     CreateNoWindow = true,
@@ -2924,9 +2956,12 @@ namespace PCoinTray
          */
         string DiagnoseNode()
         {
-            string exe = Path.Combine(_dir, "bitcoind.exe");
+            string exe = NodeExe();
             if (!File.Exists(exe))
-                return "bitcoind.exe is missing from " + _dir + ". Reinstall PCoin.";
+                return "bitcoind.exe was not found in " + _dir + " or in "
+                     + Path.Combine(_dir, "bin") + ". If you unzipped the release, "
+                     + "run install.ps1 from pc.am instead - it puts the files where "
+                     + "they belong.";
 
             // OUR node, not any bitcoind. This whole function exists because
             // "a blocked port, a missing binary, a wrong data directory and a
