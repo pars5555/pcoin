@@ -1,4 +1,4 @@
-﻿# PCoin Windows installer.
+# PCoin Windows installer.
 #
 # Installs the node, CLI and miner tray app, configures them, and starts the
 # tray app in the current desktop session.
