@@ -49,11 +49,39 @@ namespace PCoinTray
     {
         public const string SumsUrl = "https://pc.am/dl/SHA256SUMS.txt";
 
-        // 64 hex, whitespace, the miner zip, whitespace, "# vX.Y.Z".
-        // Anchored on the FILENAME so the wallet zip and the APKs cannot match.
-        static readonly Regex Line = new Regex(
-            @"^[0-9a-fA-F]{64}\s+pcoin-win64-miner\.zip\s+#\s*v([0-9]+(?:\.[0-9]+)*)\s*$",
-            RegexOptions.Multiline);
+        // WHAT THE PUBLISHED FILE ACTUALLY LOOKS LIKE. There is no version on
+        // the checksum line. The provenance is a comment line ABOVE it:
+        //
+        //   # from release v1.4.28
+        //   bda6979d...bde5f  pcoin-win64-miner.zip
+        //
+        // The previous regex wanted "<hash>  <file>  # vX.Y.Z" -- a shape this
+        // file has never used -- so it never matched, and the menu has read
+        // "Check for updates..." in every release since this was added.
+        //
+        // It did not merely fail, which is why the replacement is a line walk
+        // and not a cleverer regex: \s matches \n, so the old pattern crossed
+        // onto the NEXT line, matched "# v1.4.7" from the Android entry, and
+        // only failed on the em dash after it. One character of prose stood
+        // between us and reporting the Android version as the miner's.
+        //
+        // So: only "# from release vX.Y.Z" is authoritative, and only for the
+        // checksum line it precedes. The interleaved release notes carry OTHER
+        // versions as plain prose ("# v1.4.19 - Windows miner. ..." sits nine
+        // lines above the miner's own entry), and anything anchored on "the
+        // nearest # vX.Y.Z" reads that stale number instead.
+        const string MinerAsset = "pcoin-win64-miner.zip";
+
+        static readonly Regex FromRelease = new Regex(
+            @"^#\s*from\s+release\s+v?([0-9]+(?:\.[0-9]+)*)\s*$",
+            RegexOptions.IgnoreCase);
+
+        // "<64 hex>  <filename>" -- two spaces in practice, any whitespace run
+        // accepted. The trailing "# vX.Y.Z" is optional and preferred when
+        // present, so if the file ever does move the version inline this keeps
+        // working instead of needing a second emergency release.
+        static readonly Regex SumLine = new Regex(
+            @"^([0-9a-fA-F]{64})\s+(\S+)(?:\s+#\s*v?([0-9]+(?:\.[0-9]+)*))?\s*$");
 
         // Remembered between checks so the NEXT one can be conditional. This is
         // a long-lived process -- days -- so a client that has already seen the
@@ -70,7 +98,7 @@ namespace PCoinTray
         public static UpdateInfo Check()
         {
             var info = new UpdateInfo();
-            string body;
+            string body, lastMod = null;
             try
             {
                 ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
@@ -90,7 +118,14 @@ namespace PCoinTray
                 using (var sr = new StreamReader(resp.GetResponseStream()))
                 {
                     body = sr.ReadToEnd();
-                    _lastModified = resp.Headers["Last-Modified"];
+                    // Held in a LOCAL until the body has actually parsed. Committing
+                    // it here is what turned this bug into a lie: the first check
+                    // said "the list did not name a miner version", and every check
+                    // after it sent If-Modified-Since, got 304, found no remembered
+                    // version, and reported "could not reach pc.am" about a server
+                    // that had answered correctly. The conditional-GET cache and the
+                    // parsed answer must be committed together or they disagree.
+                    lastMod = resp.Headers["Last-Modified"];
                 }
             }
             catch (WebException wex)
@@ -114,18 +149,70 @@ namespace PCoinTray
                 return info;                    // Unknown, deliberately
             }
 
-            var m = Line.Match(body ?? "");
-            if (!m.Success)
+            string why;
+            string latest = ParseLatest(body, out why);
+            if (latest == null)
             {
-                info.Detail = "the published checksum list did not name a miner version";
+                info.Detail = why;
                 return info;                    // Unknown, deliberately
             }
 
-            info.Latest = m.Groups[1].Value;
+            info.Latest = latest;
             _lastSeenVersion = info.Latest;
+            _lastModified = lastMod;            // only NOW is a 304 answerable
             int cmp = Compare(info.Latest, Build.Version);
             info.State = cmp > 0 ? UpdateState.Available : UpdateState.UpToDate;
             return info;
+        }
+
+        //! Read the miner's version out of the published checksum list.
+        //! Returns null -- never a guess -- when the file does not say so, and
+        //! fills `why` with something a user can act on. UNKNOWN IS NOT
+        //! "UP TO DATE"; this is where that is enforced.
+        //!
+        //! Line by line rather than one Multiline regex, because the fact and
+        //! the entry it describes live on DIFFERENT lines, and a provenance
+        //! line belongs to the NEXT checksum entry only. Clearing `pending` at
+        //! every checksum line is the load-bearing part: without it, a miner
+        //! entry that had lost its own "# from release" would silently inherit
+        //! the Linux .deb's version from further up the file.
+        //! Blank and prose lines do NOT clear it, so a provenance line may
+        //! stand a line or two above its entry; a checksum line for any OTHER
+        //! asset does clear it, which is what stops another asset's tag leaking
+        //! onto the miner. A "*filename" binary marker would not match
+        //! MinerAsset and correctly reads as Unknown, not as a guess.
+        static string ParseLatest(string body, out string why)
+        {
+            why = "";
+            string pending = null, best = null;
+            bool sawAsset = false;
+            foreach (string raw in (body ?? "").Split('\n'))
+            {
+                string line = raw.TrimEnd('\r', ' ', '\t');
+
+                Match f = FromRelease.Match(line);
+                if (f.Success) { pending = f.Groups[1].Value; continue; }
+
+                Match s = SumLine.Match(line);
+                if (!s.Success) continue;       // preamble, prose, blank, bare "#"
+
+                if (string.Equals(s.Groups[2].Value, MinerAsset, StringComparison.OrdinalIgnoreCase))
+                {
+                    sawAsset = true;
+                    string ver = s.Groups[3].Success ? s.Groups[3].Value : pending;
+                    // Highest wins, numerically, so a leftover transition-alias
+                    // entry can never talk somebody into a downgrade.
+                    if (ver != null && (best == null || Compare(ver, best) > 0)) best = ver;
+                }
+                pending = null;                 // spent, or spent on another asset
+            }
+
+            if (best == null)
+                why = sawAsset
+                    ? "the published checksum list names " + MinerAsset +
+                      " but no release above it"
+                    : "the published checksum list does not name " + MinerAsset;
+            return best;
         }
 
         //! Numeric, component by component -- NOT string comparison, which puts
