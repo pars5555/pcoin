@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Listing PCN — information for exchanges</title>
+<meta name="description" content="Chain parameters, node setup, deposit and withdrawal rules, and the known gaps. Everything an exchange needs to review and list PCoin (PCN).">
+<meta name="theme-color" content="#0a0b10">
+<link rel="icon" href="/brand/pcoin-64.png">
+<!--
+  WHY THIS PAGE EXISTS.
+
+  docs.pc.am is a MERCHANT guide. It opens by telling integrators "Do not use
+  node RPC" and points them at the explorer API, because a shop taking payments
+  should not be running a daemon. An exchange is the exact opposite case: it
+  must run its own node, hold a wallet, and sign withdrawals. Nothing on pc.am
+  answered that reader, so every listing review began with the same questions
+  asked over email.
+
+  Two things on this page are here because they cost somebody real money or a
+  real weekend, and a reviewer who finds them himself concludes we did not know:
+    * fallbackfee. Core defaults it to 0 and PCoin has no fee history, so
+      WITHOUT IT EVERY WITHDRAWAL FAILS with "Fee estimation failed". A node
+      that syncs perfectly and takes deposits perfectly will not send a coin.
+    * ZMQ is not compiled in. Plenty of exchange backends want block
+      notifications over ZMQ. Saying so here is cheaper than a reviewer
+      discovering it on day three.
+
+  Numbers that move are LINKED, never printed. Height, supply and price are one
+  request away and a figure typed into HTML is wrong within the hour.
+-->
+<style>
+  :root{ --bg:#0a0b10; --panel:#11131d; --text:#e9ebf4; --muted:#9aa2b8;
+         --dim:#6b7288; --teal:#2dd4bf; --amber:#fbbf24; --red:#f87171;
+         --line:rgba(255,255,255,.09);
+         --mono:ui-monospace,"Cascadia Code",Menlo,Consolas,monospace; }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--bg);color:var(--text);
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+       font-size:16.5px;line-height:1.65;-webkit-font-smoothing:antialiased;padding:24px 18px 60px}
+  .wrap{max-width:860px;margin:0 auto}
+  a{color:var(--teal)}
+  .head{display:flex;align-items:center;gap:12px;margin-bottom:8px}
+  .head img{width:42px;height:42px;border-radius:10px}
+  h1{font-size:1.75rem;letter-spacing:-.015em}
+  .lede{color:var(--muted);margin-bottom:26px}
+  h2{font-size:1.12rem;margin:30px 0 10px;letter-spacing:-.01em}
+  h2 .n{color:var(--dim);font-family:var(--mono);font-size:.88rem;margin-right:7px}
+  h3{font-size:.99rem;margin:17px 0 6px;color:var(--text)}
+  p{margin-bottom:10px;color:var(--muted)}
+  p.t{color:var(--text)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+        padding:17px 19px;margin:12px 0}
+  .warn{border-color:rgba(251,191,36,.4)}
+  .warn h3{color:var(--amber)}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:.92rem}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:.78rem;text-transform:uppercase;letter-spacing:.05em}
+  td.k{color:var(--text);white-space:nowrap}
+  code,.mono{font-family:var(--mono);font-size:.88em;color:var(--teal);word-break:break-word}
+  pre{background:#070810;border:1px solid var(--line);border-radius:10px;padding:13px 15px;
+      overflow-x:auto;margin:10px 0}
+  pre code{color:var(--text);font-size:.85rem;line-height:1.55}
+  ul{margin:8px 0 10px 20px} li{margin-bottom:6px;color:var(--muted)}
+  .tw{overflow-x:auto}
+  .foot{color:var(--dim);font-size:.87rem;margin-top:34px;border-top:1px solid var(--line);padding-top:16px}
+  .pill{display:inline-block;font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;
+        padding:2px 8px;border-radius:20px;border:1px solid var(--line);color:var(--dim);margin-left:6px}
+  .no{color:var(--red);border-color:rgba(248,113,113,.4)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="head">
+    <img src="/brand/pcoin-round-128.png" alt="">
+    <h1>Listing PCN</h1>
+  </div>
+  <p class="lede">Everything needed to review, integrate and list PCoin, in one page —
+    including the two things that will otherwise cost you a day.</p>
+
+  <div class="card warn">
+    <h3>Read these two first</h3>
+    <p class="t"><b>1. Set <code>fallbackfee</code> or every withdrawal fails.</b>
+      Bitcoin Core defaults it to <code>0</code>, and PCoin has no fee-estimation
+      history to fall back on. A node that syncs and credits deposits perfectly will
+      refuse every send with <i>&quot;Fee estimation failed&quot;</i>. Put
+      <code>fallbackfee=0.00001</code> in the config before you test withdrawals.</p>
+    <p class="t"><b>2. ZMQ is not compiled into the published binaries.</b>
+      <code>getzmqnotifications</code> answers <code>-32601 Method not found</code>.
+      Poll <code>getbestblockhash</code>, or ask us and we will publish a build with
+      <code>-DWITH_ZMQ=ON</code> — it is a build flag, not a code change.</p>
+  </div>
+
+  <h2><span class="n">1</span>What PCN is</h2>
+  <p>PCoin is an <b>independent Layer&nbsp;1 blockchain</b> — its own genesis block,
+    network magic, ports, address prefixes and UTXO set. It is not a token, not an
+    ERC-20, not a sidechain, and it settles on nobody else&#39;s chain. It is a fork of
+    the <b>Bitcoin Core v29.4</b> codebase with proof-of-work replaced by
+    <b>RandomX</b> (CPU-mined, ASIC-resistant) and the difficulty algorithm replaced
+    by <b>LWMA</b>.</p>
+  <p>Practically, that means <b>your existing Bitcoin integration works</b>. The RPC
+    surface, the wallet semantics, the binaries&#39; names and the config file format are
+    upstream Core. What differs is listed below, and nothing else does.</p>
+
+  <div class="tw"><table>
+    <tr><th>Parameter</th><th>Value</th></tr>
+    <tr><td class="k">Name / ticker</td><td>PCoin / <b>PCN</b></td></tr>
+    <tr><td class="k">Codebase</td><td>Bitcoin Core v29.4 fork — <a href="https://github.com/pars5555/pcoin">github.com/pars5555/pcoin</a></td></tr>
+    <tr><td class="k">Proof of work</td><td>RandomX, key <code>PCoin/RandomX/v1</code>. <b>Block IDs are still double-SHA256</b> — only the PoW check uses RandomX</td></tr>
+    <tr><td class="k">Difficulty</td><td>LWMA, retargets <b>every block</b>, active from height 2800</td></tr>
+    <tr><td class="k">Max supply</td><td><b>21,000,000 PCN</b></td></tr>
+    <tr><td class="k">Block reward</td><td>50 PCN, halving every 210,000 blocks</td></tr>
+    <tr><td class="k">Target spacing</td><td>600 s (spacing is noisy — judge pace over 100+ blocks, never the all-time average)</td></tr>
+    <tr><td class="k">Decimals</td><td>8</td></tr>
+    <tr><td class="k">P2P port</td><td><b>9444</b></td></tr>
+    <tr><td class="k">RPC port</td><td><b>9443</b> — note this is P2P <b>minus</b> one, not plus one, because P2P+1 is bitcoind&#39;s default Tor onion listener</td></tr>
+    <tr><td class="k">Network magic</td><td><code>cf a2 d1 b8</code></td></tr>
+    <tr><td class="k">Genesis hash</td><td><code>a95d51f0cbf25cad…264a</code></td></tr>
+    <tr><td class="k">Genesis message</td><td><i>&quot;PCoin 01/Aug/2026 an independent chain is born&quot;</i></td></tr>
+    <tr><td class="k">DNS seed</td><td><code>seed.pc.am</code></td></tr>
+    <tr><td class="k">User agent</td><td><code>/PCoin:29.4.0/</code> — older peers still advertise <code>/Satoshi:29.4.0/</code>; that is not a Bitcoin node</td></tr>
+    <tr><td class="k">BIP44 coin type</td><td><code>9444&#39;</code></td></tr>
+  </table></div>
+
+  <h2><span class="n">2</span>Issuance: no premine, no ICO, no tax</h2>
+  <ul>
+    <li><b>No premine and no presale.</b> Every PCN in existence was mined, starting from the genesis block under the same rules that apply today.</li>
+    <li><b>No ICO, past or running.</b> There has never been a token generation event.</li>
+    <li><b>No transfer tax, and none is possible.</b> This is a UTXO chain running Bitcoin&#39;s consensus rules; there is no contract and no hook that could take a cut of a transfer. There is nothing to change post-listing.</li>
+    <li><b>No admin keys, no mint function, no pause.</b> Supply is fixed by consensus.</li>
+  </ul>
+  <p><a href="https://market.pc.am">market.pc.am</a> sells PCN from the project
+    treasury at a published price. Those are <b>already-mined coins being sold by a
+    holder</b>, not an issuance — no new supply is created and the 21 M cap is
+    untouched.</p>
+
+  <h2><span class="n">3</span>Running a node</h2>
+  <p>The binaries keep their upstream names — <code>bitcoind</code> and
+    <code>bitcoin-cli</code>. Only the data directory (<code>~/.pcoin</code>) and the
+    config file name (<code>pcoin.conf</code>) are renamed. If the host also runs
+    Bitcoin, <b>always pass <code>-datadir</code> explicitly.</b></p>
+  <p>Downloads and checksums: <a href="https://pc.am/download/">pc.am/download</a> ·
+    <a href="https://github.com/pars5555/pcoin/releases">GitHub releases</a></p>
+
+  <h3>Minimum config</h3>
+  <pre><code>server=1
+txindex=1              # you will want it; the node has no address index either way
+fallbackfee=0.00001    # MANDATORY -- without it every send fails
+changetype=bech32      # native SegWit change, matching the receive addresses
+rpcauth=...            # per upstream; RPC binds loopback by default</code></pre>
+
+  <div class="tw"><table>
+    <tr><th>Resource</th><th>Reality</th></tr>
+    <tr><td class="k">Chain size</td><td>Under 10&nbsp;MB. It syncs from scratch in well under an hour. <a href="https://explorer.pc.am/api/status">Current height</a></td></tr>
+    <tr><td class="k">Disk</td><td><code>du</code> overstates it ~28× because Core preallocates <code>blk*.dat</code>. Trust <code>size_on_disk</code> from <code>getblockchaininfo</code></td></tr>
+    <tr><td class="k">RAM</td><td>RandomX validation uses ~256&nbsp;MiB of cache (light mode; never full-memory, never large pages)</td></tr>
+    <tr><td class="k">Pruning</td><td>Supported, upstream behaviour. Not needed at this size</td></tr>
+  </table></div>
+
+  <h2><span class="n">4</span>Addresses</h2>
+  <div class="tw"><table>
+    <tr><th>Type</th><th>Prefix</th><th>Notes</th></tr>
+    <tr><td class="k">Native SegWit (bech32)</td><td><code>pc1q…</code></td><td>HRP is <code>pc</code>. The default, and what you should issue</td></tr>
+    <tr><td class="k">Taproot (bech32m)</td><td><code>pc1p…</code></td><td>Valid. A phrase-backed wallet holds only <code>wpkh</code> descriptors, which is why <code>changetype=bech32</code> matters</td></tr>
+    <tr><td class="k">Legacy P2PKH</td><td>base58 version <b>55</b></td><td>Supported</td></tr>
+    <tr><td class="k">P2SH</td><td>base58 version <b>56</b></td><td>Supported</td></tr>
+    <tr><td class="k">WIF</td><td>version <b>183</b></td><td></td></tr>
+  </table></div>
+  <p><b>Validate with the node, never a regex.</b> <code>validateaddress</code> is
+    authoritative and costs nothing. Lowercase bech32 before you compare or store it.</p>
+  <p class="t"><b>PCoin kept Bitcoin&#39;s BIP32 version bytes</b>, so PCoin extended keys
+    serialise as literal <code>xprv…</code>/<code>xpub…</code> and a Bitcoin xprv will
+    parse in a PCoin descriptor. Coin type <code>9444&#39;</code> is the only thing keeping
+    the two key trees apart — do not normalise it to <code>0&#39;</code>.</p>
+
+  <h2><span class="n">5</span>Deposits</h2>
+  <ul>
+    <li><b>3 confirmations</b> for ordinary deposits; <b>100</b> for coinbase outputs, which is consensus and not negotiable.</li>
+    <li><b>Key your ledger on <code>(txid, address)</code>, never <code>(txid, vout)</code>.</b> Deposit <code>vout</code> is routinely 0, so the wrong key silently drops a second deposit instead of erroring. Every integration that got this wrong got it wrong this way.</li>
+    <li><b>Gate on the deposit&#39;s own block height</b>, not on the tip minus a constant.</li>
+    <li><b>A failed or timed-out read resolves nothing.</b> An errored explorer call is not &quot;no payment&quot;; an unreadable rate is not a rate of zero. Hold — never credit, never reject.</li>
+  </ul>
+
+  <div class="card warn">
+    <h3>Reorgs are routine here, and one gate has already broken six integrations</h3>
+    <p class="t">Spacing is short and stale blocks happen. <code>reorg_count</code> and
+      <code>blocks_unwound</code> in our explorer API are <b>cumulative lifetime
+      counters</b> — they only ever go up. Gating on <code>blocks_unwound == 0</code>
+      looks reasonable and is a trap: one ordinary 1-block reorg sets it to 1
+      permanently and deposit crediting stops forever while every health check still
+      reports clean. That is not hypothetical — it happened to all six of our own
+      payment integrations at once and went unnoticed for three and a half days.</p>
+    <p class="t">Gate on <code>stale == false</code>, <code>node_reachable</code> and
+      <code>blocks_behind == 0</code>. For a real mid-reorg signal, compare the
+      <b>change</b> between two reads. <b>Detect reorgs; never auto-reverse a
+      credit.</b></p>
+  </div>
+
+  <h2><span class="n">6</span>Withdrawals</h2>
+  <p>Ordinary Core: <code>sendtoaddress</code>, <code>sendmany</code>,
+    <code>walletcreatefundedpsbt</code>. Two settings decide whether they work at all:</p>
+  <ul>
+    <li><b><code>fallbackfee=0.00001</code></b> — see the top of this page. There is no
+      fee market to estimate from, so without a fallback the wallet cannot build any
+      transaction.</li>
+    <li><b><code>changetype=bech32</code></b> — a wallet holding only <code>wpkh</code>
+      descriptors cannot allocate taproot change, so a send to a <code>pc1p…</code>
+      address fails at the change step without it.</li>
+  </ul>
+  <p>Blocks are not full and fees are a dust formality; the fallback rate above
+    confirms reliably.</p>
+
+  <h2><span class="n">7</span>What the node does <span class="pill no">not</span> give you</h2>
+  <p class="t">Stated plainly, so it is not a discovery on day three.</p>
+  <ul>
+    <li><b>No ZMQ.</b> Not compiled into the published binaries —
+      <code>getzmqnotifications</code> returns <code>-32601</code>. The source is
+      present; ask and we will publish a <code>-DWITH_ZMQ=ON</code> build. Until then,
+      poll <code>getbestblockhash</code>.</li>
+    <li><b>No address index.</b> Same as Bitcoin Core: the chainstate is keyed by
+      outpoint with no reverse map, and <code>txindex</code> answers a different
+      question. Use <a href="https://explorer.pc.am">our explorer API</a>, run
+      ElectrumX, or watch addresses by importing descriptors into the wallet.</li>
+    <li><b>Do not front <code>scantxoutset</code> with HTTP.</b> It is globally
+      serialised and O(UTXO set) per call.</li>
+  </ul>
+
+  <h2><span class="n">8</span>Verifying the software</h2>
+  <ul>
+    <li>Source is public and complete: <a href="https://github.com/pars5555/pcoin">github.com/pars5555/pcoin</a>. The diff against upstream <code>v29.4</code> is <code>git diff v29.4..HEAD</code> and is small enough to read end to end.</li>
+    <li>The consensus surface is four files: <code>src/pow.cpp</code>, <code>src/crypto/pow_randomx.*</code>, <code>src/kernel/chainparams.cpp</code>, <code>src/validation.cpp</code>.</li>
+    <li>RandomX is a vendored copy of <a href="https://github.com/tevador/RandomX">tevador/RandomX</a> carrying <b>exactly one local change</b>: 14 lines in <code>src/randomx/src/allocator.cpp</code> adding optional large-page allocation. Nothing on the hash-computation path is touched, and <code>git log -- src/randomx/</code> shows the whole history in three commits.</li>
+    <li>Build it yourself: <code>cmake -B build -DBUILD_GUI=OFF -DENABLE_WALLET=ON -DCMAKE_BUILD_TYPE=Release</code> — stock Core dependencies, no vendored toolchain.</li>
+    <li>Every release ships a <code>SHA256SUMS</code>; the same list is mirrored at <a href="https://pc.am/dl/SHA256SUMS.txt">pc.am/dl/SHA256SUMS.txt</a>.</li>
+    <li>Binaries are <b>not code-signed</b>. Windows SmartScreen warns about anything it has not seen widely downloaded, independently of content.</li>
+  </ul>
+
+  <h2><span class="n">9</span>Live endpoints</h2>
+  <div class="tw"><table>
+    <tr><th>What</th><th>Where</th></tr>
+    <tr><td class="k">Block explorer</td><td><a href="https://explorer.pc.am">explorer.pc.am</a></td></tr>
+    <tr><td class="k">Chain status (JSON)</td><td><a href="https://explorer.pc.am/api/status">explorer.pc.am/api/status</a></td></tr>
+    <tr><td class="k">Address history / UTXOs</td><td><code>/api/address/{addr}</code>, <code>/api/address/{addr}/txs</code></td></tr>
+    <tr><td class="k">Broadcast</td><td><code>POST /api/tx</code></td></tr>
+    <tr><td class="k">Core REST (read-only subset)</td><td><code>explorer.pc.am/rest/…</code> — <code>chaininfo.json</code>, <code>block/*</code>, <code>tx/*</code>, <code>headers/*</code>, <code>mempool/*</code></td></tr>
+    <tr><td class="k">Reference rate</td><td><a href="https://price.pc.am">price.pc.am</a> — read it at credit time and stamp it on the row; never hardcode a rate</td></tr>
+    <tr><td class="k">Merchant integration guide</td><td><a href="https://docs.pc.am">docs.pc.am</a></td></tr>
+  </table></div>
+
+  <h2><span class="n">10</span>Community and contact</h2>
+  <div class="tw"><table>
+    <tr><th>Channel</th><th>Where</th></tr>
+    <tr><td class="k">Website</td><td><a href="https://pc.am">pc.am</a></td></tr>
+    <tr><td class="k">Telegram announcements</td><td><a href="https://t.me/PCoinPCN">@PCoinPCN</a></td></tr>
+    <tr><td class="k">Telegram chat</td><td><a href="https://t.me/PCoinPCNChat">@PCoinPCNChat</a></td></tr>
+    <tr><td class="k">Discord</td><td><a href="https://discord.gg/dGmdwJkb9f">discord.gg/dGmdwJkb9f</a></td></tr>
+    <tr><td class="k">X</td><td><a href="https://x.com/PCoinPCN">@PCoinPCN</a></td></tr>
+    <tr><td class="k">Source</td><td><a href="https://github.com/pars5555/pcoin">github.com/pars5555/pcoin</a></td></tr>
+  </table></div>
+  <p>For a listing review, a test build, a ZMQ-enabled binary or testnet coins, open an
+    <a href="https://github.com/pars5555/pcoin/issues">issue</a> or ask in
+    <a href="https://t.me/PCoinPCNChat">@PCoinPCNChat</a>.</p>
+
+  <div class="foot">
+    Consensus parameters on this page are fixed by the protocol. Height, supply and
+    price are deliberately not printed here — they are one request away, and a figure
+    typed into a page is wrong within the hour.
+    <br><a href="/">← pc.am</a>
+  </div>
+
+</div>
+</body>
+</html>
