@@ -254,22 +254,47 @@ namespace PCoinTray
 
             int cols = words.Length > 12 ? 4 : 3;
             int rows = words.Length / cols;
-            int panelH = rows * 30 + 16;
-            ClientSize = new Size(520, 150 + panelH + 60);
 
-            Ui.Text(this, headline, 20, 16, 480, 24, true);
-            Ui.Text(this, body, 20, 44, 480, 92, false);
+            // MEASURE, THEN SIZE -- never the other way round. This grid used to
+            // give each word a fixed 108-pixel box and draw it in 12pt bold
+            // Consolas; "24.  abandon" needs about 115, so the Label's default
+            // WordBreak moved the WORD to a second line and the fixed 24-pixel
+            // height clipped that line away. The user saw the number and no word.
+            // That was GitHub issue #3: three people hit it, on 1.2.4, 1.3.11 and
+            // 1.3.12, and one of them lost access to a wallet over it.
+            //
+            // A recovery phrase is the one screen in this application where
+            // "mostly readable" is worthless, so the layout is derived from the
+            // text rather than hoped to fit it, and every label below is
+            // AutoSize so it cannot be clipped at any DPI or font scale.
+            var wordFont = new Font("Consolas", 12f, FontStyle.Bold);
+            var cellSize = new Size(0, 0);
+            for (int i = 0; i < words.Length; i++)
+            {
+                var sz = TextRenderer.MeasureText(
+                    (i + 1).ToString(CultureInfo.InvariantCulture) + ".  " + words[i], wordFont);
+                if (sz.Width > cellSize.Width) cellSize.Width = sz.Width;
+                if (sz.Height > cellSize.Height) cellSize.Height = sz.Height;
+            }
+            int colW = cellSize.Width + 22;          // widest entry, plus gutters
+            int rowH = cellSize.Height + 8;
+            int panelW = Math.Max(480, cols * colW);
+            int panelH = rows * rowH + 16;
+            int contentW = panelW;                   // everything else lines up with the grid
+            ClientSize = new Size(contentW + 40, 150 + panelH + 60);
+
+            Ui.Text(this, headline, 20, 16, contentW, 24, true);
+            Ui.Text(this, body, 20, 44, contentW, 92, false);
 
             _panel = new Panel
             {
                 Location = new Point(20, 142),
-                Size = new Size(480, panelH),
+                Size = new Size(panelW, panelH),
                 BorderStyle = BorderStyle.FixedSingle,
                 BackColor = Color.FromArgb(248, 246, 255)
             };
             Controls.Add(_panel);
 
-            int colW = 480 / cols;
             for (int i = 0; i < words.Length; i++)
             {
                 int c = i / rows, r = i % rows;
@@ -279,9 +304,13 @@ namespace PCoinTray
                     // most common restore failure is words written down in the
                     // wrong order.
                     Text = (i + 1).ToString(CultureInfo.InvariantCulture) + ".  " + words[i],
-                    Location = new Point(c * colW + 10, r * 30 + 8),
-                    Size = new Size(colW - 12, 24),
-                    Font = new Font("Consolas", 12f, FontStyle.Bold),
+                    Location = new Point(c * colW + 10, r * rowH + 8),
+                    // AutoSize, and NOT AutoEllipsis. An ellipsis would render
+                    // "abando..." -- which still looks like a word, so it would be
+                    // copied down and the loss discovered only at restore time.
+                    // Silent truncation is the same failure in a politer coat.
+                    AutoSize = true,
+                    Font = wordFont,
                     ForeColor = Color.FromArgb(40, 30, 70)
                 };
                 _panel.Controls.Add(l);
@@ -305,7 +334,7 @@ namespace PCoinTray
             _countdown = Ui.Text(this, "", 20, 150 + panelH, 300, 22, false);
             _countdown.ForeColor = Color.FromArgb(110, 110, 120);
 
-            var ok = Ui.Button(this, continueText, 340, 146 + panelH, 160, DialogResult.OK);
+            var ok = Ui.Button(this, continueText, contentW - 140, 146 + panelH, 160, DialogResult.OK);
             AcceptButton = ok;
 
             _timer.Interval = 1000;
