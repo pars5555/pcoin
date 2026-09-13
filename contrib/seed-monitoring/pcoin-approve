@@ -189,19 +189,33 @@ def save(d):
         pass
 
 
-def digest(item):
-    """The bytes the owner is agreeing to.
+# The current digest scheme. BUMP THIS whenever the set of hashed fields changes,
+# and never change what an existing version covers -- an item must always be
+# verifiable by the algorithm that stamped it, or a routine upgrade reads as a
+# compromise. That has already happened once: parse_mode was added to the hashed
+# set while an approved item was in the queue, and the gate refused to publish it
+# and paged ops about tampering that had not occurred.
+DIGEST_V = 2
 
-    Covers destination, text, caption and the photo's own content -- everything
-    that decides what the public sees. Re-checked at publish time; a mismatch
-    means something edited an approved item and it is refused.
+
+def digest(item, version=None):
+    """The bytes the owner is agreeing to, under a stated scheme version.
+
+    v1: destination, text, caption, photo content.
+    v2: the same, plus parse_mode -- because the same characters rendered as
+        Markdown and as plain text are two different messages to a reader, so
+        changing it after approval is as much a tamper as changing the words.
+
+    The version is NEVER inferred from the item's contents. It is read from the
+    stamp the item carries, defaulting to the current scheme, so an item cannot
+    talk the verifier into using a weaker algorithm by omitting a field.
     """
+    v = version if version is not None else int(item.get("digest_v") or DIGEST_V)
+    parts = [item.get("dest", ""), item.get("text", ""), item.get("caption", "")]
+    if v >= 2:
+        parts.append(item.get("parse_mode", ""))
     h = hashlib.sha256()
-    # parse_mode is IN here deliberately. The same characters rendered as
-    # Markdown and as plain text are two different messages to a reader, so
-    # changing it after approval is as much a tamper as changing the words.
-    for part in (item.get("dest", ""), item.get("text", ""),
-                 item.get("caption", ""), item.get("parse_mode", "")):
+    for part in parts:
         h.update(b"\x00")
         h.update(str(part).encode("utf-8"))
     h.update(b"\x00")
@@ -307,7 +321,8 @@ def cmd_submit(a):
         "published_message_id": None,
         "error": None,
     }
-    item["digest"] = digest(item)
+    item["digest_v"] = DIGEST_V
+    item["digest"] = digest(item, DIGEST_V)
     d["items"].append(item)
     save(d)
     print(item["id"])
@@ -397,9 +412,32 @@ def cmd_tick(a):
         if i["state"] != "confirmed":
             continue
         if digest(i) != i.get("digest"):
-            # Something changed an item AFTER the owner approved it. This is the
-            # exact move a compromised or malfunctioning process would make, and
-            # it is the reason the hash exists.
+            # Before calling this a compromise, rule out the boring explanation:
+            # this gate was upgraded and the item was stamped by an older scheme.
+            # An OLDER scheme matching proves the content is byte-identical to
+            # what was approved -- it is only the set of fields covered that
+            # moved.
+            stale_scheme = any(digest(i, v) == i.get("digest")
+                               for v in range(1, DIGEST_V))
+            if stale_scheme:
+                # Content unchanged, but what it covers has. The owner approved a
+                # rendering as well as a string, so this is re-ASKED rather than
+                # published or failed. Back to pending; he sees it again with the
+                # current scheme stamped on it.
+                i["digest_v"] = DIGEST_V
+                i["digest"] = digest(i, DIGEST_V)
+                i["state"] = "pending"
+                i["dm_message_id"] = None
+                i["decided_at"] = None
+                i["decided_by"] = None
+                i["error"] = ("the approval gate was upgraded after you approved this, so "
+                              "it is being shown to you again. The words did not change.")
+                changed = True
+                print("re-asking %s: digest scheme upgraded, content unchanged" % i["id"])
+                continue
+            # Not a scheme change. Something edited an item AFTER it was
+            # approved -- the exact move a compromised or malfunctioning process
+            # would make, and the reason this hash exists.
             i["state"] = "failed"
             i["error"] = "CONTENT CHANGED AFTER APPROVAL -- refused"
             changed = True
@@ -566,15 +604,42 @@ def cmd_controls(a):
             applied.append(item_id)
             continue
 
-        # Tell the owner on Telegram. The panel is a second way in; if he ever
-        # sees this without having clicked, someone else has a session.
+        # Update the DM that is still offering live buttons, THEN send one short
+        # receipt. Both, for different reasons.
+        #
+        # The EDIT is what the owner asked for: a prompt still showing Confirm
+        # and Cancel for something already decided invites a second,
+        # contradictory press days later.
+        #
+        # The RECEIPT is the security property. Telegram does not push a
+        # notification for an edit, so an edit alone can be missed entirely --
+        # and the entire point of announcing panel decisions is that a decision
+        # he did NOT make reaches his phone.
+        d_item = None
+        for it in load()["items"]:
+            if it["id"] == item_id:
+                d_item = it
+                break
+        if token and d_item and d_item.get("dm_message_id"):
+            try:
+                api(token, "editMessageText", {
+                    "chat_id": str(OWNER),
+                    "message_id": str(d_item["dm_message_id"]),
+                    "text": ("ALREADY %sED FROM THE ADMIN PANEL\n%s\nitem %s"
+                             % (decision.upper(),
+                                "Publishing now." if decision == "confirm"
+                                else "Nothing will be published.",
+                                item_id)),
+                })
+            except Exception as e:
+                print("  could not edit the approval DM (%s)" % type(e).__name__)
         if token:
             try:
                 api(token, "sendMessage", {
                     "chat_id": str(OWNER),
-                    "text": ("Approval %s was %sED from the ADMIN PANEL (not from here).\n"
-                             "Item %s.\n\nIf that was not you, someone has a panel session."
-                             % (item_id, decision.upper(), item_id)),
+                    "text": ("%s from the ADMIN PANEL, not from here (item %s). "
+                             "If that was not you, someone has a panel session."
+                             % (decision.capitalize() + "ed", item_id)),
                 })
             except Exception as e:
                 print("  could not notify about the panel decision (%s)" % type(e).__name__)
@@ -712,6 +777,15 @@ def cmd_selftest(a):
     tampered = digest(d["items"][0]) != d["items"][0]["digest"]
     print("  4. content changed after approval -> digest mismatch detected: %s" % tampered)
     ok &= tampered
+
+    # A REAL tamper must not be excusable as a scheme change. If changing the
+    # text could be explained away by trying an older algorithm, the versioning
+    # added above would have quietly destroyed the guarantee it was meant to
+    # preserve -- so prove no older scheme accepts the edited item.
+    excusable = any(digest(d["items"][0], v) == d["items"][0]["digest"]
+                    for v in range(1, DIGEST_V))
+    print("  5. an older digest scheme excuses that tamper: %s  (must be False)" % excusable)
+    ok &= not excusable
 
     os.unlink(QUEUE)
     print("selftest %s" % ("PASSED" if ok else "FAILED"))

@@ -122,6 +122,11 @@ def send(token, chat, text):
         return False
 
 
+# How long Telegram may hold the getUpdates request open. Kept below the
+# systemd timer interval so a request is open most of the time, and well below
+# TimeoutStartSec so systemd never kills a healthy wait.
+POLL_SECONDS = int(os.environ.get("GROUP_WATCH_POLL_SECONDS", "20"))
+
 APPROVE = "/usr/local/bin/pcoin-approve"
 # The owner's Telegram user id. The only account whose press counts; pcoin-approve
 # checks this again on its own side, deliberately, because a check that exists in
@@ -178,28 +183,63 @@ def handle_callback(token, cb):
         answer("dry run - nothing changed")
         return True
 
+    # ANSWER FIRST. The press is genuine and from the right account; everything
+    # after this point is work the owner should not have to watch a loader for.
+    # The wording says what is ABOUT to happen rather than what has happened,
+    # because it has not happened yet -- and if it then fails, the follow-up
+    # below says so in a message. A spinner that stops on a lie is worse than a
+    # spinner that spins.
+    verdict = ("Confirmed - publishing now." if decision == "confirm"
+               else "Cancelled. Nothing will be published.")
+    answer(verdict)
+
+    def tell(msg):
+        """Say what went wrong AFTER the callback has already been answered."""
+        try:
+            api(token, "sendMessage", {"chat_id": str(frm), "text": msg})
+        except Exception:
+            pass
+
     try:
         r = subprocess.run([APPROVE, "decide", "--id", item_id,
                             "--decision", decision, "--by", str(frm)],
                            capture_output=True, text=True, timeout=30)
     except Exception as e:
-        # Transient: the gate could not be run at all. Keep the press.
-        answer("Could not record that yet - the button still works, try again.", alert=True)
+        # Transient. Do NOT consume the press -- the button stays live and the
+        # next poll tries again.
+        tell("That press could not be recorded yet (%s). The button still works; "
+             "press it again in a moment. NOTHING was published."
+             % type(e).__name__)
         print("  approval decide could not run (%s)" % type(e).__name__, file=sys.stderr)
         return False
     out = (r.stdout or r.stderr or "").strip().splitlines()
     out = out[-1] if out else ""
     if r.returncode != 0:
-        answer("Refused: %s" % out, alert=True)
+        tell("That press was refused: %s\nNOTHING was published." % out)
         print("  approval decide FAILED for %s: %s" % (item_id, out), file=sys.stderr)
         # The decision did NOT land. Do not consume the press: a read-only
         # filesystem, a locked queue or a full disk are all things that get
         # fixed, and when they are the owner should not have to press again.
         return False
 
-    verdict = "Confirmed - publishing now." if decision == "confirm" else "Cancelled. Nothing will be published."
-    answer(verdict)
     print("  approval %s: %s" % (item_id, decision))
+
+    # KICK THE GATE NOW rather than leaving it for its next timer tick. This is
+    # the single biggest saving in the whole path: without it a confirmed item
+    # waits out a full gate interval before anything is published, which is most
+    # of the delay the owner actually feels.
+    #
+    # `--no-block` because this handler is inside the poll loop: waiting on
+    # another unit here would hold up every message queued behind this press, and
+    # the gate publishing a moment later is fine. If the start fails the timer
+    # still catches it, so this is an optimisation that cannot lose a message.
+    if decision == "confirm":
+        try:
+            subprocess.run(["systemctl", "start", "--no-block", "pcoin-approve.service"],
+                           capture_output=True, timeout=15)
+        except Exception as e:
+            print("  could not kick the gate (%s); the timer will pick it up"
+                  % type(e).__name__, file=sys.stderr)
 
     # Replace the buttons with the outcome. Leaving a live Confirm button under a
     # decision already taken invites a second press days later against a queue
@@ -273,10 +313,20 @@ def main():
     j = None
     for attempt in range(3):
         try:
+            # LONG POLL. timeout=0 meant "tell me what is already waiting and
+            # hang up", so with a 15s timer a button press could sit unseen for
+            # 15 seconds while the owner watched the loader spin. Telegram holds
+            # this request open instead and answers the moment anything arrives.
+            #
+            # The HTTP read timeout must exceed the long-poll timeout or urllib
+            # aborts the very request it is waiting on -- that mistake turns a
+            # working long poll into a retry loop that looks like a flaky
+            # network.
             j = api(token, "getUpdates", {
-                "offset": st["offset"], "timeout": 0, "limit": 100,
+                "offset": st["offset"], "timeout": POLL_SECONDS, "limit": 100,
                 "allowed_updates": json.dumps(
-                    ["message", "edited_message", "callback_query"])})
+                    ["message", "edited_message", "callback_query"])},
+                timeout=POLL_SECONDS + 15)
             break
         except urllib.error.HTTPError as e:
             if e.code == 409:
