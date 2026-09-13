@@ -1,0 +1,209 @@
+#!/bin/bash
+# Report every PCN payment to the private ops channel, in full.
+#
+# A SEPARATE POLLER, deliberately not a hook inside the four watchers. The
+# alternative was editing four live credit paths to call a notifier; a bug there
+# would stop customer money from crediting, and no notification is worth that.
+# This reads committed rows only, after the money has already moved, so the
+# worst it can do is fail to report.
+#
+# Local products only -- no SSH between servers, same rule pcoin-deposit-watch
+# follows. Run one copy per host; each reports what lives on it:
+#     152.53.171.190 -> checker
+#     116.203.221.42 -> webbuilderbot, aicontrol, 3dmodels
+#
+# One message per credit, carrying everything needed to answer "who paid, where,
+# how much was it worth" without opening a database -- including BOTH the rate
+# stamped on the deposit (what the customer actually got) and the live rate now,
+# because a gap between those two is exactly the fault that credited 3dmodels
+# deposits at one fifteenth of the right value.
+#
+# Idempotent: each reported credit is stamped by (product, txid, address), so
+# re-running never double-reports.
+#   --seed   stamp everything already credited WITHOUT reporting (first install)
+#   --dry    print what would be sent, send nothing
+
+set -u
+NOTIFY="${NOTIFY:-/usr/local/bin/pcoin-notify}"
+SEEN=/var/lib/pcoin-monitor/reported-credits
+SEED=0; DRY=0
+for a in "$@"; do
+  [ "$a" = "--seed" ] && SEED=1
+  [ "$a" = "--dry" ]  && DRY=1
+done
+mkdir -p "$SEEN" 2>/dev/null
+
+# WHICH RAILS THIS HOST IS SUPPOSED TO REPORT ON.
+#
+# Every rail below is gated on `[ -r <its config> ]` with no else. That is the
+# exact shape that let pcoin-deposit-watch log "all PCN deposit watchers
+# healthy" every five minutes for weeks while checking one rail out of five: on
+# a host where the config is absent the check does not fail, it VANISHES, and a
+# vanished check is indistinguishable from a passing one. Declaring what this
+# host is supposed to reach is what turns an absence back into a fact.
+#
+# Set RAILS_EXPECTED in /etc/pcoin-payment-report.conf, space-separated, using
+# the product names this script emits ("checker.pc.am", "webbuilderbot",
+# "aicontrol", "3dmodels.pc.am"). Unset means "do not check", so a host that has
+# never declared anything is never silently accused of losing a rail.
+CONF="${CONF:-/etc/pcoin-payment-report.conf}"
+RAILS_EXPECTED=""
+# shellcheck disable=SC1090
+[ -r "$CONF" ] && . "$CONF"
+RAILS_SEEN=""
+seen_rail() { RAILS_SEEN="$RAILS_SEEN $1"; }
+
+log() { logger -t pcoin-payment-report -- "$*" 2>/dev/null || printf '%s\n' "$*"; }
+
+# The live rate. An unreadable oracle is reported as unknown, never as a number.
+#
+# tr -d first: the oracle pretty-prints its JSON, so the key is
+# '"serviceRate": 0.015' WITH A SPACE and a naive grep matches nothing. That
+# fails silently and drops the drift line -- precisely when the rate has moved
+# and the drift is the thing worth seeing. Caught by a dry run, not by reading.
+RATE_NOW=$(curl -s --max-time 15 https://price.pc.am/price 2>/dev/null \
+           | tr -d ' \t\n' \
+           | grep -oE '"serviceRate":[0-9.]+' | head -1 | cut -d: -f2)
+[ -n "${RATE_NOW:-}" ] || RATE_NOW=""
+
+emit() {  # emit <product> <who> <addr> <sat> <usd> <rate> <credited> <unit> <txid> <height> <confs> <when>
+  local prod="$1" who="$2" addr="$3" sat="$4" usd="$5" rate="$6" \
+        credited="$7" unit="$8" txid="$9" height="${10}" confs="${11}" when="${12}"
+  local key stamp pcn drift title body
+  key="${prod//[^a-zA-Z0-9]/_}-${txid:0:16}-${addr: -8}"
+  stamp="$SEEN/$key"
+  [ -f "$stamp" ] && return 0
+
+  if [ "$SEED" = "1" ]; then printf 'seeded\n' > "$stamp"; return 0; fi
+
+  pcn=$(awk -v s="$sat" 'BEGIN{printf "%.8f", s/100000000}')
+  drift=""
+  if [ -n "$RATE_NOW" ] && [ "$(awk -v r="$rate" 'BEGIN{print (r>0)?1:0}')" = "1" ]; then
+    drift=$(awk -v n="$RATE_NOW" -v r="$rate" 'BEGIN{
+      d=(n-r)/r*100; if (d>=1||d<=-1) printf "\nRate now:    $%.6f  (%+.1f%% vs the rate they were credited at)", n, d }')
+  fi
+
+  title="PCN payment: $pcn PCN (\$$usd) to $prod"
+  body="Service:     $prod
+Account:     $who
+Address:     $addr
+
+Received:    $pcn PCN
+Credited:    \$$usd  =  $credited $unit
+Rate used:   \$$rate per PCN  (stamped on the deposit row)$drift
+
+Block:       $height    confirmations at credit: $confs
+Txid:        $txid
+Explorer:    https://explorer.pc.am/tx/$txid
+Credited at: $when UTC"
+
+  if [ "$DRY" = "1" ]; then
+    echo "--- would send ---"; echo "$title"; echo "$body"; echo "---"; return 0
+  fi
+
+  if "$NOTIFY" "$title" "$body" >/dev/null 2>&1; then
+    printf '%s\t%s\n' "$when" "$txid" > "$stamp"
+    log "reported $prod $pcn PCN ($when)"
+  else
+    # No stamp on failure: an unreported credit is retried next run, not
+    # remembered as delivered.
+    log "FAILED to report $prod $txid"
+  fi
+}
+
+run_rows() {  # run_rows <product> <unit> <sql> <mysql-cmd...>
+  local prod="$1" unit="$2" sql="$3"; shift 3
+  "$@" -N -B -e "$sql" 2>/dev/null | while IFS=$'\t' read -r id who addr sat usd rate credited txid height confs when; do
+    [ -n "${id:-}" ] || continue
+    emit "$prod" "$who" "$addr" "$sat" "$usd" "$rate" "$credited" "$unit" \
+         "$txid" "$height" "$confs" "$when"
+  done
+}
+
+# ── checker (152.53.171.190) ──────────────────────────────────────────────
+CHK=/var/www/checker_pc_am/config/config.json
+if [ -r "$CHK" ]; then
+  eval "$(python3 -c "
+import json;d=json.load(open('$CHK'))
+print('U=%s;P=%s;D=%s' % (d['db_user'], d['db_pass'], d['db_name']))" 2>/dev/null)"
+  [ -n "${U:-}" ] && seen_rail "checker.pc.am"
+  [ -n "${U:-}" ] && run_rows "checker.pc.am" "credits" \
+    "SELECT d.id, IFNULL(u.username,CONCAT('user#',d.user_id)), d.address, d.amount_sat,
+            IFNULL(d.credited_usd,0), IFNULL(d.credited_rate_usd,0), IFNULL(d.credited_credits,0),
+            d.txid, IFNULL(d.block_height,0), IFNULL(d.confirmations_at_credit,0), IFNULL(d.credited_at,'')
+       FROM pcn_deposits d LEFT JOIN users u ON u.id=d.user_id
+      WHERE d.status='credited' AND d.credited_at IS NOT NULL" \
+    mysql -h127.0.0.1 -u"$U" -p"$P" "$D"
+  unset U P D
+fi
+
+# ── webbuilderbot (116.203.221.42) ────────────────────────────────────────
+WBB=/var/www/ai-bots/bots/webbuilderbot/config.json
+if [ -r "$WBB" ]; then
+  eval "$(python3 -c "
+import json;d=json.load(open('$WBB'))
+print('U=%s;P=%s;D=%s' % (d['db_user'], d['db_pass'], d['db_name']))" 2>/dev/null)"
+  [ -n "${U:-}" ] && seen_rail "webbuilderbot"
+  [ -n "${U:-}" ] && run_rows "webbuilderbot" "USD balance" \
+    "SELECT d.id, CONCAT('chat ',d.chat_id), d.address, d.amount_sat,
+            IFNULL(d.credited_usd,0), IFNULL(d.credited_rate_usd,0), IFNULL(d.credited_usd,0),
+            d.txid, IFNULL(d.block_height,0), IFNULL(d.confirmations_at_credit,0), IFNULL(d.credited_at,'')
+       FROM pcn_deposits d
+      WHERE d.status='credited' AND d.credited_at IS NOT NULL" \
+    mysql -h127.0.0.1 -u"$U" -p"$P" "$D"
+  unset U P D
+fi
+
+# ── aicontrol (116.203.221.42) ────────────────────────────────────────────
+AIC=/var/www/ai-control-server/.env
+if [ -r "$AIC" ]; then
+  U=$(grep -E '^DB_USER=' "$AIC" | head -1 | cut -d= -f2-)
+  P=$(grep -E '^DB_PASS=' "$AIC" | head -1 | cut -d= -f2-)
+  D=$(grep -E '^DB_NAME=' "$AIC" | head -1 | cut -d= -f2-)
+  [ -n "${U:-}" ] && seen_rail "aicontrol"
+  [ -n "${U:-}" ] && run_rows "aicontrol" "USD credit" \
+    "SELECT d.id, IFNULL(u.email,CONCAT('user#',d.user_id)), d.address, d.amount_sat,
+            IFNULL(d.credited_usd,0), IFNULL(d.credited_rate_usd,0), IFNULL(d.credited_usd,0),
+            d.txid, IFNULL(d.block_height,0), IFNULL(d.confirmations_at_credit,0), IFNULL(d.credited_at,'')
+       FROM pcn_deposits d LEFT JOIN users u ON u.id=d.user_id
+      WHERE d.status='credited' AND d.credited_at IS NOT NULL" \
+    mysql -h127.0.0.1 -u"$U" -p"$P" "$D"
+  unset U P D
+fi
+
+# ── 3dmodels (116.203.221.42, MariaDB in Docker) ──────────────────────────
+M3D=/var/www/3dmodels.pc.am/code
+if [ -d "$M3D" ] && [ -r /var/www/3dmodels.pc.am/secrets/db_root_password ]; then
+  RP=$(cat /var/www/3dmodels.pc.am/secrets/db_root_password)
+  seen_rail "3dmodels.pc.am"
+  # docker compose exec -T reads stdin; </dev/null or it eats the rest of this script.
+  ( cd "$M3D" && run_rows "3dmodels.pc.am" "credits" \
+    "SELECT d.id, IFNULL(u.email,CONCAT('user#',d.user_id)), d.address, d.amount_sat,
+            IFNULL(d.credited_usd,0), IFNULL(d.credited_rate_usd,0), IFNULL(d.credited_credits,0),
+            d.txid, IFNULL(d.block_height,0), IFNULL(d.confirmations_at_credit,0), IFNULL(d.credited_at,'')
+       FROM pcn_deposits d LEFT JOIN users u ON u.id=d.user_id
+      WHERE d.status='credited' AND d.credited_at IS NOT NULL" \
+    docker compose exec -T db mariadb -uroot -p"$RP" "models3d_pc_am" ) </dev/null
+fi
+
+# -- the else that four `[ -r ... ]` gates never had -----------------------
+# Anything declared above and not reached this run is said out loud. Money may
+# still be crediting -- this poller reads committed rows and cannot stop it --
+# but nobody is being TOLD about it, and a reporting channel that has silently
+# lost a product looks exactly like a product with no customers.
+for want in $RAILS_EXPECTED; do
+  case " $RAILS_SEEN " in
+    *" $want "*) ;;
+    *)
+      log "expected rail not reached: $want"
+      if [ "$DRY" = "1" ]; then
+        printf 'WOULD ALERT: payment reporting blind for %s\n' "$want"
+      elif [ -x "$NOTIFY" ]; then
+        "$NOTIFY" "PCN payment reporting BLIND: $want" \
+          "pcoin-payment-report on $(hostname) is configured to report $want but could not read its database this run, so no credit on that rail will be reported until it can. The rail itself may be perfectly healthy: this says the REPORTING is blind, which is a different fault from the money being stuck. Check the config file is readable and the credentials still work." >/dev/null 2>&1
+      fi
+      ;;
+  esac
+done
+
+exit 0

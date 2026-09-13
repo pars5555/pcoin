@@ -1,0 +1,15 @@
+[Unit]
+Description=Report PCN payments every two minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+# Two minutes because this is what turns "a customer paid" into something a
+# person knows about, and the answer to "did that go through" should not be
+# ten minutes old. It is idempotent per (product, txid, address), so a run that
+# finds nothing new costs four database reads and sends nothing.
+RandomizedDelaySec=20
+Persistent=true
+
+[Install]
+WantedBy=timers.target

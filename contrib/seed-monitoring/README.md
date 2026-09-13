@@ -39,11 +39,16 @@ the failure is silent in exactly the way this table exists to prevent.
 | `3dmodels.pc.am` | the webbuilderbot host | same host | log mtime + docker db |
 | `3dmodel.oonak.ai` | its own host | same host | log mtime + `deposits.json` |
 | `webai` | the webai host (GCE `rba`) | same host | MySQL `pcoin_watcher_heartbeat` |
+| `pcnaibot` | 178.105.3.51 | same host | SQLite -- the only SQLite rail, so it needed its own reader |
 
 Host addresses are in `D:\pc.am\PCOIN-SERVERS.md` (off-repo). The rails sit behind
 Cloudflare, so their origin addresses are deliberately not written down here.
 
-Six rails, all assigned. Five as of 2026-08-29; `webai` added 2026-09-06. Before
+Seven rails, all assigned. Five as of 2026-08-29; `webai` added 2026-09-06;
+`pcnaibot` added 2026-09-13 -- it had been live and CHECKED from 178.105.3.51 for
+some time, but was missing from this table, which is the one place the design
+depends on being right. A rail that is watched but undocumented is one careless
+edit away from being neither. Before
 2026-08-29 only `checker` was actually being checked, on the one host that ran
 the script; the rest lived on machines it could not read and vanished silently.
 

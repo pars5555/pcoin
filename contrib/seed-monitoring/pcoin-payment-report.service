@@ -1,0 +1,19 @@
+[Unit]
+Description=Report every PCN payment to the private ops channel
+Documentation=https://github.com/pars5555/pcoin/blob/main/contrib/seed-monitoring/README.md
+OnFailure=pcoin-alert@%n.service
+
+[Service]
+Type=oneshot
+
+# Which rails this host is expected to reach. Without it the script reports on
+# whatever it happens to be able to read, and a rail whose config becomes
+# unreadable stops being reported with nothing saying so.
+EnvironmentFile=-/etc/default/pcoin-payment-report
+ExecStart=/usr/local/bin/pcoin-payment-report
+
+Nice=10
+MemoryMax=64M
+CPUQuota=10%
+# It queries several databases and reads the price oracle over the network.
+TimeoutStartSec=120

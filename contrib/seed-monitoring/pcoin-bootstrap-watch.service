@@ -1,0 +1,15 @@
+[Unit]
+Description=PCoin bootstrap reachability check, from outside the seed set
+Documentation=https://github.com/pars5555/pcoin/blob/main/contrib/seed-monitoring/README.md
+OnFailure=pcoin-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pcoin-bootstrap-watch
+
+Nice=10
+MemoryMax=64M
+CPUQuota=10%
+# It dials every seed and waits on the DNS seed; a slow seed must not look like
+# a broken check.
+TimeoutStartSec=180

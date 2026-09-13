@@ -1,0 +1,15 @@
+[Unit]
+Description=Check PCoin bootstrap reachability every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+# This check answers "can a NEW node join", which is the one question no seed
+# can answer about itself -- so it deliberately runs on a host that is not a
+# seed. Fifteen minutes is enough: a bootstrap outage stops new nodes joining,
+# it does not stop the chain.
+RandomizedDelaySec=2min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

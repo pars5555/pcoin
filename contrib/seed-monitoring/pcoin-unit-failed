@@ -1,0 +1,58 @@
+#!/bin/sh
+# Report a systemd unit that FAILED. Wired in by pcoin-alert@.service, which is
+# what every monitor unit here names in its OnFailure=.
+#
+# WHY IT IS A SCRIPT AND NOT AN ExecStart= ONE-LINER, WHICH IS WHAT IT WAS.
+# The previous form was `sh -c 'pcoin-notify "PCoin: %i failed" "$(journalctl
+# -u %i -n 12 ...)"'`. Two things it could not do:
+#
+#   1. It sent the journal tail and nothing else. This adds the unit's Result
+#      and exit code, which are the two facts that separate "died on its first
+#      line" from "ran and exited 3", and neither appears in `-o cat` output.
+#   2. It handed raw journal text to a notifier that sends with Markdown
+#      parsing on. pcoin-notify has resent as plain text on a parse rejection
+#      since 2026-09-01, so the alert was NOT being lost -- but relying on that
+#      net means every monitor-failure alert arrives via the fallback path, and
+#      a net is a thing that can itself regress. Stripping the four characters
+#      that can unbalance Markdown costs nothing here, because a unit name and
+#      a stack trace are not prose.
+#
+# It must never fail loudly itself: a handler that exits non-zero produces a
+# failed unit, which triggers a handler. Everything here is best-effort and the
+# exit is unconditionally 0.
+set -u
+UNIT="${1:-unknown.service}"
+NOTIFY="${NOTIFY:-/usr/local/bin/pcoin-notify}"
+
+# Strip rather than escape -- stripping cannot itself introduce a stray
+# backslash the way a half-right escaping pass can.
+clean() { printf '%s' "$1" | tr -d '*_`[]' ; }
+
+if [ "$UNIT" = "--selftest" ]; then
+    # Exercise the formatting against a unit that really exists on every host,
+    # so the output is a real message and not a shape. Proves the thing FIRES
+    # and what it would say, without sending anything.
+    UNIT=pcoin-disk-watch.service
+    SELFTEST=1
+else
+    SELFTEST=0
+fi
+
+RESULT=$(systemctl show "$UNIT" -p Result --value 2>/dev/null || echo unknown)
+CODE=$(systemctl show "$UNIT" -p ExecMainStatus --value 2>/dev/null || echo '?')
+# The last thing it said is the whole value of this alert. "pcoin-deposit-watch
+# failed" is a notification; its stderr is a diagnosis.
+TAIL=$(journalctl -u "$UNIT" -n 12 --no-pager -o cat 2>/dev/null | tail -n 12)
+[ -n "$TAIL" ] || TAIL='(nothing in the journal)'
+
+SUBJECT="monitor FAILED: $(clean "$UNIT")"
+BODY=$(printf 'Unit: %s\nResult: %s (exit %s)\n\nLast output:\n%s' \
+        "$(clean "$UNIT")" "$(clean "$RESULT")" "$(clean "$CODE")" "$(clean "$TAIL")")
+
+if [ "$SELFTEST" = "1" ]; then
+    printf 'would send, and nothing was sent:\n  subject: %s\n  body:\n%s\n' "$SUBJECT" "$BODY"
+    exit 0
+fi
+
+[ -x "$NOTIFY" ] && "$NOTIFY" "$SUBJECT" "$BODY" >/dev/null 2>&1
+exit 0
