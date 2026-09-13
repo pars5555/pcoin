@@ -26,7 +26,14 @@ let cache = { at: 0, rows: null, error: null, pool: null };
 
 // How a label is classified. The labels are prose written by hand over months,
 // so this reads them rather than pretending there is a schema.
-const NOT_OURS = 'pc1qsl67w7cs8gsvd9jekdrnjxj873du7x5n6nj82l';
+// Addresses that are NOT the project's, confirmed by the owner 2026-09-13.
+// Both belong to his son: the varujdesk earner payout, and the office01+02
+// machines, which mine straight to his wallet rather than forwarding to the
+// treasury. 2,800 PCN between them, none of it ours to move.
+const NOT_OURS = new Set([
+  'pc1qsl67w7cs8gsvd9jekdrnjxj873du7x5n6nj82l',   // varujdesk earner payout
+  'pc1qdxevq6dz82hyrxfqgc30n0t9txntmax5zffp3m',   // office01 + office02
+]);
 
 function classify(label, a) {
   const l = (label || '').toLowerCase();
@@ -41,7 +48,7 @@ function classify(label, a) {
   // quiet row among four phones with dust on them. It holds 2,500 PCN, it is
   // the largest unswept balance in the estate, and the coins belong to the
   // owner's son. Burying it is how somebody eventually sweeps it.
-  if (a === NOT_OURS) return 'notours';
+  if (NOT_OURS.has(a)) return 'notours';
   if (l.startsWith('payment -')) return 'rail';
   if (l.startsWith('legacy')) return 'legacy';
   if (l.includes('retired') || l.includes('uninstalled') || l.includes('removed')) return 'retired';
@@ -134,10 +141,16 @@ export function minersPage(data) {
     `<code title="${esc(r.address)}">${esc(r.address.slice(0, 14))}…${esc(r.address.slice(-6))}</code>`,
     r.error ? `<span class="bad">${esc(r.error)}</span>` : PCN(r.mature),
     r.error ? DASH : (r.immature > 0 ? `<span style="color:var(--yellow)">${PCN(r.immature)}</span>` : PCN(r.immature)),
-    r.error ? DASH : PCN(r.received),
+    // NET, not gross. This column said "Earned, lifetime" and showed
+    // `received`, which counts every receipt INCLUDING change returning from
+    // the address's own spends. The treasury showed 588,930 PCN against a total
+    // supply of 390,500 -- more coins than exist -- and the owner reasonably
+    // read it as "half a million mined". Net is what the address actually kept.
+    r.error ? DASH : PCN((r.received || 0) - (r.sent || 0)),
+    r.error ? DASH : `<span class="muted">${N(r.received, 0)} in / ${N(r.sent, 0)} out</span>`,
     r.error ? DASH : (r.lastHeight != null ? esc(String(r.lastHeight)) : DASH),
   ];
-  const heads = ['What it is', 'Address', 'Mature', 'Immature', 'Earned, lifetime', 'Last block'];
+  const heads = ['What it is', 'Address', 'Mature', 'Immature', 'Net, lifetime', 'Gross flow', 'Last block'];
 
   const section = (title, kind, blurb) => {
     const rs = of(kind);
@@ -169,6 +182,14 @@ export function minersPage(data) {
            + 'to the owner’s son.</b> It looks exactly like a forwarding failure and is not '
            + 'one &mdash; every other address forwards ~99.99% of lifetime receipts and keeps '
            + 'dust. Never sweep it.'))
+    + card('Why "gross flow" is so much larger than anything mined',
+        note('Gross received counts EVERY receipt, including change coming back from the '
+           + 'address’s own spends. The treasury shows 588,930 PCN received against a '
+           + 'total supply of 390,500 — more coins than exist — because the same '
+           + 'coins pass through it repeatedly: forwarded in, spent out, change returns, '
+           + 'counted again. Over 3,110 transactions that adds up fast. The NET column is '
+           + 'what the address actually kept, and the supply figure to compare against is '
+           + 'total_supply from the explorer, currently 390,500 PCN.'))
     + card('Where this comes from',
         note('The address labels come from the old ops dashboard’s fleet map, which is still '
            + 'the only place they are written down. That file also holds a password hash, a '
