@@ -1,0 +1,11 @@
+[Unit]
+Description=PCoin approval gate: ask the owner, then publish only what he confirmed
+OnFailure=pcoin-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pcoin-approve tick
+Nice=10
+MemoryMax=128M
+CPUQuota=20%
+TimeoutStartSec=120

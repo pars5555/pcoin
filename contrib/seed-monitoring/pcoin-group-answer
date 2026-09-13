@@ -1,0 +1,515 @@
+#!/usr/bin/env python3
+"""Answer questions in @PCoinPCNChat, and file everything worth a human's time.
+
+    pcoin-group-answer                 one pass; run it from a timer
+    pcoin-group-answer --dry-run       decide and print, post nothing, file nothing
+    pcoin-group-answer --status        what it knows, touching nothing
+
+IT DOES NOT POLL TELEGRAM. `getUpdates` is exclusive and `pcoin-group-watch` is
+this estate's only permitted consumer of it -- two consumers steal each other's
+updates and each sees half a conversation, which was live on two hosts until
+2026-09-13. So the watcher writes every group message to a spool file and this
+reads that. The relay stays the load-bearing path: if this script is broken,
+stopped or wrong, the operator still gets every message.
+
+IT SHIPS SWITCHED OFF. ANSWER_MODE defaults to `shadow`: it decides, drafts, and
+files the draft for review, but posts nothing. Nothing it writes reaches the
+group until somebody has read a batch of drafts and set ANSWER_MODE=live. A bot
+that starts talking to real users on the strength of its author's confidence is
+how a project ends up apologising in public.
+
+WHAT IT WILL NOT SAY. The prompt tells it not to discuss infrastructure or quote
+live rates. That is necessary and not sufficient -- a prompt is a request, not a
+mechanism -- so every draft is also checked here, and one that mentions a host,
+a path, a credential-shaped string or a PCN rate is held back for a human no
+matter how confident the model was.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+CONF = os.environ.get("ANSWER_CONF", "/etc/pcoin/group-answer.conf")
+ALERT_CONF = os.environ.get("PCOIN_ALERT_CONF", "/etc/pcoin/alert.conf")
+SPOOL = os.environ.get("GROUP_SPOOL", "/var/lib/pcoin-group-watch/spool.jsonl")
+STATE = os.environ.get("ANSWER_STATE", "/var/lib/pcoin-group-answer/state.json")
+PROMPT = os.environ.get("ANSWER_PROMPT", "/opt/pcoin-answer/prompt.md")
+
+# THE OFF SWITCH. Written by pcoin-approve when the owner turns this agent off in
+# the admin panel; removed when he turns it back on. Checked before anything else
+# happens, so a disabled agent never reads a config, never opens the spool and
+# never reaches an API key.
+DISABLED = os.environ.get("ANSWER_DISABLED_FLAG", "/etc/pcoin/agents/group-answer.disabled")
+
+# What it DID, one line per decision, newest last. Capped, because a log nobody
+# can open is a log nobody reads.
+ACTIONS = os.environ.get("ANSWER_ACTIONS", "/var/lib/pcoin-group-answer/actions.jsonl")
+ACTIONS_MAX = 400
+
+
+def act(**row):
+    """Append one action. Best-effort: failing to RECORD what happened must never
+    change what happens."""
+    try:
+        row["at"] = int(time.time())
+        os.makedirs(os.path.dirname(ACTIONS), exist_ok=True)
+        lines = []
+        if os.path.exists(ACTIONS):
+            with open(ACTIONS, encoding="utf-8") as fh:
+                lines = fh.readlines()[-(ACTIONS_MAX - 1):]
+        lines.append(json.dumps(row, ensure_ascii=False) + "\n")
+        tmp = ACTIONS + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.writelines(lines)
+        os.replace(tmp, ACTIONS)
+    except Exception:
+        pass
+GROUP_ID = int(os.environ.get("GROUP_CHAT_ID", "-1003975107618"))
+
+DRY = "--dry-run" in sys.argv
+
+# A message older than this is history. Answering a six-hour-old question is
+# worse than silence: the person has gone, and the group sees a bot talking to
+# itself about something already resolved.
+MAX_AGE_SECONDS = int(os.environ.get("ANSWER_MAX_AGE", 6 * 3600))
+# Ceilings, not targets. If something goes wrong -- a spool replay, a model that
+# answers everything -- these are what stop it happening sixty times.
+MAX_PER_RUN = int(os.environ.get("ANSWER_MAX_PER_RUN", 3))
+USER_COOLDOWN = int(os.environ.get("ANSWER_USER_COOLDOWN", 300))
+MAX_TOKENS = int(os.environ.get("ANSWER_MAX_TOKENS", 3000))
+
+
+def conf(path):
+    out = {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                m = re.match(r"^\s*([A-Z_]+)\s*=\s*(.*?)\s*$", line)
+                if m:
+                    out[m.group(1)] = m.group(2).strip().strip('"').strip("'")
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def load_state():
+    try:
+        with open(STATE, encoding="utf-8") as fh:
+            st = json.load(fh)
+    except Exception:
+        st = {}
+    # Normalise rather than only handling "unreadable". A state file that parses
+    # but lacks a key is what crashed a sibling script on its first real run.
+    st.setdefault("handled", {})
+    st.setdefault("last_user_answer", {})
+    st.setdefault("last_run", 0)
+    st.setdefault("answered", 0)
+    st.setdefault("held", 0)
+    return st
+
+
+def save_state(st):
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    tmp = STATE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(st, fh, indent=2)
+    os.replace(tmp, STATE)
+
+
+# ---- the output guard ----------------------------------------------------
+# Defence in depth behind the prompt. Each pattern is here because saying it in
+# a public group would be a real leak or a real promise, not because it is rude.
+FORBIDDEN = [
+    (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "an IP address"),
+    (re.compile(r"(?i)\b(?:/opt/|/etc/|/var/lib/|/usr/local/)"), "a server path"),
+    (re.compile(r"(?i)\b(systemctl|journalctl|ssh\s+root|sudo\s)"), "a server command"),
+    (re.compile(r"(?i)\b(bearer\s+[\w\-.]{12,}|api[_-]?key\s*[:=]|token\s*[:=])"), "a credential"),
+    (re.compile(r"\$0\.0\d{3,}"), "a live PCN rate"),
+    (re.compile(r"(?i)\b(seed phrase|recovery phrase)\b.{0,40}\b(is|:)\s*\w+\s+\w+\s+\w+"), "a phrase"),
+]
+
+
+def guard(text):
+    """Return the reason this draft must not be posted, or None."""
+    for rx, why in FORBIDDEN:
+        if rx.search(text or ""):
+            return why
+    return None
+
+
+# ---- the model -----------------------------------------------------------
+def models_for(cfg):
+    """The model to try, then the one to fall back to.
+
+    A fallback exists because this is a gateway in front of several upstream
+    providers, and any one of them can be down, rate-limited or temporarily
+    refusing a model while the others are fine. A bot that goes silent for a day
+    because one upstream had an afternoon is worse than one that answers in a
+    slightly different voice.
+
+    Both must be models this API key can actually serve. Every Anthropic model is
+    NOT one of them: the account's Claude is connected as a consumer
+    subscription, which by design never passes through the gateway, so
+    claude-sonnet-5 returns HTTP 400 no matter what the key is.
+    """
+    primary = cfg.get("OONA_MODEL", "deepseek-v4-flash").strip()
+    fallback = cfg.get("OONA_MODEL_FALLBACK", "qwen3.8-flash").strip()
+    out = [m for m in (primary, fallback) if m]
+    return out or ["deepseek-v4-flash"]
+
+
+def ask_model_with_fallback(cfg, system, message, author):
+    """Try each model in turn. Returns (parsed, model_used).
+
+    A model that answers with something unparseable is a FAILURE, not an answer:
+    falling through to the next one is the whole point. The last error is raised
+    if every model fails, so the caller still records the message as unhandled
+    and retries it next run rather than losing it.
+    """
+    last = None
+    for i, model in enumerate(models_for(cfg)):
+        try:
+            return ask_model(cfg, system, message, author, model), model
+        except Exception as e:
+            last = e
+            detail = str(e) if isinstance(e, (RuntimeError, ValueError)) else type(e).__name__
+            print("  model %s failed (%s)%s" % (model, detail,
+                  "; falling back" if i == 0 else ""), file=sys.stderr)
+    raise last if last else RuntimeError("no model configured")
+
+
+def ask_model(cfg, system, message, author, model=None):
+    url = cfg.get("OONA_API_URL", "https://api.oonacode.oonak.ai/v1/messages")
+    key = cfg.get("OONA_API_KEY", "")
+    model = model or cfg.get("OONA_MODEL", "deepseek-v4-flash")
+    if not key:
+        raise RuntimeError("OONA_API_KEY is not set")
+
+    body = {
+        "model": model,
+        # Reasoning models spend this budget on THINKING before they emit a
+        # word. At 900 the first real question came back stop_reason=max_tokens
+        # with no content blocks at all -- not a malformed answer, no answer,
+        # which then read as a parse failure and hid the cause entirely.
+        "max_tokens": MAX_TOKENS,
+        "system": system,
+        "messages": [{
+            "role": "user",
+            "content": (
+                "A message was just posted in the PCoin Telegram group.\n\n"
+                f"From: {author}\n"
+                f"Message: {message}\n\n"
+                "Decide whether to answer it. Reply with the JSON object described "
+                "in your instructions and nothing else."),
+        }],
+    }
+    req = urllib.request.Request(
+        url, data=json.dumps(body).encode(),
+        headers={"content-type": "application/json",
+                 "x-api-key": key,
+                 "anthropic-version": "2023-06-01"},
+        method="POST")
+    with urllib.request.urlopen(req, timeout=120) as r:
+        j = json.loads(r.read().decode())
+
+    parts = [b.get("text", "") for b in j.get("content", []) if b.get("type") == "text"]
+    raw = "\n".join(parts).strip()
+    if not raw:
+        raise RuntimeError(
+            "model returned no text (stop_reason=%s, output_tokens=%s) -- raise "
+            "ANSWER_MAX_TOKENS" % (j.get("stop_reason"),
+                                   (j.get("usage") or {}).get("output_tokens")))
+    # The model is asked for bare JSON but may fence it. Take the first object.
+    m = re.search(r"\{.*\}", raw, re.S)
+    if not m:
+        raise RuntimeError("model did not return JSON: " + raw[:200])
+    return json.loads(m.group(0))
+
+
+# ---- telegram (reply only, into the one permitted chat) ------------------
+APPROVE = "/usr/local/bin/pcoin-approve"
+
+
+def reply(token, message_id, text):
+    """QUEUE a reply for the owner's approval. This function no longer publishes.
+
+    It used to POST straight into the public group. It does not any more, and the
+    distinction is the whole point: a model now composes text that a human sees
+    before anyone else does. The return value means "accepted into the queue",
+    NOT "visible in the group", and every caller of this function had to be
+    reviewed for that difference -- a queued draft counted as an answer would be
+    an unresolved outcome recorded as a resolved one, which is the single most
+    expensive class of bug in this project.
+
+    The destination is a NAME, not a chat id. pcoin-approve maps "group" to the
+    one permitted chat from its own allow-list, so this script cannot address any
+    other chat even if something rewrites this line -- which is a stronger
+    guarantee than the hardcoded GROUP_ID it replaces.
+
+    The token argument is now unused and kept only so the call sites read the
+    same. This program holding a bot token at all is now unnecessary, and
+    removing it is the obvious next hardening step.
+    """
+    if not os.access(APPROVE, os.X_OK):
+        # FAIL CLOSED. No gate means no publishing -- never a fallback to
+        # posting directly. A fallback here would quietly restore exactly the
+        # behaviour the gate exists to remove, on the day the gate breaks.
+        print("  %s is missing -- REFUSING to post. Nothing was sent." % APPROVE,
+              file=sys.stderr)
+        return False
+    try:
+        r = subprocess.run(
+            [APPROVE, "submit", "--dest", "group",
+             "--reply-to", str(message_id),
+             "--source", "pcoin-group-answer",
+             "--key", "answer-%s" % message_id,
+             "--text", text],
+            capture_output=True, text=True, timeout=60)
+    except Exception as e:
+        print("  could not reach the approval gate (%s)" % type(e).__name__, file=sys.stderr)
+        return False
+    if r.returncode != 0:
+        print("  approval gate refused: %s"
+              % (r.stderr or r.stdout or "").strip().splitlines()[-1:], file=sys.stderr)
+        return False
+    print("  queued for approval: %s" % (r.stdout or "").strip())
+    return True
+
+
+def file_reports(cfg, reports):
+    if not reports:
+        return
+    url = cfg.get("REPORTS_URL", "")
+    token = cfg.get("REPORTS_TOKEN", "")
+    if not url or not token:
+        print("  REPORTS_URL/TOKEN unset -- %d report(s) NOT filed" % len(reports),
+              file=sys.stderr)
+        return
+    req = urllib.request.Request(
+        url, data=json.dumps({"reports": reports}).encode(),
+        headers={"content-type": "application/json", "authorization": "Bearer " + token},
+        method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            print("  filed: " + r.read().decode().strip())
+    except Exception as e:
+        print("  filing failed (%s)" % type(e).__name__, file=sys.stderr)
+
+
+def read_spool():
+    rows = []
+    try:
+        with open(SPOOL, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except Exception:
+                    continue
+    except FileNotFoundError:
+        pass
+    return rows
+
+
+def main():
+    # FIRST. Before the config, before the spool, before any network call.
+    if os.path.exists(DISABLED):
+        try:
+            with open(DISABLED, encoding="utf-8") as fh:
+                why = fh.read().strip()
+        except OSError:
+            why = ""
+        print("DISABLED from the admin panel -- doing nothing. %s" % why)
+        # Exit 0, not an error. A deliberately switched-off agent is not a
+        # failure, and exiting non-zero here would fire OnFailure= and page the
+        # ops channel every minute for as long as it stayed off.
+        return 0
+
+    cfg = conf(CONF)
+    st = load_state()
+
+    if "--status" in sys.argv:
+        print("  mode        : %s" % cfg.get("ANSWER_MODE", "shadow"))
+        print("  models      : %s" % " then ".join(models_for(cfg)))
+        print("  spool       : %d message(s)" % len(read_spool()))
+        print("  handled     : %d" % len(st["handled"]))
+        print("  answered    : %d posted, %d held" % (st["answered"], st["held"]))
+        print("  last run    : %s" % (time.strftime("%Y-%m-%d %H:%M:%SZ",
+              time.gmtime(st["last_run"])) if st["last_run"] else "never"))
+        return 0
+
+    mode = cfg.get("ANSWER_MODE", "shadow").lower()
+    live = (mode == "live") and not DRY
+
+    try:
+        with open(PROMPT, encoding="utf-8") as fh:
+            system = fh.read()
+    except OSError as e:
+        sys.exit("cannot read the prompt at %s: %s" % (PROMPT, e))
+
+    tg = conf(ALERT_CONF).get("TELEGRAM_TOKEN", "")
+    if live and not tg:
+        sys.exit("ANSWER_MODE=live but there is no TELEGRAM_TOKEN -- refusing to pretend")
+
+    now = time.time()
+    rows = [r for r in read_spool()
+            if str(r.get("message_id")) not in st["handled"]
+            and now - float(r.get("date", 0)) <= MAX_AGE_SECONDS]
+    # Oldest first: a conversation answered out of order reads as nonsense.
+    rows.sort(key=lambda r: r.get("date", 0))
+
+    if not rows:
+        st["last_run"] = int(now)
+        if not DRY:
+            save_state(st)
+        print("  nothing to answer")
+        return 0
+
+    reports, posted = [], 0
+    for r in rows:
+        mid = str(r.get("message_id"))
+        uid = str(r.get("from_id") or "?")
+        text = (r.get("text") or "").strip()
+        author = r.get("from") or "someone"
+        if not text:
+            st["handled"][mid] = int(now)
+            continue
+        # RE-CHECK INSIDE THE LOOP. group-watch re-reads a batch whose relay
+        # failed, so the spool deliberately holds duplicates -- "duplicates are
+        # cheap, a lost bug report is not". The filter that built `rows` ran
+        # once, before any of this, so without this second check the same
+        # message_id is processed twice in one pass. Not theoretical: message
+        # 104 was HELD as low-confidence and then ANSWERED from its own
+        # duplicate, seconds apart, in the same run.
+        if mid in st["handled"]:
+            continue
+        if posted >= MAX_PER_RUN:
+            break                                   # the rest wait for the next run
+        if now - float(st["last_user_answer"].get(uid, 0)) < USER_COOLDOWN:
+            continue                                # not marked handled: try again later
+
+        try:
+            out, used_model = ask_model_with_fallback(cfg, system, text, author)
+        except Exception as e:
+            # A RuntimeError we raised says something useful and carries no URL. A
+            # transport error can carry the request URL, and the URL carries the
+            # key -- those stay reported by TYPE only.
+            detail = str(e) if isinstance(e, (RuntimeError, ValueError)) else type(e).__name__
+            print("  model failed on %s: %s" % (mid, detail), file=sys.stderr)
+            continue                                # NOT handled -- a failure resolves nothing
+
+        answer = (out.get("answer") or "").strip() or None
+        conf_level = str(out.get("confidence") or "low").lower()
+        rep = out.get("report") or None
+
+        held_why = None
+        if answer:
+            held_why = guard(answer)
+            if not held_why and conf_level == "low":
+                held_why = "the model was not confident"
+            if not held_why and not live:
+                held_why = "shadow mode — nothing is posted yet"
+
+        send_failed = False
+        if answer and not held_why:
+            if reply(tg, r.get("message_id"), answer):
+                act(action="queued-for-approval", message_id=mid, who=author,
+                    asked=text[:300], answer=answer[:600],
+                    model=used_model, confidence=conf_level)
+                posted += 1
+                # QUEUED, not answered. At this moment the words are in the
+                # approval queue and may never be published. `answered` is left
+                # for what the gate actually publishes; conflating the two would
+                # make the panel claim the group was answered when it was not.
+                st["queued"] = st.get("queued", 0) + 1
+                # The cooldown DOES advance: it exists to stop the bot replying
+                # to one person over and over, and a queued draft has already
+                # used that person's turn.
+                st["last_user_answer"][uid] = int(now)
+                print("  queued %s for approval" % mid)
+            else:
+                # A send failure here is almost never a blip -- it is the bot not
+                # being allowed to post in the group. That was visible only in a
+                # journal nobody reads, which is the exact shape of failure this
+                # estate keeps getting caught by. File it so it shows on the panel,
+                # AND keep retrying: the ingest route dedupes on the report id, so
+                # re-filing the same one every run costs nothing.
+                send_failed = True
+                held_why = ("the reply could NOT be queued for approval -- check that "
+                            "/usr/local/bin/pcoin-approve exists and that the approval "
+                            "queue is readable. NOTHING was posted")
+                st["held"] += 1
+                print("  send failed for %s -- filed, left unhandled for retry" % mid,
+                      file=sys.stderr)
+        elif answer:
+            act(action="held", message_id=mid, who=author, asked=text[:300],
+                answer=answer[:600], model=used_model, confidence=conf_level,
+                reason=held_why)
+            st["held"] += 1
+            print("  held %s: %s" % (mid, held_why))
+
+        # File whenever the model asked for it, AND whenever a draft was held --
+        # ALSO file whenever something was actually POSTED. Not optional:
+        # without it, an answer the model saw no reason to flag went into a
+        # public group with no record anywhere of what it said, and the bot
+        # could not be audited afterwards. Two answers went out that way
+        # before this line existed.
+        # a held answer is precisely the case a person needs to see.
+        if rep or held_why or (answer and not held_why):
+            # Say plainly, in the record itself, whether this went out. The
+            # operator reading /user-reports needs to tell an answer that was
+            # POSTED from a draft that was held.
+            # It says QUEUED because that is what happened. It is not in the
+            # group yet and may never be; /approvals is where its fate is.
+            posted_note = ("QUEUED FOR YOUR APPROVAL -- not yet public\n\n"
+                           if (answer and not held_why) else "")
+            detail = posted_note + "They said:\n" + text[:1500]
+            if answer:
+                detail += ("\n\nDraft reply (%s):\n%s"
+                           % ("QUEUED for approval" if not held_why
+                              else "NOT queued — " + held_why, answer[:1500]))
+            reports.append({
+                "id": "tg-%s" % mid,
+                "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(r.get("date", now))),
+                "kind": "bug" if send_failed else ((rep or {}).get("kind") or "question"),
+                "summary": ((rep or {}).get("summary")
+                            or (text[:120] + ("…" if len(text) > 120 else ""))),
+                "detail": detail,
+                "from": author,
+                "link": "https://t.me/PCoinPCNChat/%s" % mid,
+                "answered": bool(answer and not held_why),
+                "model": used_model,
+            })
+
+        # A message whose reply could not be sent stays unhandled, so the next
+        # run tries again until it ages out of the window.
+        if not send_failed:
+            st["handled"][mid] = int(now)
+
+    # Keep the handled map from growing without bound: a week is far longer than
+    # MAX_AGE_SECONDS, so nothing can be re-answered because it was forgotten.
+    cutoff = now - 7 * 86400
+    st["handled"] = {k: v for k, v in st["handled"].items() if v >= cutoff}
+    st["last_run"] = int(now)
+
+    if DRY:
+        print(json.dumps(reports, indent=2)[:4000])
+        print("\n  DRY RUN: %d would be posted, %d filed, nothing saved" % (posted, len(reports)))
+        return 0
+
+    file_reports(cfg, reports)
+    save_state(st)
+    print("  %d message(s) considered, %d posted, %d filed (mode=%s)"
+          % (len(rows), posted, len(reports), mode))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

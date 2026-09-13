@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the PCoin approval gate every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+# One minute in both directions: the owner should not wait for a prompt after
+# something is queued, and a confirmed item should not sit unpublished. The
+# button press itself is carried by pcoin-group-watch, which runs on its own
+# one-minute timer, so worst case is about two minutes from press to publish.
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

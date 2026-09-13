@@ -153,42 +153,51 @@ if [ -z "${TELEGRAM_TOKEN:-}" ]; then
   die "$CONF has no TELEGRAM_TOKEN"
 fi
 
-if [ -n "$PHOTO" ]; then
-  # --form-string, not -F, for the text fields: -F gives a leading '@' or '<'
-  # and an embedded ';type=' special meaning inside the value, so a caption
-  # is not something -F can be trusted with. -F stays for the file itself.
-  RESP=$(curl -s --max-time 60 -X POST \
-    "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendPhoto" \
-    --form-string "chat_id=${ANNOUNCE_CHAT}" \
-    -F "photo=@${PHOTO}" \
-    --form-string "caption=${TEXT}" \
-    --form-string "parse_mode=Markdown" 2>&1)
-else
-  RESP=$(curl -s --max-time 25 -X POST \
-    "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
-    --data-urlencode "chat_id=${ANNOUNCE_CHAT}" \
-    --data-urlencode "text=${TEXT}" \
-    --data-urlencode "parse_mode=Markdown" \
-    --data-urlencode "disable_web_page_preview=false" 2>&1)
+# ---- HAND IT TO THE APPROVAL GATE. This no longer publishes. --------------
+#
+# Until 2026-09-13 this block curled sendPhoto/sendMessage straight at the public
+# channel. CLAUDE.md required a DM preview and an explicit yes from the owner
+# first -- but that was a procedure, which is to say it worked exactly as well as
+# whoever was following it, and nothing in the code enforced it.
+#
+# Now the announcement goes into pcoin-approve: the owner gets the real picture
+# and the real words with Confirm and Cancel under them, and only Confirm
+# publishes. The words are frozen and hashed at submission, so what he approves
+# is byte-for-byte what the channel gets.
+#
+# --markdown because this tool has always sent parse_mode=Markdown, and the gate
+# previews with the same parse_mode so the preview renders like the post.
+APPROVE=/usr/local/bin/pcoin-approve
+if [ ! -x "$APPROVE" ]; then
+  # FAIL CLOSED, and say where the gate lives. There is deliberately NO fallback
+  # to publishing directly: a fallback would quietly restore the ungated
+  # behaviour on the day the gate is missing, which is the day it matters.
+  tglog --status failed --subject "$TITLE" --body "$BODY" --error "no approval gate on this host"
+  die "no $APPROVE on this host -- announcements must go through the approval gate.
+Run this on the gate host (the one that also runs pcoin-group-watch), or install
+pcoin-approve here. Nothing was sent."
 fi
 
-case "$RESP" in
-  *'"ok":true'*)
-      # Record the message_id, not just the timestamp. Without it there is no
-      # way to correct a post later: the Bot API cannot read channel history,
-      # so an announcement with a mistake in it can only be identified by
-      # probing ids one at a time and hoping. That happened once already, over
-      # a missing link, and the fix had to become a second post because
-      # overwriting the wrong public message was the worse risk.
-      MID=$(printf '%s' "$RESP" | grep -oE '"message_id":[0-9]+' | head -1 | cut -d: -f2)
-      printf '%s\tmessage_id=%s\t%s\n'         "$(date -u '+%Y-%m-%d %H:%M UTC')" "${MID:-unknown}" "$TITLE" > "$SEEN/$KEY"
-      log "announced ($KEY, message_id=${MID:-unknown}${PHOTO:+, photo=$(basename "$PHOTO")}): $TITLE"
-      tglog --status sent --subject "$TITLE" --body "$BODY" --message-id "${MID:-unknown}"
-      echo "posted to @PCoinPCN (message_id=${MID:-unknown})"
-      ;;
-  *)  # No stamp on failure: an undelivered announcement must be retried, not
-      # remembered as sent.
-      tglog --status failed --subject "$TITLE" --body "$BODY" --error "$(printf '%s' "$RESP" | head -c 300)"
-      die "delivery FAILED: $(printf '%s' "$RESP" | head -c 300)"
-      ;;
-esac
+if [ -n "$PHOTO" ]; then
+  OUT=$("$APPROVE" submit --dest channel --markdown --source pcoin-announce \
+        --key "$KEY" --photo "$PHOTO" --text "$TEXT" 2>&1) || {
+    tglog --status failed --subject "$TITLE" --body "$BODY" --error "$(printf '%s' "$OUT" | head -c 300)"
+    die "the approval gate refused it: $OUT"
+  }
+else
+  OUT=$("$APPROVE" submit --dest channel --markdown --source pcoin-announce \
+        --key "$KEY" --text "$TEXT" 2>&1) || {
+    tglog --status failed --subject "$TITLE" --body "$BODY" --error "$(printf '%s' "$OUT" | head -c 300)"
+    die "the approval gate refused it: $OUT"
+  }
+fi
+
+# NO STAMP IN "$SEEN". The stamp meant "this was published" and it is not
+# published -- it is queued, and it may be cancelled. pcoin-approve dedupes on
+# --key itself, so a re-run cannot ask the owner twice, and if he cancels, a
+# later deliberate re-run is allowed to queue it again. Writing the stamp here
+# would record an unresolved outcome as a resolved one.
+log "queued for approval ($KEY${PHOTO:+, photo=$(basename "$PHOTO")}): $TITLE"
+tglog --status queued --subject "$TITLE" --body "$BODY"
+echo "QUEUED for your approval as $OUT"
+echo "Nothing is public yet. Check Telegram: press Confirm to publish to @PCoinPCN, or Cancel."

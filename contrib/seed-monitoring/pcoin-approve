@@ -1,0 +1,766 @@
+#!/usr/bin/env python3
+"""The approval gate: nothing reaches a public Telegram surface without the owner pressing Confirm.
+
+WHY THIS EXISTS, in the owner's words (2026-09-13):
+
+    "every automatic message to public channel or group should be send to my
+     personal bot @PCoinPCNBot and there should be 2 button confirm and cancel,
+     if i confirm then it should be sent to destination, otherwise ill cancel,
+     this is for security so the admin AI model if go mad, then nothing be
+     posted publicly until i confirm"
+
+That is a threat model, not a preference, and it is the right one. There is now a
+model in this estate that composes text and posts it to a public group by itself.
+Its output filter is good. It is still a model, and the blast radius of a bad
+minute is the project's public reputation. A human confirm button caps that at
+"the owner saw something odd in a DM".
+
+THE FIVE PROPERTIES THIS FILE IS BUILT AROUND. Each is here because the obvious
+implementation would have got it wrong:
+
+1. FAIL CLOSED. Every failure path -- unreadable queue, unreadable config, an
+   unparseable item, a Telegram error -- refuses to publish. Nothing here may
+   ever resolve an unknown into "go ahead". A gate that opens when it is confused
+   is not a gate.
+
+2. THE APPROVED BYTES ARE THE PUBLISHED BYTES. What the owner sees in the DM is
+   the real message, and a SHA-256 of it is stamped on the item at submit time
+   and re-checked immediately before publishing. If anything edits the queue
+   between approval and publication -- the exact move a compromised or
+   malfunctioning process would make -- the hash disagrees and the item is
+   refused, loudly. Approving a preview and publishing something else is the one
+   failure this design exists to make impossible.
+
+3. THERE IS NO BYPASS. No --yes, no --force, no auto-approve, no environment
+   variable that skips the DM. A caller can only ever move an item to `pending`.
+   Only a callback carrying the owner's own Telegram user id can move it to
+   `confirmed`, and only `confirmed` items publish. Adding a bypass flag later
+   would defeat the entire file, so there is deliberately no hook to hang one on.
+
+4. DESTINATIONS ARE AN ALLOW-LIST, NEVER A PARAMETER. The caller passes a NAME
+   ("channel", "group"), not a chat id. pcoin-announce hardcodes the public
+   channel id for exactly this reason: an id that arrives as an argument is an id
+   an attacker -- or a confused model -- can change, and the ops channel has been
+   posted to publicly once already.
+
+5. A MAD PROCESS MUST NOT BE ABLE TO FLOOD THE OWNER. A model in a loop would
+   otherwise submit thousands of approval requests and the DM becomes unusable,
+   which is a denial of the approval mechanism itself. MAX_PENDING caps it; over
+   the cap, submissions are refused and ops is told once.
+
+EXPIRY is the fifth property's quieter cousin: an item nobody decides within
+EXPIRE_HOURS can never be published. A week-old approval sitting in a queue is a
+loaded gun -- circumstances have moved on, and "he said yes on Tuesday" is not
+consent to publish on Sunday.
+
+USAGE
+    pcoin-approve submit --dest group --text "..." [--reply-to MID] [--source NAME]
+    pcoin-approve submit --dest channel --photo card.png --text "..." [--key K]
+    pcoin-approve list [--all]
+    pcoin-approve show ID
+    pcoin-approve decide --id ID --decision confirm|cancel --by TELEGRAM_USER_ID
+    pcoin-approve tick          # DM anything pending, publish anything confirmed
+    pcoin-approve selftest      # exercises the state machine, sends nothing
+"""
+import argparse
+import base64
+import hashlib
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+CONF = os.environ.get("PCOIN_ALERT_CONF", "/etc/pcoin/alert.conf")
+QUEUE = os.environ.get("APPROVE_QUEUE", "/var/lib/pcoin-approve/queue.json")
+
+# The owner's Telegram user id. The ONLY account whose button press counts.
+OWNER = int(os.environ.get("APPROVE_OWNER", "508669931"))
+
+# Destination allow-list. A name maps to a chat id here and nowhere else, so a
+# caller can never name a chat that is not on this list -- including, especially,
+# the private ops channel, which must never receive a public announcement.
+DESTS = {
+    "channel": {"chat": "-1003712285504", "label": "@PCoinPCN (public channel)"},
+    "group": {"chat": "-1003975107618", "label": "@PCoinPCNChat (public group)"},
+    # A private channel the owner keeps for development. It is a REAL channel
+    # send -- same code path, same permissions, same failure modes as the public
+    # one -- with nobody watching but him. Testing the publish path against the
+    # self-test DM alone would leave the channel path unexercised until the first
+    # real announcement, which is the worst possible moment to discover the bot
+    # is not an administrator there.
+    "test": {"chat": "-1004408608893", "label": "the private test channel"},
+    # Publishes back to the owner's own DM. It exists so the whole loop --
+    # submit, DM, button, publish -- can be proven end to end without touching a
+    # public surface. A gate only ever observed refusing has not been tested.
+    "selftest": {"chat": str(OWNER), "label": "the owner's DM (self-test only)"},
+}
+
+# Where an agent's off switch lives. A FILE, not a database row and not a
+# process signal: a disabled agent must stay disabled across a reboot, a
+# redeploy and a crash, and the agent itself must be able to check it with a
+# single stat call before it does anything else.
+AGENT_FLAGS = os.environ.get("AGENT_FLAG_DIR", "/etc/pcoin/agents")
+
+MAX_PENDING = int(os.environ.get("APPROVE_MAX_PENDING", "12"))
+EXPIRE_HOURS = float(os.environ.get("APPROVE_EXPIRE_HOURS", "48"))
+MAX_TEXT = 3900          # Telegram's own limit is 4096; leave room for the footer.
+MAX_CAPTION = 1000       # Telegram caps a photo caption at 1024.
+
+
+# ── plumbing ───────────────────────────────────────────────────────────────
+def conf():
+    out = {}
+    try:
+        with open(CONF, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip().strip('"').strip("'")
+    except OSError as e:
+        # FAIL CLOSED. No config means no token means nothing can be published,
+        # and that is the correct outcome -- but say so rather than behaving as
+        # though the queue were empty.
+        sys.exit("cannot read %s: %s" % (CONF, e))
+    return out
+
+
+def api(token, method, params, files=None):
+    """One Telegram call. Returns the parsed body; raises on transport failure.
+
+    Multipart is hand-rolled because sending a photo needs it and this box has no
+    requests module. The alternative -- shipping the photo as a URL -- would mean
+    the owner approves a picture Telegram fetched from somewhere else, which is
+    not the same picture.
+    """
+    url = "https://api.telegram.org/bot%s/%s" % (token, method)
+    if files:
+        boundary = "----pcoinapprove%d" % int(time.time() * 1000)
+        body = b""
+        for k, v in params.items():
+            body += ("--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n%s\r\n"
+                     % (boundary, k, v)).encode()
+        for k, (fname, blob) in files.items():
+            body += ("--%s\r\nContent-Disposition: form-data; name=\"%s\"; filename=\"%s\"\r\n"
+                     "Content-Type: application/octet-stream\r\n\r\n" % (boundary, k, fname)).encode()
+            body += blob + b"\r\n"
+        body += ("--%s--\r\n" % boundary).encode()
+        req = urllib.request.Request(url, data=body, method="POST")
+        req.add_header("content-type", "multipart/form-data; boundary=%s" % boundary)
+    else:
+        req = urllib.request.Request(
+            url, data=urllib.parse.urlencode(params).encode(), method="POST")
+    with urllib.request.urlopen(req, timeout=40) as r:
+        return json.loads(r.read().decode())
+
+
+def load():
+    """Read the queue. An UNREADABLE queue is not an empty queue.
+
+    Returning {} on a parse error would silently drop every pending approval and
+    look exactly like a quiet day. This is the CLAUDE.md 7.1 rule applied to the
+    one file that decides whether something is published.
+    """
+    if not os.path.exists(QUEUE):
+        return {"items": []}
+    try:
+        with open(QUEUE, encoding="utf-8") as fh:
+            d = json.load(fh)
+    except (OSError, ValueError) as e:
+        sys.exit("REFUSING to act: %s is unreadable (%s). Nothing is published "
+                 "while the queue cannot be read." % (QUEUE, e))
+    d.setdefault("items", [])
+    return d
+
+
+def save(d):
+    os.makedirs(os.path.dirname(QUEUE), exist_ok=True)
+    tmp = QUEUE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(d, fh, indent=2)
+    os.replace(tmp, QUEUE)          # atomic: an interrupted write cannot truncate it
+    try:
+        os.chmod(QUEUE, 0o600)
+    except OSError:
+        pass
+
+
+def digest(item):
+    """The bytes the owner is agreeing to.
+
+    Covers destination, text, caption and the photo's own content -- everything
+    that decides what the public sees. Re-checked at publish time; a mismatch
+    means something edited an approved item and it is refused.
+    """
+    h = hashlib.sha256()
+    # parse_mode is IN here deliberately. The same characters rendered as
+    # Markdown and as plain text are two different messages to a reader, so
+    # changing it after approval is as much a tamper as changing the words.
+    for part in (item.get("dest", ""), item.get("text", ""),
+                 item.get("caption", ""), item.get("parse_mode", "")):
+        h.update(b"\x00")
+        h.update(str(part).encode("utf-8"))
+    h.update(b"\x00")
+    h.update((item.get("photo_sha") or "").encode())
+    return h.hexdigest()
+
+
+def now():
+    return int(time.time())
+
+
+def stamp(ts):
+    return time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(ts)) if ts else "-"
+
+
+# Set by the selftest. A test that exercises the refusal paths would otherwise
+# page the owner every time it runs, and an alert channel that carries drills is
+# an alert channel people stop reading -- which is the failure this whole file is
+# trying to prevent, one level up.
+SELFTEST = False
+
+
+def notify_ops(subject, body):
+    """Best-effort ops alert. Never affects this program's exit code."""
+    if SELFTEST:
+        print("  (selftest: would have alerted ops -- %s)" % subject)
+        return
+    n = "/usr/local/bin/pcoin-notify"
+    if os.access(n, os.X_OK):
+        os.spawnv(os.P_NOWAIT, n, [n, subject, body])
+
+
+# ── commands ───────────────────────────────────────────────────────────────
+def cmd_submit(a):
+    if a.dest not in DESTS:
+        sys.exit("unknown destination %r. Allowed: %s" % (a.dest, ", ".join(sorted(DESTS))))
+
+    text = a.text or ""
+    if a.photo and len(text) > MAX_CAPTION:
+        sys.exit("a photo caption is capped at %d characters by Telegram and this is %d. "
+                 "Split it: photo plus short caption, then the full text as a second "
+                 "message." % (MAX_CAPTION, len(text)))
+    if not a.photo and len(text) > MAX_TEXT:
+        sys.exit("text is %d characters; the limit here is %d." % (len(text), MAX_TEXT))
+    if not text.strip():
+        sys.exit("refusing to queue an empty message.")
+
+    photo_sha, photo_b64 = None, None
+    if a.photo:
+        try:
+            with open(a.photo, "rb") as fh:
+                blob = fh.read()
+        except OSError as e:
+            sys.exit("cannot read photo %s: %s" % (a.photo, e))
+        if len(blob) > 8 * 1024 * 1024:
+            sys.exit("photo is %.1f MB; Telegram's own limit is 10 MB and this refuses "
+                     "above 8." % (len(blob) / 1048576))
+        photo_sha = hashlib.sha256(blob).hexdigest()
+        # Carried IN the queue, not as a path. A path is a promise about a file
+        # that may be edited, moved or deleted between approval and publication;
+        # the bytes cannot be.
+        photo_b64 = base64.b64encode(blob).decode()
+
+    d = load()
+    pending = [i for i in d["items"] if i["state"] in ("pending", "awaiting")]
+    if len(pending) >= MAX_PENDING:
+        notify_ops("approval queue FULL",
+                   "%d items are waiting for the owner and a new submission from %s was "
+                   "REFUSED. A process submitting faster than a human can approve is the "
+                   "flooding case this cap exists for. Nothing was published."
+                   % (len(pending), a.source or "unknown"))
+        sys.exit("REFUSED: %d items already awaiting approval (cap %d)." % (len(pending), MAX_PENDING))
+
+    # Idempotency: the same key never queues twice. pcoin-announce already works
+    # this way, and a retry after a lost response must not ask the owner twice.
+    if a.key:
+        for i in d["items"]:
+            if i.get("key") == a.key and i["state"] not in ("cancelled", "expired", "failed"):
+                print("already queued as %s (state %s); nothing new submitted" % (i["id"], i["state"]))
+                return 0
+
+    item = {
+        "id": hashlib.sha256(("%s%s%s" % (now(), text, a.dest)).encode()).hexdigest()[:12],
+        "created": now(),
+        "source": a.source or os.environ.get("APPROVE_SOURCE") or "unknown",
+        "dest": a.dest,
+        "text": text,
+        "caption": a.caption or "",
+        "reply_to": a.reply_to or "",
+        "key": a.key or "",
+        # Empty means plain text. pcoin-announce sends Markdown; the group answer
+        # bot deliberately does not, because a model composing Markdown that has
+        # to balance is a model that will eventually emit a lone asterisk and
+        # have its message refused by Telegram.
+        "parse_mode": ("Markdown" if getattr(a, "markdown", False) else ""),
+        "photo_b64": photo_b64,
+        "photo_sha": photo_sha,
+        "state": "pending",
+        "dm_message_id": None,
+        "decided_at": None,
+        "decided_by": None,
+        "published_at": None,
+        "published_message_id": None,
+        "error": None,
+    }
+    item["digest"] = digest(item)
+    d["items"].append(item)
+    save(d)
+    print(item["id"])
+    return 0
+
+
+def keyboard(item_id):
+    return json.dumps({"inline_keyboard": [[
+        {"text": "✅ Confirm — publish it", "callback_data": "pa:%s:c" % item_id},
+        {"text": "❌ Cancel", "callback_data": "pa:%s:x" % item_id},
+    ]]})
+
+
+def cmd_tick(a):
+    """One step of the gate. Run from a timer.
+
+    Order matters: expire first, then ask, then publish. Expiring first means an
+    item that aged out while the daemon was down can never be published by the
+    tick that notices it.
+    """
+    c = conf()
+    token = c.get("TELEGRAM_TOKEN")
+    if not token:
+        sys.exit("no TELEGRAM_TOKEN in %s -- refusing to do anything." % CONF)
+
+    d = load()
+    changed = False
+
+    # ---- expire ----------------------------------------------------------
+    for i in d["items"]:
+        if i["state"] in ("pending", "awaiting", "confirmed"):
+            age_h = (now() - i["created"]) / 3600.0
+            if age_h > EXPIRE_HOURS:
+                i["state"] = "expired"
+                i["error"] = "not decided within %g hours" % EXPIRE_HOURS
+                changed = True
+                print("expired %s (%s, age %.1f h)" % (i["id"], i["dest"], age_h))
+
+    # ---- ask -------------------------------------------------------------
+    for i in d["items"]:
+        if i["state"] != "pending":
+            continue
+        dest = DESTS[i["dest"]]
+        header = ("⚠️ APPROVAL NEEDED\n"
+                  "Destination: %s\nFrom: %s\nQueued: %s\n"
+                  "──────────\n"
+                  % (dest["label"], i["source"], stamp(i["created"])))
+        try:
+            # The REAL thing first -- the exact photo and the exact words that
+            # will be published -- so what is approved is what goes out, never a
+            # description of it. Then the buttons underneath.
+            # The preview MUST render exactly as the publication will, which
+            # means the same parse_mode. A preview that renders differently from
+            # the post is worse than no preview: it is a preview of something
+            # that will not be published.
+            pm = i.get("parse_mode") or ""
+            if i.get("photo_b64"):
+                p = {"chat_id": str(OWNER), "caption": i["text"][:MAX_CAPTION]}
+                if pm:
+                    p["parse_mode"] = pm
+                api(token, "sendPhoto", p,
+                    files={"photo": ("card.png", base64.b64decode(i["photo_b64"]))})
+            else:
+                p = {"chat_id": str(OWNER), "text": i["text"],
+                     "disable_web_page_preview": "true"}
+                if pm:
+                    p["parse_mode"] = pm
+                api(token, "sendMessage", p)
+            r = api(token, "sendMessage", {
+                "chat_id": str(OWNER),
+                "text": header + "Publish this to %s?" % dest["label"],
+                "reply_markup": keyboard(i["id"]),
+            })
+            i["dm_message_id"] = (r.get("result") or {}).get("message_id")
+            i["state"] = "awaiting"
+            changed = True
+            print("asked %s -> %s" % (i["id"], i["dest"]))
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            # Stays `pending`. A failed ask resolves nothing and the next tick
+            # retries; it must never fall through to publishing.
+            i["error"] = "could not ask: %s" % e
+            changed = True
+            print("could not ask %s: %s" % (i["id"], e))
+
+    # ---- publish ---------------------------------------------------------
+    for i in d["items"]:
+        if i["state"] != "confirmed":
+            continue
+        if digest(i) != i.get("digest"):
+            # Something changed an item AFTER the owner approved it. This is the
+            # exact move a compromised or malfunctioning process would make, and
+            # it is the reason the hash exists.
+            i["state"] = "failed"
+            i["error"] = "CONTENT CHANGED AFTER APPROVAL -- refused"
+            changed = True
+            notify_ops("approval gate REFUSED a tampered item",
+                       "Item %s was approved and then its content changed before it "
+                       "could be published. It was NOT published. This should never "
+                       "happen; treat it as a compromise until shown otherwise." % i["id"])
+            print("REFUSED %s: content changed after approval" % i["id"])
+            continue
+        dest = DESTS[i["dest"]]
+        try:
+            pm = i.get("parse_mode") or ""
+            if i.get("photo_b64"):
+                p = {"chat_id": dest["chat"], "caption": i["text"][:MAX_CAPTION]}
+                if pm:
+                    p["parse_mode"] = pm
+                r = api(token, "sendPhoto", p,
+                        files={"photo": ("card.png", base64.b64decode(i["photo_b64"]))})
+            else:
+                p = {"chat_id": dest["chat"], "text": i["text"],
+                     "disable_web_page_preview": "true"}
+                if pm:
+                    p["parse_mode"] = pm
+                if i.get("reply_to"):
+                    p["reply_to_message_id"] = str(i["reply_to"])
+                r = api(token, "sendMessage", p)
+            if not r.get("ok"):
+                raise ValueError(r.get("description") or "telegram said not ok")
+            i["state"] = "published"
+            i["published_at"] = now()
+            i["published_message_id"] = (r.get("result") or {}).get("message_id")
+            # The bytes are no longer needed and a queue full of base64 images is
+            # a queue nobody will read.
+            i["photo_b64"] = None
+            changed = True
+            print("published %s -> %s (message %s)" % (i["id"], i["dest"], i["published_message_id"]))
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            i["error"] = "publish failed: %s" % e
+            changed = True
+            print("publish failed for %s: %s" % (i["id"], e))
+
+    if changed:
+        save(d)
+    return 0
+
+
+def cmd_decide(a):
+    """Record the owner's decision. Called by pcoin-group-watch, which is the
+    estate's only permitted consumer of getUpdates and therefore the only thing
+    that can see a button press."""
+    if a.decision not in ("confirm", "cancel"):
+        sys.exit("decision must be confirm or cancel")
+    if int(a.by) != OWNER:
+        # Only one account's press counts. Nobody else can see these buttons --
+        # they are in a private DM -- but "nobody else can reach it" is an
+        # assumption about Telegram, and this is a check.
+        notify_ops("approval gate: press from the WRONG account",
+                   "Telegram user %s tried to decide approval item %s. Ignored."
+                   % (a.by, a.id))
+        sys.exit("refusing: user %s is not the owner" % a.by)
+    d = load()
+    for i in d["items"]:
+        if i["id"] != a.id:
+            continue
+        if i["state"] not in ("pending", "awaiting"):
+            # Pressing an old button must not resurrect a published or cancelled
+            # item. Telegram keeps buttons alive indefinitely.
+            print("%s is already %s; decision ignored" % (i["id"], i["state"]))
+            return 0
+        i["state"] = "confirmed" if a.decision == "confirm" else "cancelled"
+        i["decided_at"] = now()
+        i["decided_by"] = int(a.by)
+        save(d)
+        print("%s -> %s" % (i["id"], i["state"]))
+        return 0
+    sys.exit("no such item: %s" % a.id)
+
+
+def _ingest(path, body):
+    """POST to the admin panel's ingest, reusing the jobs reporter's identity."""
+    import urllib.request as _u
+    c = {}
+    try:
+        with open("/etc/pcoin/jobs-report.conf", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    c[k.strip()] = v.strip().strip('"').strip("'")
+    except OSError:
+        return None
+    url = (c.get("JOBS_REPORT_URL") or "").replace("/ingest/jobs", path)
+    token = c.get("JOBS_REPORT_TOKEN", "")
+    if not url or not token:
+        return None
+    req = _u.Request(url, data=json.dumps(body).encode(), method="POST",
+                     headers={"content-type": "application/json",
+                              "authorization": "Bearer " + token})
+    with _u.urlopen(req, timeout=30) as r:
+        raw = r.read().decode()
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return {"raw": raw}
+
+
+def cmd_controls(a):
+    """Pull what the owner decided in the panel, apply it, acknowledge it.
+
+    FAILS CLOSED in the only direction that matters: if the panel cannot be
+    reached, nothing is applied and nothing is acknowledged. An unreachable panel
+    must never look like "he approved everything" OR like "he switched everything
+    off" -- it looks like nothing happened, because nothing did.
+    """
+    try:
+        ctl = _ingest("/ingest/controls", {})
+    except Exception as e:
+        print("  could not read panel controls (%s)" % type(e).__name__)
+        return 0
+    if not ctl:
+        return 0
+
+    # ---- agent on/off ---------------------------------------------------
+    os.makedirs(AGENT_FLAGS, exist_ok=True)
+    for key, want in (ctl.get("agents") or {}).items():
+        if not isinstance(want, dict) or "enabled" not in want:
+            continue
+        safe = "".join(ch for ch in str(key) if ch.isalnum() or ch in "-_")
+        if not safe:
+            continue
+        flag = os.path.join(AGENT_FLAGS, safe + ".disabled")
+        on = bool(want.get("enabled"))
+        if on and os.path.exists(flag):
+            os.unlink(flag)
+            print("  agent %s ENABLED (by %s)" % (safe, want.get("by")))
+        elif not on and not os.path.exists(flag):
+            with open(flag, "w", encoding="utf-8") as fh:
+                fh.write("disabled from the admin panel at %s by %s\n"
+                         % (want.get("at"), want.get("by")))
+            print("  agent %s DISABLED (by %s)" % (safe, want.get("by")))
+
+    # ---- approvals decided in the panel ---------------------------------
+    applied = []
+    c = conf()
+    token = c.get("TELEGRAM_TOKEN", "")
+    for d in (ctl.get("decisions") or []):
+        item_id, decision = str(d.get("id", "")), str(d.get("decision", ""))
+        if decision not in ("confirm", "cancel") or not item_id:
+            continue
+
+        class A:
+            pass
+        A.id, A.decision, A.by = item_id, decision, str(OWNER)
+        try:
+            # The SAME path a Telegram press takes, state check and all. No
+            # privileged route for the panel -- a privileged route is the route
+            # worth attacking.
+            cmd_decide(A)
+            applied.append(item_id)
+        except SystemExit as e:
+            print("  panel decision %s refused: %s" % (item_id, e))
+            # Acknowledge it anyway: a refusal is final, and leaving it
+            # unacknowledged would retry it every minute for ever.
+            applied.append(item_id)
+            continue
+
+        # Tell the owner on Telegram. The panel is a second way in; if he ever
+        # sees this without having clicked, someone else has a session.
+        if token:
+            try:
+                api(token, "sendMessage", {
+                    "chat_id": str(OWNER),
+                    "text": ("Approval %s was %sED from the ADMIN PANEL (not from here).\n"
+                             "Item %s.\n\nIf that was not you, someone has a panel session."
+                             % (item_id, decision.upper(), item_id)),
+                })
+            except Exception as e:
+                print("  could not notify about the panel decision (%s)" % type(e).__name__)
+
+    if applied:
+        try:
+            _ingest("/ingest/controls", {"ack": applied})
+            print("  applied %d panel decision(s)" % len(applied))
+        except Exception as e:
+            # NOT acknowledged means it will be retried, and cmd_decide is
+            # idempotent -- an item already decided is left alone. Safe to retry.
+            print("  applied but could not acknowledge (%s)" % type(e).__name__)
+    return 0
+
+
+def cmd_report(a):
+    """Push the queue to the admin panel so the owner can read it on a page.
+
+    The photo bytes are stripped: the panel is a record of WHAT was decided, not
+    a second copy of the artwork, and a JSON file carrying several base64 images
+    is a file nobody will open twice.
+
+    It reuses the jobs reporter's host identity and token rather than minting a
+    second credential -- two copies of a credential is two things to rotate and
+    one thing to forget.
+    """
+    import urllib.request as _u
+    c = {}
+    try:
+        with open("/etc/pcoin/jobs-report.conf", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    c[k.strip()] = v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    url = (c.get("JOBS_REPORT_URL") or "").replace("/ingest/jobs", "/ingest/approvals")
+    token, host = c.get("JOBS_REPORT_TOKEN", ""), c.get("JOBS_REPORT_HOST", "")
+    if not url or not token or not host:
+        print("  no ingest config -- queue not reported")
+        return 0
+    d = load()
+    items = []
+    for i in d["items"][-200:]:
+        j = {k: v for k, v in i.items() if k != "photo_b64"}
+        j["has_photo"] = bool(i.get("photo_sha"))
+        # The full text IS sent: the whole point of the page is that the owner can
+        # read what was published or refused, months later, without opening a
+        # server. It is text he wrote or approved, going to a panel only he can
+        # reach.
+        items.append(j)
+    body = json.dumps({"host": host, "items": items,
+                       "dests": {k: v["label"] for k, v in DESTS.items()}}).encode()
+    req = _u.Request(url, data=body, method="POST",
+                     headers={"content-type": "application/json",
+                              "authorization": "Bearer " + token})
+    try:
+        with _u.urlopen(req, timeout=30) as r:
+            print("  reported: %s" % r.read().decode().strip())
+    except Exception as e:
+        # Never fatal. Failing to REPORT the queue must not stop the gate
+        # running the queue.
+        print("  could not report the queue (%s)" % type(e).__name__)
+    return 0
+
+
+def cmd_list(a):
+    d = load()
+    items = d["items"] if a.all else [i for i in d["items"]
+                                      if i["state"] in ("pending", "awaiting", "confirmed")]
+    if not items:
+        print("nothing waiting")
+        return 0
+    print("%-13s %-10s %-9s %-22s %s" % ("id", "state", "dest", "queued", "source"))
+    for i in sorted(items, key=lambda x: x["created"], reverse=True):
+        print("%-13s %-10s %-9s %-22s %s"
+              % (i["id"], i["state"], i["dest"], stamp(i["created"]), i["source"]))
+    return 0
+
+
+def cmd_show(a):
+    for i in load()["items"]:
+        if i["id"] == a.id:
+            out = dict(i)
+            if out.get("photo_b64"):
+                out["photo_b64"] = "<%d bytes, not shown>" % len(out["photo_b64"])
+            print(json.dumps(out, indent=2))
+            return 0
+    sys.exit("no such item: %s" % a.id)
+
+
+def cmd_selftest(a):
+    """Exercise the state machine with no network at all.
+
+    Proves the three things that would be catastrophic if wrong: that an
+    unapproved item cannot publish, that a tampered approved item is refused,
+    and that a press from the wrong account is ignored. A gate only ever
+    observed refusing nothing has not been tested.
+    """
+    global QUEUE, SELFTEST
+    SELFTEST = True
+    QUEUE = "/tmp/pcoin-approve-selftest.json"
+    if os.path.exists(QUEUE):
+        os.unlink(QUEUE)
+    ok = True
+
+    class A:
+        dest, text, caption, photo, key, reply_to, source = "selftest", "hello", "", None, "", "", "selftest"
+    cmd_submit(A)
+    d = load()
+    item = d["items"][0]
+    print("  1. submitted, state=%s  (must be 'pending', never publishable)" % item["state"])
+    ok &= item["state"] == "pending"
+
+    class B:
+        id, decision, by = item["id"], "confirm", "1"
+    try:
+        cmd_decide(B)
+        print("  2. a press from the WRONG account was ACCEPTED -- FAIL")
+        ok = False
+    except SystemExit:
+        print("  2. press from the wrong account: refused  OK")
+
+    class C:
+        id, decision, by = item["id"], "confirm", str(OWNER)
+    cmd_decide(C)
+    d = load()
+    print("  3. owner confirmed, state=%s  (must be 'confirmed')" % d["items"][0]["state"])
+    ok &= d["items"][0]["state"] == "confirmed"
+
+    d["items"][0]["text"] = "something else entirely"
+    save(d)
+    d = load()
+    tampered = digest(d["items"][0]) != d["items"][0]["digest"]
+    print("  4. content changed after approval -> digest mismatch detected: %s" % tampered)
+    ok &= tampered
+
+    os.unlink(QUEUE)
+    print("selftest %s" % ("PASSED" if ok else "FAILED"))
+    return 0 if ok else 1
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("submit")
+    s.add_argument("--dest", required=True, choices=sorted(DESTS))
+    s.add_argument("--text", required=True)
+    s.add_argument("--caption", default="")
+    s.add_argument("--photo", default=None)
+    s.add_argument("--key", default="")
+    s.add_argument("--reply-to", dest="reply_to", default="")
+    s.add_argument("--source", default="")
+    s.add_argument("--markdown", action="store_true",
+                   help="render with Telegram's legacy Markdown. Off by default: "
+                        "unbalanced Markdown is REFUSED by Telegram, and a message "
+                        "composed by a model will eventually contain a lone asterisk.")
+    s.set_defaults(fn=cmd_submit)
+
+    s = sub.add_parser("tick"); s.set_defaults(fn=cmd_tick)
+
+    s = sub.add_parser("decide")
+    s.add_argument("--id", required=True)
+    s.add_argument("--decision", required=True)
+    s.add_argument("--by", required=True)
+    s.set_defaults(fn=cmd_decide)
+
+    s = sub.add_parser("list")
+    s.add_argument("--all", action="store_true")
+    s.set_defaults(fn=cmd_list)
+
+    s = sub.add_parser("show")
+    s.add_argument("id")
+    s.set_defaults(fn=cmd_show)
+
+    s = sub.add_parser("report"); s.set_defaults(fn=cmd_report)
+
+    s = sub.add_parser("controls"); s.set_defaults(fn=cmd_controls)
+
+    s = sub.add_parser("selftest"); s.set_defaults(fn=cmd_selftest)
+
+    a = p.parse_args()
+    return a.fn(a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

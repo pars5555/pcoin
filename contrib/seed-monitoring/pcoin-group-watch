@@ -29,6 +29,7 @@ import html
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import urllib.error
@@ -121,6 +122,102 @@ def send(token, chat, text):
         return False
 
 
+APPROVE = "/usr/local/bin/pcoin-approve"
+# The owner's Telegram user id. The only account whose press counts; pcoin-approve
+# checks this again on its own side, deliberately, because a check that exists in
+# one place is a check that moves when somebody refactors the other place.
+APPROVE_OWNER = int(os.environ.get("APPROVE_OWNER", "508669931"))
+
+
+def handle_callback(token, cb):
+    """Carry one approval button press to pcoin-approve.
+
+    This function decides NOTHING. It parses, checks who pressed, shells out, and
+    reports back to Telegram. The queue, the allow-listed destinations and the
+    content hash all live in pcoin-approve, so the poller cannot be talked into
+    publishing anything by a malformed update.
+
+    Every path answers the callback. An unanswered callback leaves a spinner
+    turning on the owner's phone for ever, which reads as "it is working" when
+    nothing is.
+
+    Returns True if this update may be CONSUMED -- either it was acted on, or it
+    can never succeed. Returns False only for a transient failure, which keeps
+    the press in Telegram's queue so the next poll retries it.
+    """
+    cid = cb.get("id")
+    data = cb.get("data") or ""
+    frm = (cb.get("from") or {}).get("id")
+
+    def answer(text, alert=False):
+        try:
+            api(token, "answerCallbackQuery",
+                {"callback_query_id": cid, "text": text[:200],
+                 "show_alert": "true" if alert else "false"})
+        except Exception as e:
+            print("  answerCallbackQuery failed (%s)" % type(e).__name__, file=sys.stderr)
+
+    if not data.startswith("pa:"):
+        answer("not an approval button")
+        return True          # permanent: nothing to retry
+    parts = data.split(":")
+    if len(parts) != 3 or parts[2] not in ("c", "x"):
+        answer("malformed button")
+        return True          # permanent: nothing to retry
+    item_id, decision = parts[1], ("confirm" if parts[2] == "c" else "cancel")
+
+    if frm != APPROVE_OWNER:
+        # These buttons only ever exist in a private DM to the owner, so this
+        # should be unreachable. "Should be unreachable" is why it is checked.
+        answer("You are not authorised to approve PCoin publications.", alert=True)
+        print("  IGNORED approval press from user %s" % frm, file=sys.stderr)
+        return True          # permanent: this account will never be allowed
+
+    if DRY:
+        print("  [dry-run] would %s approval item %s" % (decision, item_id))
+        answer("dry run - nothing changed")
+        return True
+
+    try:
+        r = subprocess.run([APPROVE, "decide", "--id", item_id,
+                            "--decision", decision, "--by", str(frm)],
+                           capture_output=True, text=True, timeout=30)
+    except Exception as e:
+        # Transient: the gate could not be run at all. Keep the press.
+        answer("Could not record that yet - the button still works, try again.", alert=True)
+        print("  approval decide could not run (%s)" % type(e).__name__, file=sys.stderr)
+        return False
+    out = (r.stdout or r.stderr or "").strip().splitlines()
+    out = out[-1] if out else ""
+    if r.returncode != 0:
+        answer("Refused: %s" % out, alert=True)
+        print("  approval decide FAILED for %s: %s" % (item_id, out), file=sys.stderr)
+        # The decision did NOT land. Do not consume the press: a read-only
+        # filesystem, a locked queue or a full disk are all things that get
+        # fixed, and when they are the owner should not have to press again.
+        return False
+
+    verdict = "Confirmed - publishing now." if decision == "confirm" else "Cancelled. Nothing will be published."
+    answer(verdict)
+    print("  approval %s: %s" % (item_id, decision))
+
+    # Replace the buttons with the outcome. Leaving a live Confirm button under a
+    # decision already taken invites a second press days later against a queue
+    # entry that has moved on.
+    try:
+        api(token, "editMessageText", {
+            "chat_id": str(frm),
+            "message_id": str((cb.get("message") or {}).get("message_id") or ""),
+            "text": ("APPROVAL %s\n%s\nitem %s"
+                     % (decision.upper(), verdict, item_id)),
+        })
+    except Exception as e:
+        # Cosmetic only. The decision is already recorded, so this does not
+        # affect whether the press is consumed.
+        print("  could not edit the approval message (%s)" % type(e).__name__, file=sys.stderr)
+    return True
+
+
 def who(msg):
     f = msg.get("from") or {}
     name = " ".join(x for x in (f.get("first_name"), f.get("last_name")) if x) or "someone"
@@ -178,7 +275,8 @@ def main():
         try:
             j = api(token, "getUpdates", {
                 "offset": st["offset"], "timeout": 0, "limit": 100,
-                "allowed_updates": json.dumps(["message", "edited_message"])})
+                "allowed_updates": json.dumps(
+                    ["message", "edited_message", "callback_query"])})
             break
         except urllib.error.HTTPError as e:
             if e.code == 409:
@@ -216,6 +314,18 @@ def main():
     for u in ups:
         uid = u.get("update_id", 0)
         highest = max(highest, uid)
+        # ---- the approval gate's buttons ---------------------------------
+        # A press on Confirm/Cancel in the owner's DM arrives here as a
+        # callback_query, and this is the only process that can see it.
+        cb = u.get("callback_query")
+        if cb:
+            # Advance past it ONLY if it was actually acted on -- same rule this
+            # file already applies to relays, and the first version of this
+            # handler broke it.
+            if handle_callback(token, cb):
+                delivered_through = uid
+            continue
+
         msg = u.get("message") or u.get("edited_message") or {}
         chat = (msg.get("chat") or {}).get("id")
 

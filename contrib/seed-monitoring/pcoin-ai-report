@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+"""Report what the AI agents on THIS host are doing, to the admin panel.
+
+Companion to pcoin-ai-report's sibling pcoin-jobs-report, and deliberately the
+same shape: each host posts only its own entry, authenticated with its own
+token, and the panel keys the record on the host that named itself.
+
+WHAT IT MAY SEND. Model names, counters and timestamps. That is all. The
+configuration files it reads also hold API keys and ingest tokens, and this
+script must never carry one to the panel -- so it does not read a file and
+forward it, it pulls out named fields one at a time. An allow-list, not a
+redaction pass: a redaction pass is a guess about what is secret, and this
+project has leaked five secrets to a pattern that did not match.
+
+WHAT IT MUST NOT SEND. Anything describing what an agent is ALLOWED to do. Those
+facts live in the panel's own registry, because a host reporting its own
+permissions could redefine them by posting a different answer.
+
+UNKNOWN IS NOT ZERO. An agent that is installed but has never run reports
+last_run=None, not 0; the panel renders that as an em-dash. A counter that
+cannot be read is omitted entirely rather than sent as 0, because a zero on a
+page is a claim and this script would be making it up.
+"""
+import json
+import os
+import sys
+import time
+import urllib.request
+
+CONF = os.environ.get("JOBS_REPORT_CONF", "/etc/pcoin/jobs-report.conf")
+
+
+def conf():
+    """Read KEY=value from the jobs reporter's config.
+
+    Reusing that file rather than adding a second one is deliberate: the host
+    identity and the ingest token are the same facts, and two copies of a
+    credential is two things to rotate and one thing to forget.
+    """
+    out = {}
+    try:
+        with open(CONF, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return out
+
+
+def read_kv(path):
+    """KEY=value out of a shell-ish config. Values only; the caller picks keys."""
+    out = {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip().strip('"').strip("'")
+    except OSError:
+        return None
+    return out
+
+
+def read_text(path, cap=60000):
+    """The whole file, or None. Never a truncated file pretending to be whole --
+    a prompt shown half is a prompt somebody will reason about wrongly."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            t = fh.read()
+    except OSError:
+        return None
+    return t if len(t) <= cap else t[:cap] + "\n\n" + "[TRUNCATED at %d characters]" % cap
+
+
+def read_actions(path, n=120):
+    """The last n things the agent DID, newest last."""
+    out = []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh.readlines()[-n:]:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except ValueError:
+                    continue
+    except OSError:
+        return None          # unreadable is not empty
+    return out
+
+
+def mtime(path):
+    try:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(os.stat(path).st_mtime))
+    except OSError:
+        return None
+
+
+def agents():
+    found = []
+
+    # ---- the group answer bot ------------------------------------------
+    c = read_kv("/etc/pcoin/group-answer.conf")
+    if c is not None:
+        a = {"key": "group-answer"}
+        # Named fields only. This file also holds OONA_API_KEY and
+        # REPORTS_TOKEN and neither may leave the host.
+        if c.get("OONA_MODEL"):
+            a["model"] = c["OONA_MODEL"]
+        if c.get("OONA_MODEL_FALLBACK"):
+            a["fallback"] = c["OONA_MODEL_FALLBACK"]
+        if c.get("ANSWER_MODE"):
+            # "live" posts to the group; anything else drafts and holds.
+            a["live"] = c["ANSWER_MODE"].lower() == "live"
+        ts = mtime("/etc/pcoin/group-answer.conf")
+        if ts:
+            a["config_at"] = ts
+
+        # THE PROMPT ITSELF. The owner asked to see "the promt that we provide to
+        # AI to work with", and he is right to: the prompt IS the agent's
+        # behaviour. Reviewing an AI's configuration without reading its prompt is
+        # reviewing an empty box.
+        prompt = read_text("/opt/pcoin-answer/prompt.md")
+        if prompt is not None:
+            a["prompt"] = prompt
+            a["prompt_at"] = mtime("/opt/pcoin-answer/prompt.md")
+        # Whether the off switch is currently set. Reported as an observation of
+        # the flag file, not as a repeat of what the panel asked for -- so the
+        # page can show "requested off, still running" if they ever disagree.
+        a["disabled"] = os.path.exists("/etc/pcoin/agents/group-answer.disabled")
+        acts = read_actions("/var/lib/pcoin-group-answer/actions.jsonl")
+        if acts is not None:
+            a["actions"] = acts
+
+        try:
+            with open("/var/lib/pcoin-group-answer/state.json", encoding="utf-8") as fh:
+                st = json.load(fh)
+            # Each of these is sent only if it is actually present. A missing
+            # counter must reach the panel as absent, never as zero.
+            if isinstance(st.get("answered"), int):
+                a["answered"] = st["answered"]
+            if isinstance(st.get("held"), int):
+                a["held"] = st["held"]
+            if isinstance(st.get("handled"), dict):
+                a["handled"] = len(st["handled"])
+            if st.get("last_run"):
+                a["last_run"] = int(st["last_run"])
+        except (OSError, ValueError):
+            # The bot is configured but its state is unreadable. Say nothing
+            # about its counters rather than reporting it as idle -- "it did
+            # nothing" and "I could not look" are different facts.
+            pass
+        found.append(a)
+
+    # ---- pcnaibot -------------------------------------------------------
+    c = read_kv("/etc/pcoin/pcnaibot.conf")
+    if c is not None:
+        a = {"key": "pcnaibot"}
+        if c.get("DEFAULT_MODEL"):
+            a["model"] = c["DEFAULT_MODEL"]
+        if c.get("MODEL_ALLOWLIST"):
+            a["allowlist"] = c["MODEL_ALLOWLIST"]
+        ts = mtime("/etc/pcoin/pcnaibot.conf")
+        if ts:
+            a["config_at"] = ts
+        # Its own liveness is already watched by pcnaibot-watch.timer and
+        # reported as a rail; duplicating that here would give two answers to
+        # one question, and they would disagree eventually.
+        found.append(a)
+
+    return found
+
+
+def main():
+    c = conf()
+    base = os.environ.get("JOBS_REPORT_URL", c.get("JOBS_REPORT_URL", ""))
+    token = os.environ.get("JOBS_REPORT_TOKEN", c.get("JOBS_REPORT_TOKEN", ""))
+    host = os.environ.get("JOBS_REPORT_HOST", c.get("JOBS_REPORT_HOST", ""))
+    url = base.replace("/ingest/jobs", "/ingest/ai")
+
+    found = agents()
+    payload = {"host": host, "hostname": os.uname().nodename, "agents": found}
+
+    if "--dry" in sys.argv:
+        print(json.dumps(payload, indent=2))
+        return 0
+    if not url or not token or not host:
+        sys.exit("JOBS_REPORT_URL / _TOKEN / _HOST not set -- nothing to report to.")
+    if not found:
+        # Posting an empty list would overwrite a good record with nothing and
+        # still look like success -- the pcoin-ops-collect failure exactly. A
+        # host with no AI on it simply does not report.
+        print("no AI agents on this host; nothing sent")
+        return 0
+
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        headers={"content-type": "application/json", "authorization": "Bearer " + token},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        print("%s: %s" % (r.status, r.read().decode().strip()))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
