@@ -165,16 +165,10 @@ ENABLED=1
 # Loopback ONLY. It is fronted by the host's existing Caddy, which already
 # terminates TLS -- so this opens no port and needs no ufw change, exactly like
 # the bot's long polling.
-API_BIND=127.0.0.1
-API_PORT=8799
 # The public URL Caddy maps to the above. Shown to users by /api. Leave unset to
 # disable key issuance entirely.
-API_PUBLIC_URL=https://pcoinaibot.pc.am
-API_MAX_BODY_BYTES=1048576
 # Per-key admission control, independent of money: a free-model call quotes $0,
 # so a balance check would admit it unconditionally.
-API_RATE_PER_MINUTE=60
-API_RATE_BURST=20
 # Flat token allowance added to the counted/estimated input before quoting.
 # count_tokens under-counts by a per-model constant (measured: +5 on
 # glm-5.3-flash, +48 on mimo-v2.5:free), so without this the reservation is not

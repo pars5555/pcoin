@@ -1,4 +1,4 @@
-# pcnaibot -- one image, used by BOTH processes.
+# pcnaibot -- one image, used by both processes (the bot and the watcher).
 #
 # bookworm-slim, not alpine: better-sqlite3 ships glibc prebuilds, and on musl
 # it would compile from source at install time -- which turns a deploy into a
@@ -22,7 +22,7 @@ RUN npm ci --omit=dev 2>/dev/null || npm install --omit=dev
 
 COPY lib/ ./lib/
 COPY migrations/ ./migrations/
-COPY bot.mjs watch.mjs api.mjs migrate.mjs ./
+COPY bot.mjs watch.mjs migrate.mjs ./
 
 # The image runs as a non-root user whose uid/gid must match the host owner of
 # the bind-mounted state and log directories, or the watcher cannot write the

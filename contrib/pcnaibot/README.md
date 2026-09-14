@@ -16,7 +16,7 @@ code rather than skim it.
 ## What it is, and what it is not
 
 **It is** a Telegram bot with its own token, its own systemd units and its own
-SQLite database. A user picks a model and talks. Each turn is priced in USD from
+SQLite database. A user picks a model and talks — in Telegram only; there is no other way in (the outside-Telegram API and its keys were removed on 2026-09-14). Each turn is priced in USD from
 the provider's returned token counts × the house margin, and debited from an
 **integer micro-USD** balance. The user tops that up by sending PCN to a deposit
 address that is **theirs forever**, taken from a pool derived offline.
@@ -32,8 +32,8 @@ private key and no account xpub ever reaches the server** — only a list of
 somebody; a spending rail's worst bug sends coins to a stranger. This stays in
 the first category.
 
-**It is not one process.** Three: the Telegram bot, the deposit watcher and
-the HTTP API, each with its own unit and its own memory limit — see below.
+**It is not one process.** Two: the Telegram bot and the deposit watcher,
+each with its own unit and its own memory limit — see below.
 
 ---
 
@@ -42,13 +42,12 @@ the HTTP API, each with its own unit and its own memory limit — see below.
 ```
 bot.mjs                  the Telegram-facing process (long polling)
 watch.mjs                the deposit watcher, a SEPARATE process on a timer
-api.mjs                  the public HTTP API -- users calling their balance with a key
-Dockerfile               one image, used by all three processes
+Dockerfile               one image, used by both processes
 migrate.mjs              explicit versioned migrations + the structural proof
 heartbeat-check.sh       staleness check for both heartbeats; RUNS AS ROOT
-migrations/              001_init .. 004_api_keys, explicit and versioned
+migrations/              001_init .. 011_drop_api_keys, explicit and versioned
 systemd/                 units + timers + logrotate; systemd/docker/ for the container
-test/                    39 tests: money path, billing path, API keys
+test/                    money path, billing path, agent sessions, delivery, Markdown
 lib/
   config.mjs             reads /etc/pcoin/pcnaibot.conf; keeps secrets OUT of env
   log.mjs                redact-by-allow-list logging; crash handlers
@@ -67,17 +66,19 @@ lib/
   telegram.mjs           Bot API, HTML escaping, splitting, retry_after
   wpcn.mjs               wPCN top-ups, ported from checker_pc_am's WpcnService
   vendor/wpcn-pay.mjs    the shared verifier client, VENDORED VERBATIM
-  apikeys.mjs            per-user API keys (hashed) + the rate bucket
   probe.mjs              asks each model what the registry will not tell you
+  agent.mjs              the agentic API client (sessions, runs, files)
+  agentstore.mjs         our record of every session, so we can always delete it
+  deliver.mjs            hands back the files the agent makes
+  markdown.mjs           the model's Markdown as Telegram HTML
 ```
 
-## Three processes, deliberately
+## Two processes, deliberately
 
 | unit | what |
 |---|---|
 | `pcnaibot.service` | the Telegram bot, `Restart=always`, long polling |
 | `pcnaibot-watch.service` + `.timer` | the deposit watcher, one tick per minute |
-| `pcnaibot-api.service` | the public HTTP API, loopback only, behind Caddy |
 | `pcnaibot-heartbeat.service` + `.timer` | staleness check, **as root** |
 
 Running the watcher as a `setInterval` inside the bot would mean they share one
@@ -213,44 +214,9 @@ the target host or any Linux box with node 20.
 
 ---
 
-## The HTTP API
-
-A user runs `/apikey` in Telegram and gets a key. That key spends the same
-balance, through the **same reserve/settle path** — a turn costs the same
-whether it arrived from Telegram or from curl, and both land in one ledger that
-the reconciliation invariant closes over. Writing a second billing path here
-would be the "one mistake, copied" shape this project keeps paying for.
-
-```sh
-curl https://ai.pc.am/v1/messages   -H "x-api-key: $PCN_KEY"   -H "content-type: application/json"   -d '{"model":"glm-5.3-flash","max_tokens":256,
-       "messages":[{"role":"user","content":"Hello"}]}'
-```
-
-It is Anthropic-shaped on purpose, so an off-the-shelf SDK works unchanged.
-`GET /v1/models` returns the caller's billable set **with our prices, margin
-included**; `GET /v1/balance` returns their balance; every reply carries
-`x-pcn-cost-usd` and `x-pcn-balance-usd`.
-
-* **Keys are stored as a SHA-256 hash and shown once.** A stolen database yields
-  no usable credential. Lookup is by hash on a unique index, so there is no
-  candidate set and no per-key timing signal.
-* **Absent, malformed, unknown and revoked all answer one 401.** The difference
-  is only useful to somebody guessing.
-* **`max_tokens` is required**, not defaulted — it is the only thing bounding
-  the reservation, and a caller who omits it must be told rather than quietly
-  charged for a ceiling they never chose.
-* **`cache_control` is refused**, so a caller cannot opt us into billing blind.
-* **`Idempotency-Key` makes a retry safe**: the second attempt gets 409 and is
-  not billed. Without one, each call is distinct.
-* One request at a time per account, enforced by the same `busy_at` lock the
-  Telegram side uses, plus a per-key token bucket independent of money.
-
-It binds to **loopback only** and is fronted by the host's existing Caddy —
-`systemd/Caddyfile.snippet` — so it opens no port and needs no ufw change.
-
 ## Docker
 
-`Dockerfile` builds one image used by all three processes; `systemd/docker/`
+`Dockerfile` builds one image used by both processes; `systemd/docker/`
 holds the unit variants. Verified on the target host: the image builds and the
 watcher credits real chain history from inside a container, identically to the
 native run.
@@ -268,10 +234,10 @@ Three things are load-bearing and must survive any edit:
    is what gives it its own `--memory`; under `exec` they would share one cgroup
    and the two-process split would be cosmetic.
 
-The API's port publish is `-p 127.0.0.1:8799:8799`. **Never a bare `-p`** —
-Docker writes DNAT rules straight into iptables and they are evaluated *before*
-ufw's chains, so a bare publish exposes the port to the internet while ufw still
-reports it closed.
+Neither container publishes a port. If one ever must: `-p 127.0.0.1:port:port`,
+**never a bare `-p`** — Docker writes DNAT rules straight into iptables and they
+are evaluated *before* ufw's chains, so a bare publish exposes the port to the
+internet while ufw still reports it closed.
 
 ## What the provider will not tell you
 

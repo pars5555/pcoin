@@ -15,7 +15,7 @@ import { loadConfig } from './lib/config.mjs';
 import { log, errFields, installCrashHandlers, chatTag, addrTag } from './lib/log.mjs';
 import { openDb, assertSchema, pendingMigrations, kvGetJson, kvSetJson } from './lib/db.mjs';
 import { nowSec } from './lib/time.mjs';
-import { TelegramClient, escapeHtml } from './lib/telegram.mjs';
+import { TelegramClient, escapeHtml, splitMessage } from './lib/telegram.mjs';
 import { readRate } from './lib/rate.mjs';
 import { allocateAddress, poolStats, PoolEmpty } from './lib/pool.mjs';
 import { creditedUsdLast30Days } from './lib/deposits.mjs';
@@ -33,7 +33,6 @@ import {
 import { estimateRequestTokens } from './lib/tokens.mjs';
 import { WpcnService, isTxHash, STATE as WSTATE, humanMessage } from './lib/wpcn.mjs';
 import { probeAll } from './lib/probe.mjs';
-import { issueKey, listKeys, revokeKey } from './lib/apikeys.mjs';
 import QRCode from 'qrcode';
 import { extractSvgs, svgToPng, unknownBlockTypes } from './lib/render.mjs';
 import { newDeliverables, deliverFiles, noteUploaded } from './lib/deliver.mjs';
@@ -263,29 +262,56 @@ function saveHistory(chatId, msgs) {
 // Screens
 // ---------------------------------------------------------------------------
 const NEWLINE = String.fromCharCode(10);
-const BSLASH = String.fromCharCode(92);
-const SQ = String.fromCharCode(39);
 const ONE_WAY = 'Deposits are <b>one-way</b>: PCN in, credit out. Balances are held in <b>USD</b>, are not withdrawable, and are not refundable.';
+
+// THE MENU. Inline buttons on the bot's own messages (owner, 2026-09-14: "i prefer to use inline
+// buttons instead of /commands"); the slash commands stay as typed aliases for the same screens.
+const MENU_KEYBOARD = {
+  inline_keyboard: [
+    [{ text: '🧠 Choose model', callback_data: 'nav:models' }, { text: '💳 Balance', callback_data: 'nav:balance' }],
+    [{ text: '➕ Top up', callback_data: 'nav:topup' }, { text: '🆕 New chat', callback_data: 'nav:clear' }],
+    [{ text: '❓ How it works', callback_data: 'nav:help' }],
+  ],
+};
+const BACK_KEYBOARD = { inline_keyboard: [[{ text: '« Menu', callback_data: 'nav:start' }]] };
 
 function startScreen(u) {
   return [
-    '<b>PCoin AI</b> — an AI <b>agent</b> you pay for in PCN.',
+    '👋 <b>Hi! I am PCoin AI</b> — an AI agent you pay for in PCN.',
     '',
-    'It remembers your conversation, keeps files, and can use tools to actually do things — not just answer.',
-    'Send text, a photo, a document, a voice note or a video — it reads them. Ask for a picture, a chart, a PDF or code and it sends the file back.',
+    '<b>What I can do</b>',
+    '• Answer questions and chat, in any language',
+    '• Read what you send me: photos, screenshots, documents, PDFs, spreadsheets, voice notes, audio and video',
+    '• Write and run code, make pictures, charts, PDFs and files — and send them back to you here',
+    '• Search the web and read pages for you',
+    '• Remember our conversation until you start a new chat',
     '',
-    `Balance: <b>$${escapeHtml(microUsdToString(u.balance_micro_usd, 4))}</b>`,
+    `Model: <code>${escapeHtml(u.model)}</code> · Balance: <b>$${escapeHtml(microUsdToString(u.balance_micro_usd, 4))}</b>`,
     GRANT_MICRO > 0
       ? `Free grant: <b>$${escapeHtml(microUsdToString(u.grant_micro_usd, 4))}</b> — spendable on <b>free models only</b>.`
       : '',
     '',
+    '<b>Just type a message to begin.</b> Send /stop to halt an answer that is being written.',
+    '',
+    `<i>${ONE_WAY}</i>`,
+  ].filter(Boolean).join('\n');
+}
+
+function helpScreen() {
+  return [
+    '<b>How it works</b>',
+    '',
+    '• You talk to an <b>agent</b>: it keeps your conversation and files on the server and can use tools — run code, read the web, make files — not only answer.',
+    '• Each message is billed by what the model actually used: tokens in and out, at the price shown in <b>Choose model</b> (per 1M tokens, our margin included). Reasoning tokens count as output.',
+    `• One message can take up to <b>${AGENT_MAX_TURNS} steps</b>; a longer job stops there and continues when you say "continue".`,
+    '• <b>Send files</b> as photos, documents, voice notes or videos, with a caption saying what to do. Files the agent makes come back as pictures or documents.',
+    '• <b>Stop</b> an answer with /stop or the ⏹ button; you pay only for what was written.',
+    '• <b>New chat</b> forgets the conversation and deletes its files from the server.',
+    '• <b>Top up</b> by sending PCN to your own permanent address; credit lands after 3 confirmations.',
+    '',
     ONE_WAY,
     'This is a service credit, not an account balance you can withdraw. We hold no keys for you and send no PCN.',
-    '',
-    '/models — choose a model     /topup — add credit',
-    '/balance — balance and history     /help — how it works',
-    '/stop — stop the current answer     /clear — start a fresh conversation',
-  ].filter(Boolean).join('\n');
+  ].join('\n');
 }
 
 // The QR carries a BARE ADDRESS, not a pcoin: payment URI.
@@ -470,6 +496,98 @@ The agent starts a fresh session on your next message, because a session keeps t
   };
 }
 
+// One screen, sent with its buttons. The text is what the slash command would have returned;
+// the keyboard is what makes it a menu.
+async function sendScreen(chatId, html, keyboard = BACK_KEYBOARD) {
+  const parts = splitMessage(html);
+  for (let i = 0; i < parts.length; i++) {
+    const last = i === parts.length - 1;
+    await tg.sendMessage(chatId, parts[i], last && keyboard ? { reply_markup: keyboard } : {});
+  }
+}
+
+// What each menu button (and its typed alias) shows. `null` from a handler means it sent its own
+// messages. Shared by the slash commands and the inline buttons so the two can never drift.
+async function showScreen(chatId, u, which) {
+  switch (which) {
+    case 'start':
+      await sendScreen(chatId, startScreen(u), MENU_KEYBOARD);
+      return null;
+    case 'help':
+      await sendScreen(chatId, helpScreen());
+      return null;
+    case 'balance':
+      await sendScreen(chatId, balanceScreen(u), {
+        inline_keyboard: [[{ text: '➕ Top up', callback_data: 'nav:topup' }, { text: '« Menu', callback_data: 'nav:start' }]],
+      });
+      return null;
+    case 'models': {
+      const m = modelsScreen();
+      const rows = m.keyboard ? [...m.keyboard.inline_keyboard] : [];
+      rows.push([{ text: '« Menu', callback_data: 'nav:start' }]);
+      await tg.sendMessage(chatId, m.text, { reply_markup: { inline_keyboard: rows } });
+      return null;
+    }
+    case 'topup': {
+      if (!WPCN_ENABLED) return showScreen(chatId, u, 'topup_pcn');
+      await tg.sendMessage(chatId, '<b>How would you like to top up?</b>', {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: 'PCN — on the PCoin chain', callback_data: 'nav:topup_pcn' }],
+            [{ text: 'wPCN — on BNB Smart Chain', callback_data: 'nav:topup_wpcn' }],
+            [{ text: '« Menu', callback_data: 'nav:start' }],
+          ],
+        },
+      });
+      return null;
+    }
+    case 'topup_pcn': {
+      // The QR goes FIRST, with a short caption carrying the address itself --
+      // a caption is capped at 1024 where a message is 4096, so the full detail
+      // follows as its own message rather than being truncated.
+      let alloc = null;
+      try { alloc = allocateAddress(db, chatId); } catch { /* depositScreen reports it properly */ }
+      if (alloc) {
+        try {
+          const png = await depositQr(alloc.address);
+          await tg.sendPhoto(chatId, png, {
+            filename: `pcn-${alloc.address.slice(0, 10)}.png`,
+            caption: `<b>Your PCN deposit address</b>
+<code>${escapeHtml(alloc.address)}</code>
+
+Scan or copy. It is yours permanently.`,
+          });
+        } catch (e) {
+          // A QR that fails to render must never cost the user the address.
+          log.warn('QR render/send failed; sending the address as text only', errFields(e));
+        }
+      }
+      await sendScreen(chatId, await depositScreen(chatId));
+      return null;
+    }
+    case 'topup_wpcn':
+      await sendScreen(chatId, await wpcnScreen());
+      return null;
+    case 'clear': {
+      db.prepare('DELETE FROM conversations WHERE chat_id = ?').run(chatId);
+      // AND DELETE THE REMOTE SESSION. Dropping only our local history would
+      // leave a sandbox, a workspace and a transcript on OonaCode's server
+      // until it expired -- and the user would still be talking to the same
+      // agent memory they just asked to clear.
+      let text = 'New chat started — the previous conversation is forgotten.';
+      if (agent) {
+        const r = await retireSession(db, agent, chatId, { reason: '/clear' });
+        if (r.had && !r.deleted) text += ' Its files on the server could not be confirmed deleted just now; that is retried automatically.';
+        else if (r.had) text += ' Its files and transcript were deleted from the server.';
+      }
+      await sendScreen(chatId, text);
+      return null;
+    }
+    default:
+      return null;
+  }
+}
+
 function modelsScreen() {
   const s = sellableModels();
   if (s.expired) {
@@ -494,52 +612,6 @@ function modelsScreen() {
     text: '<b>Choose a model.</b> Prices are per 1M tokens, input/output, and include our margin.\n\nReasoning tokens are billed as output.',
     keyboard: rows.length ? { inline_keyboard: rows } : null,
   };
-}
-
-const API_BASE_PUBLIC = cfg.strOr('API_PUBLIC_URL', null);
-
-function apiHelpScreen() {
-  if (!API_BASE_PUBLIC) {
-    return 'The HTTP API is not enabled on this deployment.';
-  }
-  return [
-    '<b>Use your balance outside Telegram</b>',
-    '',
-    'Create a key with /apikey, then call the API the same way you would call Anthropic:',
-    '',
-    // Built with explicit character codes: a backslash-continuation and a
-    // single quote inside a shell example are exactly the two characters that
-    // get mangled by every layer between here and the user's terminal.
-    '<pre>curl ' + escapeHtml(API_BASE_PUBLIC) + '/v1/messages ' + BSLASH,
-    '  -H "x-api-key: $PCN_KEY" ' + BSLASH,
-    '  -H "content-type: application/json" ' + BSLASH,
-    '  -d ' + SQ + '{"model":"glm-5.3-flash","max_tokens":256,',
-    '        "messages":[{"role":"user","content":"Hello"}]}' + SQ + '</pre>',
-    '',
-    'Endpoints:',
-    '· <code>POST /v1/messages</code> — a turn, billed to your balance',
-    '· <code>GET /v1/models</code> — what you can call, with your prices',
-    '· <code>GET /v1/balance</code> — your balance',
-    '',
-    'Every reply carries <code>x-pcn-cost-usd</code> and <code>x-pcn-balance-usd</code>.',
-    '<code>max_tokens</code> is required. Send <code>Idempotency-Key</code> to make a retry safe.',
-    '',
-    '/apikeys — list your keys     /revoke &lt;prefix&gt; — revoke one',
-  ].join(NEWLINE);
-}
-
-function apiKeysScreen(chatId) {
-  const rows = listKeys(db, chatId);
-  if (rows.length === 0) return 'You have no API keys. Create one with /apikey.';
-  const lines = ['<b>Your API keys</b>', ''];
-  for (const k of rows) {
-    lines.push(`· <code>${escapeHtml(k.key_prefix)}…</code>`
-      + (k.revoked_at ? ' — <b>revoked</b>' : '')
-      + ` — ${k.calls} call(s)`
-      + (k.last_used_at ? `, last used ${new Date(k.last_used_at * 1000).toISOString().slice(0, 16)}Z` : ', never used'));
-  }
-  lines.push('', 'Revoke one with <code>/revoke &lt;prefix&gt;</code>.');
-  return lines.join(NEWLINE);
 }
 
 function balanceScreen(u) {
@@ -694,12 +766,16 @@ async function runTurn(chatId, updateId, text, attachments = []) {
   // from a token count priced off an undocumented registry.
   if (isAgentic) {
     let r;
+    let turnStartedAt = null;
     try {
       // RETRY A SANDBOX FAILURE. It is transient and common -- measured at
       // 0/5 then 6/8 within minutes as the provider worked on it -- and a
       // user should not have to resend their message because a container
       // did not start. A poisoned session is NOT retried into: it is replaced,
       // because one of those never recovers.
+      // Files made before this moment belong to an earlier run (see newDeliverables' `since`);
+      // the margin covers the sandbox's clock and the file API's second granularity.
+      turnStartedAt = new Date(Date.now() - 15000).toISOString();
       r = await withSandboxRetry(() => runTurnAgentic({ chatId, updateId, model: row.model, text, resv: res, attachments }), chatId);
     } catch (e) {
       if (e instanceof AgentRefused) {
@@ -795,9 +871,13 @@ You were charged $${escapeHtml(microUsdToString(actual, 6))} for this.`;
     // for nothing, and that is the failure worth avoiding here.
     if (out.sessionId) {
       try {
-        const produced = await newDeliverables(db, agent, out.sessionId);
+        const produced = await newDeliverables(db, agent, out.sessionId, { since: turnStartedAt });
         if (produced && produced.length) {
           await deliverFiles(db, agent, tg, chatId, out.sessionId, produced);
+        }
+        if (produced?.left?.length) {
+          const names = produced.left.slice(0, 8).map((n) => `<code>${escapeHtml(n)}</code>`).join(', ');
+          await tg.sendMessage(chatId, `<i>${produced.left.length} more file(s) stayed in the workspace: ${names}${produced.left.length > 8 ? ', …' : ''}. Ask for one by name if you want it.</i>`);
         }
       } catch (e) {
         log.warn('could not deliver the files the agent produced', errFields(e));
@@ -1158,6 +1238,10 @@ async function runTurnAgentic({ chatId, updateId, model, text, resv, attachments
       : 'Please look at it and tell me what it contains.');
     message = `${parts.join('\n')}\n\n${ask}`;
   }
+  // The agent cannot see this bot, so it does not know that what it saves is delivered: asked
+  // for a picture it made one and then said "I can't transmit files anywhere from here"
+  // (2026-09-14). One line, every run, and it stops apologising.
+  message += '\n\n(Note: any file you save in the workspace is sent to me automatically as an attachment, so make files freely and never say you cannot send them. Name the file in your answer.)';
 
   try {
     for await (const ev of agent.streamRun({
@@ -1426,9 +1510,8 @@ async function runTurnStreamed({ chatId, updateId, row, upstream, priceRow, isFr
 // Dispatch
 // ---------------------------------------------------------------------------
 const COMMANDS = new Set([
-  '/start', '/help', '/models', '/model', '/balance', '/topup',
-  '/pcn', '/topup_pcn', '/wpcn', '/topup_wpcn', '/clear',
-  '/apikey', '/apikeys', '/revoke', '/api', '/stats', '/stop', '/agent',
+  '/start', '/menu', '/help', '/models', '/model', '/balance', '/topup',
+  '/pcn', '/topup_pcn', '/wpcn', '/topup_wpcn', '/clear', '/stats', '/stop',
 ]);
 
 // What a message is carrying besides words.
@@ -1555,27 +1638,14 @@ async function handleMessage(msg) {
 
   switch (first) {
     case '/start':
-      return startScreen(u);
+    case '/menu':
+      return showScreen(chatId, u, 'start');
     case '/help':
-      return `${startScreen(u)}\n\nPrices are per 1M tokens and include our margin. Reasoning tokens are billed as output. Use /models to see the current list.`;
+      return showScreen(chatId, u, 'help');
     case '/balance':
-      return balanceScreen(u);
-    case '/clear': {
-      db.prepare('DELETE FROM conversations WHERE chat_id = ?').run(chatId);
-      // AND DELETE THE REMOTE SESSION. Dropping only our local history would
-      // leave a sandbox, a workspace and a transcript on OonaCode's server
-      // until it expired -- and the user would still be talking to the same
-      // agent memory they just asked to clear.
-      if (agent) {
-        const r = await retireSession(db, agent, chatId, { reason: '/clear' });
-        if (r.had) {
-          return r.deleted
-            ? 'Conversation cleared, and the agent session was deleted from the server.'
-            : 'Conversation cleared. The agent session could not be confirmed deleted just now; it will be retried automatically.';
-        }
-      }
-      return 'Conversation cleared.';
-    }
+      return showScreen(chatId, u, 'balance');
+    case '/clear':
+      return showScreen(chatId, u, 'clear');
     case '/stop': {
       // Works because the poll loop no longer awaits a turn -- this update is
       // read WHILE the stream it stops is still running.
@@ -1590,46 +1660,20 @@ async function handleMessage(msg) {
       // client will not render an inline keyboard, and the only path that works
       // if a keyboard is ever stale.
       const wanted = text.slice(first.length).trim();
-      if (wanted !== '') return setModel(chatId, wanted).msg;
-      const m = modelsScreen();
-      await tg.sendMessage(chatId, m.text, m.keyboard ? { reply_markup: m.keyboard } : {});
-      return null;
+      if (wanted !== '') {
+        await sendScreen(chatId, setModel(chatId, wanted).msg);
+        return null;
+      }
+      return showScreen(chatId, u, 'models');
     }
     case '/pcn':
-    case '/topup_pcn': {
-      // The QR goes FIRST, with a short caption carrying the address itself --
-      // a caption is capped at 1024 where a message is 4096, so the full detail
-      // follows as its own message rather than being truncated.
-      let alloc = null;
-      try { alloc = allocateAddress(db, chatId); } catch { /* depositScreen reports it properly */ }
-      if (alloc) {
-        try {
-          const png = await depositQr(alloc.address);
-          await tg.sendPhoto(chatId, png, {
-            filename: `pcn-${alloc.address.slice(0, 10)}.png`,
-            caption: `<b>Your PCN deposit address</b>
-<code>${escapeHtml(alloc.address)}</code>
-
-Scan or copy. It is yours permanently.`,
-          });
-        } catch (e) {
-          // A QR that fails to render must never cost the user the address.
-          log.warn('QR render/send failed; sending the address as text only', errFields(e));
-        }
-      }
-      return depositScreen(chatId);
-    }
-    case '/topup': {
-      if (!WPCN_ENABLED) return depositScreen(chatId);
-      await tg.sendMessage(chatId,
-        '<b>How would you like to top up?</b>\n\n'
-        + '/topup_pcn — send PCN on the PCoin chain\n'
-        + '/topup_wpcn — send wPCN on BNB Smart Chain (credits the same)');
-      return null;
-    }
+    case '/topup_pcn':
+      return showScreen(chatId, u, 'topup_pcn');
+    case '/topup':
+      return showScreen(chatId, u, 'topup');
     case '/wpcn':
     case '/topup_wpcn':
-      return wpcnScreen();
+      return showScreen(chatId, u, 'topup_wpcn');
     case '/stats': {
       if (!ADMIN_CHATS.has(chatId)) return 'That command does not exist here. Try /help.';
       const st = poolStats(db);
@@ -1643,52 +1687,6 @@ Scan or copy. It is yours permanently.`,
         `wPCN: ${WPCN_ENABLED ? 'enabled' : 'off'}`,
         `agent: ${agent ? 'enabled' : 'off'}` + (agent ? ` — live sessions ${db.prepare('SELECT COUNT(*) n FROM agent_sessions WHERE deleted_at IS NULL').get().n}, owed deletes ${db.prepare('SELECT COUNT(*) n FROM agent_sessions WHERE deleted_at IS NULL AND (expires_at = 0 OR failures >= 3)').get().n}` : ''),
       ].join(NEWLINE);
-    }
-    case '/agent': {
-      // Every chat is agentic; this reports state rather than toggling it.
-      if (!agent) return 'The agent service is not configured on this deployment.';
-      const sess = liveSession(db, chatId);
-      return [
-        'This chat runs an <b>agent</b>, not a plain model.',
-        '',
-        'It keeps its own memory, files and tools on the server, so your conversation is never re-sent — and it can do things, not only answer.',
-        '',
-        sess
-          ? `Session active since ${new Date(sess.created_at * 1000).toISOString().slice(0, 16).replace('T', ' ')}Z — ${sess.runs} message(s).`
-          : 'A session starts on your next message.',
-        `Model: <code>${escapeHtml(u.model)}</code> · up to <b>${AGENT_MAX_TURNS} steps</b> per message.`,
-        '',
-        '/clear starts fresh and deletes the session, its files and its transcript from the server.',
-      ].join(NEWLINE);
-    }
-    case '/api':
-      return apiHelpScreen();
-    case '/apikeys':
-      return apiKeysScreen(chatId);
-    case '/apikey': {
-      if (!API_BASE_PUBLIC) return 'The HTTP API is not enabled on this deployment.';
-      let key;
-      try {
-        key = issueKey(db, chatId, { name: text.slice('/apikey'.length).trim() || null });
-      } catch (e) {
-        return escapeHtml(e.message);
-      }
-      // SHOWN ONCE. Only a hash is stored, so this cannot be recovered later.
-      await tg.sendMessage(chatId,
-        '<b>Your new API key</b>' + NEWLINE + NEWLINE
-        + `<code>${escapeHtml(key)}</code>` + NEWLINE + NEWLINE
-        + '<b>Copy it now — it is shown once and cannot be recovered.</b> '
-        + 'It spends the same balance as this chat. Treat it like a password; /revoke it if it leaks.'
-        + NEWLINE + NEWLINE + 'See /api for how to use it.');
-      return null;
-    }
-    case '/revoke': {
-      const prefix = text.slice('/revoke'.length).trim();
-      if (!prefix) return 'Usage: <code>/revoke &lt;prefix&gt;</code> — see /apikeys for the prefixes.';
-      const n = revokeKey(db, chatId, prefix);
-      return n > 0
-        ? `Revoked <code>${escapeHtml(prefix)}…</code>. It will stop working immediately.`
-        : 'No active key of yours has that prefix. See /apikeys.';
     }
     default:
       break;
@@ -1740,20 +1738,13 @@ async function writeBotHeartbeat(fields) {
 // when it is a stub: an UNREGISTERED command does not fail politely, it falls
 // through to the AI handler and is BILLED TO THE USER AS A TURN.
 const PUBLIC_COMMANDS = [
-  { command: 'start',      description: 'What this is, and your balance' },
-  { command: 'models',     description: 'Choose a model, with live prices' },
-  { command: 'balance',    description: 'Balance, reserved, recent activity' },
-  { command: 'topup',      description: 'Add credit with PCN or wPCN' },
-  { command: 'topup_pcn',  description: 'Deposit address + QR (PCN)' },
-  { command: 'topup_wpcn', description: 'Pay with wPCN on BNB Smart Chain' },
-  { command: 'apikey',     description: 'Create an API key for use outside Telegram' },
-  { command: 'apikeys',    description: 'List your API keys' },
-  { command: 'revoke',     description: 'Revoke an API key by its prefix' },
-  { command: 'api',        description: 'How to call the API' },
-  { command: 'agent',      description: 'About this agent and its session' },
-  { command: 'stop',       description: 'Stop the answer being generated' },
-  { command: 'clear',      description: 'Clear this conversation' },
-  { command: 'help',       description: 'How it works' },
+  { command: 'start',   description: 'Menu — what I can do, your balance' },
+  { command: 'models',  description: 'Choose a model, with live prices' },
+  { command: 'balance', description: 'Balance and recent activity' },
+  { command: 'topup',   description: 'Add credit with PCN' },
+  { command: 'stop',    description: 'Stop the answer being written' },
+  { command: 'clear',   description: 'New chat — forget the conversation' },
+  { command: 'help',    description: 'How it works' },
 ];
 
 const ADMIN_EXTRA = [
@@ -1896,7 +1887,11 @@ async function main() {
             ensureUser(cid);
             const r = setModel(cid, data.slice(2));
             toast = r.ok ? `Model: ${r.model}` : 'Not available';
-            await tg.sendMessage(cid, r.msg);
+            await sendScreen(cid, r.msg);
+          } else if (cid !== null && (ALLOWED_CHATS.has(cid) || ADMIN_CHATS.has(cid)) && data.startsWith('nav:')) {
+            // A menu button is the same screen its slash command shows.
+            const u = ensureUser(cid);
+            await showScreen(cid, u, data.slice(4));
           } else if (cid !== null) {
             toast = 'This bot is not open yet.';
           }

@@ -138,7 +138,12 @@ export function dropRedundantVectors(entries) {
 // A listing failure is NOT "there is nothing" -- it resolves nothing, and the
 // files stay unsent so a later turn can find them. That is the §7.1 rule
 // applied to the one read this feature depends on.
-export async function newDeliverables(db, client, sessionId) {
+// `since` (ISO time) is when THIS run started: files older than that were made by an earlier
+// run and never sent -- typically a run the user stopped -- and trailing them out five per turn
+// for the next several answers buried the one file the current turn actually produced (the red
+// circle the user asked for came behind n6.txt..n10.txt, 2026-09-14). They are marked handled
+// and named to the caller instead, so they neither vanish nor keep coming.
+export async function newDeliverables(db, client, sessionId, { since = null } = {}) {
   let root;
   try {
     root = await client.listFiles(sessionId, '');
@@ -181,7 +186,22 @@ export async function newDeliverables(db, client, sessionId) {
   // Newest last, so the final message in the chat is the most recent thing the
   // agent made -- which is what the user was waiting for.
   worth.sort((a, b) => String(a.mtime ?? '').localeCompare(String(b.mtime ?? '')));
-  return worth;
+
+  if (since === null) return worth;
+  const fresh = [];
+  const stale = [];
+  for (const e of worth) {
+    if (e.mtime && String(e.mtime) < since) stale.push(e);
+    else fresh.push(e);
+  }
+  for (const e of stale) markSent(db, sessionId, e.path, e.size, e.mtime);
+  // More than a turn sends: keep the NEWEST, mark the rest handled, and tell the caller their
+  // names -- the files are still in the workspace, and a user who wants one can ask for it.
+  const left = fresh.length > MAX_PER_TURN ? fresh.slice(0, fresh.length - MAX_PER_TURN) : [];
+  for (const e of left) markSent(db, sessionId, e.path, e.size, e.mtime);
+  const keep = fresh.slice(-MAX_PER_TURN);
+  keep.left = [...stale, ...left].map((e) => e.path);
+  return keep;
 }
 
 // Fetch each file and send it: images as photos so they are VISIBLE in the
