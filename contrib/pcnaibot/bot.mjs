@@ -264,15 +264,30 @@ function saveHistory(chatId, msgs) {
 const NEWLINE = String.fromCharCode(10);
 const ONE_WAY = 'Deposits are <b>one-way</b>: PCN in, credit out. Balances are held in <b>USD</b>, are not withdrawable, and are not refundable.';
 
-// THE MENU. Inline buttons on the bot's own messages (owner, 2026-09-14: "i prefer to use inline
-// buttons instead of /commands"); the slash commands stay as typed aliases for the same screens.
-const MENU_KEYBOARD = {
-  inline_keyboard: [
-    [{ text: '🧠 Choose model', callback_data: 'nav:models' }, { text: '💳 Balance', callback_data: 'nav:balance' }],
-    [{ text: '➕ Top up', callback_data: 'nav:topup' }, { text: '🆕 New chat', callback_data: 'nav:clear' }],
-    [{ text: '❓ How it works', callback_data: 'nav:help' }],
-  ],
+// THE MENU: a keyboard that stays under the composer, so the current model is always on screen
+// (owner, 2026-09-14: "user should see the current selected model … always visible"). The top
+// button IS the model; tapping it opens the chooser. Telegram sends a tapped button's text as a
+// message, so `quickAction` turns those texts back into screens before anything can be billed.
+// The keyboard is re-sent with every answer and every model change, which is how it stays current.
+const QUICK = {
+  balance: '💳 Balance', topup: '➕ Top up', clear: '🆕 New chat', help: '❓ How it works',
 };
+function quickKeyboard(u) {
+  return {
+    keyboard: [
+      [{ text: `🧠 Model: ${u.model}` }],
+      [{ text: QUICK.balance }, { text: QUICK.topup }],
+      [{ text: QUICK.clear }, { text: QUICK.help }],
+    ],
+    resize_keyboard: true,
+    is_persistent: true,
+  };
+}
+function quickAction(text) {
+  if (text.startsWith('🧠 Model:')) return 'models';
+  for (const [k, v] of Object.entries(QUICK)) if (text === v) return k;
+  return null;
+}
 const BACK_KEYBOARD = { inline_keyboard: [[{ text: '« Menu', callback_data: 'nav:start' }]] };
 
 function startScreen(u) {
@@ -291,7 +306,7 @@ function startScreen(u) {
       ? `Free grant: <b>$${escapeHtml(microUsdToString(u.grant_micro_usd, 4))}</b> — spendable on <b>free models only</b>.`
       : '',
     '',
-    '<b>Just type a message to begin.</b> Send /stop to halt an answer that is being written.',
+    '<b>Just type a message to begin.</b> The buttons below stay with you: the top one shows the model in use — tap it to change. Send /stop to halt an answer that is being written.',
     '',
     `<i>${ONE_WAY}</i>`,
   ].filter(Boolean).join('\n');
@@ -511,7 +526,7 @@ async function sendScreen(chatId, html, keyboard = BACK_KEYBOARD) {
 async function showScreen(chatId, u, which) {
   switch (which) {
     case 'start':
-      await sendScreen(chatId, startScreen(u), MENU_KEYBOARD);
+      await sendScreen(chatId, startScreen(u), quickKeyboard(u));
       return null;
     case 'help':
       await sendScreen(chatId, helpScreen());
@@ -857,7 +872,7 @@ You were charged $${escapeHtml(microUsdToString(actual, 6))} for this.`;
     // used to follow here is what put a "Thinking..." spinner under every answer.
     //
     // The answer is Markdown as the model wrote it; Telegram gets its HTML dialect.
-    await tg.sendLong(chatId, (answer ? mdToHtml(answer) : (out.cancelled ? '<i>stopped before it wrote anything</i>' : '(the agent returned no text)')) + note);
+    await tg.sendLong(chatId, (answer ? mdToHtml(answer) : (out.cancelled ? '<i>stopped before it wrote anything</i>' : '(the agent returned no text)')) + note, { reply_markup: quickKeyboard(u) });
 
     // WHAT THE AGENT MADE, not just what it said about it.
     //
@@ -924,7 +939,7 @@ You were charged $${escapeHtml(microUsdToString(actual, 6))} for this.`;
       // there is never a moment with neither on screen.
       const note = r.aborted && !r.overranInput ? '\n\n<i>stopped</i>'
         : (r.reconstructed ? '\n\n<i>the answer was cut short; billed on what was generated</i>' : '');
-      await tg.sendLong(chatId, `${answer ? mdToHtml(answer) : '(the model returned no text)'}${note}`);
+      await tg.sendLong(chatId, `${answer ? mdToHtml(answer) : '(the model returned no text)'}${note}`, { reply_markup: quickKeyboard(u) });
 
       // AN SVG IS AN IMAGE. No model here can emit a raster one, but several
       // will happily write SVG when asked for an icon or a diagram -- and
@@ -1661,7 +1676,8 @@ async function handleMessage(msg) {
       // if a keyboard is ever stale.
       const wanted = text.slice(first.length).trim();
       if (wanted !== '') {
-        await sendScreen(chatId, setModel(chatId, wanted).msg);
+        const r = setModel(chatId, wanted);
+        await sendScreen(chatId, r.msg, quickKeyboard(ensureUser(chatId)));
         return null;
       }
       return showScreen(chatId, u, 'models');
@@ -1691,6 +1707,10 @@ async function handleMessage(msg) {
     default:
       break;
   }
+
+  // A tapped keyboard button arrives as its text. It is a screen, never a billed turn.
+  const quick = quickAction(text);
+  if (quick) return showScreen(chatId, u, quick);
 
   // A DEAD COMMAND MUST NEVER FALL THROUGH TO THE AI HANDLER. Telegram caches
   // the per-chat command menu and only refreshes it on that user's next
@@ -1887,7 +1907,7 @@ async function main() {
             ensureUser(cid);
             const r = setModel(cid, data.slice(2));
             toast = r.ok ? `Model: ${r.model}` : 'Not available';
-            await sendScreen(cid, r.msg);
+            await sendScreen(cid, r.msg, quickKeyboard(ensureUser(cid)));
           } else if (cid !== null && (ALLOWED_CHATS.has(cid) || ADMIN_CHATS.has(cid)) && data.startsWith('nav:')) {
             // A menu button is the same screen its slash command shows.
             const u = ensureUser(cid);
