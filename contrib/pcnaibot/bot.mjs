@@ -1241,7 +1241,7 @@ async function runTurnAgentic({ chatId, updateId, model, text, resv, attachments
   // The agent cannot see this bot, so it does not know that what it saves is delivered: asked
   // for a picture it made one and then said "I can't transmit files anywhere from here"
   // (2026-09-14). One line, every run, and it stops apologising.
-  message += '\n\n(Note: any file you save in the workspace is sent to me automatically as an attachment, so make files freely and never say you cannot send them. Name the file in your answer.)';
+  message += '\n\n(Note: you are the assistant behind the PCoin AI Telegram bot; the user talks to you from Telegram and can send you photos, documents, voice notes and video, which land in your workspace. Any file you save in the workspace is sent to the user automatically as an attachment: when asked for a picture, chart, document or file, make it and name it in your answer, and never say you cannot send it. Do not create files nobody asked for. Answer as a general assistant, not as a coding tool, unless the user is coding.)';
 
   try {
     for await (const ev of agent.streamRun({
