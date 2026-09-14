@@ -1150,11 +1150,25 @@ async function runTurnAgentic({ chatId, updateId, model, text, resv, attachments
   let run = null;
   let sessionIdSeen = null;
   // ONE line of status, and ONLY while there is nothing better to show. The moment real text
-  // arrives the status disappears: the answer is what the user is waiting for.
+  // arrives the status disappears: the answer is what the user is waiting for. The elapsed time
+  // rides on the status so a long model call reads as progress rather than as a stall.
+  const startedMs = Date.now();
+  const elapsed = () => {
+    const s = Math.floor((Date.now() - startedMs) / 1000);
+    return s < 60 ? `${s}s` : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  };
   const render = () => {
     if (shown !== '') return escapeHtml(shown);
-    return activity ? `<i>${escapeHtml(activity)}…</i>` : '';
+    return `<i>${escapeHtml(activity ?? 'Thinking')}… ${elapsed()}</i>`;
   };
+  // A Telegram draft expires after ~30 s of silence, and a single model call on a slow model
+  // takes 40 s and more (measured 2026-09-14: qwen3.8-flash up to 43 s, glm-5.3 up to 127 s)
+  // -- so the status vanished mid-call and the chat looked stuck ("it still thinking, why it
+  // is so slow"). Re-push it every 15 s while the run works; it is the same line with the
+  // clock moved on, and it stops the moment real text streams or the run ends.
+  const keepalive = setInterval(() => {
+    if (shown === '') draft.push(render()).catch(() => undefined);
+  }, 15000);
 
   // STOPPING MEANS INTERRUPTING THE RUN, NOT DROPPING THE STREAM. Aborting our fetch left the
   // run going on the server -- their docs: a dropped stream never stops a run -- so /stop and
@@ -1314,6 +1328,7 @@ async function runTurnAgentic({ chatId, updateId, model, text, resv, attachments
       }
     }
   } finally {
+    clearInterval(keepalive);
     clearInterval(lockTimer);
     activeStreams.delete(chatId);
   }
