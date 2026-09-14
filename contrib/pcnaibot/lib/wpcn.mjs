@@ -91,10 +91,18 @@ export class WpcnService {
   }
 
   // READ payTo AND bonusPercent FROM /health, NEVER HARDCODE.
+  //
+  // The vendored WpcnPay client is verbatim and carries verify() and claims() only, so the
+  // health read is made here. It was `this.client.health()` -- a method that does not exist --
+  // and every /topup_wpcn answered "unreachable" while the verifier was fine (2026-09-14).
   async paymentInfo() {
     if (!this.client) return null;
     try {
-      const h = await this.client.health();
+      const res = await fetch(`${this.client.endpoint.replace(/\/+$/, '')}/health`, {
+        headers: { Accept: 'application/json', Authorization: `Bearer ${this.client.token}` },
+        signal: AbortSignal.timeout(10000),
+      });
+      const h = res.ok ? await res.json() : null;
       if (!h || h.ok !== true) return null;
       if (typeof h.payTo !== 'string' || !Number.isFinite(Number(h.bonusPercent))) return null;
       return {

@@ -40,6 +40,7 @@ import { newDeliverables, deliverFiles, noteUploaded } from './lib/deliver.mjs';
 import { AgentClient, AgentUnavailable, AgentRefused, creditsToMicroUsd, runOutcome } from './lib/agent.mjs';
 import { liveSession, recordSession, touchSession, retireSession, sweepDeletions, reconcileRemote } from './lib/agentstore.mjs';
 import { streamMessages, StreamStage } from './lib/stream.mjs';
+import { mdToHtml } from './lib/markdown.mjs';
 import { DraftStream } from './lib/drafts.mjs';
 import { tokensToMicroUsd } from './lib/money.mjs';
 
@@ -271,6 +272,7 @@ function startScreen(u) {
     '<b>PCoin AI</b> — an AI <b>agent</b> you pay for in PCN.',
     '',
     'It remembers your conversation, keeps files, and can use tools to actually do things — not just answer.',
+    'Send text, a photo, a document, a voice note or a video — it reads them. Ask for a picture, a chart, a PDF or code and it sends the file back.',
     '',
     `Balance: <b>$${escapeHtml(microUsdToString(u.balance_micro_usd, 4))}</b>`,
     GRANT_MICRO > 0
@@ -282,6 +284,7 @@ function startScreen(u) {
     '',
     '/models — choose a model     /topup — add credit',
     '/balance — balance and history     /help — how it works',
+    '/stop — stop the current answer     /clear — start a fresh conversation',
   ].filter(Boolean).join('\n');
 }
 
@@ -720,14 +723,13 @@ async function runTurn(chatId, updateId, text, attachments = []) {
       throw e;
     }
 
-    const { draft: adraft, out } = r;
+    const { out } = r;
 
     if (!out.readable || out.running) {
       // We never saw a terminal run. It MAY still be running on their side --
       // their own docs say a dropped stream never stops a run -- so this is
       // UNKNOWN and is held, not released.
       hold(db, res.reservationId, `agent run never reported a terminal status`);
-      try { await adraft.clear(); } catch { /* ephemeral anyway */ }
       log.error('agent run produced no terminal status; reservation HELD');
       return 'We lost contact with the agent part-way through. Nothing has been settled; the amount is held and released automatically if no usage is recorded.';
     }
@@ -736,7 +738,6 @@ async function runTurn(chatId, updateId, text, attachments = []) {
       // `credits` is the ONLY cost signal here. Without it we cannot settle,
       // and inventing a number is exactly what this codebase refuses to do.
       hold(db, res.reservationId, 'agent run reported no credits');
-      try { await adraft.clear(); } catch { /* ignore */ }
       log.error('agent run had no credits field; reservation HELD', { status: out.status });
       return 'The agent finished but did not report what it cost, so nothing has been settled. This has been logged and will be reconciled.';
     }
@@ -756,24 +757,31 @@ async function runTurn(chatId, updateId, text, attachments = []) {
 
     const answer = (out.text || r.text || '').trim();
 
-    if (!out.ok) {
-      try { await adraft.clear(); } catch { /* ignore */ }
-      if (out.stopReason === 'max_turns') {
-        return `${escapeHtml(answer) || '(no answer)'}
-
-<i>stopped at the ${AGENT_MAX_TURNS}-step limit</i>`;
-      }
+    // A STOPPED run is an answer that ends early, not a failure: the user asked for the stop,
+    // the text so far is theirs, and whatever the agent wrote before the stop is delivered
+    // below like any other output. Since 2026-09-14 the API reports it as `cancelled` with
+    // `stop_reason: interrupted` and carries the partial text.
+    if (out.failed) {
       const why = out.error?.message ? escapeHtml(String(out.error.message).slice(0, 180)) : 'the run failed';
       // The sandbox failing is their side and costs nothing; say so plainly
       // rather than leaving the user wondering what they paid for.
-      return `The agent could not finish: <i>${why}</i>
+      return `${answer ? `${mdToHtml(answer)}\n\n` : ''}The agent could not finish: <i>${why}</i>
 
 You were charged $${escapeHtml(microUsdToString(actual, 6))} for this.`;
     }
 
-    // Send BEFORE clearing the draft, so the answer is never absent.
-    await tg.sendLong(chatId, escapeHtml(answer) || '(the agent returned no text)');
-    try { await adraft.clear(); } catch { /* ignore */ }
+    let note = '';
+    if (out.cancelled) note = '\n\n<i>stopped</i>';
+    else if (out.stopReason === 'max_turns') note = `\n\n<i>stopped at the ${AGENT_MAX_TURNS}-step limit — say "continue" to let it go on</i>`;
+    else if (out.stopReason === 'deadline') note = '\n\n<i>stopped at the time limit — say "continue" to let it go on</i>';
+    else if (out.stopReason === 'budget') note = '\n\n<i>stopped: the run reached its spending limit</i>';
+
+    // SENDING THIS IS WHAT ENDS THE DRAFT -- see the note where clear() used to
+    // live in drafts.mjs. Nothing else is needed, and the empty-text push that
+    // used to follow here is what put a "Thinking..." spinner under every answer.
+    //
+    // The answer is Markdown as the model wrote it; Telegram gets its HTML dialect.
+    await tg.sendLong(chatId, (answer ? mdToHtml(answer) : (out.cancelled ? '<i>stopped before it wrote anything</i>' : '(the agent returned no text)')) + note);
 
     // WHAT THE AGENT MADE, not just what it said about it.
     //
@@ -831,13 +839,12 @@ You were charged $${escapeHtml(microUsdToString(actual, 6))} for this.`;
         saveHistory(chatId, msgs);
       }
 
-      // Send the real message BEFORE clearing the draft, so the answer is never
-      // absent from the screen. The draft is ephemeral and would expire on its
-      // own anyway; clearing is only tidiness.
+      // Sending the real message is itself what removes the draft, so the
+      // streamed preview is replaced by the permanent answer in one step and
+      // there is never a moment with neither on screen.
       const note = r.aborted && !r.overranInput ? '\n\n<i>stopped</i>'
         : (r.reconstructed ? '\n\n<i>the answer was cut short; billed on what was generated</i>' : '');
-      await tg.sendLong(chatId, `${escapeHtml(answer) || '(the model returned no text)'}${note}`);
-      try { await r.draft.clear(); } catch (e) { log.debug('draft clear failed', errFields(e)); }
+      await tg.sendLong(chatId, `${answer ? mdToHtml(answer) : '(the model returned no text)'}${note}`);
 
       // AN SVG IS AN IMAGE. No model here can emit a raster one, but several
       // will happily write SVG when asked for an icon or a diagram -- and
@@ -918,7 +925,7 @@ You were charged $${escapeHtml(microUsdToString(actual, 6))} for this.`;
     saveHistory(chatId, msgs);
 
     const cost = isFree ? 'free' : `$${microUsdToString(actual, 6)}`;
-    return `${escapeHtml(answer) || '(the model returned no text)'}\n\n<i>${escapeHtml(cost)} · ${usage.inputTokens} in / ${usage.outputTokens} out</i>`;
+    return `${answer ? mdToHtml(answer) : '(the model returned no text)'}\n\n<i>${escapeHtml(cost)} · ${usage.inputTokens} in / ${usage.outputTokens} out</i>`;
   } catch (e) {
     if (e instanceof UpstreamError) {
       if (e.bucket === Bucket.PERMANENT || e.bucket === Bucket.BACKOFF || e.bucket === Bucket.NOT_BILLED) {
@@ -963,7 +970,10 @@ function toolVerb(name) {
 }
 
 const SANDBOX_RETRIES = 3;
-const SANDBOX_BACKOFF_MS = 4000;
+// 5 s, then 10 s, then 20 s: a gateway deploy restarts its sandbox service for about half a
+// minute, and the old 4 + 8 s sat entirely inside that window (three failures, 07:21:45 to
+// 07:21:50 on 2026-09-14, while the service was "Up 22 seconds").
+const SANDBOX_BACKOFF_MS = 5000;
 
 // Retry an agentic run through a sandbox failure.
 //
@@ -989,7 +999,7 @@ async function withSandboxRetry(fn, chatId) {
       }
       if (attempt < SANDBOX_RETRIES) {
         log.warn('agent sandbox failed; retrying', { attempt, code: e.code });
-        await new Promise((r) => setTimeout(r, SANDBOX_BACKOFF_MS * attempt));
+        await new Promise((r) => setTimeout(r, SANDBOX_BACKOFF_MS * 2 ** (attempt - 1)));
       }
     }
   }
@@ -1012,8 +1022,54 @@ async function withSandboxRetry(fn, chatId) {
 // ---------------------------------------------------------------------------
 async function runTurnAgentic({ chatId, updateId, model, text, resv, attachments = [] }) {
   const draft = new DraftStream(tg, chatId, draftIdFor(updateId), { canStop: true });
+
+  // What the user sees while the run works, declared BEFORE anything that renders it: these
+  // used to sit below the attachment block that called render(), and `let` has no hoisting --
+  // every photo or file sent to the bot crashed the turn with "Cannot access 'activity' before
+  // initialization" (2026-09-14, the first photo the owner sent).
+  let shown = '';
+  let activity = null;
+  let run = null;
+  let sessionIdSeen = null;
+  // ONE line of status, and ONLY while there is nothing better to show. The moment real text
+  // arrives the status disappears: the answer is what the user is waiting for.
+  const render = () => {
+    if (shown !== '') return escapeHtml(shown);
+    return activity ? `<i>${escapeHtml(activity)}…</i>` : '';
+  };
+
+  // STOPPING MEANS INTERRUPTING THE RUN, NOT DROPPING THE STREAM. Aborting our fetch left the
+  // run going on the server -- their docs: a dropped stream never stops a run -- so /stop and
+  // the stop button "worked" while the agent kept working and billing, and the turn ended as
+  // "we lost contact" with the money held. Now a stop asks the API to interrupt the run and
+  // keeps reading until the run reports itself cancelled; the fetch is cut only if that never
+  // comes. `stopper` is what every stop control reaches; `hardAbort` is the last resort.
   const stopper = new AbortController();
+  const hardAbort = new AbortController();
+  let stopRequested = false;
+  let stopTarget = null;
+  const requestStop = () => {
+    stopRequested = true;
+    if (!stopTarget) return; // the run.started event carries the session; it fires then
+    const target = stopTarget;
+    stopTarget = null; // once
+    void agent.interrupt(target).then((ok) => {
+      log.info('agent run interrupt requested', { chat: chatTag(chatId), ok });
+      if (!ok) hardAbort.abort();
+    });
+    setTimeout(() => hardAbort.abort(), 45000).unref?.();
+  };
+  stopper.signal.addEventListener('abort', requestStop, { once: true });
   activeStreams.set(chatId, stopper);
+
+  // KEEP THE PER-USER LOCK FRESH WHILE THE RUN WORKS (the streamed path does the same). busy_at
+  // goes stale after 180 s; an agent run is often longer, and a lock that expired underneath it
+  // let the same user start a second run -- two reservations, two drafts.
+  const lockTimer = setInterval(() => {
+    try { db.prepare('UPDATE users SET busy_at = ? WHERE chat_id = ?').run(nowSec(), chatId); }
+    catch (e) { log.warn('could not refresh the per-user lock', errFields(e)); }
+  }, 60000);
+
   await draft.push('');
 
   // A SESSION KEEPS THE MODEL IT WAS CREATED WITH -- their own docs: "the
@@ -1034,29 +1090,42 @@ async function runTurnAgentic({ chatId, updateId, model, text, resv, attachments
   }
 
   let sess = liveSession(db, chatId);
+  stopTarget = sess?.session_id ?? null;
+  sessionIdSeen = sess?.session_id ?? null;
 
   // ATTACHMENTS GO IN BEFORE THE RUN THAT NEEDS THEM.
   //
-  // AgentRunRequest.message is a plain STRING -- no content blocks, no
-  // attachment field -- so the only way to give an agent an image is to put it
-  // in the workspace and name the path in the message. (The plain /v1/messages
-  // API does take Anthropic image blocks; the agent API does not.)
+  // The file lands in the session's workspace and its path is named in the message: that works
+  // for every kind of file, every model (a vision model reads the image itself with its Read
+  // tool; a text model reads what it can), and the agent can transform and send it back. (The
+  // API also takes image and PDF content blocks since 2026-09-14; the workspace route is kept
+  // because it is the one that covers documents, audio and video too.)
   //
   // A file needs a session to live in, so one is created explicitly here rather
   // than waiting for the run to make it. Their docs: creating a session "costs
   // nothing; the sandbox starts on the first run or file operation".
   let uploaded = [];
+  const notFetched = [];
   if (attachments.length) {
     if (!sess) {
       const created = await agent.createSession({ model, title: `pcnaibot ${chatId}` });
       sess = recordSession(db, chatId, { sessionId: created.id, model });
+      stopTarget = created.id;
+      sessionIdSeen = created.id;
       log.info('session created for an upload', { session: created.id.slice(0, 8) });
     }
     activity = 'Reading your file';
     await draft.push(render());
     for (const a of attachments) {
       const dl = await tg.downloadFile(a.fileId);
-      if (!dl.ok) { log.warn('could not download an attachment', { reason: dl.reason }); continue; }
+      if (!dl.ok) {
+        // Telegram lets a bot fetch at most 20 MB. Say so in the message rather than pretend
+        // the file was never sent -- the agent would otherwise answer a question about a file
+        // it cannot see.
+        log.warn('could not download an attachment', { reason: dl.reason });
+        notFetched.push(a.name);
+        continue;
+      }
       const up = await agent.uploadFile(sess.session_id, a.name, dl.buffer, a.contentType);
       if (up.ok) {
         uploaded.push({ name: up.path, size: up.size, kind: a.kind });
@@ -1074,32 +1143,21 @@ async function runTurnAgentic({ chatId, updateId, model, text, resv, attachments
   // Name the paths in the message, because that is how the agent learns they
   // exist. Without this the file sits in the workspace unmentioned.
   let message = text;
-  if (uploaded.length) {
-    const list = uploaded.map((u) => `${u.name} (${u.size} bytes)`).join(', ');
-    const preamble = uploaded.length === 1
-      ? `I have uploaded a file to your workspace: ${list}.`
-      : `I have uploaded these files to your workspace: ${list}.`;
-    message = text ? `${preamble}
-
-${text}` : `${preamble}
-
-Please look at it and describe what you see.`;
+  if (uploaded.length || notFetched.length) {
+    const kinds = new Set(uploaded.map((u) => u.kind));
+    const list = uploaded.map((u) => `${u.name} (${u.kind}, ${u.size} bytes)`).join(', ');
+    const parts = [];
+    if (uploaded.length === 1) parts.push(`I have uploaded a file to your workspace: ${list}.`);
+    else if (uploaded.length > 1) parts.push(`I have uploaded these files to your workspace: ${list}.`);
+    if (notFetched.length) parts.push(`(${notFetched.join(', ')} could not be fetched from Telegram — over its 20 MB limit for bots — so it is not in the workspace.)`);
+    if (kinds.has('voice') || kinds.has('audio') || kinds.has('video') || kinds.has('video_note')) {
+      parts.push('If you need what is said in a recording, extract or transcribe it with the tools you have (ffmpeg is installed) and say what you could not do.');
+    }
+    const ask = text || (kinds.has('photo') || kinds.has('sticker')
+      ? 'Please look at it and describe what you see.'
+      : 'Please look at it and tell me what it contains.');
+    message = `${parts.join('\n')}\n\n${ask}`;
   }
-
-  let shown = '';
-  let activity = null;
-  let run = null;
-  let sessionIdSeen = sess?.session_id ?? null;
-
-  // ONE line of status, and ONLY while there is nothing better to show.
-  //
-  // The moment real text arrives the status disappears: the answer is what the
-  // user is waiting for, and a running commentary above it is noise that ends
-  // up embedded in what they read.
-  const render = () => {
-    if (shown !== '') return escapeHtml(shown);
-    return activity ? `<i>${escapeHtml(activity)}…</i>` : '';
-  };
 
   try {
     for await (const ev of agent.streamRun({
@@ -1108,7 +1166,7 @@ Please look at it and describe what you see.`;
       model: sess ? null : model,
       maxTurns: AGENT_MAX_TURNS,
       title: sess ? null : `pcnaibot ${chatId}`,
-    }, { abortSignal: stopper.signal })) {
+    }, { abortSignal: hardAbort.signal })) {
       if (ev.type === 'session') {
         // WRITE THE ID DOWN THE MOMENT WE LEARN IT. A session id we lose is a
         // sandbox on their server we can never delete.
@@ -1117,6 +1175,9 @@ Please look at it and describe what you see.`;
           try { sess = recordSession(db, chatId, { sessionId: ev.sessionId, model }); }
           catch (e) { log.error('could not record the agent session', errFields(e)); }
         }
+        // A stop that arrived before we knew the session goes out now.
+        if (stopRequested && !stopTarget) { stopTarget = ev.sessionId; requestStop(); }
+        else if (!stopTarget) stopTarget = ev.sessionId;
       } else if (ev.type === 'text') {
         shown += ev.delta;
         await draft.maybePush(render());
@@ -1131,6 +1192,7 @@ Please look at it and describe what you see.`;
       }
     }
   } finally {
+    clearInterval(lockTimer);
     activeStreams.delete(chatId);
   }
 
@@ -1269,9 +1331,10 @@ async function runTurnStreamed({ chatId, updateId, row, upstream, priceRow, isFr
     clearInterval(lockTimer);
     activeStreams.delete(chatId);
     await clearControl();
-    // On the error path there IS no final message to protect, so clearing the
-    // half-written preview is the right thing.
-    await draft.clear();
+    // The half-written preview is left standing. It expires on its own within
+    // ~30s, and the error message the caller is about to send removes it sooner
+    // -- whereas the empty-text "clear" that used to be here would have replaced
+    // it with a spinner that outlived the error.
     throw e; // an UpstreamError: the caller's bucket handling owns it
   }
   clearInterval(lockTimer);
@@ -1390,6 +1453,41 @@ function collectAttachments(msg) {
       kind: 'document',
     });
   }
+  // Everything else a person can drop into a chat (owner, 2026-09-14: "send image, file,
+  // anything"). Each keeps Telegram's own mime type and gets a name the agent can open.
+  const extOf = (mime, fallback) => ({
+    'video/mp4': 'mp4', 'video/quicktime': 'mov', 'video/webm': 'webm', 'audio/mpeg': 'mp3',
+    'audio/ogg': 'ogg', 'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a', 'audio/wav': 'wav',
+    'audio/flac': 'flac', 'image/gif': 'gif', 'image/webp': 'webp',
+  })[mime] ?? fallback;
+  const media = [
+    ['video', msg.video, 'video/mp4', 'mp4'],
+    ['animation', msg.animation, 'video/mp4', 'mp4'],
+    ['audio', msg.audio, 'audio/mpeg', 'mp3'],
+    ['voice', msg.voice, 'audio/ogg', 'ogg'],
+    ['video_note', msg.video_note, 'video/mp4', 'mp4'],
+  ];
+  for (const [kind, m, defaultMime, defaultExt] of media) {
+    if (!m?.file_id) continue;
+    const mime = m.mime_type || defaultMime;
+    out.push({
+      fileId: m.file_id,
+      name: safeName(m.file_name) || `${kind}-${m.file_unique_id ?? 'media'}.${extOf(mime, defaultExt)}`,
+      contentType: mime,
+      kind,
+    });
+  }
+  // A static sticker is a WebP picture; an animated one (TGS) or a video one (WebM) is not
+  // something a model can look at, so only the picture kind is passed on.
+  if (msg.sticker?.file_id && !msg.sticker.is_animated) {
+    const video = msg.sticker.is_video === true;
+    out.push({
+      fileId: msg.sticker.file_id,
+      name: `sticker-${msg.sticker.file_unique_id ?? 'sticker'}.${video ? 'webm' : 'webp'}`,
+      contentType: video ? 'video/webm' : 'image/webp',
+      kind: 'sticker',
+    });
+  }
   return out;
 }
 
@@ -1419,7 +1517,13 @@ async function handleMessage(msg) {
   // like an empty message and was dropped in silence.
   const attachments = collectAttachments(msg);
   const text = (typeof msg.text === 'string' ? msg.text : (typeof msg.caption === 'string' ? msg.caption : '')).trim();
-  if (text === '' && attachments.length === 0) return;
+  if (text === '' && attachments.length === 0) {
+    // Something the bot cannot take (an animated sticker, a poll, a contact, a location).
+    if (msg.sticker || msg.poll || msg.contact || msg.location || msg.venue || msg.dice) {
+      return 'I can read text, photos, documents, voice notes, audio and video — not this one.';
+    }
+    return;
+  }
 
   // DISPATCH ON EXACT MATCH OF THE FIRST TOKEN, so /topup_pcn cannot be
   // swallowed by /topup.

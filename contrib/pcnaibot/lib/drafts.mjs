@@ -29,7 +29,7 @@
 // does nothing -- allowed_updates persists server-side, so forgetting it fails
 // quietly and forever.
 
-import { log, errFields } from './log.mjs';
+import { log } from './log.mjs';
 import { telegramLength, TEXT_LIMIT } from './telegram.mjs';
 
 // Telegram's own cap for a message, and therefore for a draft.
@@ -91,6 +91,10 @@ export class DraftStream {
       chat_id: this.chatId,
       draft_id: this.draftId,
       text: shown,
+      // The callers hand this HTML (escaped text, and an <i>status…</i> line while the agent
+      // works). Without the parse mode the tags showed literally: "<i>Reading your file…</i>"
+      // sat in the chat for the length of every run (2026-09-14).
+      parse_mode: 'HTML',
       can_stop: this.canStop,
     });
 
@@ -117,13 +121,23 @@ export class DraftStream {
     }
   }
 
-  // Clearing is best effort: the draft expires on its own within ~30s, so a
-  // failure here costs nothing.
-  async clear() {
-    if (this.failed) return;
-    try { await this.tg.call('sendMessageDraft', { chat_id: this.chatId, draft_id: this.draftId, text: '' }); }
-    catch (e) { log.debug('draft clear failed', errFields(e)); }
-  }
+  // THERE IS DELIBERATELY NO clear(). Read this before adding one back.
+  //
+  // Telegram has no method that removes a draft -- deleteMessageDraft,
+  // clearMessageDraft and removeMessageDraft all answer 404. The only two things
+  // that end a draft are its own ~30s expiry and, per the API's own wording on
+  // `keep_on_stop`, the bot SENDING A MESSAGE. So the real sendMessage that ends
+  // every turn is already the removal mechanism, and nothing else is needed.
+  //
+  // What used to be here pushed `text: ''` to "clear" it. That is the one thing
+  // an empty text does NOT do: property 3 at the top of this file -- an empty
+  // text shows a "Thinking..." PLACEHOLDER. So the tidy-up ran after the answer
+  // had been delivered and posted a brand-new loading frame underneath it, with
+  // a fresh 30-second lifetime, on every single turn. Measured as 4-10 seconds
+  // of spinner after each reply, and as two loading indicators at once, because
+  // a live draft also drives the header state.
+  //
+  // Send the answer. That is the clear.
 }
 
 // Split a finished answer for persistence. A draft showed a tail; the real
