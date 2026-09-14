@@ -629,22 +629,45 @@ function modelsScreen() {
   };
 }
 
+// A ledger row as a person reads it: WHAT it was (the model for a turn, the rail for a deposit)
+// and WHEN, not the row's kind tag (owner, 2026-09-14: "ai_turn is ugly, show the model name").
+// The model is read off the settle note, which the billing path writes as "agent <model> …",
+// "stream <model> …" or "<model> in=…".
+function ledgerLabel(l) {
+  if (l.kind === 'ai_turn') {
+    const words = String(l.note ?? '').trim().split(/\s+/);
+    const model = words[0] === 'agent' || words[0] === 'stream' ? words[1] : words[0];
+    return model ? `<code>${escapeHtml(model)}</code>` : 'a turn';
+  }
+  if (l.kind === 'deposit_pcn') return 'PCN deposit';
+  if (l.kind === 'deposit_wpcn') return 'wPCN deposit';
+  if (l.kind === 'grant') return 'free grant';
+  return 'adjustment';
+}
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function whenLabel(sec) {
+  const d = new Date(sec * 1000);
+  const hh = String(d.getUTCHours()).padStart(2, '0');
+  const mm = String(d.getUTCMinutes()).padStart(2, '0');
+  return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${hh}:${mm}`;
+}
+
 function balanceScreen(u) {
   const led = db.prepare('SELECT * FROM ledger WHERE chat_id=? ORDER BY id DESC LIMIT 10').all(u.chat_id);
   const lines = [
-    `Balance: <b>$${escapeHtml(microUsdToString(u.balance_micro_usd, 6))}</b>`,
-    `Reserved for a turn in flight: $${escapeHtml(microUsdToString(u.reserved_micro_usd, 6))}`,
-    GRANT_MICRO > 0 ? `Free grant (free models only): $${escapeHtml(microUsdToString(u.grant_micro_usd, 6))}` : '',
+    `Balance: <b>$${escapeHtml(microUsdToString(u.balance_micro_usd, 4))}</b>`,
+    u.reserved_micro_usd > 0 ? `Reserved for a turn in flight: $${escapeHtml(microUsdToString(u.reserved_micro_usd, 4))}` : '',
+    GRANT_MICRO > 0 ? `Free grant (free models only): $${escapeHtml(microUsdToString(u.grant_micro_usd, 4))}` : '',
     `Model: <code>${escapeHtml(u.model)}</code>`,
   ].filter(Boolean);
   if (u.balance_micro_usd < 0) {
     lines.push('', '<b>Your balance is negative.</b> A turn cost more than was reserved for it. Top up to continue.');
   }
   if (led.length) {
-    lines.push('', '<b>Recent activity</b>');
+    lines.push('', '<b>Recent activity</b> <i>(times in UTC)</i>');
     for (const l of led) {
-      const sign = l.delta_micro_usd >= 0 ? '+' : '-';
-      lines.push(`· ${escapeHtml(l.kind)} ${sign}$${escapeHtml(microUsdToString(Math.abs(l.delta_micro_usd), 6))}`);
+      const sign = l.delta_micro_usd >= 0 ? '+' : '−';
+      lines.push(`· ${escapeHtml(whenLabel(l.created_at))} · ${ledgerLabel(l)} ${sign}$${escapeHtml(microUsdToString(Math.abs(l.delta_micro_usd), 4))}`);
     }
   }
   return lines.join('\n');
