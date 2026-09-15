@@ -106,21 +106,40 @@ def save_state(s):
     os.replace(tmp, STATE)
 
 
-def dc_get(token, path):
+class TransientError(RuntimeError):
+    """Discord said 5xx or 429, or could not be reached. Worth retrying, and
+    worth waking somebody only if it lasts."""
+
+
+# How long Discord may keep failing before it is an alert rather than a blip.
+# First seen 2026-09-15 18:16 UTC: one "500: Internal Server Error" from
+# Discord's own API paged the ops channel. The timer fires again in 25 s.
+QUIET_SECONDS = int(os.environ.get("DISCORD_WATCH_QUIET_SECONDS", "900"))
+
+
+def dc_get(token, path, tries=3):
     req = urllib.request.Request(API + path, headers={
         "Authorization": "Bot " + token,
         "User-Agent": "DiscordBot (https://pc.am, 1.0) pcoin-discord-watch"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return json.loads(r.read().decode("utf-8", "replace"))
-    except urllib.error.HTTPError as e:
+    last = None
+    for attempt in range(tries):
         try:
-            detail = e.read().decode("utf-8", "replace")[:200]
-        except Exception:
-            detail = ""
-        raise RuntimeError("Discord HTTP %d on %s %s" % (e.code, path.split("?")[0], detail))
-    except urllib.error.URLError as e:
-        raise RuntimeError("Discord unreachable (%s)" % type(e.reason).__name__)
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.loads(r.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as e:
+            try:
+                detail = e.read().decode("utf-8", "replace")[:200]
+            except Exception:
+                detail = ""
+            msg = "Discord HTTP %d on %s %s" % (e.code, path.split("?")[0], detail)
+            if e.code < 500 and e.code != 429:
+                # 401/403/404 are configuration, not weather: alert at once.
+                raise RuntimeError(msg)
+            last = TransientError(msg)
+        except urllib.error.URLError as e:
+            last = TransientError("Discord unreachable (%s)" % type(e.reason).__name__)
+        time.sleep(2 ** attempt)
+    raise last
 
 
 def snowflake_time(sf):
@@ -397,6 +416,8 @@ def main():
                    "answer bot cannot read Discord until it is enabled." % blank_bodies)
 
     st["last_run"] = int(time.time())
+    # Reached Discord for the whole pass: any run of transient failures is over.
+    st.pop("down_since", None)
     if not DRY:
         save_state(st)
     return 0
@@ -405,7 +426,22 @@ def main():
 if __name__ == "__main__":
     try:
         sys.exit(main())
+    except TransientError as e:
+        # A failed read resolves nothing: cursors are not advanced either way.
+        # Whether it pages anyone depends on HOW LONG Discord has been failing.
+        st = load_state()
+        now = time.time()
+        since = st.get("down_since")
+        if not isinstance(since, (int, float)) or since <= 0:
+            since = now
+            st["down_since"] = int(now)
+            if not DRY:
+                save_state(st)
+        if now - since < QUIET_SECONDS:
+            print("  %s -- down %.0fs, staying quiet until %ds" % (e, now - since, QUIET_SECONDS),
+                  file=sys.stderr)
+            sys.exit(0)
+        sys.exit("%s -- Discord has been failing for %.0f minutes" % (e, (now - since) / 60.0))
     except RuntimeError as e:
-        # A failed read resolves nothing: cursors are not advanced, and the unit
-        # fails so OnFailure alerts.
+        # Not transient (bad token, missing access): alert at once.
         sys.exit(str(e))
