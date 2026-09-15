@@ -1,0 +1,11 @@
+[Unit]
+Description=PCoin -- check the PCoin Discord chat every 25 seconds
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=25s
+AccuracySec=1s
+Unit=pcoin-discord-watch.service
+
+[Install]
+WantedBy=timers.target

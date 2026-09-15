@@ -100,6 +100,21 @@ TEST_GROUP_ID = int(os.environ.get("GROUP_TEST_CHAT_ID")
                     or _G.get("GROUP_TEST_CHAT_ID") or "0")
 
 
+def discord_channel_ids(path="/etc/pcoin/discord.conf"):
+    """Only the two channel ids. The token in the same file is not read here:
+    this program never posts to Discord, the gate does."""
+    out = {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                k, _, v = line.strip().partition("=")
+                if k.strip() in ("DISCORD_CHAT_CHANNEL_ID", "DISCORD_TEST_CHANNEL_ID"):
+                    out[k.strip()] = v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return out
+
+
 def dest_for(chat):
     """Which approval destination a message from `chat` may be answered into.
 
@@ -113,6 +128,14 @@ def dest_for(chat):
     """
     if chat is None:
         return "group"
+    if isinstance(chat, str) and chat.startswith("discord:"):
+        ch = chat.split(":", 1)[1]
+        ids = discord_channel_ids()
+        if ch and ch == ids.get("DISCORD_CHAT_CHANNEL_ID"):
+            return "dcchat"
+        if ch and ch == ids.get("DISCORD_TEST_CHANNEL_ID"):
+            return "dctest"
+        return None
     try:
         chat = int(chat)
     except (TypeError, ValueError):
@@ -215,7 +238,10 @@ FORBIDDEN = [
     (re.compile(r"\b0x[a-fA-F0-9]{40}\b"), "a BSC address or contract"),
     # Ports that name our own services. A bare four-digit number is far too
     # common to block, so this lists the ones that actually identify something.
-    (re.compile(r"(?<![\d.])(?:9443|9444|9445|9543|8787|8788|8789|8790|8791|8792|8795|3333|50001|2019)\b"),
+    # 3333 is deliberately ABSENT: it is the public stratum port, published on
+    # pc.am and in the pool docs. Blocking it silently killed every mining
+    # answer this bot drafted. Do not re-add it.
+    (re.compile(r"(?<![\d.])(?:9443|9444|9445|9543|8787|8788|8789|8790|8791|8792|8795|50001|2019)\b"),
      "a service port"),
     (re.compile(r"(?i)\b(nginx|apache2|caddy|mariadb|mysql|postgres|sqlite|redis|"
                 r"systemd|cron\b|docker|kubernetes|pm2|supervisor)\b"), "infrastructure detail"),
@@ -338,6 +364,63 @@ def ask_model(cfg, system, message, author, model=None):
 
 # ---- telegram (reply only, into the one permitted chat) ------------------
 APPROVE = "/usr/local/bin/pcoin-approve"
+
+
+OWNER_IDS = {"508669931"}
+
+
+def remove_advert(tg_token, row, author, text, model):
+    """Delete an advert the model flagged, and report it to ALERT_CHAT either way.
+
+    Returns True only when the message was actually deleted."""
+    import html as _html
+    chat = str(row.get("chat") or "")
+    mid = str(row.get("message_id"))
+    deleted, why_not = False, ""
+    if DRY:
+        why_not = "dry run"
+    else:
+        try:
+            if chat.startswith("discord:"):
+                tok = ""
+                try:
+                    for line in open("/etc/pcoin/discord.conf", encoding="utf-8"):
+                        k, _, v = line.strip().partition("=")
+                        if k.strip() == "DISCORD_BOT_TOKEN":
+                            tok = v.strip().strip('"').strip("'")
+                except OSError:
+                    pass
+                if not tok:
+                    raise RuntimeError("no Discord bot token")
+                req = urllib.request.Request(
+                    "https://discord.com/api/v10/channels/%s/messages/%s" % (chat.split(":", 1)[1], mid),
+                    method="DELETE", headers={"Authorization": "Bot " + tok,
+                                              "User-Agent": "DiscordBot (https://pc.am, 1.0) pcoin-group-answer"})
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    deleted = resp.status in (200, 204)
+            else:
+                data = urllib.parse.urlencode({"chat_id": chat or GROUP_ID, "message_id": mid}).encode()
+                with urllib.request.urlopen(urllib.request.Request(
+                        "https://api.telegram.org/bot%s/deleteMessage" % tg_token, data=data), timeout=20) as resp:
+                    deleted = bool(json.load(resp).get("ok"))
+        except urllib.error.HTTPError as e:
+            why_not = "HTTP %d" % e.code
+        except Exception as e:
+            why_not = type(e).__name__
+    where = "PCoin Discord" if chat.startswith("discord:") else "PCoin Chat"
+    head = ("🧹 <b>%s — advert removed</b> (model: %s)" % (where, model) if deleted
+            else "⚠️ <b>%s — advert NOT removed</b> (%s)" % (where, _html.escape(why_not or "unknown")))
+    body = "%s\n<b>Who:</b> %s\n<b>Text:</b>\n%s" % (head, _html.escape(author), _html.escape(text[:1500]))
+    alert = conf(ALERT_CONF).get("ALERT_CHAT", "")
+    if alert and not DRY:
+        try:
+            data = urllib.parse.urlencode({"chat_id": alert, "parse_mode": "HTML", "text": body,
+                                           "disable_web_page_preview": "true"}).encode()
+            urllib.request.urlopen(urllib.request.Request(
+                "https://api.telegram.org/bot%s/sendMessage" % tg_token, data=data), timeout=20).close()
+        except Exception as e:
+            print("  advert report failed (%s)" % type(e).__name__, file=sys.stderr)
+    return deleted
 
 
 def reply(token, message_id, text, dest="group"):
@@ -540,6 +623,14 @@ def main():
             detail = str(e) if isinstance(e, (RuntimeError, ValueError)) else type(e).__name__
             print("  model failed on %s: %s" % (mid, detail), file=sys.stderr)
             continue                                # NOT handled -- a failure resolves nothing
+
+        if out.get("spam") is True and str(r.get("from_id")) not in OWNER_IDS:
+            ok_removed = remove_advert(tg, r, author, text, used_model)
+            act(action="removed-advert" if ok_removed else "advert-not-removed",
+                message_id=mid, who=author, asked=text[:300], model=used_model)
+            st["handled"][mid] = int(now)
+            print("  advert %s %s" % (mid, "removed" if ok_removed else "NOT removed"))
+            continue
 
         answer = (out.get("answer") or "").strip() or None
         conf_level = str(out.get("confidence") or "low").lower()

@@ -159,6 +159,13 @@ def send(token, chat, text):
 # TimeoutStartSec so systemd never kills a healthy wait.
 POLL_SECONDS = int(os.environ.get("GROUP_WATCH_POLL_SECONDS", "20"))
 
+# How long the Telegram API must be unreachable before a failed poll is treated
+# as a fault rather than weather. The timer re-runs this every 25 s, so anything
+# shorter pages a human about a condition that fixes itself before they can read
+# it -- and on 2026-09-13 the alert about exactly that could not be delivered,
+# because the network it was complaining about was the one it needed.
+NET_QUIET_SECONDS = int(os.environ.get("GROUP_WATCH_NET_QUIET_SECONDS", "900"))
+
 APPROVE = "/usr/local/bin/pcoin-approve"
 # The owner's Telegram user id. The only account whose press counts; pcoin-approve
 # checks this again on its own side, deliberately, because a check that exists in
@@ -237,12 +244,42 @@ def handle_callback(token, cb):
                             "--decision", decision, "--by", str(frm)],
                            capture_output=True, text=True, timeout=30)
     except Exception as e:
-        # Transient. Do NOT consume the press -- the button stays live and the
-        # next poll tries again.
-        tell("That press could not be recorded yet (%s). The button still works; "
-             "press it again in a moment. NOTHING was published."
-             % type(e).__name__)
-        print("  approval decide could not run (%s)" % type(e).__name__, file=sys.stderr)
+        # A TIMEOUT RESOLVES NOTHING. `decide` writes the decision early and the
+        # child was merely killed at 30s, so the press may well have landed --
+        # it had, the one time this fired in anger, while this branch told the
+        # owner "NOTHING was published".
+        #
+        # So do not guess in the reassuring direction: ask the queue what state
+        # the item is actually in, and say that. Only claim nothing happened
+        # when the queue still says it is awaiting a decision.
+        state = None
+        try:
+            q = subprocess.run([APPROVE, "show", item_id],
+                               capture_output=True, text=True, timeout=15)
+            if q.returncode == 0:
+                import json as _json
+                state = (_json.loads(q.stdout) or {}).get("state")
+        except Exception:
+            state = None
+
+        if state in ("published", "confirmed"):
+            tell("Your %s DID register despite a %s -- the item is now '%s'. "
+                 "Do NOT press again." % (decision, type(e).__name__, state))
+        elif state == "cancelled":
+            tell("Your cancel DID register despite a %s. Nothing will be "
+                 "published. No need to press again." % type(e).__name__)
+        elif state == "awaiting":
+            tell("That press could not be recorded (%s) and the item is still "
+                 "awaiting a decision. The button still works; press it again. "
+                 "NOTHING was published." % type(e).__name__)
+        else:
+            # Could not read the state either. Say exactly that rather than
+            # inventing an outcome in either direction.
+            tell("That press timed out (%s) and I could not confirm whether it "
+                 "registered. Check with: pcoin-approve show %s -- do not press "
+                 "again until you have." % (type(e).__name__, item_id))
+        print("  approval decide could not run (%s); item state=%s"
+              % (type(e).__name__, state), file=sys.stderr)
         return False
     out = (r.stdout or r.stderr or "").strip().splitlines()
     out = out[-1] if out else ""
@@ -317,6 +354,114 @@ def describe(msg):
     return "[a message this watcher does not render]"
 
 
+
+# ── moderation: outside links and adverts ─────────────────────────────────────
+OWNER_ID = 508669931
+ADMIN_TTL = 3600
+# Our own Telegram handles. A t.me link to any of these is fine; to anything else
+# it is somebody advertising their group.
+OUR_TG = {"pcoinpcn", "pcoinpcnchat", "pcoinpcnbot", "pcoinaibot", "mywebsitebuilderbot"}
+
+
+def link_allowed(url):
+    u = url.strip().lower()
+    for pre in ("https://", "http://"):
+        if u.startswith(pre):
+            u = u[len(pre):]
+    if u.startswith("www."):
+        u = u[4:]
+    host, _, path = u.partition("/")
+    host = host.split(":")[0].rstrip(".")
+    first = path.split("/")[0].split("?")[0]
+    if host == "pc.am" or host.endswith(".pc.am"):
+        return True
+    if host in ("t.me", "telegram.me"):
+        return first in OUR_TG
+    if host == "github.com":
+        return first == "pars5555"
+    if host == "discord.gg":
+        return first == "dgmdwjkb9f"
+    if host == "play.google.com":
+        return "am.pc.pcoin" in u
+    if host == "webcrafterai.com" or host.endswith(".webcrafterai.com"):
+        return True
+    # wPCN lives on BSC; people legitimately paste a transaction or the pool.
+    if host in ("bscscan.com", "pancakeswap.finance"):
+        return True
+    return False
+
+
+def moderation_reason(msg):
+    """Why this message must be removed, or None. Deterministic only."""
+    fo = msg.get("forward_origin") or {}
+    fchat = fo.get("chat") or msg.get("forward_from_chat") or {}
+    if (fo.get("type") == "channel" or fchat.get("type") == "channel") and \
+            (fchat.get("username") or "").lower() not in OUR_TG:
+        return "forwarded from another channel (%s)" % (fchat.get("title") or fchat.get("username") or "unknown")
+    for text_key, ent_key in (("text", "entities"), ("caption", "caption_entities")):
+        text = msg.get(text_key) or ""
+        for e in msg.get(ent_key) or []:
+            if e.get("type") == "text_link":
+                url = e.get("url") or ""
+            elif e.get("type") == "url":
+                # Offsets are UTF-16 code units, not Python characters.
+                b = text.encode("utf-16-le")
+                url = b[2 * e.get("offset", 0): 2 * (e.get("offset", 0) + e.get("length", 0))].decode("utf-16-le", "replace")
+            else:
+                continue
+            if url and not link_allowed(url):
+                return "outside link: %s" % url[:120]
+    return None
+
+
+def group_admins(token, chat, st):
+    """Administrators of `chat`, cached for an hour. An unreadable list returns
+    None and NOTHING is moderated that run: removing an admin's message because
+    the list could not be read is the unknown-collapses-into-no mistake."""
+    cache = st.setdefault("admins", {})
+    ent = cache.get(str(chat)) or {}
+    if ent and time.time() - ent.get("at", 0) < ADMIN_TTL:
+        return set(ent.get("ids") or [])
+    try:
+        j = api(token, "getChatAdministrators", {"chat_id": chat}, timeout=20)
+    except Exception as e:
+        print("  admin list unreadable (%s) -- moderation skipped this run" % type(e).__name__, file=sys.stderr)
+        return None
+    if not j.get("ok"):
+        return None
+    ids = [((m.get("user") or {}).get("id")) for m in j.get("result") or []]
+    cache[str(chat)] = {"at": int(time.time()), "ids": [i for i in ids if i]}
+    return set(cache[str(chat)]["ids"])
+
+
+def remove_and_report(token, alert_to, chat, msg, reason):
+    """Delete, then tell the owner. Returns True once the REPORT is delivered --
+    the report is what may not be lost; a failed delete is reported as such."""
+    mid = msg.get("message_id")
+    deleted, why_not = False, ""
+    if DRY:
+        why_not = "dry run"
+    else:
+        try:
+            r = api(token, "deleteMessage", {"chat_id": chat, "message_id": mid}, timeout=20)
+            deleted = bool(r.get("ok"))
+            why_not = "" if deleted else (r.get("description") or "not ok")
+        except urllib.error.HTTPError as e:
+            try:
+                why_not = json.loads(e.read().decode("utf-8", "replace")).get("description") or "HTTP %d" % e.code
+            except Exception:
+                why_not = "HTTP %d" % e.code
+        except Exception as e:
+            why_not = type(e).__name__
+    f = msg.get("from") or {}
+    head = ("🧹 <b>PCoin Chat — message removed</b>" if deleted
+            else "⚠️ <b>PCoin Chat — advert/link NOT removed</b> (%s)" % html.escape(why_not))
+    body = ("%s\n<b>Who:</b> %s (id %s)\n<b>Why:</b> %s\n<b>Text:</b>\n%s"
+            % (head, html.escape(who(msg)), f.get("id", "?"), html.escape(reason),
+               html.escape(describe(msg)[:1500])))
+    return send(token, alert_to, body)
+
+
 def main():
     c = conf()
     token = c.get("TELEGRAM_TOKEN")
@@ -375,12 +520,40 @@ def main():
             if attempt < 2:
                 time.sleep(2 ** attempt)
                 continue
-            sys.exit("getUpdates unreachable after 3 tries (%s)" % type(e).__name__)
+            # Transport has been down for this whole run. Whether that is worth
+            # waking anybody depends on HOW LONG, not on this one run failing:
+            # the timer fires again in 25 seconds.
+            now = time.time()
+            since = st.get("net_down_since")
+            if not isinstance(since, (int, float)) or since <= 0:
+                since = now
+                st["net_down_since"] = since
+                save_state(st)
+            down_for = now - since
+            if down_for < NET_QUIET_SECONDS:
+                # Quiet: log it and exit CLEANLY, so OnFailure= does not fire.
+                # Not silent -- the journal carries it, and the next run decides
+                # again with a longer elapsed time.
+                # This file has no log() helper; it prints to stderr, which
+                # systemd puts in the journal. Match the surrounding style
+                # rather than introduce a second one.
+                print("  getUpdates unreachable (%s); down %.0fs, staying quiet until %ds"
+                      % (type(e).__name__, down_for, NET_QUIET_SECONDS), file=sys.stderr)
+                return 0
+            sys.exit("getUpdates unreachable for %.0f minutes (%s) -- this is no longer "
+                     "a blip. Check this host's network and DNS."
+                     % (down_for / 60.0, type(e).__name__))
         except Exception as e:
             sys.exit("getUpdates failed (%s)" % type(e).__name__)
 
     if not j.get("ok"):
         sys.exit("getUpdates said: %s" % j.get("description"))
+
+    # Reached Telegram. Any run of transport failures is over, so forget it --
+    # otherwise a link that blips once an hour would eventually cross the
+    # fifteen-minute threshold while actually being fine.
+    if st.pop("net_down_since", None) is not None:
+        save_state(st)
 
     ups = j.get("result", [])
     if not ups:
@@ -429,6 +602,19 @@ def main():
         if msg.get("is_automatic_forward") or (msg.get("sender_chat") or {}).get("type") == "channel":
             delivered_through = uid
             continue
+
+        # ---- moderation, BEFORE relay and spool ----------------------------
+        uid_from = (msg.get("from") or {}).get("id")
+        if uid_from != OWNER_ID:
+            reason = moderation_reason(msg)
+            if reason:
+                admins = group_admins(token, chat, st)
+                if admins is not None and uid_from not in admins:
+                    if remove_and_report(token, alert_to, chat, msg, reason):
+                        delivered_through = uid
+                        continue
+                    print("  removal report failed at update %d -- offset held" % uid, file=sys.stderr)
+                    break
 
         text = describe(msg)
         urgent = bool(msg.get("text") and TRIGGERS.search(msg["text"]))

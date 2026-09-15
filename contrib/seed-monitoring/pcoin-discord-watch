@@ -1,0 +1,411 @@
+#!/usr/bin/env python3
+"""Read the PCoin Discord chat and hand it to the same answer bot Telegram uses.
+
+    pcoin-discord-watch              one pass; run it from a timer
+    pcoin-discord-watch --dry-run    read and print, spool nothing, relay nothing, advance nothing
+    pcoin-discord-watch --status     what it knows, without touching Discord
+
+The Discord half of pcoin-group-watch. OWNER, 2026-09-15: "same bot need in
+discord ... message approval is only should be in telegram". So this writes
+Discord messages into the SAME spool pcoin-group-watch writes, pcoin-group-answer
+drafts an answer exactly as it does for Telegram, and the draft goes through
+pcoin-approve -- to the owner's Telegram DM -- before anything reaches Discord.
+Nothing here posts to Discord at all.
+
+WHY REST POLLING AND NOT THE GATEWAY. A websocket client is a long-running
+process that must reconnect, resume and heartbeat, and one that dies quietly
+reads exactly like a quiet server. A timer calling GET /messages?after=<id>
+mirrors how getUpdates is used next door, and at this community's volume it is
+nowhere near a rate limit.
+
+FOUR THINGS THAT WOULD BREAK IT, EACH GUARDED:
+
+  NO HISTORY FLOOD. On the first run for a channel the cursor is set to the
+  newest message and nothing is spooled. Otherwise installing this would draft
+  answers to every message ever posted.
+
+  THE CURSOR ADVANCES ONLY PAST WHAT WAS DELIVERED. Same rule as the Telegram
+  watcher: if relaying a message to ops fails, stop there and retry next run.
+  Duplicates in the spool are cheap and the answer bot already dedupes; a lost
+  question is not cheap.
+
+  AN EMPTY BODY IS NOT "NO MESSAGE". Without the Message Content intent Discord
+  returns every message with content "". That is a configuration fault, not
+  silence, and it is alerted rather than spooled as blank rows.
+
+  THE TOKEN NEVER APPEARS IN OUTPUT. Errors are reported by status code and
+  Discord's own message, never with request headers.
+"""
+import html
+import json
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+DISCORD_CONF = os.environ.get("DISCORD_CONF", "/etc/pcoin/discord.conf")
+ALERT_CONF = os.environ.get("PCOIN_ALERT_CONF", "/etc/pcoin/alert.conf")
+STATE = os.environ.get("DISCORD_WATCH_STATE", "/var/lib/pcoin-discord-watch/state.json")
+SPOOL = os.environ.get("GROUP_SPOOL", "/var/lib/pcoin-group-watch/spool.jsonl")
+LOG = os.environ.get("DISCORD_WATCH_LOG", "/var/lib/pcoin-discord-watch/relay.log")
+SPOOL_MAX_BYTES = 2_000_000
+API = "https://discord.com/api/v10"
+DISCORD_EPOCH_MS = 1420070400000
+
+# Same wake-up words as the Telegram watcher, so a stuck person on either
+# platform is flagged the same way.
+TRIGGERS = re.compile(
+    r"\b(bug|broken|not working|doesn'?t work|does not work|can'?t|cannot|fail(ed|ing|s)?|"
+    r"error|stuck|missing|lost|scam|stolen|hack(ed)?|refund|didn'?t receive|no reply|"
+    r"help|support)\b", re.I)
+
+DRY = "--dry-run" in sys.argv
+
+
+def read_conf(path, required=True):
+    out = {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip().strip('"').strip("'")
+    except OSError as e:
+        if required:
+            sys.exit("cannot read %s: %s" % (path, e))
+    return out
+
+
+def load_state():
+    try:
+        with open(STATE, encoding="utf-8") as fh:
+            s = json.load(fh)
+        if not isinstance(s, dict):
+            s = {}
+    except (OSError, ValueError):
+        s = {}
+    s.setdefault("cursors", {})
+    s.setdefault("seen", 0)
+    s.setdefault("last_run", 0)
+    s.setdefault("empty_alerted", 0)
+    return s
+
+
+def save_state(s):
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    tmp = STATE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(s, fh, indent=2)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, STATE)
+
+
+def dc_get(token, path):
+    req = urllib.request.Request(API + path, headers={
+        "Authorization": "Bot " + token,
+        "User-Agent": "DiscordBot (https://pc.am, 1.0) pcoin-discord-watch"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read().decode("utf-8", "replace")[:200]
+        except Exception:
+            detail = ""
+        raise RuntimeError("Discord HTTP %d on %s %s" % (e.code, path.split("?")[0], detail))
+    except urllib.error.URLError as e:
+        raise RuntimeError("Discord unreachable (%s)" % type(e.reason).__name__)
+
+
+def snowflake_time(sf):
+    return ((int(sf) >> 22) + DISCORD_EPOCH_MS) // 1000
+
+
+def who(m):
+    a = m.get("author") or {}
+    name = a.get("global_name") or a.get("username") or "someone"
+    if a.get("username") and a.get("username") != name:
+        name = "%s (@%s)" % (name, a["username"])
+    return name
+
+
+def describe(m):
+    text = m.get("content") or ""
+    extra = []
+    for att in m.get("attachments") or []:
+        extra.append("[attachment: %s]" % (att.get("filename") or "file"))
+    if m.get("sticker_items"):
+        extra.append("[sticker]")
+    return (text + (" " if text and extra else "") + " ".join(extra)).strip()
+
+
+def relay(tg_token, alert_chat, guild, channel, m, urgent):
+    """Tell the private ops channel, exactly as the Telegram watcher does."""
+    if DRY:
+        print("  (dry-run: would relay %s)" % m["id"])
+        return True
+    head = ("🆘 <b>PCoin Discord — someone needs help</b>" if urgent
+            else "💬 <b>PCoin Discord</b>")
+    body = ("%s\n<b>%s</b>\n%s\n\n<a href=\"https://discord.com/channels/%s/%s/%s\">open the message</a>"
+            % (head, html.escape(who(m)), html.escape(describe(m)[:1200]), guild, channel, m["id"]))
+    data = urllib.parse.urlencode({"chat_id": alert_chat, "parse_mode": "HTML",
+                                   "disable_web_page_preview": "true", "text": body}).encode()
+    try:
+        with urllib.request.urlopen(urllib.request.Request(
+                "https://api.telegram.org/bot%s/sendMessage" % tg_token, data=data), timeout=30) as r:
+            return bool(json.load(r).get("ok"))
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        print("  relay failed: %s" % type(e).__name__, file=sys.stderr)
+        return False
+
+
+def notify_ops(subject, body):
+    n = "/usr/local/bin/pcoin-notify"
+    if not DRY and os.access(n, os.X_OK):
+        os.spawnv(os.P_NOWAIT, n, [n, subject, body])
+
+
+def spool(row):
+    os.makedirs(os.path.dirname(SPOOL), exist_ok=True)
+    with open(SPOOL, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+    if os.path.getsize(SPOOL) > SPOOL_MAX_BYTES:
+        with open(SPOOL, encoding="utf-8") as fh:
+            keep = fh.readlines()[-1000:]
+        tmp = SPOOL + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.writelines(keep)
+        os.replace(tmp, SPOOL)
+
+
+# ── moderation: the same rule as @PCoinPCNChat ───────────────────────────────
+# OWNER, 2026-09-15: remove adverts and outside links, report each removal to
+# the private ops channel -- "same ad and link filter on Discord". This is the
+# deterministic half (links). The model half (adverts with no link) already
+# covers Discord rows in pcoin-group-answer, which can delete on either platform.
+#
+# Discord gives no link entities, so links are found by pattern -- but only
+# unambiguous ones (a scheme, www., or an invite host). A bare "node.js" or
+# "e.g." is never treated as a link, because a false positive here deletes an
+# honest question.
+OUR_TG = {"pcoinpcn", "pcoinpcnchat", "pcoinpcnbot", "pcoinaibot", "mywebsitebuilderbot"}
+OUR_INVITE = "dgmdwjkb9f"
+URL_RE = re.compile(r"(?i)(?:https?://|www\.|\b(?:t\.me|telegram\.me|discord\.gg|discord\.com/invite)/)[^\s<>]+")
+MOD_PERMS = 0x8 | 0x2000          # ADMINISTRATOR | MANAGE_MESSAGES
+MOD_TTL = 3600
+
+
+def link_allowed(url, guild=""):
+    u = url.strip().lower()
+    for pre in ("https://", "http://"):
+        if u.startswith(pre):
+            u = u[len(pre):]
+    if u.startswith("www."):
+        u = u[4:]
+    host, _, path = u.partition("/")
+    host = host.split(":")[0].rstrip(".")
+    parts = [p for p in path.split("?")[0].split("/") if p]
+    first = parts[0] if parts else ""
+    if host == "pc.am" or host.endswith(".pc.am"):
+        return True
+    if host in ("t.me", "telegram.me"):
+        return first in OUR_TG
+    if host == "github.com":
+        return first == "pars5555"
+    if host == "discord.gg":
+        return first == OUR_INVITE
+    if host in ("discord.com", "discordapp.com"):
+        if first == "invite":
+            return len(parts) > 1 and parts[1] == OUR_INVITE
+        # a link to a message in THIS server is how people point at each other
+        return first == "channels" and len(parts) > 1 and parts[1] == guild
+    if host == "play.google.com":
+        return "am.pc.pcoin" in u
+    if host == "webcrafterai.com" or host.endswith(".webcrafterai.com"):
+        return True
+    if host in ("bscscan.com", "pancakeswap.finance"):
+        return True
+    return False
+
+
+def moderation_reason(m, guild=""):
+    for raw in URL_RE.findall(m.get("content") or ""):
+        url = raw.rstrip(").,!?>'\"")
+        if url and not link_allowed(url, guild):
+            return "outside link: %s" % url[:120]
+    return None
+
+
+def is_moderator(token, guild, uid, st):
+    """True for the server owner and anyone holding a role with Administrator or
+    Manage Messages. Raises RuntimeError when it cannot tell -- and the caller
+    then removes NOTHING, because an unknown must not collapse into "not staff"."""
+    cache = st.setdefault("mod_cache", {})
+    if time.time() - cache.get("at", 0) > MOD_TTL:
+        g = dc_get(token, "/guilds/%s" % guild)
+        roles = dc_get(token, "/guilds/%s/roles" % guild)
+        cache.update(at=int(time.time()), owner=g.get("owner_id"),
+                     mod_roles=[r["id"] for r in roles if int(r.get("permissions") or 0) & MOD_PERMS])
+    if uid and uid == cache.get("owner"):
+        return True
+    mem = dc_get(token, "/guilds/%s/members/%s" % (guild, uid))
+    return any(r in cache.get("mod_roles", []) for r in mem.get("roles") or [])
+
+
+def remove_and_report(token, tg_token, alert_chat, guild, channel, m, reason):
+    """Delete, then report either way. Returns True once the REPORT is delivered."""
+    deleted, why_not = False, ""
+    if DRY:
+        why_not = "dry run"
+    else:
+        req = urllib.request.Request(
+            API + "/channels/%s/messages/%s" % (channel, m["id"]), method="DELETE",
+            headers={"Authorization": "Bot " + token,
+                     "User-Agent": "DiscordBot (https://pc.am, 1.0) pcoin-discord-watch"})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                deleted = r.status in (200, 204)
+        except urllib.error.HTTPError as e:
+            why_not = "HTTP %d" % e.code
+        except urllib.error.URLError as e:
+            why_not = type(e.reason).__name__
+    head = ("🧹 <b>PCoin Discord — message removed</b>" if deleted
+            else "⚠️ <b>PCoin Discord — link NOT removed</b> (%s)" % html.escape(why_not))
+    body = ("%s\n<b>Who:</b> %s (id %s)\n<b>Why:</b> %s\n<b>Text:</b>\n%s"
+            % (head, html.escape(who(m)), (m.get("author") or {}).get("id", "?"),
+               html.escape(reason), html.escape(describe(m)[:1500])))
+    if DRY:
+        print("  (dry-run: would remove %s: %s)" % (m["id"], reason))
+        return True
+    data = urllib.parse.urlencode({"chat_id": alert_chat, "parse_mode": "HTML",
+                                   "disable_web_page_preview": "true", "text": body}).encode()
+    try:
+        with urllib.request.urlopen(urllib.request.Request(
+                "https://api.telegram.org/bot%s/sendMessage" % tg_token, data=data), timeout=30) as r:
+            return bool(json.load(r).get("ok"))
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        print("  removal report failed: %s" % type(e).__name__, file=sys.stderr)
+        return False
+
+
+def main():
+    dc = read_conf(DISCORD_CONF)
+    token = dc.get("DISCORD_BOT_TOKEN", "")
+    guild = dc.get("DISCORD_GUILD_ID", "")
+    channels = [c for c in (dc.get("DISCORD_CHAT_CHANNEL_ID", ""),
+                            dc.get("DISCORD_TEST_CHANNEL_ID", "")) if c.isdigit()]
+    st = load_state()
+
+    if "--status" in sys.argv:
+        print("  token       : %s" % ("set" if token else "MISSING"))
+        print("  channels    : %s" % (", ".join(channels) or "NONE"))
+        for c in channels:
+            print("  cursor %s : %s" % (c, st["cursors"].get(c, "not started")))
+        print("  seen        : %d" % st["seen"])
+        print("  last run    : %s" % (time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(st["last_run"]))
+                                     if st["last_run"] else "never"))
+        return 0
+
+    if not token or not channels:
+        sys.exit("DISCORD_BOT_TOKEN and at least one channel id are required in %s" % DISCORD_CONF)
+
+    al = read_conf(ALERT_CONF)
+    tg_token, alert_chat = al.get("TELEGRAM_TOKEN", ""), al.get("ALERT_CHAT", "")
+    if not tg_token or not alert_chat:
+        sys.exit("no TELEGRAM_TOKEN / ALERT_CHAT in %s -- cannot relay, refusing to advance" % ALERT_CONF)
+
+    blank_bodies = 0
+    for ch in channels:
+        cursor = st["cursors"].get(ch)
+        if not cursor:
+            # First run for this channel: start from NOW, answer nothing old.
+            latest = dc_get(token, "/channels/%s/messages?limit=1" % ch)
+            st["cursors"][ch] = latest[0]["id"] if latest else "0"
+            print("  %s: started at %s, history ignored" % (ch, st["cursors"][ch]))
+            continue
+        msgs = dc_get(token, "/channels/%s/messages?after=%s&limit=50" % (ch, cursor))
+        msgs.sort(key=lambda m: int(m["id"]))
+        delivered = cursor
+        for m in msgs:
+            a = m.get("author") or {}
+            # Bots and webhooks -- including our own announcements and replies --
+            # are consumed and never answered. A bot answering a bot is a loop.
+            if a.get("bot") or m.get("webhook_id") or m.get("type") not in (0, 19):
+                delivered = m["id"]
+                continue
+            # ---- moderation, BEFORE spool and relay ----------------------------
+            reason = moderation_reason(m, guild)
+            if reason and guild:
+                try:
+                    staff = is_moderator(token, guild, a.get("id"), st)
+                except RuntimeError as e:
+                    print("  cannot tell if %s is staff (%s) -- not removed" % (a.get("id"), e), file=sys.stderr)
+                    staff = True
+                if not staff:
+                    if remove_and_report(token, tg_token, alert_chat, guild, ch, m, reason):
+                        delivered = m["id"]
+                        continue
+                    break                   # the report may not be lost: retry next run
+            text = m.get("content") or ""
+            if not text and not m.get("attachments") and not m.get("sticker_items"):
+                blank_bodies += 1
+            urgent = bool(text and TRIGGERS.search(text))
+            print("  %s %s: %s" % (m["id"], who(m), describe(m)[:120]))
+            if DRY:
+                delivered = m["id"]
+                continue
+            try:
+                with open(LOG, "a", encoding="utf-8") as fh:
+                    fh.write("%s\t%s\t%s\t%s\n" % (
+                        time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(snowflake_time(m["id"]))),
+                        who(m), describe(m).replace("\n", " ")[:600], m["id"]))
+            except OSError as e:
+                print("  log write failed: %s" % e, file=sys.stderr)
+            try:
+                spool({
+                    "platform": "discord",
+                    # "discord:<channel>" -- pcoin-group-answer maps this to a
+                    # Discord destination and never to a Telegram one.
+                    "chat": "discord:%s" % ch,
+                    "message_id": m["id"],
+                    "date": snowflake_time(m["id"]),
+                    "from": "%s (on Discord)" % who(m),
+                    "from_id": "dc:%s" % a.get("id", "?"),
+                    "text": text,
+                    "described": describe(m),
+                    "urgent": urgent,
+                })
+            except OSError as e:
+                print("  spool write failed: %s" % e, file=sys.stderr)
+            if not relay(tg_token, alert_chat, guild, ch, m, urgent):
+                break                       # retry from here next run
+            delivered = m["id"]
+            st["seen"] += 1
+        st["cursors"][ch] = delivered
+
+    if blank_bodies and time.time() - st["empty_alerted"] > 6 * 3600:
+        st["empty_alerted"] = int(time.time())
+        notify_ops("Discord messages arrive EMPTY",
+                   "%d Discord message(s) came back with no text. That is the Message "
+                   "Content intent being off in the Developer Portal, not quiet users: the "
+                   "answer bot cannot read Discord until it is enabled." % blank_bodies)
+
+    st["last_run"] = int(time.time())
+    if not DRY:
+        save_state(st)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except RuntimeError as e:
+        # A failed read resolves nothing: cursors are not advanced, and the unit
+        # fails so OnFailure alerts.
+        sys.exit(str(e))

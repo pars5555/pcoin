@@ -65,8 +65,10 @@ USAGE
 import argparse
 import base64
 import hashlib
+import html
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -120,7 +122,11 @@ OWNER = int(os.environ.get("APPROVE_OWNER", "508669931"))
 # caller can never name a chat that is not on this list -- including, especially,
 # the private ops channel, which must never receive a public announcement.
 DESTS = {
-    "channel": {"chat": "-1003712285504", "label": "@PCoinPCN (public channel)"},
+    # `discord` names a SECOND side published from the same approval: KIND:KEY,
+    # where KEY is looked up in DISCORD_CONF. A webhook for broadcast posts; the
+    # bot account where the post must be a reply to someone.
+    "channel": {"chat": "-1003712285504", "discord": "webhook:DISCORD_WEBHOOK_ANNOUNCE",
+                "label": "@PCoinPCN (public channel) + Discord #announcements"},
     "group": {"chat": "-1003975107618", "label": "@PCoinPCNChat (public group)"},
     # The owner's PRIVATE test group. `auto` publishes without asking him,
     # and that is not the bypass this file forbids: a caller passes a
@@ -149,7 +155,13 @@ DESTS = {
     # self-test DM alone would leave the channel path unexercised until the first
     # real announcement, which is the worst possible moment to discover the bot
     # is not an administrator there.
-    "test": {"chat": "-1004408608893", "label": "the private test channel"},
+    "test": {"chat": "-1004408608893", "discord": "webhook:DISCORD_WEBHOOK_TEST",
+             "label": "the private test channel + private Discord test channel"},
+    # Discord-ONLY destinations, for the answer bot replying to somebody who asked
+    # ON Discord. Posting that answer to Telegram as well would put a reply to a
+    # message nobody there can see into a group that never asked.
+    "dcchat": {"discord": "bot:DISCORD_CHAT_CHANNEL_ID", "label": "PCoin Discord chat (public)"},
+    "dctest": {"discord": "bot:DISCORD_TEST_CHANNEL_ID", "label": "the private Discord test channel"},
     # Publishes back to the owner's own DM. It exists so the whole loop --
     # submit, DM, button, publish -- can be proven end to end without touching a
     # public surface. A gate only ever observed refusing has not been tested.
@@ -184,6 +196,14 @@ EXPIRE_HOURS = float(os.environ.get("APPROVE_EXPIRE_HOURS", "48"))
 AUTO_DELIVER_SECONDS = int(os.environ.get("APPROVE_AUTO_SECONDS", "900"))
 MAX_TEXT = 3900          # Telegram's own limit is 4096; leave room for the footer.
 MAX_CAPTION = 1000       # Telegram caps a photo caption at 1024.
+
+DISCORD_CONF = os.environ.get("DISCORD_CONF", "/etc/pcoin/discord.conf")
+DISCORD_MAX_CONTENT = 2000   # a message body; longer text goes in an embed
+DISCORD_MAX_EMBED = 4096     # an embed description
+# How long one side may stay published while the other keeps failing before ops
+# is told. Not zero: a single transient failure retried on the next tick is
+# normal and must not page anybody.
+DISCORD_ALERT_AFTER = int(os.environ.get("DISCORD_ALERT_AFTER", "600"))
 
 
 # ── plumbing ───────────────────────────────────────────────────────────────
@@ -324,6 +344,214 @@ def notify_ops(subject, body):
         os.spawnv(os.P_NOWAIT, n, [n, subject, body])
 
 
+# ── publishing, one side at a time ─────────────────────────────────────────
+def tg_publish(token, dest, i):
+    """The Telegram side. Returns the message id; raises on ANY failure."""
+    pm = i.get("parse_mode") or ""
+    if i.get("photo_b64"):
+        p = {"chat_id": dest["chat"], "caption": i["text"][:MAX_CAPTION]}
+        if pm:
+            p["parse_mode"] = pm
+        r = api(token, "sendPhoto", p,
+                files={"photo": ("card.png", base64.b64decode(i["photo_b64"]))})
+    else:
+        p = {"chat_id": dest["chat"], "text": i["text"],
+             "disable_web_page_preview": "true"}
+        if pm:
+            p["parse_mode"] = pm
+        if i.get("reply_to"):
+            p["reply_to_message_id"] = str(i["reply_to"])
+        r = api(token, "sendMessage", p)
+    if not r.get("ok"):
+        raise ValueError(r.get("description") or "telegram said not ok")
+    return (r.get("result") or {}).get("message_id")
+
+
+def dc_conf():
+    out = {}
+    try:
+        with open(DISCORD_CONF, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip().strip('"').strip("'")
+    except OSError as e:
+        # Raised, not exited: an unreadable Discord config fails the DISCORD
+        # side of one item and must never stop Telegram publishing.
+        raise ValueError("cannot read %s: %s" % (DISCORD_CONF, e))
+    return out
+
+
+def _escape_plain(t):
+    # Plain text from a model reaches Discord as Markdown, so a stray * or _
+    # would restyle it. Escape those, but never inside a URL -- a backslash in a
+    # link breaks the link.
+    out = []
+    for tok in re.split(r"(\s+)", t):
+        if not tok.strip() or "://" in tok or tok.startswith("discord.gg/"):
+            out.append(tok)
+        else:
+            out.append(re.sub(r"([*_~|`])", r"\\\1", tok))
+    return "".join(out)
+
+
+def to_discord(text, parse_mode, c=None):
+    """The same message, in Discord's Markdown. Never Telegram markup passed raw."""
+    t = text
+    if parse_mode == "HTML":
+        t = re.sub(r'<a\s+href="([^"]+)"\s*>(.*?)</a>',
+                   lambda m: "[%s](%s)" % (m.group(2), m.group(1)), t, flags=re.S | re.I)
+        t = re.sub(r"</?(b|strong)>", "**", t, flags=re.I)
+        t = re.sub(r"</?(i|em)>", "*", t, flags=re.I)
+        t = re.sub(r"</?(u|ins)>", "__", t, flags=re.I)
+        t = re.sub(r"</?(s|strike|del)>", "~~", t, flags=re.I)
+        t = re.sub(r"</?code>", "`", t, flags=re.I)
+        t = re.sub(r"</?pre>", "```", t, flags=re.I)
+        t = re.sub(r"<[^>]+>", "", t)
+        t = html.unescape(t)
+    elif parse_mode == "Markdown":
+        # Telegram legacy: *bold* _italic_. Discord: **bold** *italic*.
+        t = re.sub(r"(?<![*\w])\*(?=\S)([^*\n]+?)(?<=\S)\*(?![*\w])", r"**\1**", t)
+        t = re.sub(r"(?<![_\w])_(?=\S)([^_\n]+?)(?<=\S)_(?![_\w])", r"*\1*", t)
+    else:
+        t = _escape_plain(t)
+    # allowed_mentions already stops a ping; this stops it READING as one.
+    zw = chr(0x200B)
+    t = t.replace("@everyone", "@" + zw + "everyone").replace("@here", "@" + zw + "here")
+    chan = (c or {}).get("DISCORD_CHAT_CHANNEL_ID", "")
+    if chan.isdigit():
+        t = t.replace("Ask in the PCoin chat: https://t.me/PCoinPCNChat",
+                      "Ask in <#%s> or on Telegram: https://t.me/PCoinPCNChat" % chan)
+    return t
+
+
+def dc_call(url, payload, blob=None, bot_token=None, method="POST"):
+    """One Discord call. The URL of a webhook IS its credential, so no error
+    raised from here may ever contain it."""
+    CRLF = chr(13) + chr(10)
+    headers = {"User-Agent": "DiscordBot (https://pc.am, 1.0) pcoin-approve"}
+    if bot_token:
+        headers["Authorization"] = "Bot " + bot_token
+    if blob is not None:
+        b = "----pcoindc%d" % int(time.time() * 1000)
+        body = ("--" + b + CRLF + 'Content-Disposition: form-data; name="payload_json"' + CRLF
+                + "Content-Type: application/json" + CRLF + CRLF).encode()
+        body += json.dumps(payload).encode() + CRLF.encode()
+        body += ("--" + b + CRLF + 'Content-Disposition: form-data; name="files[0]"; filename="card.png"'
+                 + CRLF + "Content-Type: image/png" + CRLF + CRLF).encode()
+        body += blob + CRLF.encode() + ("--" + b + "--" + CRLF).encode()
+        headers["Content-Type"] = "multipart/form-data; boundary=" + b
+    else:
+        body = json.dumps(payload).encode()
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=body, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=40) as r:
+            raw = r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read().decode("utf-8", "replace")[:300]
+        except Exception:
+            detail = ""
+        raise ValueError("Discord HTTP %d %s" % (e.code, detail))
+    except urllib.error.URLError as e:
+        raise ValueError("Discord unreachable (%s)" % type(e.reason).__name__)
+    return json.loads(raw) if raw.strip() else {}
+
+
+def dc_publish(dest, i):
+    """The Discord side. Returns the message id; raises on ANY failure."""
+    c = dc_conf()
+    kind, key = dest["discord"].split(":", 1)
+    target = c.get(key, "")
+    if not target:
+        raise ValueError("%s is not set in %s" % (key, DISCORD_CONF))
+    text = to_discord(i["text"], i.get("parse_mode") or "", c)
+    blob = base64.b64decode(i["photo_b64"]) if i.get("photo_b64") else None
+    payload = {"allowed_mentions": {"parse": []}}
+    if len(text) <= DISCORD_MAX_CONTENT:
+        payload["content"] = text
+    else:
+        payload["embeds"] = [{"description": text[:DISCORD_MAX_EMBED], "color": 0x2DD4BF}]
+    if blob is not None:
+        payload["attachments"] = [{"id": 0, "filename": "card.png"}]
+        if "embeds" in payload:
+            payload["embeds"][0]["image"] = {"url": "attachment://card.png"}
+    if kind == "webhook":
+        if not target.startswith("https://discord.com/api/webhooks/"):
+            raise ValueError("%s does not look like a Discord webhook URL" % key)
+        r = dc_call(target + "?wait=true", payload, blob)
+    elif kind == "bot":
+        tok = c.get("DISCORD_BOT_TOKEN", "")
+        if not tok:
+            raise ValueError("DISCORD_BOT_TOKEN is not set in %s" % DISCORD_CONF)
+        if not target.isdigit():
+            raise ValueError("%s is not a channel id" % key)
+        if i.get("reply_to"):
+            payload["message_reference"] = {"message_id": str(i["reply_to"]),
+                                            "fail_if_not_exists": False}
+            payload["allowed_mentions"]["replied_user"] = True
+        r = dc_call("https://discord.com/api/v10/channels/%s/messages" % target,
+                    payload, blob, tok)
+    else:
+        raise ValueError("unknown Discord target kind %r" % kind)
+    mid = (r or {}).get("id")
+    if not mid:
+        raise ValueError("Discord accepted the post but returned no message id")
+    return mid
+
+
+def publish_item(i, send_tg, send_dc):
+    """Publish one CONFIRMED item to every side its destination names.
+
+    Each side is recorded the moment it succeeds and is never sent again, so a
+    retry after a half-failure re-sends only what is missing. `published` means
+    every side. Returns True if the item changed.
+    """
+    dest = DESTS[i["dest"]]
+    sides = (["tg"] if dest.get("chat") else []) + (["dc"] if dest.get("discord") else [])
+    changed, errors = False, []
+    for side, send in (("tg", send_tg), ("dc", send_dc)):
+        if side not in sides or i.get("published_%s_at" % side):
+            continue
+        try:
+            mid = send(dest, i)
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            errors.append("%s: %s" % ("telegram" if side == "tg" else "discord", e))
+            continue
+        i["published_%s_at" % side] = now()
+        if side == "tg":
+            i["published_message_id"] = mid
+        else:
+            i["published_dc_id"] = mid
+        changed = True
+        print("published %s -> %s on %s (message %s)"
+              % (i["id"], i["dest"], "telegram" if side == "tg" else "discord", mid))
+    if all(i.get("published_%s_at" % sd) for sd in sides):
+        i["state"] = "published"
+        i["published_at"] = now()
+        # The bytes are kept until EVERY side has them; clearing them after the
+        # first side would leave the retry nothing to send.
+        i["photo_b64"] = None
+        i["error"] = None
+        return True
+    if errors:
+        i["error"] = "publish failed: " + "; ".join(errors)
+        changed = True
+        print("publish incomplete for %s: %s" % (i["id"], i["error"]))
+        done = [i["published_%s_at" % sd] for sd in sides if i.get("published_%s_at" % sd)]
+        if done and not i.get("asym_alerted") and now() - min(done) >= DISCORD_ALERT_AFTER:
+            i["asym_alerted"] = now()
+            notify_ops("posted on ONE platform only",
+                       "Item %s (%s) is live on one platform and has failed on the other "
+                       "for %d min: %s. It keeps retrying the missing side only; nothing "
+                       "will be posted twice." % (i["id"], i["dest"],
+                                                  (now() - min(done)) // 60, i["error"]))
+    return changed
+
+
 # ── commands ───────────────────────────────────────────────────────────────
 def cmd_submit(a):
     if a.dest not in DESTS:
@@ -338,6 +566,9 @@ def cmd_submit(a):
         sys.exit("text is %d characters; the limit here is %d." % (len(text), MAX_TEXT))
     if not text.strip():
         sys.exit("refusing to queue an empty message.")
+    if not DESTS[a.dest].get("chat") and len(text) > DISCORD_MAX_CONTENT:
+        sys.exit("text is %d characters; a Discord-only reply is capped at %d."
+                 % (len(text), DISCORD_MAX_CONTENT))
 
     photo_sha, photo_b64 = None, None
     if a.photo:
@@ -573,7 +804,8 @@ def cmd_tick(a):
     for i in d["items"]:
         if i["state"] != "confirmed":
             continue
-        if not (DESTS.get(i["dest"]) or {}).get("chat"):
+        dd = DESTS.get(i["dest"]) or {}
+        if not (dd.get("chat") or dd.get("discord")):
             # A destination in the allow-list with no chat id configured. Refuse
             # rather than send nowhere: an empty chat_id would make Telegram
             # error and the item would look undeliverable for a reason nobody
@@ -620,37 +852,8 @@ def cmd_tick(a):
                        "happen; treat it as a compromise until shown otherwise." % i["id"])
             print("REFUSED %s: content changed after approval" % i["id"])
             continue
-        dest = DESTS[i["dest"]]
-        try:
-            pm = i.get("parse_mode") or ""
-            if i.get("photo_b64"):
-                p = {"chat_id": dest["chat"], "caption": i["text"][:MAX_CAPTION]}
-                if pm:
-                    p["parse_mode"] = pm
-                r = api(token, "sendPhoto", p,
-                        files={"photo": ("card.png", base64.b64decode(i["photo_b64"]))})
-            else:
-                p = {"chat_id": dest["chat"], "text": i["text"],
-                     "disable_web_page_preview": "true"}
-                if pm:
-                    p["parse_mode"] = pm
-                if i.get("reply_to"):
-                    p["reply_to_message_id"] = str(i["reply_to"])
-                r = api(token, "sendMessage", p)
-            if not r.get("ok"):
-                raise ValueError(r.get("description") or "telegram said not ok")
-            i["state"] = "published"
-            i["published_at"] = now()
-            i["published_message_id"] = (r.get("result") or {}).get("message_id")
-            # The bytes are no longer needed and a queue full of base64 images is
-            # a queue nobody will read.
-            i["photo_b64"] = None
+        if publish_item(i, lambda dst, it: tg_publish(token, dst, it), dc_publish):
             changed = True
-            print("published %s -> %s (message %s)" % (i["id"], i["dest"], i["published_message_id"]))
-        except (urllib.error.URLError, OSError, ValueError) as e:
-            i["error"] = "publish failed: %s" % e
-            changed = True
-            print("publish failed for %s: %s" % (i["id"], e))
 
     if changed:
         save(d)
@@ -960,6 +1163,43 @@ def cmd_selftest(a):
                     for v in range(1, DIGEST_V))
     print("  5. an older digest scheme excuses that tamper: %s  (must be False)" % excusable)
     ok &= not excusable
+
+
+    # 6-9: Discord. Formatting first, then the property that matters most.
+    got = to_discord("*bold* and _it_ https://a.b/x_y_z", "Markdown")
+    print("  6. Telegram Markdown -> Discord: %r" % got)
+    ok &= got == "**bold** and *it* https://a.b/x_y_z"
+    got = to_discord('<b>Hi</b> <a href="https://x.y">link</a> &amp; more', "HTML")
+    print("  7. Telegram HTML -> Discord: %r" % got)
+    ok &= got == "**Hi** [link](https://x.y) & more"
+    got = to_discord("a*b @everyone https://x.y/a_b", "")
+    print("  8. plain text escaped, mention defused, URL intact: %r" % got)
+    ok &= got == "a\\*b @" + chr(0x200B) + "everyone https://x.y/a_b"
+
+    calls = {"tg": 0, "dc": 0}
+
+    def ftg(dst, it):
+        calls["tg"] += 1
+        return 111
+
+    def fdc_down(dst, it):
+        calls["dc"] += 1
+        raise ValueError("simulated Discord outage")
+
+    def fdc_up(dst, it):
+        calls["dc"] += 1
+        return "999"
+
+    it = {"id": "fanout", "dest": "channel", "text": "t", "state": "confirmed", "photo_b64": "AAAA"}
+    publish_item(it, ftg, fdc_down)
+    half = (it["state"] == "confirmed" and it.get("published_tg_at") and it["photo_b64"] == "AAAA")
+    print("  9a. Discord down: Telegram posted, item NOT published, picture kept: %s" % bool(half))
+    ok &= bool(half)
+    publish_item(it, ftg, fdc_up)
+    healed = it["state"] == "published" and calls["tg"] == 1 and calls["dc"] == 2
+    print("  9b. retry sent ONLY Discord (telegram sends=%d, must be 1), now published: %s"
+          % (calls["tg"], healed))
+    ok &= healed
 
     os.unlink(QUEUE)
     print("selftest %s" % ("PASSED" if ok else "FAILED"))

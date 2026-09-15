@@ -1,0 +1,19 @@
+[Unit]
+Description=PCoin -- read the PCoin Discord chat into the answer spool
+Documentation=https://github.com/pars5555/pcoin/blob/main/contrib/seed-monitoring/pcoin-discord-watch
+After=network-online.target
+Wants=network-online.target
+OnFailure=pcoin-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pcoin-discord-watch
+Nice=10
+MemoryMax=128M
+TimeoutStartSec=120
+StateDirectory=pcoin-discord-watch
+StateDirectoryMode=0750
+ReadWritePaths=/var/lib/pcoin-group-watch
+ProtectSystem=strict
+PrivateTmp=true
+NoNewPrivileges=true
