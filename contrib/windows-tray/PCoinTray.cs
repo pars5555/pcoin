@@ -656,6 +656,29 @@ namespace PCoinTray
         const int DEFAULT_PERCENT = 50;
         static readonly int[] PERCENT_STEPS = { 10, 25, 50, 75, 100 };
 
+        //! Which thread counts the menu offers.
+        //!
+        //! Every count up to 16 cores -- that covers every machine this project
+        //! has measured, and a miner throttling a work PC wants 3, not "the
+        //! nearest of five percentages". Above 16, 1-8 individually (throttling
+        //! happens at the low end) and then every fourth, so a 64-core box does
+        //! not produce a 64-item context menu. `cores` is always included, so
+        //! "all cores" can never go missing.
+        static System.Collections.Generic.List<int> ThreadChoices(int cores)
+        {
+            var list = new System.Collections.Generic.List<int>();
+            if (cores < 1) cores = 1;
+            if (cores <= 16)
+            {
+                for (int n = 1; n <= cores; n++) list.Add(n);
+                return list;
+            }
+            for (int n = 1; n <= 8; n++) list.Add(n);
+            for (int n = 12; n < cores; n += 4) list.Add(n);
+            list.Add(cores);
+            return list;
+        }
+
         //! The wallet this app has always used. It is never renamed, never
         //! unloaded and never altered by the recovery-phrase work; a
         //! phrase-backed wallet is added beside it.
@@ -1318,12 +1341,27 @@ namespace PCoinTray
 
             _miOff = new ToolStripMenuItem("Not mining", null, (s, e) => SetMode(0));
             menu.Items.Add(_miOff);
-            foreach (int p in PERCENT_STEPS)
+            // Built from THREAD COUNTS, not from fixed percentages. Five
+            // percentages left most counts unreachable on anything above four
+            // cores -- on 16 cores you could not ask for a single thread,
+            // because 10% of 16 rounds to 2. Reported by a miner who wanted a
+            // count the menu simply did not offer.
+            //
+            // PercentForThreads round-trips: it returns a percentage that
+            // ThreadsFor() maps back to exactly this count, so the label and
+            // the miner cannot disagree. Everything downstream still speaks
+            // percentages -- SetMode, pcoin-tray.cfg and _miPercent are
+            // untouched.
+            foreach (int n in ThreadChoices(_cores))
             {
-                int pct = p; // capture
+                int threads = n;                                  // capture
+                int pct = Cpu.PercentForThreads(threads, _cores); // capture
                 var item = new ToolStripMenuItem(
-                    string.Format(CultureInfo.InvariantCulture, "Mine at {0}%  ({1} of {2} cores)",
-                                  pct, ThreadsFor(pct), _cores),
+                    string.Format(CultureInfo.InvariantCulture,
+                                  threads == _cores
+                                      ? "Mine with all {0} cores  ({1}%)"
+                                      : "Mine with {0} of " + _cores + " cores  ({1}%)",
+                                  threads, pct),
                     null, (s, e) => SetMode(pct));
                 _miPercent[pct] = item;
                 menu.Items.Add(item);

@@ -118,7 +118,7 @@ def main():
     ap.add_argument("--headline", required=True)
     ap.add_argument("--tagline", required=True)
     ap.add_argument("--feature", action="append", default=[],
-                    help='"<emoji>|<line>", up to four')
+                    help='"<emoji>|<line>", up to three with a CTA; four will be refused')
     ap.add_argument("--stat", action="append", default=[],
                     help='"value|label", up to three')
     ap.add_argument("--cta", required=True)
@@ -230,7 +230,21 @@ def main():
         y += 18
         f_fe = font(REG, 30)
         f_em = emoji_font(34)
-        for spec in a.feature[:4]:
+        # THREE, not four. `a.feature[:4]` silently accepted a fourth row and
+        # the CTA was then clamped up to clear the footnote and drawn ON TOP OF
+        # it -- exit 0, a cheerful "wrote ..." line, and a card that looked fine
+        # until somebody opened the PNG. Verified 2026-09-15 by building one.
+        #
+        # Refused at the argument, not patched in the geometry: the vertical
+        # budget of a fixed-height card is what it is, and silently dropping the
+        # fourth row would be its own quiet lie about what was asked for.
+        if len(a.feature) > 3:
+            sys.exit(
+                "REFUSING: %d --feature lines given; three is the most that fits "
+                "above the CTA on a %dx%d card. A fourth is drawn over by the "
+                "button. Drop one and try again -- nothing was written."
+                % (len(a.feature), W, H))
+        for spec in a.feature[:3]:
             parts = spec.split("|", 1)
             glyph = parts[0].strip()
             label = parts[1].strip() if len(parts) > 1 else ""
