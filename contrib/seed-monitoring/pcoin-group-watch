@@ -241,8 +241,8 @@ def handle_callback(token, cb):
 
     try:
         r = subprocess.run([APPROVE, "decide", "--id", item_id,
-                            "--decision", decision, "--by", str(frm)],
-                           capture_output=True, text=True, timeout=30)
+                            "--decision", decision, "--by", str(frm), "--no-prompt"],
+                           capture_output=True, text=True, timeout=60)
     except Exception as e:
         # A TIMEOUT RESOLVES NOTHING. `decide` writes the decision early and the
         # child was merely killed at 30s, so the press may well have landed --
@@ -280,6 +280,19 @@ def handle_callback(token, cb):
                  "again until you have." % (type(e).__name__, item_id))
         print("  approval decide could not run (%s); item state=%s"
               % (type(e).__name__, state), file=sys.stderr)
+        if state in ("published", "confirmed", "cancelled"):
+            # It LANDED. Take the buttons away and consume the press; retrying
+            # it only repeats this message and leaves a live Confirm under a
+            # decision already taken.
+            try:
+                api(token, "editMessageText", {
+                    "chat_id": str(frm),
+                    "message_id": str((cb.get("message") or {}).get("message_id") or ""),
+                    "text": "APPROVAL %s\nitem %s is now %s" % (decision.upper(), item_id, state),
+                })
+            except Exception:
+                pass
+            return True
         return False
     out = (r.stdout or r.stderr or "").strip().splitlines()
     out = out[-1] if out else ""

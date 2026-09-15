@@ -225,7 +225,7 @@ def conf():
     return out
 
 
-def api(token, method, params, files=None):
+def api(token, method, params, files=None, timeout=40):
     """One Telegram call. Returns the parsed body; raises on transport failure.
 
     Multipart is hand-rolled because sending a photo needs it and this box has no
@@ -250,7 +250,7 @@ def api(token, method, params, files=None):
     else:
         req = urllib.request.Request(
             url, data=urllib.parse.urlencode(params).encode(), method="POST")
-    with urllib.request.urlopen(req, timeout=40) as r:
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode())
 
 
@@ -668,7 +668,7 @@ def update_prompt(item, note=None):
             "chat_id": str(OWNER),
             "message_id": str(item["dm_message_id"]),
             "text": note + NL + "item " + str(item["id"]),
-        })
+        }, timeout=10)
     except Exception as e:
         print("  (could not update the Telegram prompt: %s)" % type(e).__name__)
 
@@ -888,7 +888,10 @@ def cmd_decide(a):
         i["decided_by"] = int(a.by)
         save(d)
         print("%s -> %s" % (i["id"], i["state"]))
-        update_prompt(i)
+        # The watcher rewrites the DM itself, so it asks us not to: a Telegram
+        # call here once took longer than the watcher's whole budget.
+        if not getattr(a, "no_prompt", False):
+            update_prompt(i)
         return 0
     sys.exit("no such item: %s" % a.id)
 
@@ -1230,6 +1233,8 @@ def main():
     s.add_argument("--id", required=True)
     s.add_argument("--decision", required=True)
     s.add_argument("--by", required=True)
+    s.add_argument("--no-prompt", dest="no_prompt", action="store_true",
+                   help="record only; the caller edits the Telegram prompt itself")
     s.set_defaults(fn=cmd_decide)
 
     s = sub.add_parser("list")
