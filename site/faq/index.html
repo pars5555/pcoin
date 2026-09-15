@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PCoin — FAQ</title>
+<meta name="description" content="Common questions about PCoin (PCN): getting PCN, wallets, mining, spending it, wPCN, and staying safe.">
+<meta name="theme-color" content="#0a0b10">
+<link rel="icon" href="/brand/pcoin-64.png">
+<style>
+  :root{
+    --bg:#0a0b10; --panel:#11131d; --line:rgba(255,255,255,.09); --line-soft:rgba(255,255,255,.06);
+    --text:#e9ebf4; --muted:#9aa2b8; --dim:#6b7288; --violet:#8b5cf6; --teal:#2dd4bf;
+    --radius:16px; --mono:ui-monospace,"Cascadia Code",Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    font-size:16.5px;line-height:1.65;-webkit-font-smoothing:antialiased}
+  a{color:var(--teal);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:820px;margin:0 auto;padding:0 24px}
+  header.nav{position:sticky;top:0;z-index:50;background:rgba(10,11,16,.82);
+    backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid var(--line-soft)}
+  .nav-inner{display:flex;align-items:center;gap:28px;padding:14px 24px;max-width:1080px;margin:0 auto;flex-wrap:wrap}
+  .brand{display:flex;align-items:center;gap:11px;font-weight:700;font-size:1.15rem;color:var(--text)}
+  .brand:hover{text-decoration:none}
+  .brand img{width:28px;height:28px;border-radius:7px}
+  nav.links{display:flex;gap:22px;margin-left:auto;flex-wrap:wrap;align-items:center}
+  nav.links a{color:var(--muted);font-size:.93rem;font-weight:500}
+  nav.links a:hover{color:var(--text);text-decoration:none}
+  .hero{padding:64px 0 30px;border-bottom:1px solid var(--line-soft)}
+  h1{font-size:2.4rem;line-height:1.15;letter-spacing:-.02em;font-weight:800}
+  .lede{color:var(--muted);margin-top:14px;font-size:1.05rem;max-width:62ch}
+  main{padding:36px 0 90px}
+  h2{font-size:.8rem;letter-spacing:.09em;text-transform:uppercase;color:var(--violet);margin:34px 0 12px}
+  details{border:1px solid var(--line-soft);background:var(--panel);border-radius:var(--radius);margin-bottom:10px}
+  summary{cursor:pointer;padding:15px 20px;font-weight:600;list-style:none}
+  summary::-webkit-details-marker{display:none}
+  summary::before{content:"+";display:inline-block;width:1.2em;color:var(--teal);font-weight:700}
+  details[open] summary::before{content:"−"}
+  .a{padding:0 20px 16px 43px;color:var(--muted)}
+  .a p+p,.a ul{margin-top:8px}
+  .a ul{padding-left:18px}
+  code{font-family:var(--mono);font-size:.88em;background:rgba(255,255,255,.06);border-radius:6px;padding:1px 6px;color:var(--text)}
+  .warn{border:1px solid rgba(45,212,191,.35);border-radius:var(--radius);padding:16px 20px;margin-top:30px;color:var(--muted)}
+  footer{border-top:1px solid var(--line-soft);padding:26px 0 40px;color:var(--dim);font-size:.9rem;text-align:center}
+</style>
+</head>
+<body>
+<header class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="/"><img src="/brand/pcoin-64.png" alt="">PCoin</a>
+    <nav class="links">
+      <a href="/">Home</a>
+      <a href="/download/">Download</a>
+      <a href="/news/">News</a>
+      <a href="https://explorer.pc.am">Explorer</a>
+      <a href="https://docs.pc.am">Docs</a>
+      <a href="https://github.com/pars5555/pcoin">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap">
+  <section class="hero">
+    <h1>Frequently asked questions</h1>
+    <p class="lede">Short answers to what people ask most. Anything not here, ask a person in the
+    <a href="https://t.me/PCoinPCNChat">Telegram chat</a> or on
+    <a href="https://discord.gg/dGmdwJkb9f">Discord</a>.</p>
+  </section>
+
+  <main>
+    <h2>The basics</h2>
+    <details><summary>What is PCoin?</summary><div class="a">
+      <p>PCoin (PCN) is an independent Layer-1 blockchain with its own genesis block, network and
+      addresses. It is not a token on another chain. It is built on the Bitcoin Core codebase with
+      two changes: proof-of-work is <b>RandomX</b>, which runs well on an ordinary CPU, and
+      difficulty adjusts every block.</p>
+      <p>The supply rules are Bitcoin's: 21 million maximum, 50 PCN per block, halving every
+      210,000 blocks, one block every ten minutes on average. The chain went live in August 2026.</p>
+    </div></details>
+
+    <details><summary>Where do I follow news?</summary><div class="a">
+      <p>Announcements are posted to <a href="https://t.me/PCoinPCN">@PCoinPCN</a> on Telegram and
+      to the <a href="https://discord.gg/dGmdwJkb9f">PCoin Discord</a>. Release notes are on
+      <a href="/news/">pc.am/news</a> and the source code is on
+      <a href="https://github.com/pars5555/pcoin">GitHub</a>.</p>
+    </div></details>
+
+    <details><summary>Why does the old BitcoinTalk announcement link give a 404?</summary><div class="a">
+      <p>The forum's moderators banned the BitcoinTalk account that posted it on 9 September 2026,
+      and a ban removes that account's threads. Nothing changed with PCoin itself. An appeal has been
+      sent. Any "new official thread" there is not from the project unless @PCoinPCN announces it.</p>
+    </div></details>
+
+    <h2>Getting PCN</h2>
+    <details><summary>How do I get PCN?</summary><div class="a">
+      <ul>
+        <li><b>Mine it</b> with your CPU. See the mining questions below.</li>
+        <li><b>Buy it</b> directly from the project at <a href="https://market.pc.am">market.pc.am</a>.</li>
+        <li><b>Earn it</b> by running GPU jobs at <a href="https://pcnearner.pc.am">pcnearner.pc.am</a>.</li>
+      </ul>
+    </div></details>
+
+    <details><summary>Which wallet should I use?</summary><div class="a">
+      <ul>
+        <li><b>Android</b>: <a href="https://play.google.com/store/apps/details?id=am.pc.pcoinwallet">PCoin Wallet on Google Play</a>. The easiest start.</li>
+        <li><b>Windows</b>: PCoin Wallet for Windows, from <a href="/download/">pc.am/download</a>.</li>
+        <li><b>Linux</b>: the node installs with the one-liner on <a href="/download/">pc.am/download</a>.</li>
+      </ul>
+      <p>Every wallet gives you a <b>12-word recovery phrase</b>. Write it on paper. It is the only
+      way back into your coins, and nobody can recover it for you.</p>
+    </div></details>
+
+    <h2>Mining</h2>
+    <details><summary>How do I start mining?</summary><div class="a">
+      <ul>
+        <li><b>Windows</b>: run <code>irm https://pc.am/dl/install.ps1 | iex</code> in PowerShell. It
+        installs a node and the tray miner. Choose how many CPU threads to use from the tray icon.</li>
+        <li><b>Linux</b>: run <code>curl -fsSL https://pc.am/dl/install.sh | sudo sh</code>. A short
+        setup asks for your payout address and thread count.</li>
+        <li><b>Pool mining</b>: <a href="https://pool.pc.am">pool.pc.am</a> has the connection
+        settings, and works with SRBMiner-Multi's <code>randompcn</code> algorithm.</li>
+      </ul>
+      <p>Stock xmrig and SHA-256 miners do not work on PCoin.</p>
+    </div></details>
+
+    <details><summary>My mined coins show as "immature". Is something wrong?</summary><div class="a">
+      <p>No. A mining reward can only be spent after 100 more blocks, the same rule as Bitcoin. They
+      become spendable on their own.</p>
+    </div></details>
+
+    <details><summary>Why are block times so uneven?</summary><div class="a">
+      <p>Ten minutes is an average, not a schedule. Finding a block is random, so a gap of half an
+      hour happens regularly and is not a fault.</p>
+    </div></details>
+
+    <details><summary>Windows warns me the download is unrecognised. Is it safe?</summary><div class="a">
+      <p>That is SmartScreen, which warns about any program that is not code-signed and not yet
+      widely downloaded. It is a reputation warning, not a virus detection. Every release lists
+      SHA-256 checksums on <a href="https://github.com/pars5555/pcoin/releases">GitHub</a> and at
+      <a href="/dl/SHA256SUMS.txt">pc.am/dl/SHA256SUMS.txt</a>, so you can check the file you downloaded.</p>
+    </div></details>
+
+    <h2>Using PCN</h2>
+    <details><summary>What can I spend PCN on?</summary><div class="a">
+      <ul>
+        <li><a href="https://t.me/PcoinAiBot">@PcoinAiBot</a>: an AI agent in Telegram. Top up with <code>/topup</code>.</li>
+        <li><a href="https://webai.pc.am">webai.pc.am</a>: an AI assistant in your browser. Top up at webai.pc.am/deposit.</li>
+        <li><a href="https://aicontrol.pc.am">aicontrol.pc.am</a>: control your computers with AI. Top up under Balance.</li>
+        <li><a href="https://t.me/MyWebsiteBuilderBot">@MyWebsiteBuilderBot</a>: build a website from a chat. Top up with <code>/topup</code>.</li>
+      </ul>
+      <p>Each service gives you <b>your own deposit address</b> on its top-up page. Always use that
+      one, never an address someone posts in a chat. Deposits are credited after 3 confirmations,
+      usually about half an hour.</p>
+    </div></details>
+
+    <details><summary>I sent PCN and part of it went to an address I don't recognise.</summary><div class="a">
+      <p>That is almost always your <b>change address</b>. A wallet spends whole coins, so sending 1
+      PCN out of a 10 PCN coin returns about 9 PCN to a new address that belongs to the same wallet.
+      Nothing is lost. You can check any transaction on <a href="https://explorer.pc.am">explorer.pc.am</a>.</p>
+    </div></details>
+
+    <details><summary>Is PCN on an exchange? Can I sell it?</summary><div class="a">
+      <p>PCN is not listed on any centralised exchange. If you see "PCN" on one, it is either wPCN
+      or a scam. The only public market today is <b>wPCN on PancakeSwap</b> (see below), and it is small.</p>
+    </div></details>
+
+    <details><summary>What is wPCN?</summary><div class="a">
+      <p>wPCN is a token on BNB Smart Chain that is backed one-to-one by PCN held in a public reserve.
+      It exists so PCoin can trade on PancakeSwap.</p>
+      <p>Wrapping new PCN into wPCN is <b>closed</b>. Turning wPCN <b>back into PCN is open</b> at
+      <a href="https://wrapdesk.pc.am/redeem">wrapdesk.pc.am/redeem</a>. Redemptions are paid by hand,
+      so allow some hours. Never send wPCN to an exchange deposit address; no exchange lists it.</p>
+    </div></details>
+
+    <h2>Staying safe</h2>
+    <details><summary>Someone messaged me offering help, a listing, or double coins.</summary><div class="a">
+      <p>It is a scam. Nobody from PCoin will ever message you first, ask for your recovery phrase or
+      private key, ask you to "validate" a wallet, or offer to arrange an exchange listing. Block
+      them and report it in the chat so others see it.</p>
+    </div></details>
+
+    <details><summary>I posted my recovery phrase by mistake.</summary><div class="a">
+      <p>Treat the coins as exposed: create a new wallet straight away and send everything to it.
+      Anyone who read the phrase can spend from the old one.</p>
+    </div></details>
+
+    <details><summary>Why was my message removed from the chat?</summary><div class="a">
+      <p>Advertising and outside links are not allowed in the PCoin chat. Links to PCoin's own sites
+      and channels are fine.</p>
+    </div></details>
+
+    <div class="warn">Still stuck? Ask in <a href="https://t.me/PCoinPCNChat">@PCoinPCNChat</a> or on
+    <a href="https://discord.gg/dGmdwJkb9f">Discord</a>. A person will pick it up.</div>
+  </main>
+</div>
+
+<footer>
+  <p>PCoin (PCN) &mdash; an independent Layer-1 blockchain.
+  <a href="/">pc.am</a> &middot;
+  <a href="https://github.com/pars5555/pcoin">source</a> &middot;
+  <a href="https://t.me/PCoinPCN">Telegram</a> &middot;
+  <a href="https://discord.gg/dGmdwJkb9f">Discord</a></p>
+</footer>
+</body>
+</html>
