@@ -397,57 +397,107 @@ def report_listing_offer(tg_token, row, author, text, model):
         print("  listing offer report failed (%s)" % type(e).__name__, file=sys.stderr)
 
 
-def remove_advert(tg_token, row, author, text, model):
-    """Delete an advert the model flagged, and report it to ALERT_CHAT either way.
+REMOVED_LOG = "/var/lib/pcoin-group-watch/removed.jsonl"
 
-    Returns True only when the message was actually deleted."""
+
+def removed_log(entry):
+    """The durable history of removals, one JSON object per line."""
+    try:
+        with open(REMOVED_LOG, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as e:
+        print("  removal log write failed: %s" % e, file=sys.stderr)
+
+
+def _tg_call(tg_token, method, fields):
+    data = urllib.parse.urlencode(fields).encode()
+    try:
+        with urllib.request.urlopen(urllib.request.Request(
+                "https://api.telegram.org/bot%s/%s" % (tg_token, method), data=data), timeout=20) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        try:
+            return json.loads(e.read().decode("utf-8", "replace"))
+        except Exception:
+            return {"ok": False, "description": "HTTP %d" % e.code}
+    except Exception as e:
+        return {"ok": False, "description": type(e).__name__}
+
+
+def remove_advert(tg_token, row, author, text, model):
+    """Report to the private channel FIRST, then delete.
+
+    Returns True if deleted, False if reported but the delete failed, and None if
+    the report could not be delivered -- in which case NOTHING was deleted and the
+    caller must leave the message unhandled so the next run tries again.
+    """
     import html as _html
+    esc = _html.escape
     chat = str(row.get("chat") or "")
     mid = str(row.get("message_id"))
-    deleted, why_not = False, ""
-    if DRY:
-        why_not = "dry run"
-    else:
-        try:
-            if chat.startswith("discord:"):
-                tok = ""
-                try:
-                    for line in open("/etc/pcoin/discord.conf", encoding="utf-8"):
-                        k, _, v = line.strip().partition("=")
-                        if k.strip() == "DISCORD_BOT_TOKEN":
-                            tok = v.strip().strip('"').strip("'")
-                except OSError:
-                    pass
-                if not tok:
-                    raise RuntimeError("no Discord bot token")
-                req = urllib.request.Request(
-                    "https://discord.com/api/v10/channels/%s/messages/%s" % (chat.split(":", 1)[1], mid),
-                    method="DELETE", headers={"Authorization": "Bot " + tok,
-                                              "User-Agent": "DiscordBot (https://pc.am, 1.0) pcoin-group-answer"})
-                with urllib.request.urlopen(req, timeout=20) as resp:
-                    deleted = resp.status in (200, 204)
-            else:
-                data = urllib.parse.urlencode({"chat_id": chat or GROUP_ID, "message_id": mid}).encode()
-                with urllib.request.urlopen(urllib.request.Request(
-                        "https://api.telegram.org/bot%s/deleteMessage" % tg_token, data=data), timeout=20) as resp:
-                    deleted = bool(json.load(resp).get("ok"))
-        except urllib.error.HTTPError as e:
-            why_not = "HTTP %d" % e.code
-        except Exception as e:
-            why_not = type(e).__name__
-    where = "PCoin Discord" if chat.startswith("discord:") else "PCoin Chat"
-    head = ("🧹 <b>%s — advert removed</b> (model: %s)" % (where, model) if deleted
-            else "⚠️ <b>%s — advert NOT removed</b> (%s)" % (where, _html.escape(why_not or "unknown")))
-    body = "%s\n<b>Who:</b> %s\n<b>Text:</b>\n%s" % (head, _html.escape(author), _html.escape(text[:1500]))
+    discord = chat.startswith("discord:")
+    where = "PCoin Discord" if discord else "PCoin Chat"
+    link = ("https://discord.com/channels/1547398066313891890/%s/%s" % (chat.split(":", 1)[1], mid)
+            if discord else "https://t.me/PCoinPCNChat/%s" % mid)
+    when = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(float(row.get("date") or time.time())))
+    user_id = str(row.get("from_id") or "?")
     alert = conf(ALERT_CONF).get("ALERT_CHAT", "")
-    if alert and not DRY:
-        try:
-            data = urllib.parse.urlencode({"chat_id": alert, "parse_mode": "HTML", "text": body,
-                                           "disable_web_page_preview": "true"}).encode()
-            urllib.request.urlopen(urllib.request.Request(
-                "https://api.telegram.org/bot%s/sendMessage" % tg_token, data=data), timeout=20).close()
-        except Exception as e:
-            print("  advert report failed (%s)" % type(e).__name__, file=sys.stderr)
+    if DRY or not alert:
+        print("  (would report, then remove advert %s)" % mid)
+        return None
+
+    forwarded = False
+    if not discord:
+        fw = _tg_call(tg_token, "forwardMessage", {"chat_id": alert, "from_chat_id": chat or str(GROUP_ID),
+                                                   "message_id": mid, "disable_notification": "true"})
+        forwarded = bool(fw.get("ok"))
+    body = ("🧹 <b>%s — removing a message</b> (the AI judged it an advert)\n"
+            "<b>Who:</b> %s\n<b>User id:</b> <code>%s</code>\n<b>Sent:</b> %s\n"
+            "<b>Message:</b> %s\n<b>Model:</b> %s\n<b>Text:</b>\n%s%s"
+            % (where, esc(author), esc(user_id), when, link, esc(model or "?"), esc(text[:2500]),
+               "\n\n<i>The original is forwarded just above.</i>" if forwarded else ""))
+    rep = _tg_call(tg_token, "sendMessage", {"chat_id": alert, "parse_mode": "HTML", "text": body[:4000],
+                                             "disable_web_page_preview": "true"})
+    if not rep.get("ok"):
+        print("  removal report for %s failed (%s) -- NOT deleting this run"
+              % (mid, rep.get("description")), file=sys.stderr)
+        return None
+
+    deleted, why_not = False, ""
+    try:
+        if discord:
+            tok = ""
+            try:
+                for line in open("/etc/pcoin/discord.conf", encoding="utf-8"):
+                    k, _, v = line.strip().partition("=")
+                    if k.strip() == "DISCORD_BOT_TOKEN":
+                        tok = v.strip().strip('"').strip("'")
+            except OSError:
+                pass
+            if not tok:
+                raise RuntimeError("no Discord bot token")
+            req = urllib.request.Request(
+                "https://discord.com/api/v10/channels/%s/messages/%s" % (chat.split(":", 1)[1], mid),
+                method="DELETE", headers={"Authorization": "Bot " + tok,
+                                          "User-Agent": "DiscordBot (https://pc.am, 1.0) pcoin-group-answer"})
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                deleted = resp.status in (200, 204)
+        else:
+            d = _tg_call(tg_token, "deleteMessage", {"chat_id": chat or str(GROUP_ID), "message_id": mid})
+            deleted = bool(d.get("ok"))
+            why_not = "" if deleted else (d.get("description") or "not ok")
+    except urllib.error.HTTPError as e:
+        why_not = "HTTP %d" % e.code
+    except Exception as e:
+        why_not = type(e).__name__
+
+    removed_log({"at": int(time.time()), "by": "pcoin-group-answer", "platform": "discord" if discord else "telegram",
+                 "chat": chat, "message_id": mid, "sent": when, "who": author, "user_id": user_id,
+                 "reason": "advert (AI)", "model": model, "text": text, "forwarded": forwarded,
+                 "deleted": deleted, "delete_error": why_not})
+    if not deleted:
+        _tg_call(tg_token, "sendMessage", {"chat_id": alert, "text":
+                 "⚠️ Could NOT delete message %s in %s (%s). It is still visible." % (mid, where, why_not or "unknown")})
     return deleted
 
 
@@ -662,6 +712,8 @@ def main():
 
         if out.get("spam") is True and str(r.get("from_id")) not in OWNER_IDS:
             ok_removed = remove_advert(tg, r, author, text, used_model)
+            if ok_removed is None:
+                continue        # the report did not go out, so nothing was deleted: retry next run
             act(action="removed-advert" if ok_removed else "advert-not-removed",
                 message_id=mid, who=author, asked=text[:300], model=used_model)
             st["handled"][mid] = int(now)

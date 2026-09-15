@@ -447,32 +447,67 @@ def group_admins(token, chat, st):
     return set(cache[str(chat)]["ids"])
 
 
+REMOVED_LOG = "/var/lib/pcoin-group-watch/removed.jsonl"
+
+
+def removed_log(entry):
+    """The durable history of removals, one JSON object per line."""
+    try:
+        with open(REMOVED_LOG, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as e:
+        print("  removal log write failed: %s" % e, file=sys.stderr)
+
+
 def remove_and_report(token, alert_to, chat, msg, reason):
-    """Delete, then tell the owner. Returns True once the REPORT is delivered --
-    the report is what may not be lost; a failed delete is reported as such."""
+    """Forward the original and report WHO and WHY to the private channel, THEN
+    delete. Returns False when the report could not be delivered: nothing is
+    deleted and the update is re-read next run. History first, always."""
     mid = msg.get("message_id")
-    deleted, why_not = False, ""
-    if DRY:
-        why_not = "dry run"
-    else:
-        try:
-            r = api(token, "deleteMessage", {"chat_id": chat, "message_id": mid}, timeout=20)
-            deleted = bool(r.get("ok"))
-            why_not = "" if deleted else (r.get("description") or "not ok")
-        except urllib.error.HTTPError as e:
-            try:
-                why_not = json.loads(e.read().decode("utf-8", "replace")).get("description") or "HTTP %d" % e.code
-            except Exception:
-                why_not = "HTTP %d" % e.code
-        except Exception as e:
-            why_not = type(e).__name__
     f = msg.get("from") or {}
-    head = ("🧹 <b>PCoin Chat — message removed</b>" if deleted
-            else "⚠️ <b>PCoin Chat — advert/link NOT removed</b> (%s)" % html.escape(why_not))
-    body = ("%s\n<b>Who:</b> %s (id %s)\n<b>Why:</b> %s\n<b>Text:</b>\n%s"
-            % (head, html.escape(who(msg)), f.get("id", "?"), html.escape(reason),
-               html.escape(describe(msg)[:1500])))
-    return send(token, alert_to, body)
+    name = " ".join(x for x in (f.get("first_name"), f.get("last_name")) if x) or "?"
+    username = ("@" + f["username"]) if f.get("username") else "(no username)"
+    when = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(msg.get("date") or time.time()))
+    if DRY:
+        print("  (dry-run: would report, then remove %s: %s)" % (mid, reason))
+        return True
+    forwarded = False
+    try:
+        fw = api(token, "forwardMessage", {"chat_id": alert_to, "from_chat_id": chat,
+                                           "message_id": mid, "disable_notification": "true"}, timeout=20)
+        forwarded = bool(fw.get("ok"))
+    except Exception as e:
+        print("  forward failed (%s)" % type(e).__name__, file=sys.stderr)
+    body = ("🧹 <b>PCoin Chat — removing a message</b>\n"
+            "<b>Why:</b> %s\n<b>Name:</b> %s\n<b>Username:</b> %s\n<b>User id:</b> <code>%s</code>\n"
+            "<b>Language:</b> %s · <b>Premium:</b> %s · <b>Bot:</b> %s\n<b>Sent:</b> %s\n"
+            "<b>Message:</b> https://t.me/PCoinPCNChat/%s\n<b>Text:</b>\n%s%s"
+            % (html.escape(reason), html.escape(name), html.escape(username), f.get("id", "?"),
+               f.get("language_code", "?"), "yes" if f.get("is_premium") else "no",
+               "yes" if f.get("is_bot") else "no", when, mid, html.escape(describe(msg)[:2500]),
+               "\n\n<i>The original is forwarded just above.</i>" if forwarded else ""))
+    if not send(token, alert_to, body[:4000]):
+        print("  removal report for %s failed -- NOT deleting; retried next run" % mid, file=sys.stderr)
+        return False
+    deleted, why_not = False, ""
+    try:
+        r = api(token, "deleteMessage", {"chat_id": chat, "message_id": mid}, timeout=20)
+        deleted = bool(r.get("ok"))
+        why_not = "" if deleted else (r.get("description") or "not ok")
+    except urllib.error.HTTPError as e:
+        try:
+            why_not = json.loads(e.read().decode("utf-8", "replace")).get("description") or "HTTP %d" % e.code
+        except Exception:
+            why_not = "HTTP %d" % e.code
+    except Exception as e:
+        why_not = type(e).__name__
+    removed_log({"at": int(time.time()), "by": "pcoin-group-watch", "platform": "telegram", "chat": chat,
+                 "message_id": mid, "sent": when, "name": name, "username": username, "user_id": f.get("id"),
+                 "language": f.get("language_code"), "reason": reason, "text": describe(msg),
+                 "forwarded": forwarded, "deleted": deleted, "delete_error": why_not})
+    if not deleted:
+        send(token, alert_to, "⚠️ Could NOT delete message %s (%s). It is still visible." % (mid, html.escape(why_not)))
+    return True
 
 
 def main():
