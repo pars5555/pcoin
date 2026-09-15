@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""The "Road to exchange listing" progress banner, mirrored into Discord #announcements.
+
+    pcoin-discord-banner            one pass; run from its timer
+    pcoin-discord-banner --dry-run  print what would be posted, touch nothing
+
+OWNER, 2026-09-15: "Show the progress banner on Discord too."
+
+It does NOT count anything. pcoin-listing-banner reads the market database and
+writes what it read to its state file; this reads that file. Two programs
+counting separately is how two public numbers come to disagree.
+
+Shape: one webhook message in #announcements, pinned by the bot, EDITED in
+place when the figures change (or every MAX_STALE_H hours so "as of" stays
+honest). Discord pins stay reachable wherever the message sits, so unlike the
+Telegram banner it is never re-posted to reach the bottom -- a repost would
+notify every member for a timestamp.
+
+A message somebody deleted (404 on edit) is re-posted and pinned. A state file
+the Telegram banner has not written yet, or cannot be read, changes nothing:
+a failed read resolves nothing (CLAUDE.md 7.1).
+"""
+import importlib.machinery
+import importlib.util
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+
+DRY = "--dry-run" in sys.argv
+TG_STATE = os.environ.get("BANNER_STATE", "/var/lib/pcoin-listing-banner/state.json")
+STATE = os.environ.get("DISCORD_BANNER_STATE", "/var/lib/pcoin-discord-banner/state.json")
+MAX_STALE_H = float(os.environ.get("BANNER_MAX_STALE_H", "6"))
+API = "https://discord.com/api/v10"
+UA = "DiscordBot (https://pc.am, 1.0) pcoin-discord-banner"
+
+
+def load_module(name, path):
+    spec = importlib.util.spec_from_loader(name, importlib.machinery.SourceFileLoader(name, path))
+    m = importlib.util.module_from_spec(spec)
+    argv, sys.argv = sys.argv, [path]
+    try:
+        spec.loader.exec_module(m)
+    finally:
+        sys.argv = argv
+    return m
+
+
+def load_json(path, default):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            v = json.load(fh)
+        return v if isinstance(v, dict) else default
+    except (OSError, ValueError):
+        return default
+
+
+def save_state(st):
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    tmp = STATE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(st, fh, indent=1)
+    os.replace(tmp, STATE)
+
+
+def call(method, url, body=None, bot_token=None):
+    headers = {"User-Agent": UA, "Content-Type": "application/json"}
+    if bot_token:
+        headers["Authorization"] = "Bot " + bot_token
+    req = urllib.request.Request(url, method=method, headers=headers,
+                                 data=json.dumps(body).encode() if body is not None else None)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            raw = r.read().decode("utf-8", "replace")
+            return r.status, (json.loads(raw) if raw.strip() else {})
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode("utf-8", "replace")[:200]
+    except urllib.error.URLError as e:
+        sys.exit("Discord unreachable (%s) -- nothing changed" % type(e.reason).__name__)
+
+
+def main():
+    tg = load_json(TG_STATE, None)
+    if not tg or tg.get("last_count") is None or tg.get("last_usd") is None:
+        print("the Telegram banner has not recorded figures yet -- nothing to mirror")
+        return 0
+    count, usd = int(tg["last_count"]), float(tg["last_usd"])
+    as_of = time.strftime("%Y-%m-%d %H:%M", time.gmtime(float(tg.get("last_edit") or time.time())))
+
+    lb = load_module("lb", "/usr/local/bin/pcoin-listing-banner")
+    ap = load_module("ap", "/usr/local/bin/pcoin-approve")
+    c = ap.dc_conf()
+    hook, bot = c.get("DISCORD_WEBHOOK_ANNOUNCE", ""), c.get("DISCORD_BOT_TOKEN", "")
+    chan = c.get("DISCORD_ANNOUNCE_CHANNEL_ID", "")
+    if not (hook and bot and chan):
+        sys.exit("DISCORD_WEBHOOK_ANNOUNCE, DISCORD_BOT_TOKEN and DISCORD_ANNOUNCE_CHANNEL_ID are required")
+
+    html = lb.widget_text(count, usd, lb.TARGET, as_of)
+    chat = c.get("DISCORD_CHAT_CHANNEL_ID", "")
+    # The channel mention is swapped in AFTER conversion: to_discord strips
+    # anything shaped like a tag, and <#id> is shaped like a tag.
+    html = html.replace('<a href="https://t.me/PCoinPCNChat">Questions? Ask in the chat</a>', "@@ASK@@")
+    text = ap.to_discord(html, "HTML", c)
+    text = text.replace("@@ASK@@", ("Questions? Ask in <#%s>" % chat) if chat.isdigit()
+                        else "Questions? https://t.me/PCoinPCNChat")
+    payload = {"content": text, "flags": 4, "allowed_mentions": {"parse": []}}
+
+    st = load_json(STATE, {})
+    unchanged = st.get("count") == count and st.get("usd") == usd
+    fresh = time.time() - float(st.get("edited") or 0) < MAX_STALE_H * 3600
+    if DRY:
+        print("would %s:\n%s" % ("leave as is" if (st.get("message_id") and unchanged and fresh) else "post/edit", text))
+        return 0
+    if st.get("message_id") and unchanged and fresh:
+        print("no change (count=%d, $%.2f); not editing" % (count, usd))
+        return 0
+
+    wid, wtok = hook.rstrip("/").split("/")[-2:]
+    mid = st.get("message_id")
+    if mid:
+        s, r = call("PATCH", "%s/webhooks/%s/%s/messages/%s" % (API, wid, wtok, mid), payload)
+        if s == 200:
+            print("edited Discord banner %s: count=%d $%.2f" % (mid, count, usd))
+        elif s == 404:
+            print("banner %s was deleted; posting a new one" % mid)
+            mid = None
+        else:
+            sys.exit("editing the Discord banner failed: HTTP %s %s" % (s, r))
+    if not mid:
+        s, r = call("POST", "%s/webhooks/%s/%s?wait=true" % (API, wid, wtok), payload)
+        if s not in (200, 201) or not isinstance(r, dict) or not r.get("id"):
+            sys.exit("posting the Discord banner failed: HTTP %s %s" % (s, r))
+        mid = r["id"]
+        # Record BEFORE pinning: a failed pin must not lead to a second banner.
+        st.update(message_id=mid, count=count, usd=usd, edited=int(time.time()))
+        save_state(st)
+        ps, pr = call("PUT", "%s/channels/%s/pins/%s" % (API, chan, mid), bot_token=bot)
+        print("posted Discord banner %s; pin: HTTP %s %s" % (mid, ps, "" if ps == 204 else pr))
+    st.update(message_id=mid, count=count, usd=usd, edited=int(time.time()))
+    save_state(st)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

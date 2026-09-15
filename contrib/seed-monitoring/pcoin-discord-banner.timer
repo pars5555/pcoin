@@ -1,0 +1,10 @@
+[Unit]
+Description=PCoin -- refresh the Discord progress banner every 10 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+Unit=pcoin-discord-banner.service
+
+[Install]
+WantedBy=timers.target

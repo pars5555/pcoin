@@ -1,0 +1,14 @@
+[Unit]
+Description=PCoin -- mirror the listing progress banner into Discord #announcements
+After=network-online.target pcoin-listing-banner.service
+Wants=network-online.target
+OnFailure=pcoin-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pcoin-discord-banner
+EnvironmentFile=-/etc/default/pcoin-listing-banner
+StateDirectory=pcoin-discord-banner
+Nice=10
+MemoryMax=128M
+TimeoutStartSec=120
