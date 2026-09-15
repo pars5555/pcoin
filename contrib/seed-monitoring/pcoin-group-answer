@@ -369,6 +369,34 @@ APPROVE = "/usr/local/bin/pcoin-approve"
 OWNER_IDS = {"508669931"}
 
 
+def report_listing_offer(tg_token, row, author, text, model):
+    """Tell the owner privately. Nothing is deleted and nothing is answered."""
+    import html as _html
+    chat = str(row.get("chat") or "")
+    mid = str(row.get("message_id"))
+    if chat.startswith("discord:"):
+        where = "PCoin Discord"
+        link = "https://discord.com/channels/1547398066313891890/%s/%s" % (chat.split(":", 1)[1], mid)
+    else:
+        where = "PCoin Chat"
+        link = "https://t.me/PCoinPCNChat/%s" % mid
+    body = ("🏦 <b>%s — listing / exchange approach</b> (left in the chat, not answered)\n"
+            "<b>Who:</b> %s\n<b>Text:</b>\n%s\n\n<a href=\"%s\">open the message</a>\n"
+            "<i>Verify on the exchange's own official-verification page before replying. "
+            "Never pay an individual.</i>" % (where, _html.escape(author), _html.escape(text[:1500]), link))
+    alert = conf(ALERT_CONF).get("ALERT_CHAT", "")
+    if DRY or not alert:
+        print("  (would report listing offer %s)" % mid)
+        return
+    try:
+        data = urllib.parse.urlencode({"chat_id": alert, "parse_mode": "HTML", "text": body,
+                                       "disable_web_page_preview": "true"}).encode()
+        urllib.request.urlopen(urllib.request.Request(
+            "https://api.telegram.org/bot%s/sendMessage" % tg_token, data=data), timeout=20).close()
+    except Exception as e:
+        print("  listing offer report failed (%s)" % type(e).__name__, file=sys.stderr)
+
+
 def remove_advert(tg_token, row, author, text, model):
     """Delete an advert the model flagged, and report it to ALERT_CHAT either way.
 
@@ -623,6 +651,14 @@ def main():
             detail = str(e) if isinstance(e, (RuntimeError, ValueError)) else type(e).__name__
             print("  model failed on %s: %s" % (mid, detail), file=sys.stderr)
             continue                                # NOT handled -- a failure resolves nothing
+
+        if out.get("listing_offer") is True and str(r.get("from_id")) not in OWNER_IDS:
+            report_listing_offer(tg, r, author, text, used_model)
+            act(action="listing-offer-reported", message_id=mid, who=author,
+                asked=text[:300], model=used_model)
+            st["handled"][mid] = int(now)
+            print("  listing offer %s reported, message left in place" % mid)
+            continue
 
         if out.get("spam") is True and str(r.get("from_id")) not in OWNER_IDS:
             ok_removed = remove_advert(tg, r, author, text, used_model)
