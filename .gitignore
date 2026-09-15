@@ -48,6 +48,14 @@ local.properties
 # Build chatter, not source.
 contrib/windows-tray/build.log
 
+# Runtime artifacts. PCoinTray.exe and PCoinWallet.exe write these beside
+# themselves, and the documented build recipe runs them from this directory
+# (contrib/windows-tray/README.md), so a plain build-and-test leaves them in
+# a clone. pcoin-seed.dat is covered separately -- it holds the phrase.
+contrib/windows-tray/pcoin-tray.log
+contrib/windows-tray/pcoin-wallet.log
+contrib/windows-tray/pcoin-pending-uri.txt
+
 # pcoin-seed-vault writes its output into the working directory, so a run
 # started from inside a clone would otherwise leave an encrypted wallet backup
 # staged for commit. Encrypted is not published: the blob plus a guessed
