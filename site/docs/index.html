@@ -385,7 +385,7 @@ node pcoin-seed-vault.mjs new --system myapp</code></pre>
     <tr><td>minimum deposit</td><td>your call</td><td>ignore dust rather than write a row per satoshi</td></tr>
   </table>
 
-  <p>All six production integrations run <strong>3 confirmations</strong> — about half an
+  <p>Every production integration runs <strong>3 confirmations</strong> — about half an
   hour at the 600&nbsp;s target, less when the chain runs fast. Several also corroborate
   every deposit above $0.05 against a second, independent explorer, which is the better
   defence at a shallow depth. Make it a config value,
