@@ -135,6 +135,13 @@ def dest_for(chat):
             return "dcchat"
         if ch and ch == ids.get("DISCORD_TEST_CHANNEL_ID"):
             return "dctest"
+        # Anywhere else in the guild: answer where the question was asked. The id
+        # is passed on as a NAME and pcoin-approve checks with Discord that the
+        # channel is ours before posting -- this script cannot reach a chat
+        # outside the guild however this line is rewritten, and the owner's
+        # Telegram Confirm is still what publishes it.
+        if ch.isdigit() and 15 <= len(ch) <= 25:
+            return "dc:" + ch
         return None
     try:
         chat = int(chat)

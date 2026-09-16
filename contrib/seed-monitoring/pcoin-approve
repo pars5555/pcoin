@@ -121,6 +121,44 @@ OWNER = int(os.environ.get("APPROVE_OWNER", "508669931"))
 # Destination allow-list. A name maps to a chat id here and nowhere else, so a
 # caller can never name a chat that is not on this list -- including, especially,
 # the private ops channel, which must never receive a public announcement.
+# A destination the answer bot DERIVES: "dc:<channel id>", the channel a question
+# was actually asked in. It is a name like any other and the id in it is NOT
+# trusted -- dc_publish asks Discord whose channel it is and refuses anything
+# outside our guild before posting. See the header note on allow-lists.
+DYNAMIC_DC = re.compile(r"^dc:(\d{15,25})$")
+
+
+def dc_channel(channel_id, bot_token):
+    """Ask Discord what a channel IS. A plain GET: dc_call would put a body on it.
+
+    Raises on anything that is not a clean answer, because this is the check that
+    stands between a derived id and a post, and "we could not tell" must never
+    read as "go ahead".
+    """
+    req = urllib.request.Request(
+        "https://discord.com/api/v10/channels/%s" % channel_id,
+        headers={"Authorization": "Bot " + bot_token,
+                 "User-Agent": "DiscordBot (https://pc.am, 1.0) pcoin-approve"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        raise ValueError("cannot read channel %s from Discord (HTTP %d)" % (channel_id, e.code))
+    except Exception as e:
+        raise ValueError("cannot read channel %s from Discord (%s)" % (channel_id, type(e).__name__))
+
+
+def dest_of(name):
+    """The destination for a name, or None. The ONLY place a name becomes a target."""
+    if name in DESTS:
+        return DESTS[name]
+    m = DYNAMIC_DC.match(str(name or ""))
+    if m:
+        return {"discord": "botid:" + m.group(1),
+                "label": "the Discord channel this was asked in (%s)" % m.group(1)}
+    return None
+
+
 DESTS = {
     # `discord` names a SECOND side published from the same approval: KIND:KEY,
     # where KEY is looked up in DISCORD_CONF. A webhook for broadcast posts; the
@@ -465,9 +503,25 @@ def dc_publish(dest, i):
     """The Discord side. Returns the message id; raises on ANY failure."""
     c = dc_conf()
     kind, key = dest["discord"].split(":", 1)
-    target = c.get(key, "")
-    if not target:
-        raise ValueError("%s is not set in %s" % (key, DISCORD_CONF))
+    if kind == "botid":
+        # The id was derived from a spooled message, so it is INPUT. Ask Discord
+        # whose channel it is; refuse anything that is not in our own guild.
+        # Everything dangerous -- the ops channel, another server, a DM -- fails
+        # this check, and it fails CLOSED: unreachable is not permission.
+        target = key
+        guild = c.get("DISCORD_GUILD_ID", "")
+        tok0 = c.get("DISCORD_BOT_TOKEN", "")
+        if not guild or not tok0:
+            raise ValueError("DISCORD_GUILD_ID and DISCORD_BOT_TOKEN are required to post to a derived channel")
+        info = dc_channel(target, tok0)
+        got = str((info or {}).get("guild_id") or "")
+        if got != str(guild):
+            raise ValueError("channel %s is not in this guild (guild_id=%r); refusing to post"
+                             % (target, got or "none"))
+    else:
+        target = c.get(key, "")
+        if not target:
+            raise ValueError("%s is not set in %s" % (key, DISCORD_CONF))
     text = to_discord(i["text"], i.get("parse_mode") or "", c)
     blob = base64.b64decode(i["photo_b64"]) if i.get("photo_b64") else None
     payload = {"allowed_mentions": {"parse": []}}
@@ -483,7 +537,7 @@ def dc_publish(dest, i):
         if not target.startswith("https://discord.com/api/webhooks/"):
             raise ValueError("%s does not look like a Discord webhook URL" % key)
         r = dc_call(target + "?wait=true", payload, blob)
-    elif kind == "bot":
+    elif kind in ("bot", "botid"):
         tok = c.get("DISCORD_BOT_TOKEN", "")
         if not tok:
             raise ValueError("DISCORD_BOT_TOKEN is not set in %s" % DISCORD_CONF)
@@ -510,7 +564,7 @@ def publish_item(i, send_tg, send_dc):
     retry after a half-failure re-sends only what is missing. `published` means
     every side. Returns True if the item changed.
     """
-    dest = DESTS[i["dest"]]
+    dest = dest_of(i["dest"])
     sides = (["tg"] if dest.get("chat") else []) + (["dc"] if dest.get("discord") else [])
     changed, errors = False, []
     for side, send in (("tg", send_tg), ("dc", send_dc)):
@@ -554,8 +608,10 @@ def publish_item(i, send_tg, send_dc):
 
 # ── commands ───────────────────────────────────────────────────────────────
 def cmd_submit(a):
-    if a.dest not in DESTS:
-        sys.exit("unknown destination %r. Allowed: %s" % (a.dest, ", ".join(sorted(DESTS))))
+    if dest_of(a.dest) is None:
+        sys.exit("unknown destination %r. Allowed: %s, or dc:<channel id> for a reply "
+                 "in the Discord channel a question was asked in."
+                 % (a.dest, ", ".join(sorted(DESTS))))
 
     text = a.text or ""
     if a.photo and len(text) > MAX_CAPTION:
@@ -566,7 +622,7 @@ def cmd_submit(a):
         sys.exit("text is %d characters; the limit here is %d." % (len(text), MAX_TEXT))
     if not text.strip():
         sys.exit("refusing to queue an empty message.")
-    if not DESTS[a.dest].get("chat") and len(text) > DISCORD_MAX_CONTENT:
+    if not dest_of(a.dest).get("chat") and len(text) > DISCORD_MAX_CONTENT:
         sys.exit("text is %d characters; a Discord-only reply is capped at %d."
                  % (len(text), DISCORD_MAX_CONTENT))
 
@@ -724,7 +780,7 @@ def cmd_tick(a):
     for i in d["items"]:
         if i["state"] != "pending":
             continue
-        dest = DESTS[i["dest"]]
+        dest = dest_of(i["dest"])
         if dest.get("auto") or i.get("source") in AUTO_SOURCES:
             # Straight to confirmed, and recorded as such. It still goes through
             # publish, so it is still hash-checked against what was submitted --
@@ -804,7 +860,7 @@ def cmd_tick(a):
     for i in d["items"]:
         if i["state"] != "confirmed":
             continue
-        dd = DESTS.get(i["dest"]) or {}
+        dd = dest_of(i["dest"]) or {}
         if not (dd.get("chat") or dd.get("discord")):
             # A destination in the allow-list with no chat id configured. Refuse
             # rather than send nowhere: an empty chat_id would make Telegram
@@ -1214,7 +1270,8 @@ def main():
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("submit")
-    s.add_argument("--dest", required=True, choices=sorted(DESTS))
+    # No `choices=`: dc:<id> is valid too. dest_of() above is the gate.
+    s.add_argument("--dest", required=True)
     s.add_argument("--text", required=True)
     s.add_argument("--caption", default="")
     s.add_argument("--photo", default=None)
