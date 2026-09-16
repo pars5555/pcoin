@@ -243,8 +243,9 @@ export function exchangeSection({ base, creds, actor }) {
       <td>$${esc(u.usd.available)} + $${esc(u.usd.locked)}</td><td>${esc(u.pcn.available)} + ${esc(u.pcn.locked)}</td><td>${u.disabled ? '<b class="bad">disabled</b>' : 'active'}</td>
       <td>${form('user_disable', `${hidden('id', u.id)}${hidden('disabled', u.disabled ? 'false' : 'true')}<input name="reason" type="text" placeholder="reason" required>`, u.disabled ? 'Enable' : 'Disable')}
       ${u.hasTwofa ? form('twofa_reset', `${hidden('id', u.id)}<input name="reason" type="text" placeholder="how you verified them" required>`, 'Reset 2FA') : ''}
-      ${form('user_credit', `${hidden('id', u.id)}<select name="asset"><option value="USD">USD</option><option value="PCN">PCN</option></select><input name="amount" type="text" inputmode="decimal" placeholder="amount" required style="width:90px">`, 'Test credit')}</td></tr>`);
-    return '<div class="card"><p class="muted">A 2FA reset is exactly what an impersonator asks for. Verify the person another way first.<br><b>Test credit</b> puts a balance on an account for testing before opening. It is refused the moment the exchange is open, because a real balance comes from a real deposit.</p></div>'
+      ${form('user_credit', `${hidden('id', u.id)}<select name="asset"><option value="USD">USD</option><option value="PCN">PCN</option></select><input name="amount" type="text" inputmode="decimal" placeholder="amount" required style="width:90px">`, 'Test credit')}
+      ${form('user_adjust', `${hidden('id', u.id)}<select name="asset"><option value="USD">USD</option><option value="PCN">PCN</option></select><input name="amount" type="text" inputmode="decimal" placeholder="+ or -" required style="width:80px"><input name="reason" type="text" placeholder="why (required)" required>`, 'Adjust')}</td></tr>`);
+    return '<div class="card"><p class="muted">A 2FA reset is exactly what an impersonator asks for. Verify the person another way first.<br><b>Test credit</b> puts a balance on an account for testing before opening. It is refused the moment the exchange is open, because a real balance comes from a real deposit.<br><b>Adjust</b> is the one that works while the exchange is OPEN: it corrects a balance that is wrong — a payment that arrived but was never credited, a double credit to claw back, a goodwill payment. A minus takes money away. It writes a ledger row so the books still balance, records who did it and why, and sends it to Telegram at once, so an adjustment nobody made is visible in seconds rather than at the next reconciliation.</p></div>'
       + table(['id', 'email', '2FA', 'USD available + locked', 'PCN available + locked', 'state', ''], rows, 'No users yet.');
   }
 
@@ -385,6 +386,7 @@ export function exchangeSection({ base, creds, actor }) {
         expectFirst: f.get('expectFirst') || null, expectLast: f.get('expectLast') || null }, 'pool'],
       house_address: () => ['/admin/api/house/ask-address', {}, 'overview'],
       user_credit: () => [`/admin/api/users/${id()}/credit`, { asset: f.get('asset'), amount: String(f.get('amount') || '').trim() }, 'users'],
+      user_adjust: () => [`/admin/api/users/${id()}/adjust`, { asset: f.get('asset'), amount: String(f.get('amount') || '').trim(), reason: String(f.get('reason') || '').trim() }, 'users'],
       house_balance: () => {
         const [bot, asset] = String(f.get('which') || '').split(':');
         return ['/admin/api/house/balance', { bot, asset, amount: String(f.get('amount') || '').trim() }, 'overview'];
