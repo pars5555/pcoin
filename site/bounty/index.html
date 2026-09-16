@@ -1,0 +1,259 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+
+<meta name="referrer" content="no-referrer">
+<title>Earn PCN — PCoin</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230d1117'/><path d='M16 5 L18.4 13.6 L27 16 L18.4 18.4 L16 27 L13.6 18.4 L5 16 L13.6 13.6 Z' fill='%232dd4bf'/></svg>">
+<style>
+:root{color-scheme:dark;--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--card:#161b22;
+ --line:#30363d;--teal:#2dd4bf;--blue:#58a6ff;--green:#3fb950;--amber:#d29922;--red:#f85149}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);margin:0;
+ font:16px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif}
+.wrap{max-width:50rem;margin:0 auto;padding:0 1.25rem 5rem}
+header{border-bottom:1px solid var(--line);background:#0b0f14;position:sticky;top:0;z-index:9}
+header .wrap{display:flex;align-items:center;gap:1rem;padding:.85rem 1.25rem;flex-wrap:wrap}
+header b{font-size:1.02rem}
+.draft{background:#3d2d05;border-bottom:1px solid #6b4f08;color:#e3b341;
+ font-size:.9rem;padding:.6rem 1.25rem;text-align:center}
+.draft b{color:#f0c674}
+h1{font-size:1.75rem;margin:2rem 0 .4rem;letter-spacing:-.01em}
+h2{font-size:.84rem;margin:2.8rem 0 .8rem;color:var(--mut);font-weight:600;
+ text-transform:uppercase;letter-spacing:.07em}
+h3{font-size:1.15rem;margin:0 0 .2rem}
+a{color:var(--blue)}
+.lead{color:var(--mut);font-size:1.05rem;margin:0 0 .4rem}
+code{background:#0b0f14;padding:.15rem .42rem;border-radius:5px;color:var(--teal);
+ font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.9em;word-break:break-all}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+ padding:1.15rem 1.3rem;margin:1.1rem 0}
+.top{display:flex;gap:1rem;align-items:flex-start;flex-wrap:wrap;margin-bottom:.4rem}
+.top .body{flex:1 1 20rem;min-width:0}
+.pay{flex:0 0 auto;text-align:right}
+.pay .amt{font-size:1.5rem;font-weight:700;color:var(--teal);white-space:nowrap}
+.pay .per{font-size:.82rem;color:var(--mut)}
+.status{display:inline-block;font-size:.74rem;letter-spacing:.04em;text-transform:uppercase;
+ padding:.12rem .5rem;border-radius:99px;border:1px solid var(--line);color:var(--mut);
+ margin-bottom:.5rem}
+.status.soon{border-color:#6b4f08;color:#e3b341}
+.status.live{border-color:#1a5c2e;color:var(--green)}
+ol.steps{counter-reset:s;padding:0;list-style:none;margin:1rem 0 .3rem}
+ol.steps li{counter-increment:s;position:relative;padding:.1rem 0 .85rem 2.5rem}
+ol.steps li::before{content:counter(s);position:absolute;left:0;top:0;width:1.7rem;
+ height:1.7rem;border-radius:99px;background:#0b0f14;border:1px solid var(--line);
+ color:var(--teal);font-size:.85rem;display:grid;place-items:center;font-weight:700}
+ol.steps b{color:var(--fg)}
+.small{font-size:.92rem;color:var(--mut)}
+.rules{margin:.9rem 0 0;padding:.75rem .95rem;background:#0b0f14;border-radius:8px;
+ border-left:3px solid var(--line);font-size:.92rem;color:var(--mut)}
+.rules b{color:var(--fg)}
+.rules ul{margin:.3rem 0 0;padding-left:1.1rem}
+.rules li{margin:.28rem 0}
+table{width:100%;border-collapse:collapse;margin:.5rem 0}
+td,th{text-align:left;padding:.5rem .5rem;border-bottom:1px solid #21262d;font-size:.94rem}
+th{color:var(--mut);font-weight:600;white-space:nowrap;vertical-align:top}
+.note{border-left:3px solid var(--amber);padding:.1rem 0 .1rem .9rem;color:#e3b341;
+ margin:1.2rem 0;font-size:.95rem}
+.honest{border-left:3px solid var(--blue);padding:.1rem 0 .1rem .9rem;margin:1.2rem 0}
+footer{margin-top:3.5rem;border-top:1px solid var(--line);padding-top:1.1rem;
+ color:var(--mut);font-size:.9rem}
+@media (max-width:480px){
+ .wrap{padding:0 1rem 4rem}
+ header .wrap{padding:.6rem 1rem}
+ h1{font-size:1.45rem}
+ .card{padding:.95rem 1rem}
+ .pay{text-align:left}
+ .pay .amt{font-size:1.3rem}
+ ol.steps li{padding-left:2.2rem}
+ table,tbody,tr,td,th{display:block}
+ tr{padding:.5rem 0;border-bottom:1px solid #21262d}
+ td,th{padding:0;border-bottom:none}
+ th{font-size:.76rem;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.15rem}
+}
+</style></head><body>
+
+<header><div class="wrap"><b>PCoin Programs</b></div></header>
+
+<div class="wrap">
+
+<h1>Earn PCN</h1>
+<p class="lead">Three ways to earn, and every one of them is checked by machine — by
+the blockchain, by the exchange's own ledger, or by the service you paid. There is
+nothing to screenshot, no form to argue over, and no decision made on a hunch.</p>
+
+<!-- ─────────────────────────────────────────────── 1 ── -->
+<h2>1 · Bring someone to the exchange</h2>
+
+<div class="card">
+<span class="status live">Live now</span>
+<div class="top">
+  <div class="body"><h3>Introduce someone who buys PCN</h3>
+  <p class="small" style="margin:.2rem 0 0">Share your personal link. When the person
+  who follows it opens an account on exchange.pc.am, funds it and buys PCN, you are
+  paid.</p></div>
+  <div class="pay"><div class="amt">200 PCN</div><div class="per">per person</div></div>
+</div>
+
+<ol class="steps">
+<li><b>Sign in at exchange.pc.am.</b> You sign in with your PCoin account — the same
+one you use at market.pc.am. If you do not have one, creating it is part of signing
+in.</li>
+<li><b>Copy your personal link.</b> It looks like
+<code>exchange.pc.am/?ref=XXXXXXXX</code> and it is on your account page. The code is
+yours and does not change.</li>
+<li><b>Share it.</b> Anywhere you like, to people who would genuinely want it.</li>
+<li><b>They open your link and create an account.</b> You are credited with the
+introduction the moment they first click it, not when they sign up — so it still
+counts if they come back a week later. If they had already visited through someone
+else's link, that first link keeps them.</li>
+<li><b>They deposit at least $50 and buy PCN with it.</b> Both are required. A deposit
+with no purchase does not count, and neither does buying with PCN they already
+had.</li>
+<li><b>Wait 14 days.</b> Everything is re-checked at the end of that period.</li>
+<li><b>200 PCN appears in your exchange balance.</b> You can spend it on the exchange
+straight away, or withdraw it once your balance is over the $30 withdrawal
+minimum.</li>
+</ol>
+
+<div class="rules"><b>The rules</b>
+<ul>
+<li>One payment per person you introduce. Introducing the same person twice pays
+once.</li>
+<li>You cannot introduce yourself, and accounts sharing a payment method are checked
+by a person before anything is paid.</li>
+<li><b>The pool is 3,000 PCN — fifteen payments.</b> When it is gone the programme
+stops until it is topped up. It is paid in the order people qualify.</li>
+</ul></div>
+</div>
+
+<!-- ─────────────────────────────────────────────── 2 ── -->
+<h2>2 · Run a mining pool that is not ours</h2>
+
+<div class="card">
+<span class="status live">Live now</span>
+<div class="top">
+  <div class="body"><h3>Run an independent pool, get 5 miners</h3>
+  <p class="small" style="margin:.2rem 0 0">Almost all PCoin mining goes through one
+  pool, and that pool is ours. That is not healthy for the network and we would
+  rather pay to fix it than pretend otherwise.</p></div>
+  <div class="pay"><div class="amt">500 PCN</div><div class="per">per pool</div></div>
+</div>
+
+<ol class="steps">
+<li><b>Run a PCoin mining pool.</b> Any pool software that speaks Stratum and can
+  build PCoin blocks. If you would rather not write one, <b>use ours</b> — it is the
+  same software we run in production, in the public repository under the same licence,
+  with nothing held back:
+  <a href="https://github.com/pars5555/pcoin/blob/main/contrib/pool/RUNNING-A-POOL.md">Running a PCoin pool</a>. You host it, you run it, you keep the fees you charge.</li>
+<li><b>Attract at least 5 miners.</b> Five separate payout addresses. That is what the chain
+  shows and what we count — we cannot tell a person from a machine and we do not
+  pretend to.</li>
+<li><b>Be active across the month.</b> We look at the last 30 days and need to have seen
+  your pool finding blocks on at least 7 separate days in that window. One lucky
+  block paying six addresses is not five miners; you do not have to have been
+  running for the whole month.</li>
+<li><b>Tell us it exists</b> — in the <a href="https://t.me/PCoinPCNChat"
+rel="noopener">PCoin chat</a> or by opening an issue on
+<a href="https://github.com/pars5555/pcoin/issues" rel="noopener">GitHub</a>. Say
+where the pool is and where you would like to be paid.</li>
+<li><b>We check it on the blockchain.</b> A pool pays its miners inside the block it
+finds, so we simply count how many separate addresses your pool has been paying, over
+those 30 days. We do not need access to your server, your miner list, or anything
+else you would reasonably not want to give us.</li>
+<li><b>We pay you 500 PCN</b> to the address you gave us. Miners reach you with <b>SRBMiner-Multi</b> (<code>--algorithm randompcn --pool your.host:3333</code>), which needs nothing from us and no special build — re-checked against a live PCoin pool on 17 September 2026.</li>
+</ol>
+
+<div class="rules"><b>The rules</b>
+<ul>
+<li>Paid once per pool.</li>
+<li>Your pool must be genuinely independent — a pool we do not run, and not a relay pointing at ours. Running our pool <i>software</i> is fine and encouraged; it is running our <i>instance</i> that is not a second pool.</li>
+<li>We tell you what we counted. If we say no, you get the number we saw and
+why.</li>
+</ul></div>
+</div>
+
+<!-- ─────────────────────────────────────────────── 3 ── -->
+<h2>3 · Spend PCN at a PCoin service</h2>
+
+<div class="card">
+<span class="status soon">Coming soon</span>
+<div class="top">
+  <div class="body"><h3>Get 10% of it back</h3>
+  <p class="small" style="margin:.2rem 0 0">Use PCN for what it is actually for, and
+  some of it comes back to you.</p></div>
+  <div class="pay"><div class="amt">10% back</div><div class="per">up to 50 PCN a month</div></div>
+</div>
+
+<ol class="steps">
+<li><b>Pay with PCN at one of these services:</b>
+  <a href="https://t.me/PcoinAiBot" rel="noopener">@PcoinAiBot</a>,
+  <a href="https://webai.pc.am" rel="noopener">webai.pc.am</a>,
+  <a href="https://aicontrol.pc.am" rel="noopener">aicontrol.pc.am</a>, or
+  <a href="https://t.me/MyWebsiteBuilderBot" rel="noopener">@MyWebsiteBuilderBot</a>.
+  Each one gives you its own PCN address to pay to.</li>
+<li><b>Your payment is credited as normal</b> once it has three confirmations.</li>
+<li><b>10% is added on top, at the same service.</b> If you paid 100 PCN worth of
+credit, another 10 PCN worth arrives in the same balance.</li>
+<li><b>There is nothing to claim.</b> It happens by itself. You do not need to
+register, ask, or tell us anything.</li>
+</ol>
+
+<div class="rules"><b>The rules</b>
+<ul>
+<li>Up to 50 PCN back per person per month, across all services.</li>
+<li>The 10% is credit at the service you paid — it is not sent to your wallet.</li>
+<li>It is worked out from what you were actually credited, at the rate you were
+credited at, so a later price move cannot change it.</li>
+</ul></div>
+</div>
+
+<!-- ─────────────────────────────────────────────── -->
+<h2>What is not on this list, and why</h2>
+
+<div class="note">
+We do <b>not</b> pay for app store reviews, ratings or installs — Google prohibits
+it and it would put the app at risk. We do <b>not</b> pay for posts on Reddit, which
+prohibits incentivised posting. And we do <b>not</b> pay for followers, group members,
+stars or likes. Those are the easiest things in the world to buy, and buying them
+would tell us nothing true about PCoin and tell you even less.
+</div>
+
+<h2>What you are being paid in</h2>
+
+<div class="honest">
+<p style="margin:.2rem 0 .6rem">PCN is the coin of an independent blockchain that is
+about six weeks old. Please be clear about what that means before taking part:</p>
+<ul style="margin:.2rem 0">
+<li>PCN is <b>not listed on any exchange</b> other than our own.</li>
+<li>What PCN <b>does</b> do today is pay for real things — the services listed above
+accept it, and you can mine it yourself on an ordinary computer.</li>
+<li>We publish a rate at <code>price.pc.am</code>. That is the rate our own services
+credit a payment at. <b>It is not a market price, and it is not a promise that anyone
+will buy your PCN at it.</b></li>
+</ul>
+<p style="margin:.6rem 0 .2rem">We would rather say that plainly and have fewer people
+take part than have anyone join expecting something we have not got.</p>
+</div>
+
+<h2>Questions</h2>
+<table>
+<tr><th>How do I know you paid?</th><td>Every payment we make is a transaction on a
+public blockchain. Look it up at <a href="https://explorer.pc.am">explorer.pc.am</a>.
+Credit given at a service shows in that service's own history.</td></tr>
+<tr><th>Can I do more than one?</th><td>Yes. They are separate and do not affect each
+other.</td></tr>
+<tr><th>What if you say no?</th><td>You get told what was checked and what the result
+was. If a number is wrong, say so and we will look again.</td></tr>
+<tr><th>Where do I ask?</th><td>The <a href="https://t.me/PCoinPCNChat"
+rel="noopener">PCoin chat</a>, or <a href="https://docs.pc.am">docs.pc.am</a> for how
+everything works underneath.</td></tr>
+</table>
+
+<footer>
+PCoin · <a href="https://pc.am">pc.am</a> ·
+<a href="https://explorer.pc.am">explorer</a> ·
+<a href="https://docs.pc.am">docs</a><br>
+<span style="color:#6e7681">Programme 3 is not open yet. Programmes 1 and 2 are running now.</span>
+</footer>
+
+</div></body></html>
