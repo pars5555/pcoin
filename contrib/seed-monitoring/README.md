@@ -41,6 +41,17 @@ the failure is silent in exactly the way this table exists to prevent.
 | `webai` | the webai host (GCE `rba`) | same host | MySQL `pcoin_watcher_heartbeat` |
 | `pcnaibot` | 178.105.3.51 | same host | SQLite -- the only SQLite rail, so it needed its own reader |
 
+### Not a deposit rail, but on this list for the same reason
+
+| component | runs on | what it does | how you know it ran |
+|---|---|---|---|
+| `pcoin-pool-bounty` | **178.105.3.51** (daily timer) | P2: walks 30 days of coinbases, finds independent pools with 5+ miners, writes `/var/lib/pcoin-programs/claims.json` for the Programs page | `systemctl list-timers pcoin-pool-bounty`, and its journal line naming the window it walked |
+
+It is here because a component in no host's list is watched by nobody and
+nothing will ever say so. It moves no money -- it writes a claims file and the
+owner pays by hand -- but a verifier that has quietly stopped means a pool
+qualifies and nobody is told, which looks exactly like nobody qualifying.
+
 Host addresses are in `D:\pc.am\PCOIN-SERVERS.md` (off-repo). The rails sit behind
 Cloudflare, so their origin addresses are deliberately not written down here.
 

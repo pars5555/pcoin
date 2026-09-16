@@ -1,0 +1,452 @@
+#!/usr/bin/env python3
+"""P2: find independent mining pools that have attracted 5+ miners, and file a claim.
+
+    pcoin-pool-bounty                 walk the window, write claims, say what it found
+    pcoin-pool-bounty --dry-run       decide everything, write nothing
+    pcoin-pool-bounty --days 30 --min-miners 5
+    pcoin-pool-bounty --selftest      prove every branch fires, touching no chain
+
+WHY THIS PROGRAM EXISTS. Our own pool finds most of the blocks on this chain.
+That is the largest technical risk PCoin carries -- one operator near a majority
+on a live chain -- and it is a blocker with every exchange the project has
+approached. This bounty buys decentralisation directly, and it has a property
+worth keeping in mind while reading the rules below: somebody gaming it still has
+to run a real pool doing real work. Being too STRICT is the worse failure --
+nobody qualifies and the concentration stays -- so where a rule could go either
+way it goes the generous way.
+
+HOW A POOL IS COUNTED, WITHOUT ASKING ITS OPERATOR ANYTHING. A PCoin pool pays
+its miners inside the coinbase: there is no payout wallet and no payout
+transaction. So a pool's miner list is on the chain. A block paying many
+addresses is a pool block, a block paying one is solo, and blocks whose payee
+sets overlap are the same pool. The operator gives us no API access, no miner
+list, and runs nothing of ours.
+
+WHAT THIS CANNOT DO, AND MUST NOT GUESS. It cannot know where to PAY the
+operator. Every address it sees belongs to a MINER. An address present in every
+one of a pool's blocks is probably the operator's own fee -- ours takes its fee
+in the coinbase the same way -- but "probably" is not good enough to send coin
+to, and a wrong payment cannot be taken back. So `address` is left null, the
+candidates are reported as evidence, and a person asks the operator once.
+
+AND IT CANNOT SEND ANYTHING. It writes a claims file. The owner pays by hand.
+"""
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+CLI_CANDIDATES = [
+    ["/opt/pcoin/bin/bitcoin-cli", "-conf=/etc/pcoin/pcoin.conf"],
+    ["docker", "exec", "pcoin-seed", "bitcoin-cli"],
+    ["bitcoin-cli"],
+]
+CLAIMS_PATH = os.environ.get("POOL_BOUNTY_CLAIMS", "/var/lib/pcoin-programs/claims.json")
+REWARD_PCN = 500
+BLOCKS_PER_DAY = 144          # 600 s target spacing
+
+# Ours, and the two that are not ours but are not payable either. Both belong to
+# the owner's son; contrib/admin-panel/miners.mjs carries the list and the
+# reasoning, and this file must agree with it.
+OURS = {
+    "pc1qlvw6kx8wkcz8f6p0d6kswv69fjt33ll079f64e",   # pool payout AND treasury
+    "pc1qsl67w7cs8gsvd9jekdrnjxj873du7x5n6nj82l",   # varujdesk earner payout
+    "pc1qdxevq6dz82hyrxfqgc30n0t9txntmax5zffp3m",   # office01 + office02
+}
+
+
+def find_cli():
+    """Pick whichever way this box talks to its node. Seeds are inconsistent on
+    purpose -- some native, some containerised -- and hard-coding one shape is
+    how a monitor silently stops covering half the fleet."""
+    for cand in CLI_CANDIDATES:
+        exe = cand[0]
+        if exe == "docker":
+            if not shutil.which("docker"):
+                continue
+        elif not (os.path.isfile(exe) or shutil.which(exe)):
+            continue
+        try:
+            subprocess.run(cand + ["getblockcount"], capture_output=True, timeout=20, check=True)
+            return cand
+        except Exception:                                  # noqa: BLE001
+            continue
+    return None
+
+
+def rpc(cli, *args):
+    r = subprocess.run(cli + list(args), capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or r.stdout).strip()[:200])
+    out = r.stdout.strip()
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        return out
+
+
+def fetch_blocks(cli, lo, hi):
+    """Blocks lo..hi inclusive, as decoded dicts.
+
+    ONE subprocess per CHUNK, not per block. Walking 30 days is ~4,300 blocks and
+    ~8,600 RPC calls; at 90 ms of process spawn each that is thirteen minutes, and
+    a verifier that takes thirteen minutes gets run by nobody. Inside a single
+    shell the same work is about thirty seconds, because the spawn was the whole
+    cost. Measured, not assumed.
+    """
+    loop = ("for h in $(seq %d %d); do bitcoin-cli getblock $(bitcoin-cli getblockhash $h) 2; done"
+            % (lo, hi))
+    if cli[0] == "docker":
+        cmd = cli[:-1] + ["sh", "-c", loop.replace("bitcoin-cli", cli[-1])]
+    else:
+        conf = " ".join(cli[1:])
+        cmd = ["sh", "-c", loop.replace("bitcoin-cli", "%s %s" % (cli[0], conf))]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or r.stdout).strip()[:300])
+    dec, buf, i, n, out = json.JSONDecoder(), r.stdout, 0, len(r.stdout), []
+    while i < n:
+        while i < n and buf[i] in " \n\r\t":
+            i += 1
+        if i >= n:
+            break
+        obj, i = dec.raw_decode(buf, i)
+        out.append(obj)
+    return out
+
+
+def coinbase_payees(block):
+    """The addresses a block's coinbase actually pays. Zero-value outputs are
+    skipped: every block carries a zero-value OP_RETURN witness commitment, and
+    counting it as a payee would make every solo block look like a pool."""
+    cb = block["tx"][0]
+    return sorted({o["scriptPubKey"].get("address") for o in cb["vout"]
+                   if o.get("value", 0) > 0 and o["scriptPubKey"].get("address")})
+
+
+def group_pools(blocks):
+    """Blocks whose payee sets overlap are the same pool.
+
+    Two shared addresses, not one: on a chain this small one miner splitting
+    hashrate between two pools would otherwise merge them into one, and merging
+    an independent pool into OURS would hide exactly what this program is looking
+    for. Two is still generous -- see the header on preferring generous rules.
+    """
+    pools = []
+    for b in blocks:
+        addrs = coinbase_payees(b)
+        if len(addrs) < 2:
+            continue                      # solo, or an empty coinbase
+        s = set(addrs)
+        g = next((p for p in pools if len(s & p["addrs"].keys()) >= 2), None)
+        if g is None:
+            g = {"addrs": {}, "blocks": 0, "first": b["height"], "last": b["height"],
+                 "days": set(), "first_hash": b["hash"]}
+            pools.append(g)
+        for a in addrs:
+            g["addrs"][a] = g["addrs"].get(a, 0) + 1
+        g["blocks"] += 1
+        g["first"] = min(g["first"], b["height"])
+        g["last"] = max(g["last"], b["height"])
+        # SAMPLED BY DAY, from block time, because "sustained" has to mean more
+        # than one lucky evening. Block timestamps are not monotonic in height on
+        # this chain, so this is a set of days seen and never a subtraction.
+        g["days"].add(int(b["time"]) // 86400)
+    return pools
+
+
+def classify(pools, min_miners, min_days):
+    """Split the groups into ours, and candidates that qualify or do not."""
+    ours, qualified, short = [], [], []
+    for p in pools:
+        payees = set(p["addrs"])
+        if payees & OURS:
+            ours.append(p)
+            continue
+        independent = payees - OURS
+        p["miners"] = len(independent)
+        p["spread_days"] = len(p["days"])
+        # The addresses in EVERY one of this pool's blocks. Probably the
+        # operator's fee, possibly just a miner who never stops -- reported as a
+        # lead for a human to confirm, never used as a payment destination.
+        p["always"] = sorted(a for a, c in p["addrs"].items() if c == p["blocks"])
+        (qualified if p["miners"] >= min_miners and p["spread_days"] >= min_days else short).append(p)
+    return ours, qualified, short
+
+
+def pool_key(p, registry):
+    """A stable identity for a pool -- REMEMBERED, not recomputed.
+
+    The Programs page merges the owner's decisions onto claims BY ID, so an id
+    that moves silently loses an approval or re-presents a claim already paid.
+
+    Anything derived from what is in the window is unstable, and the first
+    version of this was: it keyed on the two heaviest payees, and the selftest
+    caught it changing the moment one miner joined. That is not a flaw in the
+    formula, it is a flaw in the idea -- the window SLIDES, so today's heaviest
+    payee leaves it eventually and any formula over window contents moves with
+    it.
+
+    So identity is stored once and matched afterwards by address overlap, the
+    same join that groups blocks into a pool. A pool keeps its id while any two
+    of its known addresses are still being paid, through miners joining, miners
+    leaving, and the whole first month dropping out of the window.
+    """
+    s = set(p["addrs"])
+    for key, known in registry.items():
+        if len(s & set(known)) >= 2:
+            registry[key] = sorted(set(known) | s)[:64]     # bounded: pools grow
+            return key
+    top = sorted(p["addrs"].items(), key=lambda kv: (-kv[1], kv[0]))[:2]
+    key = "-".join(a[-8:] for a, _ in top)
+    registry[key] = sorted(s)[:64]
+    return key
+
+
+def load_registry(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError) as e:
+        sys.exit("REFUSING: %s exists but cannot be read (%s)." % (path, e))
+
+
+def save_registry(path, registry):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".pools-", suffix=".json")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(registry, f, indent=2, sort_keys=True)
+        f.write(chr(10))
+    os.replace(tmp, path)
+
+
+def load_claims(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return []
+    except (OSError, json.JSONDecodeError) as e:
+        # Unreadable is NOT empty. Overwriting a claims file we could not read is
+        # how an approval the owner already gave disappears.
+        sys.exit("REFUSING: %s exists but cannot be read (%s). Fix it or move it aside." % (path, e))
+    return data if isinstance(data, list) else data.get("claims", [])
+
+
+def save_claims(path, claims):
+    """Temp file plus rename, so a reader never sees a half-written file."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".claims-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(claims, f, indent=2, sort_keys=True)
+            f.write("\n")
+        os.replace(tmp, path)
+    except Exception:                                      # noqa: BLE001
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def merge(existing, found):
+    """Add claims that are new. NEVER touch one the owner has already decided.
+
+    A claim whose state has moved past 'qualified' -- approved, paid, rejected --
+    is a record of a decision, and a verifier that rewrites it is a verifier that
+    can un-pay somebody or re-present a settled claim. Only the evidence on a
+    still-'qualified' row is refreshed, because that is the row nobody has acted
+    on yet.
+    """
+    by_id = {c.get("id"): c for c in existing}
+    added, refreshed = [], []
+    for c in found:
+        old = by_id.get(c["id"])
+        if old is None:
+            existing.append(c)
+            added.append(c["id"])
+        elif old.get("state") == "qualified":
+            old["evidence"] = c["evidence"]
+            old["evidence_url"] = c["evidence_url"]
+            refreshed.append(c["id"])
+    return added, refreshed
+
+
+def health_ok(cli):
+    """Is the node in a state where the chain can be believed?
+
+    Gate on reachability and sync. NEVER on a cumulative lifetime counter: gating
+    on one silently froze all six PCoin payment rails for three and a half days
+    while every liveness check passed, because the counter had been set once,
+    years of blocks ago, and could never go back down.
+    """
+    try:
+        info = rpc(cli, "getblockchaininfo")
+    except Exception as e:                                 # noqa: BLE001
+        return False, "the node is unreachable (%s)" % str(e)[:80]
+    if info.get("initialblockdownload"):
+        return False, "the node is still syncing"
+    behind = int(info.get("headers", 0)) - int(info.get("blocks", 0))
+    if behind > 2:
+        return False, "the node is %d blocks behind its own headers" % behind
+    return True, "height %d" % info.get("blocks", 0)
+
+
+# ------------------------------------------------------------------ selftest
+def selftest():
+    """Every branch, against input built to break it. A check that cannot fire is
+    indistinguishable from one that passes."""
+    def block(h, addrs, t=0):
+        return {"height": h, "hash": "%064x" % h, "time": t or (1789000000 + h * 600),
+                "tx": [{"vout": [{"value": 50, "scriptPubKey": {"address": a}} for a in addrs]
+                        + [{"value": 0, "scriptPubKey": {}}]}]}
+    fails = []
+
+    def check(name, cond):
+        print("  %-62s %s" % (name, "ok" if cond else "FAILED"))
+        if not cond:
+            fails.append(name)
+
+    # The zero-value witness commitment must not make a solo block look pooled.
+    check("a solo block is not a pool", group_pools([block(1, ["pcA"])]) == [])
+
+    # Ours is excluded however many miners it has.
+    ours = [block(i, ["pc1qlvw6kx8wkcz8f6p0d6kswv69fjt33ll079f64e"] + ["m%d" % j for j in range(9)],
+                  1789000000 + i * 86400) for i in range(1, 12)]
+    o, q, s = classify(group_pools(ours), 5, 7)
+    check("our own pool is excluded, not reported as a candidate", len(o) == 1 and q == [] and s == [])
+
+    # An independent pool with 6 miners across 10 days qualifies.
+    ind = [block(100 + i, ["opFee", "m1", "m2", "m3", "m4", "m5", "m6"], 1789000000 + i * 86400)
+           for i in range(10)]
+    _, q, _ = classify(group_pools(ind), 5, 7)
+    check("an independent pool with 6 payees over 10 days QUALIFIES", len(q) == 1)
+    check("and its likely-operator address is reported as a lead",
+          q and q[0]["always"] == sorted(["opFee", "m1", "m2", "m3", "m4", "m5", "m6"]))
+
+    # Four miners is not five.
+    few = [block(200 + i, ["a", "b", "c", "d"], 1789000000 + i * 86400) for i in range(10)]
+    _, q, s = classify(group_pools(few), 5, 7)
+    check("four payees does NOT qualify", q == [] and len(s) == 1)
+
+    # Six miners, but all in one evening: not sustained.
+    burst = [block(300 + i, ["a", "b", "c", "d", "e", "f"], 1789000000 + i * 60) for i in range(10)]
+    _, q, s = classify(group_pools(burst), 5, 7)
+    check("six payees in a single day does NOT qualify (not sustained)", q == [] and len(s) == 1)
+
+    # Identity is stable however the blocks are ordered or how miners churn.
+    reg = {}
+    a = pool_key(group_pools(ind)[0], reg)
+    # Read in a different order, one miner gone, two joined, and -- the case that
+    # matters -- the whole first half of the window aged out.
+    churned = list(reversed(ind[5:])) + [block(400, ["opFee", "m2", "newcomer", "another"])]
+    b = pool_key(group_pools(churned)[0], reg)
+    check("the pool id survives churn, reordering and the window sliding", a == b)
+    check("a genuinely different pool gets a different id",
+          pool_key(group_pools([block(500 + i, ["z1", "z2", "z3"]) for i in range(3)])[0], reg) != a)
+
+    # A decided claim is never rewritten; a qualified one has its evidence refreshed.
+    ex = [{"id": "p2-x", "state": "paid", "evidence": "old"},
+          {"id": "p2-y", "state": "qualified", "evidence": "old"}]
+    added, refreshed = merge(ex, [{"id": "p2-x", "evidence": "new", "evidence_url": "u"},
+                                  {"id": "p2-y", "evidence": "new", "evidence_url": "u"},
+                                  {"id": "p2-z", "evidence": "new", "evidence_url": "u"}])
+    check("a PAID claim is never rewritten", ex[0]["evidence"] == "old")
+    check("a still-qualified claim has its evidence refreshed", ex[1]["evidence"] == "new")
+    check("a new pool is added once", added == ["p2-z"] and len(ex) == 3)
+    added2, _ = merge(ex, [{"id": "p2-z", "evidence": "new", "evidence_url": "u"}])
+    check("a second run adds no duplicate", added2 == [] and len(ex) == 3)
+
+    print()
+    print("selftest %s" % ("PASSED" if not fails else "FAILED: " + ", ".join(fails)))
+    return 1 if fails else 0
+
+
+def main(argv):
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--days", type=int, default=30)
+    ap.add_argument("--min-miners", type=int, default=5)
+    ap.add_argument("--min-days", type=int, default=7,
+                    help="distinct days the pool must have been seen on, inside the window")
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--claims", default=CLAIMS_PATH)
+    ap.add_argument("--registry", default=os.path.join(os.path.dirname(CLAIMS_PATH), "pool-identities.json"))
+    ap.add_argument("--selftest", action="store_true")
+    a = ap.parse_args(argv[1:])
+    if a.selftest:
+        return selftest()
+
+    cli = find_cli()
+    if not cli:
+        sys.exit("no way to reach a PCoin node on this host")
+    ok, why = health_ok(cli)
+    if not ok:
+        # HOLD. An unreadable chain is not "no pools found", and writing an empty
+        # claims file here would erase pools that qualified yesterday.
+        print("HOLDING: %s. Nothing was read and nothing was written." % why)
+        return 0
+
+    tip = int(rpc(cli, "getblockcount"))
+    lo = max(1, tip - a.days * BLOCKS_PER_DAY)
+    t0 = time.time()
+    blocks = fetch_blocks(cli, lo, tip)
+    if len(blocks) < (tip - lo + 1) * 0.9:
+        print("HOLDING: read only %d of %d blocks; a partial window undercounts miners."
+              % (len(blocks), tip - lo + 1))
+        return 0
+
+    registry = load_registry(a.registry)
+    pools = group_pools(blocks)
+    ours, qualified, short = classify(pools, a.min_miners, a.min_days)
+    print("walked %d..%d (%d blocks) in %.0fs, %s" % (lo, tip, len(blocks), time.time() - t0, why))
+    print("  our own pool: %s" % (", ".join("%d blocks / %d miners" % (p["blocks"], len(p["addrs"]))
+                                            for p in ours) or "not seen"))
+    for p in short:
+        print("  candidate %s: %d payees on %d day(s) over %d blocks -- needs %d payees on %d days"
+              % (pool_key(p, registry), p["miners"], p["spread_days"], p["blocks"], a.min_miners, a.min_days))
+
+    found = []
+    for p in qualified:
+        key = pool_key(p, registry)
+        found.append({
+            "id": "p2-%s" % key,
+            "program": "P2",
+            "who": "pool %s" % key,
+            "address": None,           # a miner's address is not the operator's
+            "pcn": REWARD_PCN,
+            "qualified_at": int(time.time()),
+            "state": "qualified",
+            "evidence": ("%d distinct payout addresses across %d blocks on %d separate days, "
+                         "heights %d-%d. Likely operator address(es), present in every block: %s. "
+                         "ASK the operator where to pay -- every address here belongs to a miner."
+                         % (p["miners"], p["blocks"], p["spread_days"], p["first"], p["last"],
+                            ", ".join(p["always"]) or "none")),
+            "evidence_url": "https://explorer.pc.am/block/%d" % p["last"],
+        })
+
+    if not found:
+        print("  no pool qualifies yet.")
+    existing = load_claims(a.claims)
+    added, refreshed = merge(existing, found)
+    for c in found:
+        print("  QUALIFIED %s: %s" % (c["id"], c["evidence"][:100]))
+    if a.dry_run:
+        print("  --dry-run: %d new, %d refreshed, nothing written" % (len(added), len(refreshed)))
+        return 0
+    if added or refreshed:
+        save_claims(a.claims, existing)
+        print("  wrote %s: %d new, %d refreshed" % (a.claims, len(added), len(refreshed)))
+    else:
+        print("  nothing to write")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
