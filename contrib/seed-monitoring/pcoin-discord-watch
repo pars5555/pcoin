@@ -117,6 +117,20 @@ class TransientError(RuntimeError):
 QUIET_SECONDS = int(os.environ.get("DISCORD_WATCH_QUIET_SECONDS", "900"))
 
 
+def dc_get_soft(token, path):
+    """dc_get, but a channel we cannot read is skipped rather than fatal.
+
+    Returns None on failure, which callers must treat as "unknown, try again
+    next run" -- never as "no messages". The cursor is not advanced on a None,
+    so nothing is lost, it is only delayed by 25 seconds.
+    """
+    try:
+        return dc_get(token, path)
+    except Exception as e:                                   # noqa: BLE001
+        print("  %s unreadable (%s)" % (path.split("?")[0], type(e).__name__), file=sys.stderr)
+        return None
+
+
 def dc_get(token, path, tries=3):
     req = urllib.request.Request(API + path, headers={
         "Authorization": "Bot " + token,
@@ -387,17 +401,85 @@ def remove_and_report(token, tg_token, alert_chat, guild, channel, m, reason, do
     return True
 
 
+# Channels that exist to be READ, not written to: bot feeds, stats tickers and
+# the write-protected reference channels. Everything else in the guild is a place
+# somebody might ask something, so everything else is watched.
+SKIP_NAMES = re.compile(
+    r"block-feed|live-stats|^\u23cf|^\U0001f4c8|^\u26cf|announcements|^rules$|^welcome$",
+    re.I)
+
+
+def discover_channels(token, guild, always):
+    """Every channel a person could ask a question in, found rather than listed.
+
+    ALWAYS INCLUDES THE CONFIGURED IDS. Discovery that silently replaced them
+    would make a Discord permission change look like a working watcher.
+
+    Forum posts are threads with their own ids, so a forum channel on its own
+    reads as empty -- which is exactly how the question that prompted this went
+    unseen for five hours. Active threads are listed guild-wide in one call;
+    archived ones are fetched per forum, newest first.
+    """
+    found = list(always)
+    seen = set(always)
+
+    def add(cid):
+        cid = str(cid)
+        if cid not in seen:
+            seen.add(cid)
+            found.append(cid)
+
+    try:
+        chans = dc_get(token, "/guilds/%s/channels" % guild)
+    except Exception as e:                                   # noqa: BLE001
+        # Discovery failing is not "there are no channels": keep what we were
+        # told and carry on, rather than quietly watching nothing.
+        print("  channel discovery failed (%s); using the configured ids only" % type(e).__name__,
+              file=sys.stderr)
+        return found
+
+    forums = []
+    for c in chans:
+        name = str(c.get("name") or "")
+        if c.get("type") == 15:
+            forums.append(c)
+            continue
+        if c.get("type") not in (0, 5):
+            continue
+        if SKIP_NAMES.search(name):
+            continue
+        add(c["id"])
+
+    try:
+        for t in (dc_get(token, "/guilds/%s/threads/active" % guild) or {}).get("threads", []):
+            add(t["id"])
+    except Exception as e:                                   # noqa: BLE001
+        print("  active threads unreadable (%s)" % type(e).__name__, file=sys.stderr)
+
+    for f in forums:
+        try:
+            arch = dc_get(token, "/channels/%s/threads/archived/public?limit=20" % f["id"])
+            for t in (arch or {}).get("threads", []):
+                add(t["id"])
+        except Exception as e:                               # noqa: BLE001
+            print("  archived threads in %s unreadable (%s)" % (f.get("name"), type(e).__name__), file=sys.stderr)
+
+    return found
+
+
 def main():
     dc = read_conf(DISCORD_CONF)
     token = dc.get("DISCORD_BOT_TOKEN", "")
     guild = dc.get("DISCORD_GUILD_ID", "")
-    channels = [c for c in (dc.get("DISCORD_CHAT_CHANNEL_ID", ""),
-                            dc.get("DISCORD_TEST_CHANNEL_ID", "")) if c.isdigit()]
+    configured = [c for c in (dc.get("DISCORD_CHAT_CHANNEL_ID", ""),
+                              dc.get("DISCORD_TEST_CHANNEL_ID", "")) if c.isdigit()]
     st = load_state()
+    channels = discover_channels(token, guild, configured) if (token and guild) else configured
 
     if "--status" in sys.argv:
         print("  token       : %s" % ("set" if token else "MISSING"))
-        print("  channels    : %s" % (", ".join(channels) or "NONE"))
+        print("  configured  : %s" % (", ".join(configured) or "NONE"))
+        print("  watching    : %d channel(s) and thread(s), discovered from the guild" % len(channels))
         for c in channels:
             print("  cursor %s : %s" % (c, st["cursors"].get(c, "not started")))
         print("  seen        : %d" % st["seen"])
@@ -418,11 +500,15 @@ def main():
         cursor = st["cursors"].get(ch)
         if not cursor:
             # First run for this channel: start from NOW, answer nothing old.
-            latest = dc_get(token, "/channels/%s/messages?limit=1" % ch)
+            latest = dc_get_soft(token, "/channels/%s/messages?limit=1" % ch)
+            if latest is None:
+                continue                      # cannot read it yet; do not seed a cursor
             st["cursors"][ch] = latest[0]["id"] if latest else "0"
             print("  %s: started at %s, history ignored" % (ch, st["cursors"][ch]))
             continue
-        msgs = dc_get(token, "/channels/%s/messages?after=%s&limit=50" % (ch, cursor))
+        msgs = dc_get_soft(token, "/channels/%s/messages?after=%s&limit=50" % (ch, cursor))
+        if msgs is None:
+            continue                          # unreadable this run; cursor stays put
         msgs.sort(key=lambda m: int(m["id"]))
         delivered = cursor
         for m in msgs:
