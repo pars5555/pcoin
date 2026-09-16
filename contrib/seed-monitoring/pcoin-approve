@@ -743,7 +743,49 @@ def cmd_tick(a):
     Order matters: expire first, then ask, then publish. Expiring first means an
     item that aged out while the daemon was down can never be published by the
     tick that notices it.
+
+    ONE TICK AT A TIME, ENFORCED BY A FILE LOCK.
+
+    There was none, and the queue is read, acted on, and written back with no
+    protection in between, so two overlapping ticks both see an item as unasked
+    and both act on it. The owner got TWO approval prompts for the same
+    announcement, twice in one evening, on 2026-09-16: the timer runs every 15
+    seconds and a tick was also being run by hand to hurry an item along.
+
+    systemd's Type=oneshot stops two TIMER runs overlapping, which is why this
+    never showed up in normal operation -- and is also why it was so easy to hit,
+    because running the command by hand is the one thing a person does while
+    debugging and it is the one case systemd does not cover.
+
+    Duplicate prompts are the mild symptom. The same race on a CONFIRMED item is
+    two publishes of the same post to a public channel, which cannot be taken
+    back. So the lock is not politeness, and a tick that cannot get it exits
+    quietly rather than proceeding: the next one is fifteen seconds away.
     """
+    # Imported here, not at the top: fcntl is Unix-only and this file is edited
+    # and self-tested on Windows, where tick never runs. A top-level import made
+    # the whole script unloadable there, which is a worse bug than the one this
+    # lock fixes.
+    import fcntl
+
+    lock_path = QUEUE + ".lock"
+    try:
+        lf = open(lock_path, "a+")
+    except OSError as e:
+        sys.exit("cannot open the tick lock %s: %s" % (lock_path, e))
+    try:
+        fcntl.flock(lf.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("another tick holds the lock; leaving this one to it")
+        return 0
+    try:
+        return _tick_locked(a)
+    finally:
+        fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+        lf.close()
+
+
+def _tick_locked(a):
     c = conf()
     token = c.get("TELEGRAM_TOKEN")
     if not token:
