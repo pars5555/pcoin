@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for newly confirmed payouts every two minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+AccuracySec=30s
+Unit=pcoin-payout-announce.service
+
+[Install]
+WantedBy=timers.target

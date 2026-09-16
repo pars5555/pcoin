@@ -84,6 +84,13 @@ def waited(seconds):
 
 NETWORK = {"BEP20": "USDT on BNB Smart Chain", "TRC20": "USDT on TRON", "PCN": "PCN"}
 
+# Where anybody can check the payment for themselves.
+EXPLORER = {
+    "BEP20": "https://bscscan.com/tx/%s",
+    "TRC20": "https://tronscan.org/#/transaction/%s",
+    "PCN": "https://explorer.pc.am/tx/%s",
+}
+
 
 def post_text(p, total):
     """The post. Plain facts, no adjectives doing work the numbers should do."""
@@ -104,7 +111,10 @@ def post_text(p, total):
         "Every payout is checked against the chain before it counts as paid.",
     ]
     if WITH_TXID and p.get("txid"):
-        lines += ["", p["txid"]]
+        # A bare hash is proof only to somebody who already knows what to do with
+        # it. A link is proof anybody can click, which is the entire point of
+        # publishing it at all. Telegram makes a bare URL clickable by itself.
+        lines += ["", "Check it on the chain:", EXPLORER.get(p["network"], "%s") % p["txid"]]
     tally = []
     if total.get("count"):
         tally.append("%d payout%s so far" % (total["count"], "" if total["count"] == 1 else "s"))

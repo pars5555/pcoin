@@ -1,0 +1,12 @@
+[Unit]
+Description=PCoin — queue a payout announcement for the owner's approval
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pcoin-payout-announce
+# Set PAYOUT_ANNOUNCE_TXID=1 here to include the transaction id in the post.
+# It is proof anybody can check, and it also publishes the recipient's address
+# next to "a PCoin user" -- which is why it is off unless chosen.
+Environment=PAYOUT_ANNOUNCE_TXID=1
+Nice=10
