@@ -891,6 +891,20 @@ def _tick_locked(a):
                 "disable_web_page_preview": "true",
             })
             i["dm_message_id"] = (r.get("result") or {}).get("message_id")
+            # KEEP EVERY PROMPT EVER SENT FOR THIS ITEM, not just the last.
+            #
+            # This field used to be overwritten, so a second prompt orphaned the
+            # first: the item got decided, the newest prompt was edited to say
+            # so, and the older one kept buttons that still looked live. The
+            # owner pressed them -- confirming a draft already withdrawn, and
+            # cancelling an announcement already published -- and reasonably
+            # believed he had decided something. Both presses were correctly
+            # no-ops, so nothing broke except his trust in the buttons, which is
+            # the only thing this tool is actually made of.
+            if i["dm_message_id"]:
+                ids = i.setdefault("dm_message_ids", [])
+                if i["dm_message_id"] not in ids:
+                    ids.append(i["dm_message_id"])
             # WHEN HE WAS ASKED, not when it was queued. The auto-deliver window
             # must start from the moment the question reached him: if the gate
             # was down for an hour, the message he has only just seen must still
@@ -1106,11 +1120,16 @@ def cmd_controls(a):
             if it["id"] == item_id:
                 d_item = it
                 break
-        if token and d_item and d_item.get("dm_message_id"):
+        # EVERY prompt for this item, not only the newest: an older one left
+        # with working buttons is a decision waiting to be taken twice.
+        prompt_ids = list((d_item or {}).get("dm_message_ids") or [])
+        if d_item and d_item.get("dm_message_id") and d_item["dm_message_id"] not in prompt_ids:
+            prompt_ids.append(d_item["dm_message_id"])
+        for pid in (prompt_ids if (token and d_item) else []):
             try:
                 api(token, "editMessageText", {
                     "chat_id": str(OWNER),
-                    "message_id": str(d_item["dm_message_id"]),
+                    "message_id": str(pid),
                     "text": ("ALREADY %sED FROM THE ADMIN PANEL\n%s\nitem %s"
                              % (decision.upper(),
                                 "Publishing now." if decision == "confirm"
@@ -1118,7 +1137,7 @@ def cmd_controls(a):
                                 item_id)),
                 })
             except Exception as e:
-                print("  could not edit the approval DM (%s)" % type(e).__name__)
+                print("  could not edit approval DM %s (%s)" % (pid, type(e).__name__))
         if token:
             try:
                 api(token, "sendMessage", {
