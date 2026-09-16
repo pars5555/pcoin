@@ -73,7 +73,7 @@ wallet backup staged for commit.
 |---|---|---|
 | `--selftest` | derivation vectors, encryption round-trip, tamper detection | no |
 | `new --system <name>` | generate, verify the paper copy, encrypt, write both files | creates one |
-| `pool --system <name> --count N [--start 0]` | derive receive addresses to paste into an admin import box | **no** — xpub only |
+| `pool --system <name> --count N [--start 0] [--branch receive\|change]` | derive receive (default) or change addresses to paste into an admin import box. exchange.pc.am imports both: it watches its wallet's change addresses so withdrawals reconcile | **no** — xpub only |
 | `verify --file <blob>` | decrypt and prove it reproduces the recorded xpub. Exit 0/1, so it works in a cron check | passphrase |
 | `restore --file <blob>` | print the twelve words. Only when about to sign | passphrase |
 

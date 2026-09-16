@@ -25,7 +25,8 @@ itself: `KomodoPlatform/komodo-defi-framework` 301-redirects to
 | `explorers/PCN` | ✅ two independent explorers |
 | `icons_original/pcn.png` | ✅ 256×256 |
 | **One completed atomic swap** | ✅ 100 PCN ⇄ DOGE, `swaps/PCN-DOGE.md` |
-| **PR filed** | ✅ [GLEECBTC/coins#1964](https://github.com/GLEECBTC/coins/pull/1964) — open, mergeable, awaiting review |
+| **PR merged** | ✅ [GLEECBTC/coins#1964](https://github.com/GLEECBTC/coins/pull/1964) — **merged 2026-08-31** by `cipig` after his own live swap, icon replaced the same day. Verified 2026-09-15: `PCN` and `PCN-segwit` are in `utils/coins_config.json` on master with `wallet_only: false`, i.e. tradeable on the DEX |
+| **Actually trading?** | **Not yet** (checked 2026-09-15). Komodo Wallet is now **Gleec Wallet** (`KomodoPlatform/komodo-wallet` redirects to `GLEECBTC/gleec-wallet`). Its SDK bundles coins snapshot `a4fa5547` from 2026-08-23, 27 commits before PCN, but `runtime_updates_enabled: true` pulls `master`, so PCN should appear after the app refreshes — not verified inside the app. The `defistats.gleec.com` ticker summary lists 257 pairs and no PCN: no swap volume recorded. Listed is not liquid |
 
 ---
 

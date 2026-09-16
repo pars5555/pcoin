@@ -1153,12 +1153,32 @@ async function wrapPage() {
                                                              : 'Wrong user or password.'));
     }
 
-    if (!authed) return send(200, 'text/html', loginPage(null));
+    // A READ-ONLY bearer, for the unified admin panel. It grants EXACTLY this one
+    // JSON route -- not the HTML pages, not /logout, nothing that writes. Kept as
+    // its own flag rather than folded into `authed` so it cannot widen by
+    // accident when a route is added later.
+    const bearerM = (req.headers.authorization || '').match(/^Bearer\s+(.+)$/i);
+    const readOnly = !!(cfg.readToken && bearerM
+      && bearerM[1].length === cfg.readToken.length
+      && timingSafeEqual(Buffer.from(bearerM[1]), Buffer.from(cfg.readToken)));
 
-    if (path === '/api') {
-      const [c, ce, fl] = await Promise.all([chain(), census(200), fleetBalances().catch(() => [])]);
-      return send(200, 'application/json', JSON.stringify({ chain: c, census: ce, fleet: fl, state: readState() }, null, 2));
+    if (path === '/api' && (authed || readOnly)) {
+      // fleetBalances().catch(() => []) reported an UNREADABLE fleet as an EMPTY
+      // one, so "no balances" and "could not read the balances" rendered the
+      // same. On a money page that is the worst possible tie. null means unknown.
+      const [c, ce, fl] = await Promise.all([
+        chain(), census(200),
+        fleetBalances().then(v => ({ ok: true, v })).catch(e => ({ ok: false, e: e.message })),
+      ]);
+      return send(200, 'application/json', JSON.stringify({
+        chain: c, census: ce,
+        fleet: fl.ok ? fl.v : null,
+        fleetError: fl.ok ? null : fl.e,
+        state: readState(),
+      }, null, 2));
     }
+
+    if (!authed) return send(200, 'text/html', loginPage(null));
 
     if (path === '/')         return send(200, 'text/html', await dashboardPage());
     if (path === '/census')   return send(200, 'text/html', await censusPage(url));

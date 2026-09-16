@@ -36,6 +36,8 @@ import { exchangesPage } from './exchanges.mjs';
 import { approvalsPage } from './approvals.mjs';
 import { wrapdeskPage, wrapdeskState, CLOSED_FILE } from './wrapdesk.mjs';
 import { minersPage, minersData } from './miners.mjs';
+import { pricingPage, pricingData } from './pricing.mjs';
+import { exchangeSection } from './exchange.mjs';
 import { reportsPage, loadReports, saveReports } from './reports.mjs';
 import { cachedVerdicts, verdictCell, vtKey } from './virustotal.mjs';
 
@@ -168,6 +170,8 @@ const NAV = [
   ['Mining',   [['miners', '⛏️ My miners']]],
   ['Services', [['services', '\u{1F5A7} All services'],
                 ['services/market',    '\u2022 market.pc.am', 'sub'],
+                ['pricing', '💲 How the PCN price works'],
+                ['exchange', '\u{1F3E6} exchange.pc.am'],
                 ['services/wpcnpay',   '\u2022 wpcnpay.pc.am', 'sub'],
                 ['services/pcnearner', '\u2022 pcnearner.pc.am', 'sub'],
                 ['services/explorer',  '\u2022 explorer.pc.am', 'sub'],
@@ -694,8 +698,27 @@ const server = createServer(async (req, res) => {
     return send(res, 200, shell2('telegram', 'Telegram', telegramPage()));
   }
 
+  if (sub === '/pricing') {
+    return send(res, 200, shell2('pricing', 'How the PCN price works',
+                                 pricingPage(await pricingData())));
+  }
   if (sub === '/miners') {
     return send(res, 200, shell2('miners', 'Miners', minersPage(await minersData())));
+  }
+
+  // exchange.pc.am. This panel holds only the exchange's READ token (upstream.json);
+  // every write carries the owner's exchange-admin 2FA code, which the exchange
+  // itself checks. See exchange.mjs.
+  if (sub === '/exchange' && req.method === 'POST') {
+    const form = await readBody(req);
+    const cred = loadCredential();
+    const section = exchangeSection({ base: BASE, creds: upstreamCreds(), actor: String((cred && cred.username) || 'owner') });
+    const r = await section.action(form, url);
+    return send(res, 200, shell2('exchange', 'exchange.pc.am', await section.page(r.url, r.flash)));
+  }
+  if (sub === '/exchange') {
+    const section = exchangeSection({ base: BASE, creds: upstreamCreds(), actor: 'owner' });
+    return send(res, 200, shell2('exchange', 'exchange.pc.am', await section.page(url)));
   }
 
   if (sub === '/wrapdesk' && req.method === 'POST') {

@@ -125,9 +125,11 @@ function evmAddressFromXpub(xpub, index) {
   return out;
 }
 
-/** Receive address #index from an ACCOUNT xpub. Non-hardened: no key material. */
-function addressFromXpub(xpub, index) {
-  const child = HDKey.fromExtendedKey(xpub).deriveChild(0).deriveChild(index);
+/** Address #index on a branch (0 = receive, 1 = change) from an ACCOUNT xpub.
+ *  Non-hardened: no key material. */
+function addressFromXpub(xpub, index, branch = 0) {
+  if (branch !== 0 && branch !== 1) throw new Error('branch must be 0 (receive) or 1 (change)');
+  const child = HDKey.fromExtendedKey(xpub).deriveChild(branch).deriveChild(index);
   const h160 = createHash('ripemd160')
     .update(createHash('sha256').update(child.publicKey).digest())
     .digest();
@@ -304,7 +306,7 @@ async function cmdNew(system, chain = 'pcn') {
  * can spend. This is the one step of the whole procedure that is safe to run on
  * any machine, including a server.
  */
-async function cmdPool(system, count, start) {
+async function cmdPool(system, count, start, branchName) {
   if (!system) die('--system <name> is required, e.g. --system checker');
   const xpubFile = system + '-xpub.txt';
   if (!existsSync(xpubFile)) die(xpubFile + ' not found. Run `new --system ' + system + '` first.');
@@ -313,6 +315,11 @@ async function cmdPool(system, count, start) {
   const from = Number(start ?? 0);
   if (!Number.isInteger(n) || n < 1 || n > 100000) die('--count must be 1..100000');
   if (!Number.isInteger(from) || from < 0) die('--start must be 0 or more');
+  // The CHANGE branch exists for systems that watch their own wallet's balance
+  // (exchange.pc.am): the owner's wallet sends change to m/84'/9444'/0'/1/i, and
+  // if those addresses are not watched every withdrawal looks like lost coins.
+  const branch = branchName === undefined || branchName === 'receive' ? 0 : branchName === 'change' ? 1 : -1;
+  if (branch < 0) die('--branch must be receive or change');
 
   const xpub = readFileSync(xpubFile, 'utf8').trim();
   // An xprv here would still derive correct addresses, so nothing downstream
@@ -322,13 +329,13 @@ async function cmdPool(system, count, start) {
   if (HDKey.fromExtendedKey(xpub).privateKey) die(xpubFile + ' contains a PRIVATE key. Refusing.');
 
   const out = [];
-  for (let i = from; i < from + n; i++) out.push(addressFromXpub(xpub, i));
+  for (let i = from; i < from + n; i++) out.push(addressFromXpub(xpub, i, branch));
 
-  const outFile = system + '-pool-' + from + '-' + (from + n - 1) + '.txt';
+  const outFile = system + '-pool-' + (branch ? 'change-' : '') + from + '-' + (from + n - 1) + '.txt';
   writeFileSync(outFile, out.join('\n') + '\n');
 
   console.log('\n  Wrote ' + outFile);
-  console.log('  ' + n + ' addresses, derivation index ' + from + '..' + (from + n - 1) + '\n');
+  console.log('  ' + n + (branch ? ' CHANGE' : ' receive') + " addresses, path m/84'/9444'/0'/" + branch + '/' + from + '..' + (from + n - 1) + '\n');
   console.log('  first : ' + out[0] + '   (index ' + from + ')');
   console.log('  last  : ' + out[out.length - 1] + '   (index ' + (from + n - 1) + ')');
   console.log('  sha256: ' + createHash('sha256').update(readFileSync(outFile)).digest('hex'));
@@ -463,6 +470,16 @@ function selftest() {
   ];
   RECEIVE.forEach((want, i) =>
     t('published receive address #' + i, addressFromXpub(acct.publicExtendedKey, i), want));
+  // The change branch, pinned to the same published table (PCOIN.md 6.4). The
+  // exchange watches these, and a wrong branch index would still produce valid
+  // pc1q addresses -- just ones the owner's wallet never sends change to.
+  const CHANGE = [
+    'pc1qel0k9nyfvgqsgkc4fv9jp9ff37gw48gnsqt2rs',
+    'pc1qszm5tcmmewdgjny34klqv3dupm6jd5939k6e20',
+    'pc1qxyzkhz58fs86rxjmm96hz58zt3j0qnx8s76tyg',
+  ];
+  CHANGE.forEach((want, i) =>
+    t('published change address #' + i, addressFromXpub(acct.publicExtendedKey, i, 1), want));
 
   // Negative control: coin type 0' on the burn phrase is a well-known BITCOIN
   // address wearing a pc prefix. PCoin kept Bitcoin's version bytes, so nothing
@@ -519,7 +536,7 @@ const cmd = argv[0];
 
 if (argv.includes('--selftest')) selftest();
 else if (cmd === 'new') await cmdNew(flag('--system'), flag('--chain') || 'pcn');
-else if (cmd === 'pool') await cmdPool(flag('--system'), flag('--count'), flag('--start'));
+else if (cmd === 'pool') await cmdPool(flag('--system'), flag('--count'), flag('--start'), flag('--branch'));
 else if (cmd === 'verify') await cmdVerify(flag('--file'));
 else if (cmd === 'identify') await cmdIdentify(flag('--file'));
 else if (cmd === 'restore') await cmdRestore(flag('--file'));
@@ -527,7 +544,7 @@ else {
   console.log('\n  pcoin-seed-vault - create and back up a system\'s PCN wallet\n');
   console.log('    node pcoin-seed-vault.mjs --selftest');
   console.log('    node pcoin-seed-vault.mjs new     --system <name>');
-  console.log('    node pcoin-seed-vault.mjs pool    --system <name> --count 1000 [--start 0]');
+  console.log('    node pcoin-seed-vault.mjs pool    --system <name> --count 1000 [--start 0] [--branch receive|change]');
   console.log('    node pcoin-seed-vault.mjs verify  --file <name>-seed.enc.json');
   console.log('    node pcoin-seed-vault.mjs identify [--file <name>-seed.enc.json]');
   console.log('    node pcoin-seed-vault.mjs restore  --file <name>-seed.enc.json\n');
