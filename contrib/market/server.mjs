@@ -1002,6 +1002,22 @@ createServer(async (req, res) => {
                        `nothing was sent.`);
         }
 
+        // SAY THANK YOU NOW, NOT WHEN THE COINS GO OUT.
+        //
+        // Owner's instruction 2026-09-14: "once payment received on nowpayment
+        // it should post on channel." The post used to fire from
+        // delivery.recordSent(), which for an automatic delivery is seconds
+        // later and for a MANUAL one can be hours -- order Mmu1bc3zrfd6902 was
+        // paid at 14:22 UTC and had still announced nothing by evening, and the
+        // pinned listing banner had not moved either.
+        //
+        // announcePurchase() re-reads the order and posts nothing unless the
+        // status is a real paid purchase, so the needs_review paths above
+        // (unbacked reservation, underpayment) stay silent. recordSent() still
+        // calls it too; pcoin-approve's `--key purchase-<id>` makes whichever
+        // arrives second a no-op.
+        D.announcePurchase(d.order_id).catch(e => console.error('[ipn] announce:', e.message));
+
         // Hand it to delivery: small orders send themselves, larger ones queue
         // and message the operator. deliver() never throws — a delivery problem
         // must not turn into a non-200 that makes NOWPayments retry a payment
@@ -1389,6 +1405,31 @@ createServer(async (req, res) => {
       const tok = `${payload}.${createHmac('sha256', cfg.ssoSecret).update(payload).digest('hex')}`;
       const sep = back.includes('?') ? '&' : '?';
       res.writeHead(302, { Location: back + sep + 'sso=' + encodeURIComponent(tok) });
+      return res.end();
+    }
+
+    // ---- SSO: hand exchange.pc.am a signed statement of who is signed in ----
+    // Owner, 2026-09-15: market and exchange share one login. Same shape as
+    // /sso/wrapdesk above, with three differences that matter for money:
+    // 1. Its OWN secret, cfg.ssoExchangeSecret -- not sessionSecret and not the wrap
+    //    desk's ssoSecret, so a wrap-desk compromise cannot mint exchange sign-ins.
+    // 2. The audience 'exchange' is inside the signed payload and the exchange
+    //    refuses any other, so a wrap-desk token can never be replayed there.
+    // 3. The return URL must match EXACTLY, never by prefix.
+    // The exchange also makes each token single-use and asks its own 2FA.
+    if (p === '/sso/exchange') {
+      if (!cfg.ssoExchangeSecret) return json(res, 503, { error: 'exchange sign-on is not configured' });
+      const back = String(u.searchParams.get('return') || '');
+      if (back !== 'https://exchange.pc.am/sso') {
+        return json(res, 400, { error: 'return url is not an allowed destination' });
+      }
+      if (!email) {
+        res.writeHead(302, { Location: '/?next=' + encodeURIComponent('/sso/exchange?return=' + encodeURIComponent(back)) });
+        return res.end();
+      }
+      const payload = `${email}|exchange|${Date.now() + 120_000}`;
+      const tok = `${payload}.${createHmac('sha256', cfg.ssoExchangeSecret).update(payload).digest('hex')}`;
+      res.writeHead(302, { Location: back + '?sso=' + encodeURIComponent(tok) });
       return res.end();
     }
 
