@@ -41,6 +41,11 @@ MUTED = (150, 158, 178)
 TEAL = (45, 212, 191)
 PURPLE = (139, 92, 246)
 CARD = (22, 25, 33)
+# The site's own gold button, `.btn-gold` in site/index.html: background #f5c542
+# on #241a00 text. Copied rather than approximated, so a card advertising the
+# gold button on pc.am is the same gold the visitor then sees.
+GOLD = (245, 197, 66)
+GOLD_INK = (36, 26, 0)
 
 FONT_DIRS = ["C:/Windows/Fonts", "/usr/share/fonts/truetype/dejavu",
              "/usr/share/fonts/truetype/liberation", "/Library/Fonts"]
@@ -122,6 +127,9 @@ def main():
     ap.add_argument("--stat", action="append", default=[],
                     help='"value|label", up to three')
     ap.add_argument("--cta", required=True)
+    ap.add_argument("--cta-accent", choices=["teal", "gold"], default="teal",
+                    help="gold matches the .btn-gold button on pc.am; use it when "
+                         "the card points at a gold button the reader will look for")
     ap.add_argument("--motif", default="", choices=["", "browser"],
                     help="optional illustration on the right half")
     ap.add_argument("--mark", default="site/brand/pcoin-round-256.png")
@@ -281,8 +289,9 @@ def main():
     cy = max(y + 34, H - 138)
     if cy + 60 > H - 74:                      # keep clear of the footnote
         cy = H - 74 - 60 - 10
-    d.rounded_rectangle([m, cy, m + cw, cy + 60], radius=30, fill=TEAL)
-    d.text((m + 28, cy + 14), a.cta, font=f_c, fill=(8, 20, 20))
+    pill, ink = (GOLD, GOLD_INK) if a.cta_accent == "gold" else (TEAL, (8, 20, 20))
+    d.rounded_rectangle([m, cy, m + cw, cy + 60], radius=30, fill=pill)
+    d.text((m + 28, cy + 14), a.cta, font=f_c, fill=ink)
 
     f_f = font(REG, 19)
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%d %b %Y %H:%M UTC")
