@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""The approval gate: nothing reaches a public Telegram surface without the owner pressing Confirm.
+"""The approval gate: every public post is shown to the owner first, and publishes itself after 15 minutes if he decides nothing.
+
+That second clause is the whole guarantee and this line used to omit it -- it
+read "nothing reaches a public Telegram surface without the owner pressing
+Confirm", which stopped being true on 2026-09-13 when auto-deliver was added
+at his request (01fc08e). The gate fails OPEN now, not closed. An item that
+goes out that way is recorded "auto after N min, NOT reviewed" and is never
+merged with a real approval, so "who approved this?" still has an answer.
+Set APPROVE_AUTO_SECONDS=0 to go back to failing closed.
 
 WHY THIS EXISTS, in the owner's words (2026-09-13):
 
