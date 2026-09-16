@@ -72,6 +72,14 @@ import time
 import urllib.request
 import urllib.parse
 
+# Hashrate history, for the spike check below. Kept HERE rather than derived
+# from the chain each run because difficulty only tells you what the network was
+# doing over the retarget window -- it cannot tell you the shape of the arrival.
+HASH_STATE = os.environ.get("HEARTBEAT_HASH_STATE", "/var/lib/pcoin-chain-heartbeat-hash.json")
+HASH_KEEP = 168                    # samples; hourly, so a week
+SPIKE_WARN = 2.0                   # x the median of the recent window
+SPIKE_ALARM = 3.0
+
 CLI_CANDIDATES = [
     ["/opt/pcoin/bin/bitcoin-cli", "-conf=/etc/pcoin/pcoin.conf"],
     ["docker", "exec", "pcoin-seed", "bitcoin-cli"],
@@ -134,6 +142,76 @@ def short(addr, head=10, tail=6):
     if not addr or len(addr) <= head + tail + 1:
         return addr or "?"
     return f"{addr[:head]}…{addr[-tail:]}"
+
+
+def hashrate_trend(hps, now=None, path=None):
+    """Is this hashrate normal for this chain, or did somebody just arrive?
+
+    WHY THIS EXISTS. The heartbeat has always printed the network hashrate and
+    never said whether the number was unusual, so a stranger turning up with
+    three times the whole network's hashrate looked exactly like an ordinary
+    line of an ordinary report. On a chain this size that is the single most
+    dangerous thing that can happen -- the entire network is a few dozen
+    ordinary machines, so out-hashing it is cheap, and a reorg is only visible
+    once the damage is done.
+
+    Compared against the MEDIAN of the stored samples, not the mean: one huge
+    reading would drag a mean up and hide the next spike behind its own
+    predecessor.
+
+    Returns (line, severity) and NEVER throws -- a heartbeat that dies because
+    its state file is unreadable tells you nothing about the chain, which is the
+    thing it exists to report on.
+    """
+    now = now or time.time()
+    path = path or HASH_STATE
+    try:
+        with open(path, encoding="utf-8") as f:
+            hist = [x for x in json.load(f) if isinstance(x, list) and len(x) == 2]
+    except (OSError, ValueError, TypeError):
+        hist = []                      # unreadable is empty history, not a crash
+
+    if hps is None:
+        return "hashrate trend: not checked (the node did not answer)", None
+
+    prior = [h for _, h in hist if h and h > 0]
+    line, sev = None, None
+    if len(prior) < 6:
+        line = "hashrate trend: learning (%d/6 samples so far)" % len(prior)
+    else:
+        prior.sort()
+        mid = prior[len(prior) // 2] if len(prior) % 2 else (prior[len(prior) // 2 - 1] + prior[len(prior) // 2]) / 2.0
+        ratio = hps / mid if mid > 0 else 0.0
+        word = ("%.2fx" % ratio)
+        if ratio >= SPIKE_ALARM:
+            line = ("*HASHRATE SPIKE* %s the %d-sample median (%s -> %s). "
+                    "Somebody large arrived. This does NOT create extra PCN -- difficulty "
+                    "retargets every block -- but a chain this size can be out-hashed cheaply, "
+                    "so check who is winning blocks below." % (word, len(prior), fmt_hashrate(mid), fmt_hashrate(hps)))
+            sev = "alarm"
+        elif ratio >= SPIKE_WARN:
+            line = ("hashrate trend: *%s the %d-sample median* (%s -> %s) -- watch it"
+                    % (word, len(prior), fmt_hashrate(mid), fmt_hashrate(hps)))
+            sev = "warn"
+        elif ratio <= 0.34:
+            line = ("hashrate trend: %s the %d-sample median (%s -> %s) -- miners have LEFT"
+                    % (word, len(prior), fmt_hashrate(mid), fmt_hashrate(hps)))
+            sev = "warn"
+        else:
+            line = "hashrate trend: %s the %d-sample median (normal)" % (word, len(prior))
+
+    # Append AFTER comparing, so a run is never measured against itself.
+    hist.append([int(now), hps])
+    hist = hist[-HASH_KEEP:]
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(hist, f)
+        os.replace(tmp, path)
+    except OSError:
+        pass                           # losing a sample is not worth failing a heartbeat
+    return line, sev
 
 
 def fmt_hashrate(hps):
@@ -229,6 +307,8 @@ def build_report(cli, window, hours):
     diff = info.get("difficulty")
     hr = fmt_hashrate(hashps) if hashps is not None else "unknown"
     lines.append(f"difficulty {diff:.4g} · network hashrate ~{hr} (getnetworkhashps)")
+    trend_line, trend_sev = hashrate_trend(hashps)
+    lines.append(trend_line)
     lines.append("LWMA active since height 2,800")
 
     # -- recent snapshot: who is winning blocks right now --
