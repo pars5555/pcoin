@@ -376,6 +376,25 @@ ADMIN_TTL = 3600
 OUR_TG = {"pcoinpcn", "pcoinpcnchat", "pcoinpcnbot", "pcoinaibot", "mywebsitebuilderbot"}
 
 
+# Words that make a link a MINING link rather than an advert.
+POOL_WORDS = re.compile(r"(?i)\b(pool|stratum|mining|miner|hashrate|hash rate|randompcn|worker|rig|solo)\b")
+# Words that make a "PCoin" link dangerous no matter how it is dressed up. A
+# drainer site calls itself pcoin-something; a pool does not need any of these.
+SCAM_WORDS = re.compile(r"(?i)\b(airdrop|claim|giveaway|free (coins?|tokens?|pcn)|bonus|double|presale|"
+                        r"whitelist|seed phrase|recovery phrase|private key|connect (your )?wallet|"
+                        r"validate|sync wallet|restore wallet|x2|2x)\b")
+# A stratum endpoint: host:port, or a host that names the coin.
+POOLISH = re.compile(r"(?i)(:\d{2,5}\b)|(\bpcoin\b)|(\bpcn\b)|(\bpool\b)")
+
+
+def is_pool_link(text, url):
+    """True when this looks like somebody sharing a PCoin pool or mining setup,
+    and nothing about it looks like a scam. Used to REPORT instead of delete."""
+    if SCAM_WORDS.search(text or "") or SCAM_WORDS.search(url or ""):
+        return False
+    return bool(POOL_WORDS.search(text or "")) and bool(POOLISH.search(url or ""))
+
+
 def link_allowed(url):
     u = url.strip().lower()
     for pre in ("https://", "http://"):
@@ -405,12 +424,16 @@ def link_allowed(url):
 
 
 def moderation_reason(msg):
-    """Why this message must be removed, or None. Deterministic only."""
+    """(reason, delete) for a message that breaks the rules, or (None, False).
+
+    delete=False means REPORT ONLY: the owner is told and the message stays. That
+    is what a PCoin pool or mining link gets (owner, 2026-09-16)."""
     fo = msg.get("forward_origin") or {}
     fchat = fo.get("chat") or msg.get("forward_from_chat") or {}
     if (fo.get("type") == "channel" or fchat.get("type") == "channel") and \
             (fchat.get("username") or "").lower() not in OUR_TG:
-        return "forwarded from another channel (%s)" % (fchat.get("title") or fchat.get("username") or "unknown")
+        return ("forwarded from another channel (%s)"
+                % (fchat.get("title") or fchat.get("username") or "unknown"), True)
     for text_key, ent_key in (("text", "entities"), ("caption", "caption_entities")):
         text = msg.get(text_key) or ""
         for e in msg.get(ent_key) or []:
@@ -423,8 +446,11 @@ def moderation_reason(msg):
             else:
                 continue
             if url and not link_allowed(url):
-                return "outside link: %s" % url[:120]
-    return None
+                if is_pool_link(text, url):
+                    return ("PCoin pool / mining link: %s -- LEFT IN THE CHAT for you to judge"
+                            % url[:120], False)
+                return ("outside link: %s" % url[:120], True)
+    return (None, False)
 
 
 def group_admins(token, chat, st):
@@ -459,7 +485,7 @@ def removed_log(entry):
         print("  removal log write failed: %s" % e, file=sys.stderr)
 
 
-def remove_and_report(token, alert_to, chat, msg, reason):
+def remove_and_report(token, alert_to, chat, msg, reason, do_delete=True):
     """Forward the original and report WHO and WHY to the private channel, THEN
     delete. Returns False when the report could not be delivered: nothing is
     deleted and the update is re-read next run. History first, always."""
@@ -478,7 +504,9 @@ def remove_and_report(token, alert_to, chat, msg, reason):
         forwarded = bool(fw.get("ok"))
     except Exception as e:
         print("  forward failed (%s)" % type(e).__name__, file=sys.stderr)
-    body = ("🧹 <b>PCoin Chat — removing a message</b>\n"
+    head = ("🧹 <b>PCoin Chat — removing a message</b>" if do_delete
+            else "⛏ <b>PCoin Chat — a mining link, left in place</b>")
+    body = ("%s\n" % head +
             "<b>Why:</b> %s\n<b>Name:</b> %s\n<b>Username:</b> %s\n<b>User id:</b> <code>%s</code>\n"
             "<b>Language:</b> %s · <b>Premium:</b> %s · <b>Bot:</b> %s\n<b>Sent:</b> %s\n"
             "<b>Message:</b> https://t.me/PCoinPCNChat/%s\n<b>Text:</b>\n%s%s"
@@ -487,8 +515,15 @@ def remove_and_report(token, alert_to, chat, msg, reason):
                "yes" if f.get("is_bot") else "no", when, mid, html.escape(describe(msg)[:2500]),
                "\n\n<i>The original is forwarded just above.</i>" if forwarded else ""))
     if not send(token, alert_to, body[:4000]):
-        print("  removal report for %s failed -- NOT deleting; retried next run" % mid, file=sys.stderr)
+        print("  report for %s failed -- nothing removed; retried next run" % mid, file=sys.stderr)
         return False
+    if not do_delete:
+        removed_log({"at": int(time.time()), "by": "pcoin-group-watch", "platform": "telegram", "chat": chat,
+                     "message_id": mid, "sent": when, "name": name, "username": username, "user_id": f.get("id"),
+                     "reason": reason, "text": describe(msg), "forwarded": forwarded, "deleted": False,
+                     "kept": "pool/mining link reported to the owner"})
+        print("  reported (kept) %s: %s" % (mid, reason))
+        return True
     deleted, why_not = False, ""
     try:
         r = api(token, "deleteMessage", {"chat_id": chat, "message_id": mid}, timeout=20)
@@ -654,13 +689,16 @@ def main():
         # ---- moderation, BEFORE relay and spool ----------------------------
         uid_from = (msg.get("from") or {}).get("id")
         if uid_from != OWNER_ID:
-            reason = moderation_reason(msg)
+            reason, do_delete = moderation_reason(msg)
             if reason:
                 admins = group_admins(token, chat, st)
                 if admins is not None and uid_from not in admins:
-                    if remove_and_report(token, alert_to, chat, msg, reason):
+                    if remove_and_report(token, alert_to, chat, msg, reason, do_delete):
                         delivered_through = uid
-                        continue
+                        if do_delete:
+                            continue        # gone: never spooled, never answered
+                        # Reported but kept: fall through so the answer bot sees it
+                        # like any other message.
                     print("  removal report failed at update %d -- offset held" % uid, file=sys.stderr)
                     break
 

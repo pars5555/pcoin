@@ -215,9 +215,34 @@ def spool(row):
 # honest question.
 OUR_TG = {"pcoinpcn", "pcoinpcnchat", "pcoinpcnbot", "pcoinaibot", "mywebsitebuilderbot"}
 OUR_INVITE = "dgmdwjkb9f"
-URL_RE = re.compile(r"(?i)(?:https?://|www\.|\b(?:t\.me|telegram\.me|discord\.gg|discord\.com/invite)/)[^\s<>]+")
+URL_RE = re.compile(
+    r"(?i)(?:https?://|www\.|\b(?:t\.me|telegram\.me|discord\.gg|discord\.com/invite)/)[^\s<>]+"
+    # a stratum endpoint: host:port
+    r"|\b[a-z0-9-]+(?:\.[a-z0-9-]+)+:\d{2,5}\b"
+    # a bare host with a TLD people actually use for this
+    r"|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|io|app|xyz|pro|ai|me|co|gg|top|site|online|shop|"
+    r"live|cash|fund|finance|capital|exchange|cloud|dev|tech|info|biz|ru|cn|in|uk|de)\b(?:/[^\s<>]*)?")
 MOD_PERMS = 0x8 | 0x2000          # ADMINISTRATOR | MANAGE_MESSAGES
 MOD_TTL = 3600
+
+
+# Words that make a link a MINING link rather than an advert.
+POOL_WORDS = re.compile(r"(?i)\b(pool|stratum|mining|miner|hashrate|hash rate|randompcn|worker|rig|solo)\b")
+# Words that make a "PCoin" link dangerous no matter how it is dressed up. A
+# drainer site calls itself pcoin-something; a pool does not need any of these.
+SCAM_WORDS = re.compile(r"(?i)\b(airdrop|claim|giveaway|free (coins?|tokens?|pcn)|bonus|double|presale|"
+                        r"whitelist|seed phrase|recovery phrase|private key|connect (your )?wallet|"
+                        r"validate|sync wallet|restore wallet|x2|2x)\b")
+# A stratum endpoint: host:port, or a host that names the coin.
+POOLISH = re.compile(r"(?i)(:\d{2,5}\b)|(\bpcoin\b)|(\bpcn\b)|(\bpool\b)")
+
+
+def is_pool_link(text, url):
+    """True when this looks like somebody sharing a PCoin pool or mining setup,
+    and nothing about it looks like a scam. Used to REPORT instead of delete."""
+    if SCAM_WORDS.search(text or "") or SCAM_WORDS.search(url or ""):
+        return False
+    return bool(POOL_WORDS.search(text or "")) and bool(POOLISH.search(url or ""))
 
 
 def link_allowed(url, guild=""):
@@ -254,11 +279,16 @@ def link_allowed(url, guild=""):
 
 
 def moderation_reason(m, guild=""):
-    for raw in URL_RE.findall(m.get("content") or ""):
+    """(reason, delete) -- delete=False means report only and leave it."""
+    text = m.get("content") or ""
+    for raw in URL_RE.findall(text):
         url = raw.rstrip(").,!?>'\"")
         if url and not link_allowed(url, guild):
-            return "outside link: %s" % url[:120]
-    return None
+            if is_pool_link(text, url):
+                return ("PCoin pool / mining link: %s -- LEFT IN THE CHAT for you to judge"
+                        % url[:120], False)
+            return ("outside link: %s" % url[:120], True)
+    return (None, False)
 
 
 def is_moderator(token, guild, uid, st):
@@ -289,7 +319,7 @@ def removed_log(entry):
         print("  removal log write failed: %s" % e, file=sys.stderr)
 
 
-def remove_and_report(token, tg_token, alert_chat, guild, channel, m, reason):
+def remove_and_report(token, tg_token, alert_chat, guild, channel, m, reason, do_delete=True):
     """Report WHO and WHY to the private channel first, then delete.
     Returns True once the report is delivered (deleted or not); False means
     nothing was deleted and the message is re-read next run."""
@@ -305,7 +335,9 @@ def remove_and_report(token, tg_token, alert_chat, guild, channel, m, reason):
     if DRY:
         print("  (dry-run: would report, then remove %s: %s)" % (m["id"], reason))
         return True
-    body = ("🧹 <b>PCoin Discord — removing a message</b>\n"
+    head = ("🧹 <b>PCoin Discord — removing a message</b>" if do_delete
+            else "⛏ <b>PCoin Discord — a mining link, left in place</b>")
+    body = ("%s\n" % head +
             "<b>Why:</b> %s\n<b>Display name:</b> %s\n<b>Username:</b> %s\n<b>User id:</b> <code>%s</code>\n"
             "<b>Account created:</b> %s (%s days old)\n<b>Sent:</b> %s\n<b>Message:</b> %s\n<b>Text:</b>\n%s"
             % (html.escape(reason), html.escape(a.get("global_name") or "?"), html.escape(a.get("username") or "?"),
@@ -319,8 +351,16 @@ def remove_and_report(token, tg_token, alert_chat, guild, channel, m, reason):
     except (urllib.error.URLError, OSError, ValueError):
         reported = False
     if not reported:
-        print("  removal report for %s failed -- NOT deleting; retried next run" % m["id"], file=sys.stderr)
+        print("  report for %s failed -- nothing removed; retried next run" % m["id"], file=sys.stderr)
         return False
+    if not do_delete:
+        removed_log({"at": int(time.time()), "by": "pcoin-discord-watch", "platform": "discord",
+                     "channel": channel, "message_id": m["id"], "sent": when,
+                     "display_name": a.get("global_name"), "username": a.get("username"), "user_id": uid,
+                     "reason": reason, "text": describe(m), "deleted": False,
+                     "kept": "pool/mining link reported to the owner"})
+        print("  reported (kept) %s: %s" % (m["id"], reason))
+        return True
     deleted, why_not = False, ""
     req = urllib.request.Request(API + "/channels/%s/messages/%s" % (channel, m["id"]), method="DELETE",
                                  headers={"Authorization": "Bot " + token,
@@ -393,7 +433,7 @@ def main():
                 delivered = m["id"]
                 continue
             # ---- moderation, BEFORE spool and relay ----------------------------
-            reason = moderation_reason(m, guild)
+            reason, do_delete = moderation_reason(m, guild)
             if reason and guild:
                 try:
                     staff = is_moderator(token, guild, a.get("id"), st)
@@ -401,10 +441,12 @@ def main():
                     print("  cannot tell if %s is staff (%s) -- not removed" % (a.get("id"), e), file=sys.stderr)
                     staff = True
                 if not staff:
-                    if remove_and_report(token, tg_token, alert_chat, guild, ch, m, reason):
+                    if not remove_and_report(token, tg_token, alert_chat, guild, ch, m, reason, do_delete):
+                        break               # the report may not be lost: retry next run
+                    if do_delete:
                         delivered = m["id"]
                         continue
-                    break                   # the report may not be lost: retry next run
+                    # Reported but kept: fall through and treat it as a normal message.
             text = m.get("content") or ""
             if not text and not m.get("attachments") and not m.get("sticker_items"):
                 blank_bodies += 1
