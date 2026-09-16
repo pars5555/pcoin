@@ -678,6 +678,12 @@ def main():
         print("  nothing to answer")
         return 0
 
+    # For the per-user cap below: each person's NEWEST still-unhandled message.
+    # rows is oldest-first, so the last write per user wins.
+    newest_pending = {}
+    for r in rows:
+        newest_pending[str(r.get("from_id") or "?")] = str(r.get("message_id"))
+
     reports, posted = [], 0
     for r in rows:
         mid = str(r.get("message_id"))
@@ -715,13 +721,42 @@ def main():
             continue
 
         if len(uw) >= PER_USER_HOUR:
-            # MARKED handled: this is that person's own doing, and retrying it
-            # every run for an hour is the spam arriving twice.
-            st["handled"][mid] = int(now)
-            act(action="rate-limited", message_id=mid, who=author,
-                asked=text[:300],
-                reason="%s has already had %d answers this hour" % (author, len(uw)))
-            print("  rate-limited %s (%s: %d answers this hour)" % (mid, author, len(uw)))
+            # DEFER. DO NOT DISCARD.
+            #
+            # This used to mark the message handled, which threw the question
+            # away for good -- not answered, not retried once the window
+            # cleared, not filed for anybody. On 2026-09-16 a member asked
+            # "What if i sell token worth 9$ then how i get the withdraw" and
+            # got nothing. That question needed answering BEFORE he sold,
+            # because the minimum withdrawal is $30 and $9 cannot be withdrawn
+            # at all. From his side the bot replied twice and then ignored him,
+            # and nothing anywhere said a question had been dropped.
+            #
+            # The cap itself is right: it stops one person monopolising the bot.
+            # What was wrong was what it did with the message it refused. The
+            # window is an hour (WINDOW) and the spool holds six (MAX_AGE_
+            # SECONDS), so holding costs nothing and the question gets answered
+            # late instead of never.
+            #
+            # Only that person's NEWEST pending question is held. Otherwise a
+            # flood would arrive in full an hour later, which is the exact
+            # failure the original marking was written to prevent -- so keep
+            # both properties rather than trading one for the other.
+            if newest_pending.get(uid) not in (None, mid):
+                st["handled"][mid] = int(now)
+                act(action="superseded", message_id=mid, who=author,
+                    asked=text[:300],
+                    reason="over the per-user cap (%d/h) and followed by a newer "
+                           "question from the same person" % PER_USER_HOUR)
+                print("  superseded %s (%s: over the cap, newer question pending)"
+                      % (mid, author))
+            else:
+                act(action="deferred", message_id=mid, who=author,
+                    asked=text[:300],
+                    reason="%s has had %d answers this hour; holding until the "
+                           "window clears" % (author, len(uw)))
+                print("  per-user cap (%d/h) -- %s HELD for later, not dropped"
+                      % (PER_USER_HOUR, mid))
             continue
 
         try:
