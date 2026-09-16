@@ -102,7 +102,7 @@ export function exchangeSection({ base, creds, actor }) {
         <tr><td>Ask bot deposit address</td><td>${hb.ask.depositAddress ? mono(hb.ask.depositAddress) : form('house_address', '', 'Show the ask bot deposit address')}</td></tr>
         <tr><td>Bid bot USD — negative is what its purchases owe</td><td>${esc(hb.bid.usd.available)} · ${esc(hb.bid.usd.locked)} in orders</td></tr>
         <tr><td>Bid bot PCN bought</td><td>${esc(hb.bid.pcn.available)}</td></tr>
-        <tr><td>Set a bot balance</td><td>${form('house_balance', '<select name="which"><option value="ask:PCN">ask bot PCN</option><option value="bid:USD">bid bot USD</option></select> <input name="amount" type="text" inputmode="decimal" placeholder="30000" required style="width:120px">', 'Set balance')}</td></tr></table>
+        <tr><td>Set a bot balance</td><td>${form('house_balance', '<select name="which"><option value="ask:PCN">ask bot PCN</option><option value="bid:USD">bid bot USD</option><option value="bounty:PCN">referral bounty PCN</option></select> <input name="amount" type="text" inputmode="decimal" placeholder="30000" required style="width:120px">', 'Set balance')}</td></tr></table>
         <p class="muted" style="margin-top:10px">Bot balances are house credit you set here: nothing is sent on chain. A user who buys PCN from the ask bot, or sells PCN to the bid bot for USD, is paid by you from any wallet only when they withdraw. The bid bot still buys at most its daily budget. Switch the bots on in Settings (bot_ask_enabled, bot_bid_enabled).</p></div>`;
     const o = r.json;
     const l = o.liability;
@@ -271,10 +271,12 @@ export function exchangeSection({ base, creds, actor }) {
         <td>${x.state === 'paid' || x.state === 'refused' ? ''
           : form('referral_refuse', `${hidden('id', x.id)}<input name="reason" type="text" placeholder="why (required)" required>`, 'Refuse')}</td></tr>`;
     });
-    return `<div class="card"><p>Budget left to pay with: <b class="${empty ? 'bad' : 'good'}">${esc(budgetPcn)} PCN</b>${empty ? ' — nobody is being paid until house:bounty is funded.' : ''}</p>
+    return `<div class="card"><p>Budget left to pay with: <b class="${empty ? 'bad' : 'good'}">${esc(budgetPcn)} PCN</b>${empty ? ' — nobody is being paid until it is funded.' : ''}</p>
+      <p>${form('house_balance', `${hidden('which', 'bounty:PCN')}Set the pool to <input name="amount" type="text" inputmode="decimal" placeholder="3000" required style="width:120px"> PCN`, 'Set pool')}</p>
+      <p class="muted">This SETS the pool, it does not add to it: paying out reduces the balance, so topping up means setting it back to the figure you want available.
+      No coins move — it is a ledger balance, and real PCN only leaves when somebody actually withdraws.</p>
       <p class="muted">A referral is paid only when the referee has BOTH deposited real money and bought PCN with it, and only after the hold.
-      Fund the programme by adjusting <b>house:bounty</b> PCN in Users; the balance there is the whole budget and it cannot go negative,
-      so a bug costs at most what you funded. <b>Refuse</b> stops one before it is paid — a paid referral is already a ledger fact and cannot be undone here.</p></div>`
+Fund it below; the balance is the whole budget and cannot go negative, so a bug costs at most what you funded. <b>Refuse</b> stops one before it is paid — a paid referral is already a ledger fact and cannot be undone here.</p></div>`
       + table(['id', 'code', 'referrer', 'referee', 'reward', 'state', 'when', ''], rows, 'No referrals yet.');
   }
 

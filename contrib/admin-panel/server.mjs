@@ -38,6 +38,7 @@ import { wrapdeskPage, wrapdeskState, CLOSED_FILE } from './wrapdesk.mjs';
 import { minersPage, minersData } from './miners.mjs';
 import { pricingPage, pricingData } from './pricing.mjs';
 import { exchangeSection } from './exchange.mjs';
+import { programsPage, programsData, programsAction } from './programs.mjs';
 import { reportsPage, loadReports, saveReports } from './reports.mjs';
 import { cachedVerdicts, verdictCell, vtKey } from './virustotal.mjs';
 
@@ -182,7 +183,8 @@ const NAV = [
                   ['approvals', '\u{2705} Approvals'],
                   ['wrapdesk', '\u{1F512} Wrap desk'],
                   ['telegram', '\u{1F4AC} Telegram']]],
-  ['Work',     [['tasks', '\u{1F4CB} Tasks'],
+  ['Work',     [['programs', '\u{1F381} Programs'],
+                ['tasks', '\u{1F4CB} Tasks'],
                 ['user-reports', '\u{1F41E} User reports']]],
   ['Config',   [['security', '\u{1F512} Security (2FA)']]],
 ];
@@ -748,6 +750,15 @@ const server = createServer(async (req, res) => {
   if (sub === '/wrapdesk') {
     return send(res, 200, shell2('wrapdesk', 'Wrap desk',
       wrapdeskPage(wrapdeskState())));
+  }
+
+  if (sub === '/programs' && req.method === 'POST') {
+    programsAction(await readBody(req));
+    res.writeHead(302, { location: 'programs' });
+    return res.end();
+  }
+  if (sub === '/programs') {
+    return send(res, 200, shell2('programs', 'Programs', programsPage(programsData())));
   }
 
   if (sub === '/approvals' && req.method === 'POST') {
