@@ -21,7 +21,7 @@ import https from 'node:https';
 import { esc } from './ui.mjs';
 
 const VIEWS = [
-  ['overview', 'Overview'], ['withdrawals', 'Withdrawals'], ['deposits', 'Deposits'], ['settings', 'Settings'],
+  ['overview', 'Overview'], ['activity', 'Activity'], ['withdrawals', 'Withdrawals'], ['deposits', 'Deposits'], ['settings', 'Settings'],
   ['users', 'Users'], ['book', 'Book & trades'], ['price', 'Price influence'], ['policy', 'Policy'], ['pool', 'Address pool'], ['audit', 'Audit log'],
 ];
 
@@ -248,6 +248,23 @@ export function exchangeSection({ base, creds, actor }) {
       + table(['id', 'email', '2FA', 'USD available + locked', 'PCN available + locked', 'state', ''], rows, 'No users yet.');
   }
 
+  // Everything that happened, newest first. The exchange writes these rows as it
+  // works and sends them to Telegram from its tick loop, so this page and the
+  // channel show the same thing — and a Telegram outage delays the channel, never
+  // the exchange.
+  async function activity() {
+    const r = await call('GET', '/admin/api/activity');
+    if (!ok(r)) return unknown('the activity feed', r);
+    const KIND = { account: '🆕', signin: '🔑', order: '📋', trade: '💱', deposit: '💰' };
+    const rows = r.json.events.map((e) => `<tr><td>${esc(when(e.at))}</td><td>${KIND[e.kind] || ''} ${esc(e.kind)}</td>
+      <td>${esc(e.text)}</td><td>${e.sent_at ? '<span class="muted">sent</span>' : '<b>waiting</b>'}</td></tr>`);
+    const waiting = Number(r.json.waitingToSend || 0);
+    return '<div class="card"><p class="muted">Sign-ups, sign-ins, orders, fills and deposit credits — kept for 30 days. '
+      + (waiting ? `<b>${waiting} waiting to reach Telegram</b> (they go out on the next tick; nothing is lost if it refuses).` : 'Everything has reached Telegram.')
+      + ' Withdrawals have their own page, and each request is announced the moment it is made.</p></div>'
+      + table(['time', 'what', 'detail', 'telegram'], rows, 'Nothing yet.');
+  }
+
   async function book() {
     const [b, t] = await Promise.all([call('GET', '/admin/api/book'), call('GET', '/admin/api/trades')]);
     if (!ok(b)) return unknown('the order book', b);
@@ -323,7 +340,7 @@ export function exchangeSection({ base, creds, actor }) {
       <td>${esc(a.action)}</td><td>${esc(a.subject || '')}</td><td>${esc(a.old_value || '')}</td><td>${esc(a.new_value || '')}</td><td>${esc(a.detail || '')}</td></tr>`), 'Nothing yet.');
   }
 
-  const RENDER = { overview, withdrawals, deposits, settings, users, book, price, policy, pool, audit };
+  const RENDER = { overview, activity, withdrawals, deposits, settings, users, book, price, policy, pool, audit };
 
   async function page(url, flash = null) {
     if (!ex || !ex.apiUrl || !ex.readToken) {
