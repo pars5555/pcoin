@@ -93,7 +93,29 @@ def main():
         sys.exit("REFUSING: --version is %s but Version.cs says %s. "
                  "Bump Version.cs, install.ps1 $Version and $Sha256 together."
                  % (a.version, vm.group(1)))
-    print("version constant in the binary: %s (matches --version)" % vm.group(1))
+    print("version constant in the source: %s (matches --version)" % vm.group(1))
+
+    # AND THE SAME CHECK AGAINST THE ARTIFACT, which is the one that ships.
+    #
+    # The check above proves what Version.cs SAYS. It does not prove the exe was
+    # rebuilt from it. v1.4.29 and v1.4.30 both shipped a PCoinTray.exe still
+    # reporting 1.4.28, so every user who installed them was told an update was
+    # available for ever -- update, land on the same build, be told again. The
+    # source check passed both times; it was aimed at the wrong object.
+    #
+    # csc writes the constant as a UTF-16 literal in the metadata, so it can be
+    # read straight out of the bytes without a decompiler.
+    try:
+        blob = open(a.tray, "rb").read()
+    except IOError:
+        sys.exit("cannot read %s -- refusing to pack a binary I cannot inspect" % a.tray)
+    text = blob.decode("utf-16-le", "ignore")
+    found = sorted(set(re.findall(r"\d+\.\d+\.\d+", text)))
+    if a.version not in found:
+        sys.exit("REFUSING: %s does not contain the version %s. It contains: %s. "
+                 "The exe was not rebuilt after Version.cs was bumped -- run build.bat."
+                 % (os.path.basename(a.tray), a.version, ", ".join(found) or "no version at all"))
+    print("version inside %s: %s (matches --version)" % (os.path.basename(a.tray), a.version))
 
     tmp = tempfile.mkdtemp(prefix="pcoinpack")
     try:
