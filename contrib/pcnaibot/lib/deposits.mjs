@@ -8,6 +8,17 @@
 import { immediate, nowSec } from './db.mjs';
 import { satsToNanoUsd, splitNano } from './money.mjs';
 
+// P3, the AI-spend rebate. OFF unless the environment says otherwise, so this
+// file can ship and be read before anybody decides to run it.
+//   PCNAIBOT_REBATE_PPM=100000   -> 10%
+//   PCNAIBOT_REBATE_FROM=<unix>  -> only deposits credited from this moment on;
+//                                   0 means never, which is the default
+export const REBATE = {
+  ppm: BigInt(process.env.PCNAIBOT_REBATE_PPM ?? 0),
+  capSat: BigInt(process.env.PCNAIBOT_REBATE_CAP_SAT ?? 5000000000),   // 50 PCN
+  from: BigInt(process.env.PCNAIBOT_REBATE_FROM ?? 0),
+};
+
 export const CreditResult = {
   CREDITED: 'credited',
   ALREADY: 'already_credited',
@@ -150,7 +161,19 @@ export function creditDeposit(db, depositId, rate, {
       depositId
     );
 
-    return { result: CreditResult.CREDITED, microUsd: micro, rateE12, dust, remainder };
+    // The rebate is a BONUS on top of a credit that has already succeeded. It
+    // must never be the reason a real payment fails to land, so a fault here is
+    // recorded and swallowed rather than rolling the deposit back with it.
+    let rebate = { granted: 0n, why: 'not attempted' };
+    try {
+      rebate = rebateFor(db, dep, micro, {
+        now, ppm: REBATE.ppm, capSat: REBATE.capSat, from: REBATE.from,
+      });
+    } catch (e) {
+      rebate = { granted: 0n, why: 'failed: ' + (e && e.message ? e.message : String(e)) };
+    }
+
+    return { result: CreditResult.CREDITED, microUsd: micro, rateE12, dust, remainder, rebate };
   });
 }
 
@@ -165,6 +188,74 @@ export function creditDepositSafe(db, depositId, rate, opts) {
     }
     throw e;
   }
+}
+
+// ---------------------------------------------------------------- P3 rebate
+//
+// "10% back when you spend PCN here", paid as CREDIT AT THIS SERVICE. Nothing
+// is sent, no address is collected, and the user gets it immediately -- which
+// is the whole reason this shape was chosen: no rail stores a PCN address that
+// the user controls, so there is nowhere to send a coin even if we wanted to.
+//
+// SWITCHED OFF BY DEFAULT. rebatePpm is 0 unless the operator sets it, so
+// deploying this code changes nothing until somebody decides it should.
+//
+// THREE THINGS IT MUST NEVER DO, in order of how much they would cost:
+//
+//   1. Break a deposit. The rebate runs inside the credit's transaction, so a
+//      throw here would roll back the CREDIT -- the money-critical path -- and
+//      leave a real payment uncredited. Every call site therefore catches.
+//   2. Pay twice. Keyed on the deposit that earned it, so the UNIQUE(idem_key)
+//      that already guards deposits guards this too. A replay throws before
+//      anything moves.
+//   3. Overpay. The monthly cap is read INSIDE the same transaction, so two
+//      deposits landing together cannot both see an empty allowance.
+//
+// The cap is expressed in PCN and computed from amount_sat, never from a rate:
+// the rebate is always 10% of the coins sent, so the PCN arithmetic needs no
+// oracle and cannot drift with the price.
+export function rebateFor(db, dep, micro, { now, ppm, capSat, from }) {
+  if (ppm <= 0n) return { granted: 0n, why: 'off' };
+  if (from <= 0n || BigInt(now) < from) return { granted: 0n, why: 'before the start date' };
+  if (micro <= 0n) return { granted: 0n, why: 'nothing was credited' };
+  if (dep.chat_id === null || dep.chat_id === undefined) return { granted: 0n, why: 'no account to credit' };
+
+  const wanted = (micro * ppm) / 1000000n;
+  if (wanted <= 0n) return { granted: 0n, why: 'rounds to zero' };
+
+  // What this person has already had rebated, this calendar month, in PCN.
+  // Joined through the idem_key rather than a flag column, because the ledger
+  // row IS the record -- a flag can disagree with it, a key cannot.
+  const monthStart = BigInt(Math.floor(new Date(new Date(Number(now) * 1000)
+    .toISOString().slice(0, 7) + '-01T00:00:00Z').getTime() / 1000));
+  const used = db.prepare(
+    `SELECT COALESCE(SUM(d.amount_sat), 0) AS sat
+       FROM pcn_deposits d
+       JOIN ledger l ON l.idem_key = 'rebate:' || d.txid || ':' || d.address
+      WHERE d.chat_id = ? AND l.created_at >= ?`
+  ).get(dep.chat_id, Number(monthStart));
+  const usedSat = (BigInt(used.sat) * ppm) / 1000000n;
+  const thisSat = (BigInt(dep.amount_sat) * ppm) / 1000000n;
+  if (usedSat >= capSat) return { granted: 0n, why: 'monthly cap already reached' };
+
+  let grant = wanted;
+  if (usedSat + thisSat > capSat) {
+    // Pro-rate in the same proportion the PCN was cut, so the USD and the PCN
+    // never tell different stories about the same rebate.
+    const allowed = capSat - usedSat;
+    grant = thisSat > 0n ? (wanted * allowed) / thisSat : 0n;
+    if (grant <= 0n) return { granted: 0n, why: 'monthly cap already reached' };
+  }
+
+  db.prepare(
+    `INSERT INTO ledger (chat_id, delta_micro_usd, kind, idem_key, rate_e12, note, created_at)
+     VALUES (?,?,?,?,?,?,?)`
+  ).run(dep.chat_id, Number(grant), 'adjust', `rebate:${dep.txid}:${dep.address}`,
+        null, 'P3: 10% back on PCN spent here', Number(now));
+  const upd = db.prepare('UPDATE users SET balance_micro_usd = balance_micro_usd + ? WHERE chat_id = ?')
+    .run(Number(grant), dep.chat_id);
+  if (upd.changes !== 1) throw new Error('rebate: no users row for chat ' + dep.chat_id);
+  return { granted: grant, why: grant < wanted ? 'capped' : 'full' };
 }
 
 // The reconciliation invariant, per user. Checked every tick.
