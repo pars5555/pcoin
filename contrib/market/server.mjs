@@ -793,6 +793,18 @@ async function reportSaleEconomics(d, opts = {}) {
 // denial of service against the one channel carrying the double-send alarm.
 let lastSigAlert = 0, lastCrashAlert = 0, lastGatewayAlert = 0;
 
+// A body that is not JSON is a client error. Returns null AFTER answering 400,
+// so the caller returns immediately and never sees a half-parsed object.
+const jsonBodyOr400 = (raw, res) => {
+  try {
+    const v = JSON.parse(raw);
+    if (v && typeof v === 'object') return v;
+  } catch { /* falls through to the 400 below */ }
+  res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.end(JSON.stringify({ error: 'body must be a JSON object' }));
+  return null;
+};
+
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const CSS = readFileSync('/opt/pcoin-market/style.css', 'utf8');
 const shell = (title, b) => `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
@@ -801,7 +813,18 @@ const shell = (title, b) => `<!DOCTYPE html><html lang="en"><head><meta charset=
 
 // ── server ─────────────────────────────────────────────────────────────────
 createServer(async (req, res) => {
-  const u = new URL(req.url, 'http://x');
+  // A request target is INPUT. Node throws on one it cannot parse, and this is
+  // the first statement in the handler: left unguarded the throw escaped before
+  // anything was written, so the connection hung until the client gave up and
+  // each attempt raised an unhandled rejection that paged the owner. A scanner
+  // sending a few hundred of those is a denial of service with an alert attached.
+  let u;
+  try {
+    u = new URL(req.url, 'http://x');
+  } catch {
+    res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+    return res.end('bad request target\n');
+  }
   const p = u.pathname.replace(/\/+$/, '') || '/';
 
   // ---- admin panel, mounted before anything customer-facing ----
@@ -1370,7 +1393,8 @@ createServer(async (req, res) => {
     }
 
     if (p === '/api/register' && req.method === 'POST') {
-      const f = JSON.parse(await body(req));
+      const f = jsonBodyOr400(await body(req), res);
+      if (f === null) return;
       if (!(await captchaGate(req, res, f))) return;
       const em = String(f.email || '').trim().toLowerCase();
       if (!VALID_EMAIL.test(em)) return json(res, 400, { error: 'invalid email' });
@@ -1392,7 +1416,8 @@ createServer(async (req, res) => {
       return res.end(JSON.stringify({ ok: true, email: em }));
     }
     if (p === '/api/login' && req.method === 'POST') {
-      const f = JSON.parse(await body(req));
+      const f = jsonBodyOr400(await body(req), res);
+      if (f === null) return;
       if (!(await captchaGate(req, res, f))) return;
       const em = String(f.email || '').trim().toLowerCase();
       const accRows = await q(`SELECT salt, hash FROM users WHERE email = ?`, [em]);
@@ -1443,7 +1468,8 @@ createServer(async (req, res) => {
     // ---- buy ----
     if (p === '/api/buy' && req.method === 'POST') {
       if (!email) return json(res, 401, { error: 'sign in first' });
-      const f = JSON.parse(await body(req));
+      const f = jsonBodyOr400(await body(req), res);
+      if (f === null) return;
       const usd = Number(f.usd);
       const addr = String(f.address || '').trim();
       if (!(usd >= S.get('minOrderUsd'))) return json(res, 400, { error: `minimum order is $${S.get('minOrderUsd')}` });
@@ -1663,7 +1689,8 @@ createServer(async (req, res) => {
           buybackOpen: false });
       }
       if (!email) return json(res, 401, { error: 'sign in first' });
-      const f = JSON.parse(await body(req));
+      const f = jsonBodyOr400(await body(req), res);
+      if (f === null) return;
       const pcn = Number(f.pcn);
       if (!(pcn > 0)) return json(res, 400, { error: 'amount must be positive' });
       const quote = await jget(`${PRICE}/quote/sell?pcn=${pcn}`);
