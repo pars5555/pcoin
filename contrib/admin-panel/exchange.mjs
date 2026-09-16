@@ -22,7 +22,7 @@ import { esc } from './ui.mjs';
 
 const VIEWS = [
   ['overview', 'Overview'], ['activity', 'Activity'], ['withdrawals', 'Withdrawals'], ['deposits', 'Deposits'], ['settings', 'Settings'],
-  ['users', 'Users'], ['book', 'Book & trades'], ['price', 'Price influence'], ['policy', 'Policy'], ['pool', 'Address pool'], ['audit', 'Audit log'],
+  ['users', 'Users'], ['referrals', 'Referrals'], ['book', 'Book & trades'], ['price', 'Price influence'], ['policy', 'Policy'], ['pool', 'Address pool'], ['audit', 'Audit log'],
 ];
 
 const big = (v) => { try { return BigInt(String(v)); } catch { return null; } };
@@ -249,6 +249,35 @@ export function exchangeSection({ base, creds, actor }) {
       + table(['id', 'email', '2FA', 'USD available + locked', 'PCN available + locked', 'state', ''], rows, 'No users yet.');
   }
 
+  // Who invited whom, and what is left to pay them with.
+  //
+  // THE BUDGET LINE IS THE IMPORTANT ONE. house:bounty's PCN balance IS the
+  // programme's budget: it cannot go negative, so when it empties, qualified
+  // referrals simply wait instead of overspending. An empty budget is a normal
+  // state and never an outage -- but nobody gets paid until it is topped up, so
+  // it is shown first and in red when it is gone.
+  async function referrals() {
+    const r = await call('GET', '/admin/api/referrals');
+    if (!ok(r)) return unknown('referrals', r);
+    const { budgetPcn, referrals: list } = r.json;
+    const empty = Number(budgetPcn) <= 0;
+    const rows = list.map((x) => {
+      const when = x.paidAt ?? x.qualifiedAt ?? x.createdAt;
+      const state = x.state === 'paid' ? '<b class="good">paid</b>'
+        : x.state === 'refused' ? `<b class="bad">refused</b> <span class="muted">${esc(x.refusedReason || '')}</span>`
+          : x.state === 'holding' ? 'qualified, in the hold' : esc(x.state);
+      return `<tr><td>${esc(x.id)}</td><td>${esc(x.code)}</td><td>${esc(x.referrer)}</td><td>${esc(x.referee)}</td>
+        <td>${esc(x.rewardPcn)} PCN</td><td>${state}</td><td class="muted">${esc(new Date(when * 1000).toISOString().slice(0, 16).replace('T', ' '))}</td>
+        <td>${x.state === 'paid' || x.state === 'refused' ? ''
+          : form('referral_refuse', `${hidden('id', x.id)}<input name="reason" type="text" placeholder="why (required)" required>`, 'Refuse')}</td></tr>`;
+    });
+    return `<div class="card"><p>Budget left to pay with: <b class="${empty ? 'bad' : 'good'}">${esc(budgetPcn)} PCN</b>${empty ? ' — nobody is being paid until house:bounty is funded.' : ''}</p>
+      <p class="muted">A referral is paid only when the referee has BOTH deposited real money and bought PCN with it, and only after the hold.
+      Fund the programme by adjusting <b>house:bounty</b> PCN in Users; the balance there is the whole budget and it cannot go negative,
+      so a bug costs at most what you funded. <b>Refuse</b> stops one before it is paid — a paid referral is already a ledger fact and cannot be undone here.</p></div>`
+      + table(['id', 'code', 'referrer', 'referee', 'reward', 'state', 'when', ''], rows, 'No referrals yet.');
+  }
+
   // Everything that happened, newest first. The exchange writes these rows as it
   // works and sends them to Telegram from its tick loop, so this page and the
   // channel show the same thing — and a Telegram outage delays the channel, never
@@ -341,7 +370,7 @@ export function exchangeSection({ base, creds, actor }) {
       <td>${esc(a.action)}</td><td>${esc(a.subject || '')}</td><td>${esc(a.old_value || '')}</td><td>${esc(a.new_value || '')}</td><td>${esc(a.detail || '')}</td></tr>`), 'Nothing yet.');
   }
 
-  const RENDER = { overview, activity, withdrawals, deposits, settings, users, book, price, policy, pool, audit };
+  const RENDER = { overview, activity, withdrawals, deposits, settings, users, referrals, book, price, policy, pool, audit };
 
   async function page(url, flash = null) {
     if (!ex || !ex.apiUrl || !ex.readToken) {
@@ -371,6 +400,7 @@ export function exchangeSection({ base, creds, actor }) {
     };
     const reason = () => String(f.get('reason') || '');
     const specs = {
+      referral_refuse: () => ['/admin/api/referrals/refuse', { id: Number(id()), reason: reason() }, 'referrals'],
       setting: () => ['/admin/api/settings', { key: f.get('key'),
         value: f.get('type') === 'list' ? String(f.get('value') || '').split(',').map((x) => x.trim()).filter(Boolean) : f.get('value') }, 'settings'],
       approve: () => [`/admin/api/withdrawals/${id()}/approve`, {}, 'withdrawals'],
