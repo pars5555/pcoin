@@ -115,6 +115,31 @@ def discord_channel_ids(path="/etc/pcoin/discord.conf"):
     return out
 
 
+# Telegram carries a photo's words in `caption`, which the watcher renders into
+# `described` as "a photo: <caption>". These are the labels it uses when there is
+# no caption at all -- those really are nothing to answer.
+MEDIA_ONLY = {"a photo", "a file", "a video", "a voice message", "a sticker",
+              "a GIF", "audio"}
+
+
+def askable_text(r):
+    """What the person actually asked, whether they typed it or captioned it.
+
+    Returns "" only when there is genuinely nothing to answer: a bare image with
+    no caption, a join/leave line, or something the watcher could not render.
+
+    The "a photo: " prefix is kept on purpose. The model cannot see the image,
+    and being told one is attached is what stops it answering as if it had.
+    """
+    t = (r.get("text") or "").strip()
+    if t:
+        return t
+    d = (r.get("described") or "").strip()
+    if not d or d.startswith("[") or d in MEDIA_ONLY:
+        return ""
+    return d
+
+
 def dest_for(chat):
     """Which approval destination a message from `chat` may be answered into.
 
@@ -657,7 +682,7 @@ def main():
     for r in rows:
         mid = str(r.get("message_id"))
         uid = str(r.get("from_id") or "?")
-        text = (r.get("text") or "").strip()
+        text = askable_text(r)
         author = r.get("from") or "someone"
         if not text:
             st["handled"][mid] = int(now)
