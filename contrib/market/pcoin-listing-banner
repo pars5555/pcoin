@@ -11,7 +11,7 @@ a page does (CLAUDE.md 8b: a number on a public page is a promise).
 Shape of one run:
 
     take an exclusive lock                            (one run at a time, always)
-      -> count delivered orders with usd >= MIN_USD   (MySQL, read-only)
+      -> count PAID orders with usd >= MIN_USD        (MySQL, read-only)
       -> render a 1200x630 card (Pillow)              (house style, figures read live)
       -> first run:  adopt an existing pinned banner if one is there,
                      otherwise sendPhoto + pinChatMessage, remember message_id
@@ -88,6 +88,10 @@ FONT_REG       = os.environ.get("BANNER_FONT_REGULAR", "/usr/share/fonts/truetyp
 CHAT_ID        = os.environ.get("BANNER_CHAT_ID", "").strip()       # NO default. See docstring.
 TARGET         = int(os.environ.get("BANNER_TARGET", "1000"))
 MIN_USD        = float(os.environ.get("BANNER_MIN_USD", "20"))
+# exchange.pc.am counts too, since 2026-09-16: a $20+ PURCHASE of PCN by a person
+# on the order book is the same event as a $20 order delivered by the market.
+# Empty turns it off without touching this file.
+EXCHANGE_URL   = os.environ.get("BANNER_EXCHANGE_URL", "https://exchange.pc.am/api/listing-purchases").strip()
 MAX_STALE_H    = float(os.environ.get("BANNER_MAX_STALE_H", "6"))
 ALLOW_PUBLIC   = os.environ.get("BANNER_ALLOW_PUBLIC", "0") == "1"
 MARKET_URL     = os.environ.get("BANNER_MARKET_URL", "https://market.pc.am")
@@ -208,12 +212,18 @@ def parse_row(out):
 
 
 def count_orders():
-    """Delivered orders worth at least MIN_USD, plus the dollars they represent.
+    """PAID orders worth at least MIN_USD, plus the dollars they represent.
 
     Read-only, through the mysql client so this script carries no driver
-    dependency. 'delivered' is the only terminal success status the market
-    writes (expired and test_completed are not purchases). A failure here is
-    fatal on purpose -- see the module docstring.
+    dependency. A failure here is fatal on purpose -- see the module docstring.
+
+    Counted from PAYMENT, not from delivery (changed 2026-09-14, owner's
+    instruction). Those are the same instant for an automatic delivery and hours
+    apart for a manual one, and counting the later of the two made the bar say a
+    customer's $123.89 had not arrived when it had. 'expired' never paid;
+    'test_completed' is ours and DOES carry a paid_at, so it is the status
+    allow-list rather than the paid_at test that keeps our own tests out;
+    'needs_review' is an undecided payment and counts for neither side yet.
     """
     try:
         with open(MARKET_CONFIG) as f:
@@ -234,9 +244,13 @@ def count_orders():
         # 30 s hang and then a timeout that reads as a database problem.
         die("market config has no db password; refusing to run a client that would prompt")
 
+    # Statuses kept in step with ANNOUNCEABLE in /opt/pcoin-market/delivery.mjs.
+    # If you change one, change the other, or the pinned bar and the channel
+    # post will quote different numbers for the same event.
     sql = ("SELECT COUNT(*), COALESCE(ROUND(SUM(usd),2),0), "
            "COALESCE(DATE_FORMAT(MAX(delivered_at), '%%Y-%%m-%%d'), '') "
-           "FROM orders WHERE status='delivered' AND usd >= %s;" % (MIN_USD,))
+           "FROM orders WHERE paid_at IS NOT NULL AND usd >= %s "
+           "AND status IN ('awaiting_delivery','sending','delivered');" % (MIN_USD,))
 
     # The password goes in the ENVIRONMENT, never on argv: /proc/<pid>/cmdline is
     # readable by every uid on this shared host, and any exception carrying argv
@@ -260,6 +274,41 @@ def count_orders():
         # stderr from mysql never contains the password; it echoes host/user only
         die("mysql failed (rc %d): %s" % (r.returncode, r.stderr.strip()[:200]))
     return parse_row(r.stdout)
+
+
+def count_exchange():
+    """$20+ purchases on exchange.pc.am: the count, and the dollars they paid.
+
+    UNREADABLE IS NOT ZERO. A purchase count only ever goes up, so if the
+    exchange cannot be reached the last figure we read still stands and the bar
+    stays truthful, a few minutes stale at worst. If we have never read it, the
+    run is abandoned instead of publishing a total we know is short — the same
+    rule the market DB failure follows, for the same reason: a number on a public
+    card is a promise, and one that goes DOWN is the promise most people notice.
+    """
+    if not EXCHANGE_URL:
+        return 0, 0.0
+    cache = os.path.join(STATE_DIR, "exchange-last.json")
+    try:
+        req = urllib.request.Request(EXCHANGE_URL, headers={"accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            j = json.load(r)
+        c, u = int(j["purchases"]), float(j["totalUsd"])
+        os.makedirs(STATE_DIR, exist_ok=True)
+        tmp = cache + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump({"purchases": c, "usd": u}, fh)
+        os.replace(tmp, cache)
+        return c, u
+    except Exception as e:                     # noqa: BLE001 - every failure is the same answer
+        try:
+            with open(cache) as fh:
+                j = json.load(fh)
+            log("exchange.pc.am unreadable (%s); keeping its last figure of %d purchases"
+                % (type(e).__name__, int(j["purchases"])))
+            return int(j["purchases"]), float(j["usd"])
+        except Exception:                      # noqa: BLE001
+            die("exchange.pc.am unreadable and never read before; not publishing a total that is short", 0)
 
 
 # ----------------------------------------------------------------- state ----
@@ -385,7 +434,7 @@ def render_card(count, usd, target, as_of_utc):
         d.text((cx + 22, cy + 16), label.upper(), fill=DIM, font=font(16))
         d.text((cx + 22, cy + 44), value, fill=AMBER if i == 0 else TEXT, font=font(40))
 
-    d.text((64, H - 44), "Read live from market.pc.am at %s UTC  -  every $20+ purchase counts" % as_of_utc,
+    d.text((64, H - 44), "Read live from market.pc.am and exchange.pc.am at %s UTC  -  every $20+ purchase counts" % as_of_utc,
            fill=DIM, font=font(18, bold=False))
 
     buf = io.BytesIO()
@@ -414,7 +463,7 @@ def caption(count, usd, target, as_of_utc):
     return (
         "<b>%s</b>\n"
         "%s  <b>%s</b> / %s\n\n"
-        "Every <b>$20+</b> purchase on <a href=\"%s\">market.pc.am</a> counts as one. "
+        "Every <b>$20+</b> purchase on exchange.pc.am or <a href=\"%s\">market.pc.am</a> counts as one. "
         "At <b>%s</b>, PCoin goes on a tracked exchange.\n"
         "<i>%s purchases · $%s bought · as of %s UTC · read live, not typed in · "
         "no price promises</i>"
@@ -461,8 +510,9 @@ def widget_text(count, usd, target, as_of_utc):
     return (
         "%s <b>%.1f%%</b> \u2014 %s\n"
         "<b>%s</b> / %s purchases  \u00b7  <b>$%s</b> bought  \u00b7  as of %s UTC\n"
-        "<i>Every $20+ purchase on <a href=\"%s\">market.pc.am</a> counts. "
-        "No price promises.</i>"
+        "<i>Every $20+ purchase on exchange.pc.am or <a href=\"%s\">market.pc.am</a> counts. "
+        "No price promises.  \u00b7  "
+        "<a href=\"https://t.me/PCoinPCNChat\">Questions? Ask in the chat</a></i>"
     ) % (bar, pct, BANNER_MARKER, format(count, ","), format(target, ","),
          format(usd, ",.0f"), as_of_utc, MARKET_URL)
 
@@ -673,6 +723,11 @@ def main():
         lock = take_lock()           # noqa: F841 -- held open for the life of the process
 
     count, usd, last_day = count_orders()
+    ex_count, ex_usd = count_exchange()
+    if ex_count:
+        log("exchange.pc.am adds %d purchase(s), $%.2f" % (ex_count, ex_usd))
+    count += ex_count
+    usd += ex_usd
     as_of = time.strftime("%Y-%m-%d %H:%M", time.gmtime())
     text = widget_text(count, usd, TARGET, as_of)
     png = render_card(count, usd, TARGET, as_of) if STYLE == "card" else None
