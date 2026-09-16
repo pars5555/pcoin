@@ -119,13 +119,46 @@ def fetch_blocks(cli, lo, hi):
     return out
 
 
-def coinbase_payees(block):
-    """The addresses a block's coinbase actually pays. Zero-value outputs are
-    skipped: every block carries a zero-value OP_RETURN witness commitment, and
-    counting it as a payee would make every solo block look like a pool."""
+# A payout smaller than this is not somebody's earnings.
+#
+# The independent pool on this chain pays exactly ONE SATOSHI to a fixed address
+# in every block it finds. That is a marker -- the operator tagging their own
+# blocks, which is ordinary pool practice -- and not a miner being paid: a 2%
+# fee on a 50 PCN block would be a whole PCN, not 0.00000001 of one.
+#
+# Counting it inflated that pool's miner count from 2 to 3, which would
+# eventually have paid a 500 PCN bounty to a pool with four real miners and a
+# tag. 1,000 satoshi is deliberately far below any real share -- the smallest
+# genuine payout seen on our own pool is around 2,500 -- so this excludes
+# markers without excluding a small miner.
+DUST_SAT = 1000
+DUST_PCN = DUST_SAT / 1e8
+
+
+def coinbase_outputs(block):
+    """(every address paid anything, addresses paid a real amount).
+
+    THE TWO ARE USED FOR DIFFERENT THINGS, and conflating them broke this twice.
+
+    A dust marker is not a MINER -- the independent pool here pays exactly one
+    satoshi to a fixed address in every block, and counting it turned its two
+    miners into three.
+
+    But it is the best thing available for deciding which blocks belong to the
+    SAME pool, because that is precisely what the operator put it there to do.
+    Dropping it from the grouping as well split that one pool into two halves
+    that shared only a single miner -- undercounting, which is the worse
+    direction: a pool that never qualifies leaves the concentration exactly where
+    it is.
+
+    So: group on everything, count only what is actually a payout. The zero-value
+    OP_RETURN witness commitment every block carries is excluded from both, or
+    every solo block would look like a pool.
+    """
     cb = block["tx"][0]
-    return sorted({o["scriptPubKey"].get("address") for o in cb["vout"]
-                   if o.get("value", 0) > 0 and o["scriptPubKey"].get("address")})
+    alive = [(o["scriptPubKey"].get("address"), o.get("value", 0)) for o in cb["vout"]
+             if o.get("value", 0) > 0 and o["scriptPubKey"].get("address")]
+    return sorted({a for a, _ in alive}), sorted({a for a, v in alive if v >= DUST_PCN})
 
 
 def group_pools(blocks):
@@ -138,16 +171,18 @@ def group_pools(blocks):
     """
     pools = []
     for b in blocks:
-        addrs = coinbase_payees(b)
-        if len(addrs) < 2:
+        seen, paid = coinbase_outputs(b)
+        if len(paid) < 2:
             continue                      # solo, or an empty coinbase
-        s = set(addrs)
-        g = next((p for p in pools if len(s & p["addrs"].keys()) >= 2), None)
+        s = set(seen)
+        g = next((p for p in pools if len(s & p["seen"].keys()) >= 2), None)
         if g is None:
-            g = {"addrs": {}, "blocks": 0, "first": b["height"], "last": b["height"],
-                 "days": set(), "first_hash": b["hash"]}
+            g = {"addrs": {}, "seen": {}, "blocks": 0, "first": b["height"],
+                 "last": b["height"], "days": set(), "first_hash": b["hash"]}
             pools.append(g)
-        for a in addrs:
+        for a in seen:
+            g["seen"][a] = g["seen"].get(a, 0) + 1
+        for a in paid:
             g["addrs"][a] = g["addrs"].get(a, 0) + 1
         g["blocks"] += 1
         g["first"] = min(g["first"], b["height"])
@@ -196,12 +231,12 @@ def pool_key(p, registry):
     of its known addresses are still being paid, through miners joining, miners
     leaving, and the whole first month dropping out of the window.
     """
-    s = set(p["addrs"])
+    s = set(p.get("seen") or p["addrs"])
     for key, known in registry.items():
         if len(s & set(known)) >= 2:
             registry[key] = sorted(set(known) | s)[:64]     # bounded: pools grow
             return key
-    top = sorted(p["addrs"].items(), key=lambda kv: (-kv[1], kv[0]))[:2]
+    top = sorted((p.get("seen") or p["addrs"]).items(), key=lambda kv: (-kv[1], kv[0]))[:2]
     key = "-".join(a[-8:] for a, _ in top)
     registry[key] = sorted(s)[:64]
     return key
@@ -316,6 +351,24 @@ def selftest():
 
     # The zero-value witness commitment must not make a solo block look pooled.
     check("a solo block is not a pool", group_pools([block(1, ["pcA"])]) == [])
+
+    # A ONE-SATOSHI marker is not a miner. The real independent pool on this
+    # chain pays exactly one satoshi to a fixed address in every block, and
+    # counting it turned its two miners into three.
+    def marked(h, miners, marker="opTag"):
+        outs = [{"value": 50.0 / len(miners), "scriptPubKey": {"address": m}} for m in miners]
+        outs.append({"value": 0.00000001, "scriptPubKey": {"address": marker}})
+        outs.append({"value": 0, "scriptPubKey": {}})
+        return {"height": h, "hash": "%064x" % h, "time": 1789000000 + h * 86400, "tx": [{"vout": outs}]}
+    tagged = [marked(600 + i, ["a", "b", "c", "d"]) for i in range(10)]
+    _, q, sh = classify(group_pools(tagged), 5, 7)
+    check("a 1-satoshi marker is NOT counted as a miner", q == [] and sh and sh[0]["miners"] == 4)
+    # ...but it MUST still hold the pool together. These blocks share only the
+    # marker and one miner; without it they are two pools of one miner each.
+    split = [marked(700, ["a", "b"]), marked(701, ["a", "b"]),
+             marked(702, ["b", "c"]), marked(703, ["b", "c"])]
+    gs = group_pools(split)
+    check("the marker still groups blocks into ONE pool", len(gs) == 1 and len(gs[0]["addrs"]) == 3)
 
     # Ours is excluded however many miners it has.
     ours = [block(i, ["pc1qlvw6kx8wkcz8f6p0d6kswv69fjt33ll079f64e"] + ["m%d" % j for j in range(9)],
