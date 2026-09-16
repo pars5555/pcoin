@@ -65,20 +65,52 @@ def save_state(st):
     os.replace(tmp, STATE)
 
 
-def call(method, url, body=None, bot_token=None):
+# Discord's own API answers 5xx from time to time -- one such 500 paged the ops
+# channel on 2026-09-15 at 18:16 UTC through the chat reader. The banner runs
+# every ten minutes and a stale banner for one cycle is nothing, so weather is
+# retried, then waited out quietly; only a lasting outage is worth an alert.
+QUIET_SECONDS = int(os.environ.get("DISCORD_BANNER_QUIET_SECONDS", "3600"))
+
+
+def transient_exit(why):
+    """Exit for something that is probably weather. Silent until it has lasted
+    QUIET_SECONDS, then fail so OnFailure= alerts."""
+    st = load_json(STATE, {})
+    now = time.time()
+    since = st.get("down_since")
+    if not isinstance(since, (int, float)) or since <= 0:
+        since = now
+        st["down_since"] = int(now)
+        if not DRY:
+            save_state(st)
+    if now - since < QUIET_SECONDS:
+        print("  %s -- down %.0fs, staying quiet until %ds" % (why, now - since, QUIET_SECONDS),
+              file=sys.stderr)
+        sys.exit(0)
+    sys.exit("%s -- Discord has been failing for %.0f minutes" % (why, (now - since) / 60.0))
+
+
+def call(method, url, body=None, bot_token=None, tries=3):
     headers = {"User-Agent": UA, "Content-Type": "application/json"}
     if bot_token:
         headers["Authorization"] = "Bot " + bot_token
-    req = urllib.request.Request(url, method=method, headers=headers,
-                                 data=json.dumps(body).encode() if body is not None else None)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            raw = r.read().decode("utf-8", "replace")
-            return r.status, (json.loads(raw) if raw.strip() else {})
-    except urllib.error.HTTPError as e:
-        return e.code, e.read().decode("utf-8", "replace")[:200]
-    except urllib.error.URLError as e:
-        sys.exit("Discord unreachable (%s) -- nothing changed" % type(e.reason).__name__)
+    for attempt in range(tries):
+        req = urllib.request.Request(url, method=method, headers=headers,
+                                     data=json.dumps(body).encode() if body is not None else None)
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                raw = r.read().decode("utf-8", "replace")
+                return r.status, (json.loads(raw) if raw.strip() else {})
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")[:200]
+            if e.code < 500 and e.code != 429:
+                return e.code, detail          # 401/403/404: the caller decides
+            if attempt == tries - 1:
+                transient_exit("Discord HTTP %d" % e.code)
+        except urllib.error.URLError as e:
+            if attempt == tries - 1:
+                transient_exit("Discord unreachable (%s)" % type(e.reason).__name__)
+        time.sleep(2 ** attempt)
 
 
 def main():
@@ -139,6 +171,8 @@ def main():
         ps, pr = call("PUT", "%s/channels/%s/pins/%s" % (API, chan, mid), bot_token=bot)
         print("posted Discord banner %s; pin: HTTP %s %s" % (mid, ps, "" if ps == 204 else pr))
     st.update(message_id=mid, count=count, usd=usd, edited=int(time.time()))
+    # Reached Discord: forget any run of transient failures.
+    st.pop("down_since", None)
     save_state(st)
     return 0
 
