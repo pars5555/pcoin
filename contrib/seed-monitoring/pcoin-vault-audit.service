@@ -1,0 +1,11 @@
+[Unit]
+Description=PCN rail custody audit -- is every live rail's sealed seed actually in the vault?
+Documentation=https://github.com/pars5555/pcoin/tree/main/contrib/seed-monitoring
+OnFailure=pcoin-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pcoin-vault-audit
+# The audit reads the vault directory and the manifest, both root-owned 0600.
+User=root
+Nice=10

@@ -46,6 +46,7 @@ the failure is silent in exactly the way this table exists to prevent.
 | component | runs on | what it does | how you know it ran |
 |---|---|---|---|
 | `pcoin-pool-bounty` | **178.105.3.51** (daily timer) | P2: walks 30 days of coinbases, finds independent pools with 5+ miners, writes `/var/lib/pcoin-programs/claims.json` for the Programs page | `systemctl list-timers pcoin-pool-bounty`, and its journal line naming the window it walked |
+| `pcoin-vault-audit` | **116.203.221.42** (daily 05:05, after the 04:17 mirror sync) | Compares `/etc/pcoin/vault-rails.conf` against the sealed seeds actually in the vault, BOTH ways: expected-but-absent, and present-but-unlisted. Also flags a zero-length blob, which looks like a backup and is not | `systemctl list-timers pcoin-vault-audit`; `pcoin-vault-audit --dry-run` prints its findings and sends nothing |
 
 It is here because a component in no host's list is watched by nobody and
 nothing will ever say so. It moves no money -- it writes a claims file and the

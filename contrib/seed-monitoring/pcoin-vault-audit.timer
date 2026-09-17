@@ -1,0 +1,13 @@
+[Unit]
+Description=Daily PCN rail custody audit
+Documentation=https://github.com/pars5555/pcoin/tree/main/contrib/seed-monitoring
+
+[Timer]
+# After the 04:17 vault->mirror sync, so a rail uploaded today is judged against
+# a mirror that has already caught up rather than alerting about a lag.
+OnCalendar=*-*-* 05:05:00
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

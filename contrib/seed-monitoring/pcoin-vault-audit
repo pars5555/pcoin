@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# Does every live rail's key material actually EXIST in the vault?
+#
+# WHY THIS EXISTS. The vault -> mirror sync has been automated and correct since
+# 2026-08-22: a daily rsync, verified, logged, never missed a day. It was not the
+# problem. The problem is one step earlier and nothing watched it -- whether a
+# rail's sealed blob ever REACHES the vault in the first place.
+#
+# Measured 2026-09-17: `pcnaibot-seed.enc.json` was created on a workstation on
+# 2026-09-11 and never uploaded, so for six days the only copy of a live payment
+# rail's key material was one Windows disk. The mirror faithfully mirrored its
+# absence. And `webai` -- live since 2026-09-06, crediting real deposits -- had
+# no seed and no xpub in the vault at all.
+#
+# So this compares the manifest of rails that MUST have custody against what is
+# actually on disk, IN BOTH DIRECTIONS:
+#
+#   * expected but absent  -> a rail whose keys exist nowhere but someone's PC
+#   * present but unlisted -> the manifest has gone stale, which is how a rail
+#                             stops being checked without anyone deciding that
+#
+# The second direction is the point. `RAILS_EXPECTED` taught this estate that a
+# rail in nobody's list is watched by nobody and nothing says so.
+#
+# Exit code is 0 unless the script itself broke. A detected problem is an alert,
+# not a non-zero exit: cron mail on top of a Telegram alert is just noise.
+#
+#   --dry-run   print findings, send nothing. Verified to send nothing.
+#   --list      print what is in the vault and exit.
+
+set -uo pipefail
+
+VAULT_DIR="${VAULT_DIR:-/var/www/android-keys/pcoin-custody}"
+MANIFEST="${MANIFEST:-/etc/pcoin/vault-rails.conf}"
+NOTIFY="${NOTIFY:-/usr/local/bin/pcoin-notify}"
+
+DRY_RUN=0
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) DRY_RUN=1 ;;
+        --list)    ls -1 "$VAULT_DIR" 2>/dev/null | sed -n 's/-seed\.enc\.json$//p' | sort; exit 0 ;;
+        *) printf 'unknown argument: %s\n' "$arg" >&2; exit 2 ;;
+    esac
+done
+
+PROBLEMS=0
+log() { logger -t pcoin-vault-audit -- "$*" 2>/dev/null || printf '%s\n' "$*"; }
+
+alert() {   # alert <subject> <body>
+    PROBLEMS=$((PROBLEMS + 1))
+    log "ALERT: $1 -- $2"
+    if [ "$DRY_RUN" = "1" ]; then
+        printf 'WOULD ALERT: %s -- %s\n' "$1" "$2"
+        return
+    fi
+    [ -x "$NOTIFY" ] && "$NOTIFY" "$1" "$2" >/dev/null 2>&1
+}
+
+# ---------------------------------------------------------------------------
+# A missing manifest is NOT "nothing to check".
+#
+# This is the pcoin-wrapdesk-watch lesson: run without the setting that makes it
+# correct and the check quietly becomes a check of nothing, while still exiting
+# 0 and looking healthy. Refuse loudly instead.
+# ---------------------------------------------------------------------------
+if [ ! -r "$MANIFEST" ]; then
+    alert "vault audit NOT CONFIGURED" \
+          "No rail manifest at $MANIFEST, so nothing was checked. This is a FAULT, not a pass."
+    exit 0
+fi
+
+if [ ! -d "$VAULT_DIR" ]; then
+    alert "vault audit cannot read the vault" \
+          "$VAULT_DIR is not a directory on $(hostname). Nothing was verified."
+    exit 0
+fi
+
+# Expected rails: one name per line, '#' comments and blanks ignored.
+mapfile -t EXPECTED < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' "$MANIFEST" | grep -v '^$' | sort -u)
+
+if [ "${#EXPECTED[@]}" -eq 0 ]; then
+    alert "vault audit manifest is EMPTY" \
+          "$MANIFEST lists no rails, so this check can never fail. Treat as unconfigured."
+    exit 0
+fi
+
+mapfile -t PRESENT < <(ls -1 "$VAULT_DIR" 2>/dev/null | sed -n 's/-seed\.enc\.json$//p' | sort -u)
+
+have() { printf '%s\n' "${PRESENT[@]}" | grep -qxF "$1"; }
+listed() { printf '%s\n' "${EXPECTED[@]}" | grep -qxF "$1"; }
+
+MISSING=()
+for rail in "${EXPECTED[@]}"; do
+    have "$rail" || MISSING+=("$rail")
+done
+
+UNLISTED=()
+for rail in "${PRESENT[@]:-}"; do
+    [ -n "$rail" ] || continue
+    listed "$rail" || UNLISTED+=("$rail")
+done
+
+# An empty blob is worse than an absent one: it looks like a backup.
+EMPTY=()
+for rail in "${PRESENT[@]:-}"; do
+    [ -n "$rail" ] || continue
+    f="$VAULT_DIR/$rail-seed.enc.json"
+    [ -s "$f" ] || EMPTY+=("$rail")
+done
+
+if [ "${#MISSING[@]}" -gt 0 ]; then
+    alert "PCN rail keys are NOT in the vault" \
+          "No sealed seed for: ${MISSING[*]}. Until one is uploaded, the only copy of that rail's key material is wherever it was generated. Vault: $VAULT_DIR on $(hostname)."
+fi
+
+if [ "${#EMPTY[@]}" -gt 0 ]; then
+    alert "A vault blob is EMPTY" \
+          "Zero-length sealed seed for: ${EMPTY[*]}. An empty file is not a backup, and it looks like one."
+fi
+
+if [ "${#UNLISTED[@]}" -gt 0 ]; then
+    alert "The vault manifest is stale" \
+          "These rails have a sealed seed but are not listed in $MANIFEST: ${UNLISTED[*]}. Either add them or say why they are excluded -- an unlisted rail is one this check silently stops covering."
+fi
+
+if [ "$PROBLEMS" -eq 0 ]; then
+    log "all ${#EXPECTED[@]} rail seeds present in the vault"
+    [ "$DRY_RUN" = "1" ] && printf 'OK: all %d expected rail seeds present, nothing unlisted\n' "${#EXPECTED[@]}"
+fi
+
+exit 0
