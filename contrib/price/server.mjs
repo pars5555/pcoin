@@ -68,7 +68,42 @@ let alertedMissing = false;
 let lastPollAlert = 0;
 /** Best-effort and never throws: an alert that can crash the price oracle is a
  *  worse problem than the one it reports. */
-async function notify(html) {
+// FIRE AND FORGET. price.pc.am is read by every payment rail on the estate, and
+// nothing that happens on api.telegram.org may hold it up.
+//
+// The send could never THROW -- failures were already caught and logged -- but
+// it was awaited, and the timeout is ten seconds. A Telegram outage therefore
+// did not break the oracle, it made whatever was alerting wait ten seconds,
+// which on a service this many things depend on is its own kind of outage.
+// Owner, 2026-09-18: every Telegram send must be async, everywhere.
+//
+// sendAlert() does the work; notify() hands it over and returns at once. No
+// caller has ever used the return value; anything that needs to know a message
+// landed should await sendAlert directly and say why.
+const MAX_IN_FLIGHT = 50;
+let alertsInFlight = 0;
+let alertsDropped = 0;
+
+function notify(html) {
+  if (alertsInFlight >= MAX_IN_FLIGHT) {
+    alertsDropped++;
+    if (alertsDropped === 1 || alertsDropped % 50 === 0) {
+      console.error(`[price] ${alertsInFlight} alerts in flight — DROPPING (${alertsDropped} so far). ` +
+                    'Telegram is probably down; pricing is unaffected.');
+    }
+    return Promise.resolve(false);
+  }
+  alertsInFlight++;
+  // Not awaited on purpose, so the .catch() matters: an un-awaited promise that
+  // rejects is an unhandled rejection, which would take down the very service
+  // the alert is about.
+  sendAlert(html)
+    .catch(e => console.error('[price] alert unexpected:', e && e.message))
+    .finally(() => { alertsInFlight--; });
+  return Promise.resolve(true);
+}
+
+async function sendAlert(html) {
   if (!ALERT.TELEGRAM_TOKEN || !alertTo) {
     if (!alertedMissing) {
       alertedMissing = true;
