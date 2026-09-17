@@ -423,15 +423,36 @@ async function listAll() {
       console.log(`  ${name.padEnd(16)} unreadable: ${e.message.slice(0, 60)}`);
       continue;
     }
-    rows.push({ name, total, addrs });
-    const note = name === 'exchange' ? '  <- CUSTOMERS\' deposits, never sweep'
+    // A wallet with no seed file here is WATCH-ONLY from this machine: its
+    // balance is real and yours, but this tool cannot sign for it. Saying so on
+    // the row is the difference between "I have this" and "I can move this",
+    // and only the second one is actionable.
+    const spendable = existsSync(join(HERE, `${name}-seed.enc.json`));
+    rows.push({ name, total, addrs, spendable });
+    const note = name === 'exchange' ? "  <- CUSTOMERS' deposits, never sweep"
       : name === 'wpcn-reserve' ? '  <- backs wPCN 1:1; only the surplus is yours'
-        : '';
+        : !spendable ? '  <- watch-only here (no seed file); sign where the wallet lives'
+          : '';
     console.log(`  ${name.padEnd(16)} ${sat(total).padStart(16)} PCN   ${String(addrs).padStart(3)} address(es)${note}`);
   }
-  const sweepable = rows.filter((r) => r.name !== 'exchange' && r.name !== 'wpcn-reserve')
-    .reduce((s, r) => s + r.total, 0);
-  console.log(`\n  freely sweepable (everything except exchange and the wPCN reserve): ${sat(sweepable)} PCN\n`);
+
+  const sum = (f) => rows.filter(f).reduce((s, r) => s + r.total, 0);
+  const locked = (r) => r.name === 'exchange' || r.name === 'wpcn-reserve';
+  const sweepable = sum((r) => !locked(r) && r.spendable);
+  const watchOnly = sum((r) => !locked(r) && !r.spendable);
+  const everything = sum(() => true);
+
+  console.log('\n  ' + '─'.repeat(70));
+  console.log(`  sweepable from this machine   ${sat(sweepable).padStart(16)} PCN`);
+  if (watchOnly > 0) {
+    console.log(`  yours, but signed elsewhere   ${sat(watchOnly).padStart(16)} PCN   (watch-only above)`);
+  }
+  console.log(`  spoken for (exchange + wPCN)  ${sat(sum(locked)).padStart(16)} PCN   NOT yours to move`);
+  console.log(`  ${'─'.repeat(70)}`);
+  console.log(`  everything this tool can see  ${sat(everything).padStart(16)} PCN`);
+  console.log('\n  NOT INCLUDED: the treasury and the fleet PCs. They were not made by');
+  console.log('  pcoin-seed-vault.mjs, so there is no xpub here to read them with --');
+  console.log('  the treasury is the wallet on your phone and is where sweeps land.\n');
   process.exit(0);
 }
 if (has('--list')) await listAll();
@@ -476,6 +497,75 @@ async function checkPass(name) {
     : '\n  Something is wrong; do not use this for a send until it is understood.\n');
   process.exit(matches && valid ? 0 : 1);
 }
+/** Try ONE passphrase against every vault and report each one.
+ *
+ *  The owner keeps one passphrase for all of them, so the useful question is
+ *  not "does this open checker" but "does this open everything, and is there
+ *  anything here I cannot get into". A wallet that holds coins nobody can
+ *  unlock is the failure worth finding, and finding it by discovering it
+ *  during a send is the worst possible moment.
+ *
+ *  Each one is checked twice over: the passphrase must open the file AND the
+ *  phrase inside must derive the xpub recorded beside it. Opening alone only
+ *  proves the passphrase fits the blob.
+ */
+async function checkAll() {
+  const names = readdirSync(HERE).filter((f) => f.endsWith('-xpub.txt'))
+    .map((f) => f.replace('-xpub.txt', '')).sort();
+  console.log(`\n  ${names.length} wallets found. Testing one passphrase against all of them.`);
+  console.log('  Nothing is sent and nothing is written; this only reads.\n');
+
+  const pass = await ask('  passphrase (nothing is echoed): ', { hidden: true });
+  if (!pass) die('no passphrase given');
+  console.log('');
+
+  let opened = 0;
+  let failed = 0;
+  let noSeed = 0;
+  for (const name of names) {
+    const seedFile = join(HERE, `${name}-seed.enc.json`);
+    const xpubFile = join(HERE, `${name}-xpub.txt`);
+    if (!existsSync(seedFile)) {
+      noSeed++;
+      console.log(`  --  ${name.padEnd(16)} no seed file here — cannot be opened from this machine`);
+      continue;
+    }
+    const xpub = readFileSync(xpubFile, 'utf8').trim();
+    let mnemonic = null;
+    try {
+      mnemonic = decrypt(JSON.parse(readFileSync(seedFile, 'utf8')), pass).trim();
+    } catch {
+      failed++;
+      console.log(`  XX  ${name.padEnd(16)} this passphrase does NOT open it`);
+      continue;
+    }
+    const validWords = bip39.validateMnemonic(mnemonic, wordlist);
+    const derived = HDKey.fromMasterSeed(bip39.mnemonicToSeedSync(mnemonic)).derive(ACCOUNT_PATH);
+    const matches = derived.publicExtendedKey === xpub;
+    mnemonic = null;
+    if (validWords && matches) {
+      opened++;
+      console.log(`  OK  ${name.padEnd(16)} opens, and the phrase derives its own xpub`);
+    } else {
+      failed++;
+      console.log(`  XX  ${name.padEnd(16)} opened, but ${!validWords ? 'the phrase is not valid BIP39' : 'it derives a DIFFERENT xpub'}`);
+    }
+  }
+
+  console.log('\n  ' + '─'.repeat(66));
+  console.log(`  ${opened} of ${names.length} open with this passphrase and match their own xpub`);
+  if (noSeed) console.log(`  ${noSeed} have no seed file here — see the note below`);
+  if (failed) console.log(`  ${failed} FAILED — look at those before relying on this passphrase`);
+  if (noSeed) {
+    console.log('\n  A wallet with no seed file cannot be signed for from this machine. That is');
+    console.log('  correct for anything the node created rather than pcoin-seed-vault.mjs:');
+    console.log('  Core has no twelve words, so its wallet.dat IS the key material.');
+  }
+  console.log('');
+  process.exit(failed ? 1 : 0);
+}
+if (has('--check-all')) await checkAll();
+
 if (has('--check')) {
   const n = flag('--check') && !String(flag('--check')).startsWith('--') ? flag('--check') : flag('--system');
   if (!n) die('say which one: --check <system>   (or --check --system <name>)');
@@ -493,6 +583,8 @@ if (!system || !to || (!amountArg && !sendAll)) {
   console.log(`
   node vault-sweep.mjs --system <name> --to <pc1q…> (--all | --amount <PCN>) [--send]
   node vault-sweep.mjs --list        what every vault holds, no passphrase needed
+  node vault-sweep.mjs --check-all   test ONE passphrase against every vault
+  node vault-sweep.mjs --check <sys> test it against one, and show address0
   node vault-sweep.mjs --selftest    prove the signing against the BIP143 vector
 
   Builds and signs, and prints what would be sent. It broadcasts NOTHING until
