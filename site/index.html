@@ -60,6 +60,40 @@
   }
   .gh-pill:hover{border-color:var(--teal);text-decoration:none}
 
+  /* ---------- header: 5 primary links, the rest behind More ---------- */
+  /* No JS. <details> is a disclosure widget that keyboards and screen readers
+     already understand, and it still works if a script never loads -- which
+     matters when the menu is the only route to half the site. */
+  /* WHY A CHECKBOX AND NOT <details> FOR THE BURGER. A closed <details> hides
+     its content through the UA's own slot, which a child `display` cannot
+     override -- so on desktop, where there is no burger to open it, the entire
+     nav simply vanished. Verified in the browser, not assumed. The checkbox
+     hack has no such hidden state: the nav is an ordinary sibling and CSS
+     decides when it shows. <details> is still used for "More", where hiding
+     when closed is exactly what is wanted. */
+  .nav-toggle{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
+  label.burger{display:none}
+  .more{position:relative}
+  .more > summary{
+    list-style:none;cursor:pointer;color:var(--muted);
+    font-size:.93rem;font-weight:500;user-select:none;
+  }
+  .more > summary::-webkit-details-marker{display:none}
+  .more > summary::after{content:"";display:inline-block;margin-left:6px;
+    border:4px solid transparent;border-top-color:currentColor;transform:translateY(2px)}
+  .more[open] > summary::after{transform:translateY(-2px) rotate(180deg)}
+  .more > summary:hover{color:var(--text)}
+  .more-panel{
+    position:absolute;right:0;top:calc(100% + 12px);z-index:70;
+    display:grid;grid-template-columns:1fr 1fr;gap:2px 22px;
+    background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:14px 18px;min-width:320px;
+    box-shadow:0 18px 44px rgba(0,0,0,.5);
+  }
+  .more-panel a{white-space:nowrap;padding:7px 0;font-size:.92rem}
+  .nav-gold{color:var(--gold,#f5c542) !important;font-weight:600}
+  .nav-gold:hover{color:#ffd76b !important}
+
   /* ---------- hero ---------- */
   .hero{
     position:relative;overflow:hidden;
@@ -287,11 +321,49 @@
     .hero-art{order:-1;flex-basis:auto;align-self:center}
     .hero-art svg{width:150px}
     section{padding:64px 0}
-    /* fifteen links wrap to five rows on a phone: let the header scroll away instead of pinning it */
-    header.nav{position:static}
-    .nav-inner{gap:10px 14px}
-    nav.links{gap:6px 14px}
-    nav.links a{font-size:.88rem;padding:4px 0}
+    /* This used to read "fifteen links wrap to five rows on a phone: let the
+       header scroll away instead of pinning it" and set position:static. The
+       burger removed the reason -- the header is one 44px row now -- and the
+       workaround had become the bug: a static element ignores its own z-index,
+       so the open menu was painted UNDERNEATH the hero. Sticky again, and the
+       nav is reachable from anywhere on the page. */
+    header.nav{position:sticky;top:0;z-index:60}
+    .nav-inner{gap:10px 14px;padding:12px 16px;flex-wrap:nowrap}
+    /* The burger IS the nav on a phone. Three bars, 44px of touch target --
+       the smallest thing a thumb hits reliably. */
+    label.burger{
+      display:flex;flex-direction:column;justify-content:center;gap:5px;
+      width:44px;height:44px;padding:0 10px;cursor:pointer;
+      border:1px solid var(--line);border-radius:10px;margin-left:auto;
+    }
+    label.burger span{display:block;height:2px;background:var(--text);border-radius:2px}
+    .nav-toggle:checked ~ label.burger{border-color:var(--teal)}
+    .nav-toggle:focus-visible ~ label.burger{outline:2px solid var(--teal);outline-offset:2px}
+    /* Full-width sheet under the header rather than a floating box: on a 390px
+       screen an absolutely-positioned dropdown either overflows the viewport or
+       gets a horizontal scrollbar, and both look broken. */
+    /* The sheet spans the HEADER, not the 44px burger it hangs from -- anchored
+       to the burger it came out 44px wide and was effectively invisible. */
+    .nav-inner{position:relative}
+    .nav-toggle:checked ~ nav.links{
+      position:absolute;left:16px;right:16px;top:calc(100% + 6px);
+      display:flex;flex-direction:column;align-items:stretch;gap:0;
+      background:var(--panel);border:1px solid var(--line);border-radius:14px;
+      padding:8px 6px;box-shadow:0 20px 48px rgba(0,0,0,.55);z-index:80;
+    }
+    nav.links{display:none}
+    nav.links > a,.more > summary{padding:12px 14px;font-size:.98rem;border-radius:9px}
+    nav.links > a:active{background:var(--panel-2)}
+    .gh-pill{justify-content:flex-start;border:none;padding:12px 14px}
+    /* Inside the sheet the More panel expands in place -- a dropdown inside a
+       dropdown is a trap on a touch screen. */
+    .more{width:100%}
+    .more-panel{
+      position:static;display:flex;flex-direction:column;gap:0;
+      min-width:0;border:none;box-shadow:none;background:transparent;
+      padding:0 0 0 14px;margin-top:2px;border-left:2px solid var(--line);
+    }
+    .more-panel a{padding:11px 10px;white-space:normal}
     /* a 560px-wide table on a 390px phone is a table nobody reads: stack each row */
     table.params{min-width:0}
     table.params tbody,table.params tr{display:block}
@@ -325,24 +397,32 @@
       <svg viewBox="18 18 72 72" width="34" height="34" aria-hidden="true"><circle cx="54" cy="54" r="36" fill="#262B33"/><path fill="#fff" d="M54,23.25A30.75,30.75 0 0 1 60,23.84L58.73,30.22A24.25,24.25 0 0 0 54,29.75ZM65.77,25.59A30.75,30.75 0 0 1 71.08,28.43L67.47,33.84A24.25,24.25 0 0 0 63.28,31.6ZM75.74,32.26A30.75,30.75 0 0 1 79.57,36.92L74.16,40.53A24.25,24.25 0 0 0 71.15,36.85ZM82.41,42.23A30.75,30.75 0 0 1 84.16,48L77.78,49.27A24.25,24.25 0 0 0 76.4,44.72ZM84.75,54A30.75,30.75 0 0 1 84.16,60L77.78,58.73A24.25,24.25 0 0 0 78.25,54ZM82.41,65.77A30.75,30.75 0 0 1 79.57,71.08L74.16,67.47A24.25,24.25 0 0 0 76.4,63.28ZM75.74,75.74A30.75,30.75 0 0 1 71.08,79.57L67.47,74.16A24.25,24.25 0 0 0 71.15,71.15ZM65.77,82.41A30.75,30.75 0 0 1 60,84.16L58.73,77.78A24.25,24.25 0 0 0 63.28,76.4ZM54,84.75A30.75,30.75 0 0 1 48,84.16L49.27,77.78A24.25,24.25 0 0 0 54,78.25ZM42.23,82.41A30.75,30.75 0 0 1 36.92,79.57L40.53,74.16A24.25,24.25 0 0 0 44.72,76.4ZM32.26,75.74A30.75,30.75 0 0 1 28.43,71.08L33.84,67.47A24.25,24.25 0 0 0 36.85,71.15ZM25.59,65.77A30.75,30.75 0 0 1 23.84,60L30.22,58.73A24.25,24.25 0 0 0 31.6,63.28ZM23.25,54A30.75,30.75 0 0 1 23.84,48L30.22,49.27A24.25,24.25 0 0 0 29.75,54ZM25.59,42.23A30.75,30.75 0 0 1 28.43,36.92L33.84,40.53A24.25,24.25 0 0 0 31.6,44.72ZM32.26,32.26A30.75,30.75 0 0 1 36.92,28.43L40.53,33.84A24.25,24.25 0 0 0 36.85,36.85ZM42.23,25.59A30.75,30.75 0 0 1 48,23.84L49.27,30.22A24.25,24.25 0 0 0 44.72,31.6Z"/><path fill="#fff" fill-rule="evenodd" d="M75,54A21,21 0 1 1 33,54A21,21 0 1 1 75,54ZM54,38.5L57.89,50.11L69.5,54L57.89,57.89L54,69.5L50.11,57.89L38.5,54L50.11,50.11Z"/></svg>
       PCoin <small>PCN</small>
     </a>
+    <input type="checkbox" id="nav-toggle" class="nav-toggle">
+    <label class="burger" for="nav-toggle" aria-label="Menu"><span></span><span></span><span></span></label>
     <nav class="links" aria-label="Site">
-      <a href="#mission">Mission</a>
       <a href="/download/">Download</a>
       <a href="#mining">Mining</a>
-      <a href="#hardware">Hardware</a>
-      <a href="#pool">Pool</a>
-      <a href="#spend">Spend it</a>
-      <a href="#trade">Trading</a>
       <a href="https://market.pc.am" rel="noopener">Buy PCN</a>
       <a href="https://exchange.pc.am" rel="noopener">Exchange</a>
-      <a href="https://wrapdesk.pc.am" rel="noopener">Wrap desk</a>
-      <a href="https://explorer.pc.am" rel="noopener">Explorer</a>
-        <a href="#parameters">Parameters</a>
-      <a href="#get-started">Get started</a>
-      <a href="#roadmap">Roadmap</a>
-      <a href="/news/">News</a>
-      <a href="/faq/">FAQ</a>
-      <a href="#integrate">Accept PCN</a>
+      <a class="nav-gold" href="/bounty/">Earn PCN</a>
+      <details class="more">
+        <summary>More</summary>
+        <div class="more-panel">
+          <a href="#mission">Mission</a>
+          <a href="#hardware">Hardware</a>
+          <a href="#pool">Pool</a>
+          <a href="#spend">Spend it</a>
+          <a href="#trade">Trading</a>
+          <a href="#parameters">Parameters</a>
+          <a href="#get-started">Get started</a>
+          <a href="#roadmap">Roadmap</a>
+          <a href="#integrate">Accept PCN</a>
+          <a href="/faq/">FAQ</a>
+          <a href="/news/">News</a>
+          <a href="https://explorer.pc.am" rel="noopener">Explorer</a>
+          <a href="https://wrapdesk.pc.am" rel="noopener">Wrap desk</a>
+        </div>
+      </details>
       <a class="gh-pill" href="https://github.com/pars5555/pcoin" rel="noopener">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.1.79-.25.79-.55v-2.02c-3.2.7-3.87-1.36-3.87-1.36-.52-1.33-1.28-1.68-1.28-1.68-1.04-.72.08-.7.08-.7 1.15.08 1.76 1.19 1.76 1.19 1.03 1.75 2.69 1.25 3.34.95.1-.75.4-1.25.72-1.54-2.55-.29-5.23-1.28-5.23-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11.1 11.1 0 0 1 5.79 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.41-2.69 5.38-5.25 5.66.41.36.78 1.06.78 2.14v3.17c0 .3.2.66.8.55A11.5 11.5 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z"/></svg>
         GitHub
@@ -366,7 +446,7 @@
         </p>
         <div class="cta-row">
           <a class="btn btn-primary" href="#get-started">Get started</a>
-          <a class="btn btn-gold" href="/bounty/">Earn PCN &mdash; 200 per invite</a>
+          <a class="btn btn-gold" href="/bounty/">Earn PCN &mdash; 500 per invite</a>
           <a class="btn btn-ghost" href="https://github.com/pars5555/pcoin" rel="noopener">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.1.79-.25.79-.55v-2.02c-3.2.7-3.87-1.36-3.87-1.36-.52-1.33-1.28-1.68-1.28-1.68-1.04-.72.08-.7.08-.7 1.15.08 1.76 1.19 1.76 1.19 1.03 1.75 2.69 1.25 3.34.95.1-.75.4-1.25.72-1.54-2.55-.29-5.23-1.28-5.23-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11.1 11.1 0 0 1 5.79 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.41-2.69 5.38-5.25 5.66.41.36.78 1.06.78 2.14v3.17c0 .3.2.66.8.55A11.5 11.5 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z"/></svg>
             GitHub
@@ -1111,7 +1191,7 @@ Linux    pcoin-cli startmining &quot;&lt;your pc1q&hellip; address&gt;&quot; 4</
         <div class="dl-card">
           <h3>Windows</h3>
           <p class="dl-sub">Node, CLI and tray app in one archive. Unzip and run, or use the one command below.</p>
-          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/download/v1.4.30/pcoin-win64-miner.zip" rel="noopener">Download (.zip)</a>
+          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/download/v1.4.31/pcoin-win64-miner.zip" rel="noopener">Download (.zip)</a>
           <a class="dl-alt" href="#get-started">or install with one command</a>
         </div>
 
