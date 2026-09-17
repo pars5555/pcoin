@@ -777,6 +777,20 @@ def main():
                         # exists, or it answers as though the message were whole.
                         "has_image": bool(msg.get("photo") or msg.get("document")
                                           or msg.get("video") or msg.get("sticker")),
+                        # KEEP THE HANDLE TO THE IMAGE. Telegram only lets a file be
+                        # fetched by its file_id, and this row was the last place that id
+                        # existed -- so every screenshot anyone posted became permanently
+                        # unreadable the moment it was spooled. That went unnoticed until a
+                        # miner posted a screenshot with NO caption: the answer bot had
+                        # nothing to answer, nobody could open the picture, and the question
+                        # simply died. Storing the id changes no behaviour and gives the bot
+                        # no sight -- it only stops us throwing away the one thing that would
+                        # let a person, or later a vision model, actually look.
+                        # The LAST photo entry is the largest size Telegram offers.
+                        "file_id": ((msg.get("photo") or [{}])[-1].get("file_id")
+                                    or (msg.get("document") or {}).get("file_id")
+                                    or (msg.get("video") or {}).get("file_id")
+                                    or (msg.get("sticker") or {}).get("file_id")),
                         "urgent": urgent,
                     }, ensure_ascii=False) + "\n")
                 # Trim by SIZE, not on every run: rewriting the file each minute to
