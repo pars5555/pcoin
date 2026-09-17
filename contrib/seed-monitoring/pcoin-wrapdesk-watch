@@ -1,0 +1,775 @@
+#!/usr/bin/env python3
+"""Tell the operator what to DO about the wrap desk, hourly, until it is done.
+
+This is not a health check. It is a task list that nags. Every wrap has manual
+steps spread over hours -- wait for confirmations, send wPCN, and (only while
+the keeper is buying) sell the PCN and buy wPCN back -- and a step forgotten
+halfway is how a desk ends up with a customer paid nothing.
+
+Whether that last pair applies is READ from the keeper's unit, never assumed:
+see keeper_buys(). It was hardcoded once and went stale two days after the
+owner switched buying off.
+
+WHAT "DONE" MEANS HERE, AND WHY THERE IS NO BUTTON.
+
+Nothing is marked complete by a human saying so. Each step is derived from what
+is observable on a chain:
+
+    PCN arrived at the reserve        -> explorer.pc.am / the node
+    it has 100 confirmations          -> same
+    wPCN was sent to the requester    -> their BSC balance rose
+    wPCN was bought back              -> the pool's wPCN reserve fell
+
+A button would let the operator mark a step done that did not happen. Reading
+the chain cannot. This is the same doctrine the rest of the project uses: an
+unreadable answer is UNKNOWN, and unknown never becomes done.
+
+That cuts both ways, deliberately. If a read FAILS, the task stays open and gets
+nagged again. Better to be told twice about something finished than to have a
+half-finished wrap go quiet.
+
+Alerts go to the PRIVATE ops channel via pcoin-notify. Never the public one.
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.request
+
+STATE = os.environ.get("WRAPDESK_STATE", "/var/lib/pcoin-wrapdesk/state.json")
+NOTIFY = os.environ.get("PCOIN_NOTIFY", "/usr/local/bin/pcoin-notify")
+NAG_SECONDS = int(os.environ.get("NAG_SECONDS", 3600))      # hourly, per the owner
+CONFIRMATIONS = int(os.environ.get("WRAP_CONFIRMATIONS", 100))
+PER_PERSON = float(os.environ.get("WRAP_PER_PERSON", 250))
+TOTAL_ALLOC = float(os.environ.get("WRAP_TOTAL_ALLOC", 1500))
+# A HARD CEILING ON ONE INSTRUCTION, independent of every calculation above it.
+#
+# The per-person limit is applied to a SINGLE DEPOSIT, so six deposits of exactly
+# 250 never trip it and produce six separate 237.50 instructions -- 1425 wPCN to
+# one party against a stated entitlement of 237.50. That happened, live, on
+# 2026-09-06, and the same run ALSO printed "THE ALLOCATION IS EXHAUSTED"
+# without suppressing a single one of the six sends.
+#
+# This number is not derived from the request. It is the largest amount this
+# script may ever tell a human to send. If a calculation produces more, the
+# calculation is wrong and the instruction is withheld.
+MAX_SEND = float(os.environ.get("WRAP_MAX_SEND", PER_PERSON))
+
+# The wrap fee, taken in wPCN withheld rather than PCN returned.
+#
+# It is FRICTION, not revenue. At the current limits 5% of the entire 1,500 wPCN
+# allocation is about $1.37, which pays for nothing -- its actual job is to slow
+# a rush of miners wrapping in order to dump on PancakeSwap, which is the risk
+# the per-person limit also exists for.
+#
+# Know the cost before changing it: a fee of F% means arbitrage only closes gaps
+# WIDER than F%, so the PCN and wPCN prices can sit that far apart before anyone
+# is paid to fix it. Since connecting the two prices is the whole point of the
+# desk, a large fee works against its own purpose. 5% is a deliberate trade of
+# peg tightness for a brake on dumping, not a considered revenue decision.
+FEE_PCT = float(os.environ.get("WRAP_FEE_PCT", 5.0))
+
+EXPLORER = "https://explorer.pc.am"
+RESERVE = os.environ.get("WRAP_RESERVE", "pc1q7hhzmdkkx0zjtzj6qkwmuvhlgwfqjrc6j2dk52")
+
+
+def keeper_buys():
+    """Is the keeper actually buying wPCN back?  True / False / None(unknown).
+
+    THIS WAS HARDCODED ONCE AND IT WENT STALE. Every ACTION this script printed
+    said "sell the PCN, buy wPCN back from the pool". On 2026-09-08 the owner
+    turned exactly that off -- KEEPER_BUY=off on pcoin-wpcn-keeper -- so the
+    pool is allowed to fall on real selling instead of our own USDT holding a
+    number still. The advice outlived the decision, and an operator following
+    it would have quietly undone the thing it was changed to do.
+
+    So read the keeper's own unit rather than asserting either answer, and
+    return None when it cannot be read. Unknown is its own state: advising
+    "buy" or "do not buy" off a failed read is precisely how a stale
+    instruction re-establishes itself.
+    """
+    try:
+        r = subprocess.run(["systemctl", "show", "pcoin-wpcn-keeper",
+                            "-p", "Environment", "--value"],
+                           capture_output=True, text=True, timeout=10)
+    except Exception:
+        return None
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    # systemd prints Environment as one space-separated line of KEY=VALUE.
+    # Split rather than regex: this file does not import re, and an import for
+    # one lookup is a worse trade than three lines of string work.
+    for tok in r.stdout.split():
+        if tok.startswith("KEEPER_BUY="):
+            return tok.split("=", 1)[1].strip().lower() not in ("0", "off", "false", "no")
+    return True              # flag absent means the keeper's own ON default
+
+
+def cycle_advice(amt):
+    """The second half of the cycle, phrased from what is TRUE right now.
+
+    Always ends in a newline so the caller can drop it in unconditionally.
+    """
+    buys = keeper_buys()
+    if buys is False:
+        return ("Do NOT buy wPCN back: KEEPER_BUY=off on the keeper, a standing "
+                "decision that the pool is allowed to fall on real selling rather "
+                "than be held up with our own USDT. Selling the %.2f PCN is "
+                "optional and separate.\n" % amt)
+    if buys is None:
+        return ("Whether to buy wPCN back is UNKNOWN -- the keeper's KEEPER_BUY "
+                "setting could not be read. Check the unit before doing either; "
+                "do not assume the old advice.\n")
+    return ("Then: sell the %.2f PCN on market.pc.am, and use the proceeds to buy "
+            "wPCN back from the pool -- but ONLY while the pool trades BELOW "
+            "price.pc.am.\n" % amt)
+
+# wrapdesk.pc.am writes every allocated deposit address here, with the BSC
+# address that asked for it. Without this the watcher can see that PCN arrived
+# but not who is owed the wPCN, which makes an alert unactionable.
+REQUESTS = os.environ.get("WRAPDESK_REQUESTS", "/var/lib/wrapdesk/requests.json")
+
+# Deposits at or below this height are NOT wrap requests. The reserve was funded
+# with 50,000 PCN before the desk existed, and without this the watcher reads that
+# as a customer owed 50,000 wPCN -- which is exactly what the first dry run did.
+# Set it to the chain height at the moment the desk opens.
+OPENED_AT_HEIGHT = int(os.environ.get("WRAP_OPENED_AT_HEIGHT", "0"))
+
+# The mirror of the floor above, and the only thing that actually shuts the desk.
+# Deposits ABOVE this height are not wrap requests: the desk was closed by then.
+# 0 means open, so the default behaviour is unchanged.
+#
+# Hiding the request form stops new REQUESTERS and stops nothing else. Everyone
+# who registered keeps a deposit address that is theirs alone, and was told they
+# could reuse it any number of times. Without this line, "closed" means the desk
+# takes no new customers while its existing ones go on minting obligations.
+#
+# A deposit above the line is REPORTED, never ignored -- see the refund branch.
+CLOSED_AT_HEIGHT = int(os.environ.get("WRAP_CLOSED_AT_HEIGHT", "0"))
+
+# --dry-run: print what would be reported, notify nobody.
+#
+# It exists because the notifier is chosen by PCOIN_NOTIFY, and someone
+# reasonably guessing "NOTIFY=/bin/true" disables NOTHING -- the real notifier
+# runs and the ops channel gets a real alert. That happened on 2026-09-03.
+DRY_RUN = "--dry-run" in sys.argv
+if DRY_RUN:
+    NOTIFY = "/bin/true"
+
+
+def get(url, timeout=25):
+    """JSON GET, or None. None is UNKNOWN and must never be treated as a value."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return json.load(r)
+    except Exception:
+        return None
+
+
+def load_state():
+    # NORMALISE, do not just parse. The skeleton used to be returned only when
+    # the file was unreadable, so a file that parsed but lacked a key -- a fresh
+    # "{}", or one written by an older version -- crashed with KeyError: 'seen'
+    # on the first wrap it looked at. A first install is the worst possible
+    # moment for a traceback, and the failure looked like a broken watcher
+    # rather than a missing key.
+    try:
+        with open(STATE) as f:
+            st = json.load(f)
+        if not isinstance(st, dict):
+            st = {}
+    except Exception:
+        st = {}
+    for k in ("seen", "nagged", "outstanding"):
+        if not isinstance(st.get(k), dict):
+            st[k] = {}
+    # REFUSE TO RUN ON AN UN-MIGRATED LEDGER. Keys changed from wrap:<txid> to
+    # wrap:<txid>:<address> on 2026-09-05. An old-format key would simply never
+    # match the new lookup, so every already-released wrap would be reported
+    # again as an ACTION and an operator could pay it twice. That is the exact
+    # opposite of the bug the new key fixes, and silently tolerating the old
+    # format would hide a half-done migration behind a working-looking run.
+    # Refusing loudly is the only outcome that cannot cost money.
+    stale = [k for k in list(st["seen"]) + list(st["nagged"])
+             if k.startswith("wrap:") and k.count(":") == 1]
+    if stale:
+        msg = ("REFUSING TO RUN: %d ledger key(s) are in the old wrap:<txid> format:\n  %s\n"
+               "Migrate them first (verifies each against the chain):\n"
+               "  python3 /usr/local/bin/migrate_wrap_keys.py --apply\n"
+               % (len(stale), "\n  ".join(stale)))
+        sys.stderr.write(msg)
+        # stderr alone reaches nobody: this unit runs from a timer every 15 min,
+        # exit 3 is a plain systemd failure with no OnFailure wiring of its own,
+        # and while it refuses NO wrap is reported -- a new deposit in that window
+        # would sit unannounced indefinitely. So say it where the operator looks.
+        # It repeats every run until fixed, which is correct for this state.
+        if not DRY_RUN:
+            try:
+                notify("wrap desk: REFUSING TO RUN -- un-migrated ledger", msg)
+            except Exception:
+                pass
+        sys.exit(3)
+    return st
+
+
+def save_state(s):
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    tmp = STATE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(s, f, indent=1)
+    os.replace(tmp, STATE)          # atomic; a torn state file loses the queue
+
+
+def notify(subject, body):
+    if not os.path.exists(NOTIFY):
+        print(f"[no notifier] {subject}\n{body}")
+        return
+    subprocess.run([NOTIFY, subject, body], timeout=60)
+
+
+def pool_price():
+    """{'price': float} from the pair contract, or None if unreadable.
+
+    Read from getReserves() rather than any API: it is the source of truth and
+    cannot be stale. None means UNKNOWN and the caller must not assume a side.
+    """
+    try:
+        # Installed to /usr/local/bin, but deploy.py lives with the deployment
+        # in /opt/wpcn. Inserting the script's own directory finds nothing.
+        sys.path.insert(0, os.environ.get("WPCN_DIR", "/opt/wpcn"))
+        sys.path.insert(1, os.path.dirname(os.path.abspath(__file__)))
+        from web3 import Web3
+        from deploy import load, connect
+        cfg = load()
+        w3, _ = connect(cfg)
+        abi = [{"constant": True, "inputs": [], "name": "getReserves",
+                "outputs": [{"name": "_r0", "type": "uint112"},
+                            {"name": "_r1", "type": "uint112"},
+                            {"name": "_t", "type": "uint32"}], "type": "function"},
+               {"constant": True, "inputs": [], "name": "token0",
+                "outputs": [{"name": "", "type": "address"}], "type": "function"}]
+        pair = w3.eth.contract(address=Web3.to_checksum_address(cfg["PAIR"]), abi=abi)
+        r0, r1, _ = pair.functions.getReserves().call()
+        t0 = pair.functions.token0().call()
+        tok = Web3.to_checksum_address(cfg["TOKEN"])
+        wp, us = (r0 / 1e8, r1 / 1e18) if t0 == tok else (r1 / 1e8, r0 / 1e18)
+        return {"price": us / wp, "wpcn": wp, "usdt": us}
+    except Exception:
+        return None
+
+
+def main() -> int:
+    st = load_state()
+    now = int(time.time())
+    tasks = []          # (key, urgency, text)
+
+    # ---- 1. incoming wraps, and how far along they are --------------------
+    #
+    # WATCH THE ALLOCATED ADDRESSES, NOT JUST THE RESERVE.
+    #
+    # wrapdesk.pc.am hands every requester their own deposit address derived
+    # from the reserve xpub. Those deposits land in the reserve WALLET, so the
+    # backing is never at risk -- but they do NOT land on the reserve's index-0
+    # address. A watcher looking only at index 0 sees nothing, and a customer
+    # who paid is never paid back. The money is safe and the person is not.
+    #
+    # So: read the desk's own request file and check every address it has
+    # handed out, plus index 0 for anyone who sent there directly.
+    watch = {RESERVE: None}                 # address -> requester BSC address
+    try:
+        with open(REQUESTS) as f:
+            for r in (json.load(f).get("requests") or {}).values():
+                if r.get("address"):
+                    watch[r["address"]] = r.get("bsc")
+    except FileNotFoundError:
+        pass                                # desk not deployed here; reserve only
+    except Exception as e:
+        # The file exists and could not be read. That is NOT "no requests" --
+        # every allocated address becomes invisible, which is the exact failure
+        # this block exists to prevent.
+        tasks.append(("requests_unreadable", "warn",
+                      f"Could not read the wrap desk request file ({REQUESTS}): {e}\n"
+                      f"Deposits to allocated addresses cannot be seen right now. "
+                      f"This is UNKNOWN, not 'nothing pending'."))
+
+    # EVERY setting lives in the systemd unit's Environment= lines, so running
+    # this script by hand gets none of them. The one that matters is the floor:
+    # without it the reserve's own founding deposit -- the PCN the whole wPCN
+    # supply was sized against -- is re-read as a customer owed wPCN, and the
+    # alert is indistinguishable from a real one. Say so rather than quietly
+    # producing a confident wrong answer.
+    if CLOSED_AT_HEIGHT > 0:
+        print("the wrap desk is CLOSED at height %d: deposits above it are "
+              "reported for REFUND, not wrapped." % CLOSED_AT_HEIGHT)
+    if OPENED_AT_HEIGHT <= 0:
+        print("WARNING: WRAP_OPENED_AT_HEIGHT is unset, so there is NO floor and "
+              "deposits that pre-date the desk (the reserve's own funding) will "
+              "be reported as wrap requests. The production value lives in "
+              "pcoin-wrapdesk-watch.service; run via systemd, or pass it "
+              "explicitly.", file=sys.stderr)
+
+    used_total = 0.0        # allocation consumed, summed across ALL addresses
+    # Same figure, broken down BY DEPOSIT ADDRESS. The desk maps a deposit
+    # address back to the account that requested it, so a per-account quota
+    # can be summed from this without the desk ever seeing the chain itself.
+    # These entries sum to used_total exactly -- same arithmetic, same refund
+    # exclusion -- so the two can never disagree about the same deposits.
+    per_addr = {}
+    # What has ALREADY gone out, read from the ledger rather than recomputed, plus
+    # what this run has instructed. A send is only instructed if it fits inside
+    # TOTAL_ALLOC once both are counted -- otherwise the desk re-promises the same
+    # allocation once per run, forever.
+    released_wpcn = 0.0
+    unknown_released = 0
+    for _k, _v in (st.get("seen") or {}).items():
+        if isinstance(_v, dict) and _v.get("released") and not _v.get("refunded"):
+            try:
+                _amt = float(_v.get("send_wpcn") or 0)
+            except (TypeError, ValueError):
+                _amt = 0.0
+            if _amt > 0:
+                released_wpcn += _amt
+            else:
+                # A release recorded before this field existed. Its amount is NOT
+                # zero, it is UNKNOWN -- and counting unknown as zero makes the
+                # allocation ceiling read as more headroom than the desk has, which
+                # is the one direction a safety limit must never err in. Charge it
+                # the maximum a single release could have been.
+                unknown_released += 1
+                released_wpcn += PER_PERSON * (1 - FEE_PCT / 100.0)
+    pledged_wpcn = 0.0      # instructed by THIS run
+    per_addr_wpcn = {}      # cumulative per depositor, across all their deposits
+    # Rebuilt from the chain every run, never accumulated -- it is what
+    # --released resolves an abbreviated txid against.
+    st["outstanding"] = {}
+    for watch_addr, requester in watch.items():
+        addr = get(f"{EXPLORER}/api/address/{watch_addr}")
+        who = (f"\nRequester BSC address: {requester}" if requester
+               else "\n(sent to the main reserve address directly)")
+        if addr is None:
+            # Cannot read this address. That is not "no wraps pending" -- say so
+            # and keep every existing task open.
+            tasks.append((f"unreadable:{watch_addr}", "warn",
+                          f"Could not read {watch_addr} on explorer.pc.am. "
+                          f"Wrap deposits there cannot be checked right now. "
+                          f"This is UNKNOWN, not 'nothing pending'.{who}"))
+            continue
+        conf_items = (addr.get("history") or {}).get("items") or []
+        pend_items = (addr.get("unconfirmed_history") or {}).get("items") or []
+
+        for it in pend_items:
+            txid = it.get("txid", "?")
+            amt = it.get("received_pcn", "?")
+            tasks.append((f"pending:{txid}", "info",
+                          f"WRAP REQUEST arriving: {amt} PCN, tx {txid[:16]}...\n"
+                          f"Unconfirmed. Nothing to do yet -- needs {CONFIRMATIONS} "
+                          f"confirmations before any wPCN is released."))
+
+        for it in conf_items:
+            txid = it.get("txid", "?")
+            confs = it.get("confirmations", 0)
+            amt = float(it.get("received_pcn") or 0)
+            if amt <= 0:
+                continue
+            h = it.get("height")
+            if not isinstance(h, int) or h <= OPENED_AT_HEIGHT:
+                continue          # pre-dates the desk: reserve funding, not a wrap
+            # Keyed on (txid, address), never txid alone. One PCoin transaction
+            # can pay several deposit addresses at once -- that is what a batch
+            # payout from an exchange looks like -- and this loop visits each
+            # address in turn. Keyed on txid alone, the first address's release
+            # marked the WHOLE transaction seen and the second customer's PCN
+            # arrived, was skipped in silence, and was never paid. CLAUDE.md 8c
+            # rule 1: every live rail shipped this wrong first, and so did this.
+            key = f"wrap:{txid}:{watch_addr}"
+            # A REFUNDED deposit is closed too, but it is not a release.
+            #
+            # The PCN went back to the sender and no wPCN was ever issued against it, so
+            # recording it as `released` would silence the alert correctly and corrupt the
+            # allocation at the same time -- the ceiling below counts released deposits as
+            # wPCN that went out. It is its own state.
+            if st["seen"].get(key, {}).get("released") or st["seen"].get(key, {}).get("refunded"):
+                continue
+            if CLOSED_AT_HEIGHT > 0 and h > CLOSED_AT_HEIGHT:
+                # Arrived after the desk shut. No wPCN is owed and none may be
+                # sent -- but the PCN is real and it is ours to give back. This
+                # is deliberately an ACTION, not an info line: a refund somebody
+                # has to make is not a thing to notice, it is a thing to do.
+                tasks.append((key, "action",
+                              "ARRIVED AFTER THE DESK CLOSED -- do NOT send wPCN\n"
+                              "%.2f PCN, tx %s...\n"
+                              "  TO REFUND  : %.2f PCN\n"
+                              "  depositor  : %s\n"
+                              "The desk closed at height %d; this landed at %d. Nothing is\n"
+                              "owed in wPCN. Send the PCN back to the address that sent it.\n"
+                              "WHEN REFUNDED, close it out or this repeats hourly forever:\n"
+                              "  pcoin-wrapdesk-watch --refunded %s:%s <pcoin_txid>"
+                              % (amt, txid[:16], amt,
+                                 requester or "(no request on file)",
+                                 CLOSED_AT_HEIGHT, h, txid, watch_addr)))
+                continue
+            if confs < CONFIRMATIONS:
+                tasks.append((key, "info",
+                              f"WRAP {amt:.2f} PCN, tx {txid[:16]}...\n"
+                              f"{confs}/{CONFIRMATIONS} confirmations. "
+                              f"Do NOT release wPCN yet -- the depth is the whole "
+                              f"defence against a reorg."))
+            else:
+                over = ""
+                eligible = amt
+                if amt > PER_PERSON:
+                    eligible = PER_PERSON
+                    over = (f"\n*** {amt:.0f} PCN EXCEEDS the {PER_PERSON:.0f} per-person "
+                            f"limit. Wrap only {PER_PERSON:.0f} and return the rest, "
+                            f"or decide deliberately to exceed it. ***")
+                # The fee is taken in wPCN NOT SENT, never in PCN returned. The
+                # reserve keeps the full deposit while fewer wPCN go out, so
+                # backing moves ABOVE 1:1 -- the only direction it may ever move.
+                fee = eligible * FEE_PCT / 100.0
+                net = eligible - fee
+                # ---- THE CEILING. Three independent checks; any one withholds the instruction.
+                # None of them trusts the arithmetic above.
+                #
+                #   1. per DEPOSITOR, not per deposit -- `eligible` caps a single payment, which
+                #      is what splitting 1500 into six 250s walked straight past.
+                #   2. against the WHOLE desk allocation, counting what already went out.
+                #   3. an absolute ceiling on any single instruction, derived from nothing.
+                #
+                # A breach does not quietly reduce the amount and send anyway: paying a customer
+                # less than they expect without saying so is its own incident. It withholds the
+                # instruction and names the limit, because deciding to exceed one belongs to a
+                # person who can see the whole picture.
+                prior_addr = per_addr_wpcn.get(watch_addr, 0.0)
+                hard_cap = PER_PERSON * (1 - FEE_PCT / 100.0)
+                breach = None
+                if prior_addr + net > hard_cap + 1e-9:
+                    breach = ("this depositor would reach %.2f wPCN across their deposits, over "
+                              "the %.2f a single person may receive (%.0f PCN less the %.0f%% fee)"
+                              % (prior_addr + net, hard_cap, PER_PERSON, FEE_PCT))
+                elif released_wpcn + pledged_wpcn + net > TOTAL_ALLOC + 1e-9:
+                    breach = ("the desk would reach %.2f wPCN against a %.0f wPCN allocation "
+                              "(%.2f already sent, %.2f pending earlier in this run)"
+                              % (released_wpcn + pledged_wpcn + net, TOTAL_ALLOC,
+                                 released_wpcn, pledged_wpcn))
+                elif net > MAX_SEND + 1e-9:
+                    breach = ("%.2f wPCN exceeds the %.2f ceiling on any single instruction"
+                              % (net, MAX_SEND))
+
+                if breach:
+                    tasks.append((key, "action",
+                                  "WITHHELD -- do NOT send wPCN for this deposit\n"
+                                  "%.2f PCN, tx %s...\n"
+                                  "  would send : %.2f wPCN\n"
+                                  "  TO         : %s\n"
+                                  "REASON: %s.\n"
+                                  "The PCN is safe in the reserve and nothing is lost by waiting. "
+                                  "Decide deliberately -- raise the limit, refund the excess, or "
+                                  "pay it and record why. Do not just follow the number above.\n"
+                                  "WHEN REFUNDED, close it out or this repeats hourly forever:\n"
+                                  "  pcoin-wrapdesk-watch --refunded %s:%s <pcoin_txid>"
+                                  % (amt, txid[:16], net,
+                                     requester or "(no request on file)", breach,
+                                     txid, watch_addr)))
+                    per_addr_wpcn[watch_addr] = prior_addr + net
+                    continue
+                per_addr_wpcn[watch_addr] = prior_addr + net
+                pledged_wpcn += net
+                # Computed outside the f-string: nesting quotes inside an
+                # f-string expression is a syntax error before Python 3.12.
+                pay_to = requester or ("(NO REQUEST ON FILE -- sent straight to "
+                                       "the reserve. Find out who before paying.)")
+                # Same composite key as `seen`, so --released's prefix match on
+                # the txid resolves to a key that already carries the address.
+                st["outstanding"][f"{txid}:{watch_addr}"] = {"pcn": amt, "send_wpcn": net,
+                                                             "to": requester, "address": watch_addr}
+                tasks.append((key, "action",
+                              f"ACTION: send {net:.2f} wPCN\n"
+                              f"{amt:.2f} PCN confirmed ({confs} confs), tx {txid[:16]}...\n"
+                              f"  eligible : {eligible:.2f} PCN\n"
+                              f"  fee {FEE_PCT:g}%  : {fee:.2f} wPCN (kept, not sent)\n"
+                              f"  SEND     : {net:.2f} wPCN\n"
+                              f"  TO       : {pay_to}\n"
+                              f"Send from the inventory wallet.{over}\n"
+                              f"{cycle_advice(amt)}"
+                              f"WHEN SENT, close it out or this repeats hourly forever:\n"
+                              f"  pcoin-wrapdesk-watch --released {txid}:{watch_addr} <bsc_txhash>"))
+
+        # accumulate this address's share of the allocation; reported once,
+        # after every address has been read, or the figure would be partial.
+        for it in conf_items:
+            h = it.get("height")
+            a = float(it.get("received_pcn") or 0)
+            if (isinstance(h, int) and h > OPENED_AT_HEIGHT and a > 0
+                    and not (CLOSED_AT_HEIGHT > 0 and h > CLOSED_AT_HEIGHT)):
+                # A REFUNDED deposit issued nothing, so it consumes no allocation.
+                # Counting it did the opposite of what an allocation ceiling is for: after
+                # five over-limit deposits were returned, this still read "1862.00 of 1500
+                # used, THE ALLOCATION IS EXHAUSTED" -- and the send ceiling reads the same
+                # idea, so the desk would have refused the next genuine customer on the
+                # strength of money it had already given back.
+                _k = f"wrap:{it.get('txid','?')}:{watch_addr}"
+                if not (st["seen"].get(_k, {}) or {}).get("refunded"):
+                    used_total += min(a, PER_PERSON) * (1 - FEE_PCT / 100.0)
+                    per_addr[watch_addr] = round(
+                        per_addr.get(watch_addr, 0.0)
+                        + min(a, PER_PERSON) * (1 - FEE_PCT / 100.0), 8)
+
+    if used_total > 0:
+        left = TOTAL_ALLOC - used_total
+        # TWO figures, and the operator needs the smaller one to plan against.
+        #
+        #   used_total     rebuilt from the chain each run: what actually went out
+        #                  and stayed out. Refunds are excluded, which is the point --
+        #                  see above, where returned money once read as EXHAUSTED and
+        #                  would have refused a real customer.
+        #
+        #   released_wpcn  what the SEND GATE below actually tests. A release recorded
+        #                  before send_wpcn existed has an unknown amount, and unknown
+        #                  is charged the maximum a release could have been, so this
+        #                  is always >= used_total.
+        #
+        # Reporting only the first told the operator 825.50 left while the gate would
+        # refuse past ~360. Neither number is wrong; showing only one of them was.
+        gate_left = TOTAL_ALLOC - released_wpcn
+        gap = ""
+        if released_wpcn > used_total + 0.01:
+            gap = ("\n  The send gate is stricter: %.2f used, %.2f left,"
+                   " because %d earlier release(s) predate the amount being recorded"
+                   " and are charged at the maximum. PLAN AGAINST THAT NUMBER -- it is"
+                   " the one that refuses."
+                   % (released_wpcn, gate_left, unknown_released))
+        tasks.append(("allocation",
+                      "action" if (left <= 0 or gate_left <= 0) else "info",
+                      f"Allocation: {used_total:.2f} of {TOTAL_ALLOC:.0f} wPCN used, "
+                      f"{left:.2f} left." + gap
+                      + ("\n*** THE ALLOCATION IS EXHAUSTED. Do not wrap more "
+                         "without deciding deliberately to raise it. ***"
+                         if left <= 0 else "")))
+
+    # ---- PUBLISH the allocation figure so the DESK can refuse on it -------
+    #
+    # The desk used to compute its own "committed" from REQUESTED amounts while
+    # this script computed "used" from what was actually DEPOSITED. Two numbers
+    # for one quantity, and they drifted the moment anyone sent more than they
+    # asked for: on 2026-09-09 the desk said 2000.00 and this said 2152.00,
+    # because one depositor sent 500 against a 250 request and another asked for
+    # 100 but sent 10. The desk was the more permissive of the two, which is the
+    # wrong way round for a ceiling.
+    #
+    # Deposits are what create the obligation, and only this script sees them, so
+    # it is the one that must publish the number. The desk reads it and refuses
+    # against it. Both figures are written because they answer different
+    # questions and the SMALLER headroom is the one to plan against:
+    #   used_wpcn      what actually went out and stayed out (refunds excluded)
+    #   released_wpcn  what the send gate tests; >= used_wpcn, because a release
+    #                  recorded before send_wpcn existed is charged at maximum
+    st["allocation"] = {
+        "per_address": per_addr,
+        "used_wpcn": round(used_total, 8),
+        "released_wpcn": round(released_wpcn, 8),
+        "total_alloc": TOTAL_ALLOC,
+        "at": int(time.time()),
+    }
+
+    # ---- 2. is the cycle worth running right now? -------------------------
+    price = get("https://price.pc.am")
+    pool = pool_price()
+    rate = (price or {}).get("serviceRate")
+    if rate is None:
+        tasks.append(("rate_unreadable", "warn",
+                      "Could not read price.pc.am. Cannot tell whether the buy-back "
+                      "cycle should be running. Do not guess -- check by hand before "
+                      "buying wPCN."))
+    elif pool and pool.get("price") is not None:
+        pp = float(pool["price"])
+        buys = keeper_buys()
+        if buys is False:
+            # The arithmetic is still worth printing -- it is the peg's
+            # temperature -- but it must not read as an instruction while
+            # buying is switched off by a standing decision.
+            side = "below" if pp < float(rate) else "at or above"
+            tasks.append(("cycle_off", "info",
+                          f"Pool ${pp:.6f} is {side} price.pc.am ${float(rate):.6f}. "
+                          f"Buying back is OFF (KEEPER_BUY=off) -- a standing decision "
+                          f"that the pool is allowed to fall on real selling. This is "
+                          f"the peg's temperature, not something to act on."))
+        elif buys is None:
+            tasks.append(("cycle_unknown", "warn",
+                          f"Pool ${pp:.6f} vs price.pc.am ${float(rate):.6f}, but the "
+                          f"keeper's KEEPER_BUY setting could NOT be read, so whether to "
+                          f"buy wPCN back is UNKNOWN. Check the unit before doing either."))
+        elif pp < float(rate):
+            tasks.append(("cycle_open", "info",
+                          f"Cycle is OPEN: pool ${pp:.6f} is below price.pc.am "
+                          f"${float(rate):.6f}. Buying wPCN back is profitable and "
+                          f"pushes the peg the right way."))
+        else:
+            tasks.append(("cycle_shut", "info",
+                          f"Cycle is SHUT: pool ${pp:.6f} is at or above price.pc.am "
+                          f"${float(rate):.6f}. Do NOT buy wPCN back -- it would cost "
+                          f"more than the PCN you sold."))
+    else:
+        # THIS BRANCH IS LOAD-BEARING. Without it, a readable rate plus an
+        # unreadable pool appended NOTHING -- the script printed only "nothing
+        # outstanding" and looked perfectly healthy while it was blind. That is
+        # exactly the failure this project has a rule against: unknown must be
+        # its own state, never silence that reads as fine.
+        tasks.append(("pool_unreadable", "warn",
+                      "Could not read the PancakeSwap pair reserves, so the pool "
+                      "price is UNKNOWN. Cannot say whether the buy-back cycle "
+                      "should be running -- do not assume either direction. "
+                      "Check the pair by hand before buying or selling wPCN."))
+
+    # ---- 3. report, nagging only what is actionable -----------------------
+    actions = [t for t in tasks if t[1] == "action"]
+    warns = [t for t in tasks if t[1] == "warn"]
+
+    for key, urgency, text in tasks:
+        print(f"[{urgency}] {text}\n")
+
+    due = []
+    for key, urgency, text in actions + warns:
+        last = st["nagged"].get(key, 0)
+        if now - last >= NAG_SECONDS:
+            due.append((key, text))
+
+    if due:
+        body = "\n\n".join(t for _, t in due)
+        body += (f"\n\n---\nThis repeats every {NAG_SECONDS//60} minutes until the "
+                 f"chain shows it done. Nothing here is marked complete by hand.")
+        notify(f"wrap desk: {len(due)} thing(s) need you", body)
+        for key, _ in due:
+            st["nagged"][key] = now
+
+    save_state(st)
+
+    if actions:
+        print(f"UNHEALTHY: {len(actions)} wrap action(s) outstanding")
+        return 1
+    if warns:
+        print(f"UNVERIFIED: {len(warns)} thing(s) could not be checked")
+        return 2
+    # "Nothing outstanding" means no ACTION is due -- but a wrap still
+    # confirming is very much something happening, and a summary line that
+    # reads as "all quiet" while a customer is mid-wrap invites an operator to
+    # skim past it. Say what is in flight.
+    inflight = [t for t in tasks if t[1] == "info" and t[0].startswith(("wrap:", "pending:"))]
+    if inflight:
+        print(f"wrap desk: no action due, {len(inflight)} wrap(s) still confirming")
+    else:
+        print("wrap desk: nothing outstanding")
+    return 0
+
+
+if __name__ == "__main__":
+    # --released is the ONE manual override, and it has to exist.
+    #
+    # The docstring above says nothing is marked done by a human saying so, and
+    # for every step that a chain can answer, that holds. This step it cannot:
+    # the wPCN goes out on BNB Smart Chain from a wallet this script has no
+    # view of, and even seeing that balance fall would not prove WHICH wrap it
+    # settled. So a person records it -- with the BSC transaction hash, so the
+    # claim stays checkable afterwards.
+    #
+    # Without this the loop never closes: a confirmed wrap is re-reported every
+    # hour forever, including after it is paid. That is how pcoin-concentration
+    # -watch taught everyone to ignore the channel, and an alert nobody reads is
+    # worse than no alert, because it looks like coverage.
+    # --refunded closes a deposit that was PAID BACK rather than wrapped.
+    #
+    # Over-limit deposits are returned, not wrapped -- the desk's own FAQ has always
+    # said so. But the watcher reads RECEIVE history, not the current balance, so
+    # sending the PCN back does not make the deposit stop appearing: it would be
+    # re-reported every hour forever, exactly like an unpaid one. Refunding without
+    # this leaves five permanent alerts behind.
+    #
+    # Deliberately not --released. That marks wPCN as issued, which would then count
+    # against the allocation ceiling for tokens that were never minted.
+    if len(sys.argv) >= 3 and sys.argv[1] == "--refunded":
+        s = load_state()
+        txid = sys.argv[2]
+        if txid.startswith("wrap:"):
+            txid = txid[5:]
+        if ":" not in txid:
+            print(f"REFUSED: {txid!r} has no address part. Use <txid>:<deposit-address>, "
+                  f"copied from the WITHHELD alert.")
+            sys.exit(2)
+        key = f"wrap:{txid}"
+        s.setdefault("seen", {}).setdefault(key, {})
+        s["seen"][key]["refunded"] = True
+        s["seen"][key]["at"] = int(time.time())
+        s["seen"][key]["refund_txid"] = sys.argv[3] if len(sys.argv) > 3 else None
+        save_state(s)
+        print(f"marked refunded: {key}")
+        if len(sys.argv) <= 3:
+            print("NOTE: no PCoin txid recorded. Re-run with it so the refund stays "
+                  "checkable against the chain later.")
+        sys.exit(0)
+
+
+    if len(sys.argv) >= 3 and sys.argv[1] == "--released":
+        s = load_state()
+        txid = sys.argv[2]
+        if txid.startswith("wrap:"):
+            txid = txid[5:]
+
+        # RESOLVE A PREFIX, AND REFUSE WHAT DOES NOT MATCH.
+        #
+        # The alert header abbreviates the txid ("tx 9727cf9b4ecdf5e8..."), so
+        # an operator copying from the wrong line records a key that matches no
+        # wrap at all. That writes cleanly, prints success, and changes nothing
+        # -- the wrap keeps being reported hourly and the operator believes it
+        # is closed. A silent no-op that looks like success is the worst of the
+        # available failures, so this resolves prefixes and refuses the rest.
+        outstanding = list((s.get("outstanding") or {}).keys())
+        hits = [t for t in outstanding if t.startswith(txid)]
+        if len(hits) == 1:
+            txid = hits[0]
+        elif len(hits) > 1:
+            print(f"AMBIGUOUS: {txid!r} matches {len(hits)} outstanding wraps.")
+            for t in hits:
+                print(f"  {t}")
+            sys.exit(2)
+        elif outstanding and txid not in outstanding:
+            print(f"NO MATCH: {txid!r} is not an outstanding wrap. Nothing changed.")
+            print("Outstanding right now:")
+            for t in outstanding:
+                print(f"  {t}")
+            sys.exit(2)
+
+        # The resolved value is now "<txid>:<address>" (taken from outstanding),
+        # never a bare txid. If outstanding was empty and the operator typed a
+        # bare txid, it falls through to here unresolved -- refuse rather than
+        # write an old-format key, which load_state would then refuse on the
+        # next run and which could never match a real deposit again.
+        if ":" not in txid:
+            print(f"REFUSED: {txid!r} has no address part. A released wrap is recorded "
+                  f"as <txid>:<deposit-address>; copy the key from the ACTION alert, "
+                  f"or give a txid prefix that resolves against an outstanding wrap.")
+            sys.exit(2)
+        key = f"wrap:{txid}"
+        s.setdefault("seen", {}).setdefault(key, {})
+        s["seen"][key]["released"] = True
+        s["seen"][key]["at"] = int(time.time())
+        s["seen"][key]["bsc_txhash"] = sys.argv[3] if len(sys.argv) > 3 else None
+        # Also record the AMOUNT that went out. Without it the allocation ceiling has
+        # no idea what the desk has already committed, and a missing figure is read as
+        # the maximum rather than as zero -- correct, but needlessly pessimistic once
+        # the real number is knowable. `outstanding` is rebuilt from the chain each run
+        # and is keyed exactly like this, so the figure comes from the same place the
+        # operator was told to send.
+        _out = (s.get("outstanding") or {}).get(txid) or {}
+        try:
+            _sent = float(_out.get("send_wpcn") or 0)
+        except (TypeError, ValueError):
+            _sent = 0.0
+        if _sent > 0:
+            s["seen"][key]["send_wpcn"] = _sent
+        save_state(s)
+        print(f"marked released: {key}")
+        if len(sys.argv) <= 3:
+            print("NOTE: no BSC txhash recorded. Re-run with it so the payment "
+                  "can be verified later.")
+        sys.exit(0)
+    sys.exit(main())

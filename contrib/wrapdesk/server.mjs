@@ -71,6 +71,12 @@ function intakeClosed() {
   try { return readFileSync(CLOSED_FILE, 'utf8'); }
   catch { return null; }          // absent = open
 }
+// Shown in place of the request form while the desk is closed.
+const CLOSED_FORM_NOTE = `<div class="card"><p class="muted" style="margin:0">
+The request form is hidden while the desk is closed, so there is nothing to fill
+in. <b>Nothing you have already sent is affected</b> &mdash; follow anything still
+confirming on the <a href="/track">track page</a>.</p></div>`;
+
 // pcoin-wrapdesk-watch's ledger. READ-ONLY here, and its absence is tolerated:
 // this desk must keep taking requests if the watcher has not run yet.
 const WATCH_STATE = process.env.WRAPDESK_WATCH_STATE || '/var/lib/pcoin-wrapdesk/state.json';
@@ -545,14 +551,20 @@ ${intakeClosed() !== null ? `<div class="card" style="border-left:4px solid #e54
 <p><b>Nothing you are already owed is affected.</b> Every wrap that reached 100
 confirmations has been paid, and anything still confirming will be paid the same
 way.</p>
+<p><b>Do not send any more PCN to your deposit address.</b> Those addresses
+are no longer wrapped. PCN that arrives at one now is <b>returned, not
+converted</b> &mdash; by a person, which takes time. This applies even though the
+address still belongs to you and still works on the chain.</p>
+<p><b>Going the other way still works.</b> wPCN &rarr; PCN is open as normal:
+<a href="/redeem">redeem your wPCN</a> and the PCN is sent to you.</p>
 <p>You can still buy and sell wPCN on PancakeSwap (wPCN/USDT), and buy PCN
 directly at <a href="https://market.pc.am">market.pc.am</a>.</p>
 </div>` : ''}
-<h1>Turn PCN into wPCN</h1>
+${intakeClosed() !== null ? '' : `<h1>Turn PCN into wPCN</h1>
 <p class="lead">wPCN is PCoin wrapped as a BEP-20 on BNB Smart Chain, so it can
-trade on PancakeSwap. Backed 1:1 by the PCN you send.</p>
+trade on PancakeSwap. Backed 1:1 by the PCN you send.</p>`}
 ${msg}
-<div class="card"><form method="POST" action="/request">
+${intakeClosed() !== null ? CLOSED_FORM_NOTE : `<div class="card"><form method="POST" action="/request">
 <label>Your BSC address — where the wPCN will be sent. Use a wallet <b>you</b>
 control (MetaMask, or any wallet that lets you add a custom BEP-20 token).
 <b>Never an exchange deposit address</b> — no exchange lists wPCN, so it could
@@ -564,12 +576,12 @@ not credit you.</label>
  max="${PER_PERSON}" placeholder="e.g. 100" required>
 ${HCAPTCHA_ON ? `<div class="h-captcha" data-sitekey="${HCAPTCHA_SITEKEY}" data-theme="dark" style="margin:.9rem 0"></div>` : ''}
 <button type="submit">Get my deposit address</button>
-</form></div>
+</form></div>`}
 
 <h2>How it works</h2><div class="card"><ol class="steps">
 <li>You give your BSC address and an amount.</li>
 <li>You get a PCoin deposit address that is <b>yours alone</b>.</li>
-<li>You send PCN to it — any amount up to ${PER_PERSON}, any number of times.</li>
+<li>You send PCN to it — any amount up to ${PER_PERSON}, any number of times.${intakeClosed() !== null ? ' <b>Not while the desk is closed: an address that receives PCN now has it returned, not wrapped.</b>' : ''}</li>
 <li>After <b>${CONFIRMATIONS} confirmations</b> (~${WAIT_H}&nbsp;h) a person sends your wPCN.</li>
 </ol><p class="muted" style="margin:.6rem 0 0">Track it at any point on the
 <a href="/track">track page</a> using your deposit address.</p>
@@ -1346,7 +1358,7 @@ createServer(async (req, res) => {
       return send(200, page('Your deposit address', '/', `
 <h1>Send PCN to this address</h1>
 <div class="card"><p class="muted">Your deposit address — <b>yours alone</b>, and
-reusable. Send to it any time.</p>
+reusable. Send to it any time.${intakeClosed() !== null ? ' <b style="color:#e5484d">The desk is closed: PCN sent now is returned, not wrapped.</b>' : ''}</p>
 <p><code style="font-size:1.06rem">${esc(r.address)}</code></p></div>
 <div class="card"><table>
 <tr><th>You send</th><td>${esc(String(amount))} PCN</td></tr>
