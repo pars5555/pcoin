@@ -12,9 +12,18 @@ import { immediate } from './db.mjs';
 import { nowSec } from './time.mjs';
 import { log, errFields, chatTag } from './log.mjs';
 
-// Between deletes. Measured 2026-09-13: seven deletes fired ~335ms apart all
-// returned 400; the same ids spaced out returned 204.
-export const DELETE_PACING_MS = 1500;
+// Between deletes.
+//
+// Was 1500ms, to work around a provider bug: measured 2026-09-13, seven deletes
+// fired ~335ms apart ALL returned 400, and the same ids spaced out returned 204.
+// OonaCode fixed that, and it is re-measured 2026-09-17: six deletes issued back
+// to back, with no pacing at all, every one 204.
+//
+// Not dropped to zero. A small gap costs nothing here -- a session lives 24h and
+// nothing about this sweep is urgent -- and it keeps the sweeper from behaving
+// like a burst against a shared endpoint. What it no longer does is crawl: at
+// 1500ms a twenty-session backlog took half a minute.
+export const DELETE_PACING_MS = 250;
 
 // The session this chat is CURRENTLY bound to.
 //

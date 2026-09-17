@@ -1443,9 +1443,29 @@ async function runTurnStreamed({ chatId, updateId, row, upstream, priceRow, isFr
           log.warn('message_start carried no usable input count; the early-abort guard is INERT on this gateway '
             + '-- an under-quoted input can only be caught at settle time, where it is billed in full');
         }
+        // CACHING IS EXPECTED, AND IT IS THE THING THAT MAKES A REPEATED PROMPT
+        // CHEAP. This used to be logged as an ERROR -- "billing blind" -- which
+        // was backwards: it fired on the normal, desirable case.
+        //
+        // Measured 2026-09-17 on a fresh agent session, three identical turns:
+        //   turn 1  input 17,469  cache_read 0       -> 2.947 credits
+        //   turn 2  input 126     cache_read 17,408  -> 0.086 credits
+        //   turn 3  input 108     cache_read 17,472  -> 0.083 credits
+        // The big system prompt is charged fresh ONCE and read from cache after,
+        // so turn 2 costs about 34x less than turn 1.
+        //
+        // On THIS path we price `input_tokens` and `output_tokens` ourselves,
+        // and Anthropic's `input_tokens` EXCLUDES cache reads -- so a cached
+        // turn bills the user only the small fresh part and nothing at all for
+        // the cached portion. That is conservative: we under-charge, never
+        // over-charge, and no customer is harmed by it. Whether to bill cache
+        // reads at their own lower rate is a pricing decision, not a bug.
+        //
+        // Still logged, because a change in this behaviour should be visible
+        // rather than inferred from a bill.
         if (ev.cacheRead !== 0 || ev.cacheCreation !== 0) {
-          log.error('gateway cached without being asked; billing blind on this model',
-            { model: row.model, read: ev.cacheRead, write: ev.cacheCreation });
+          log.info('gateway served part of the input from cache; that part is not billed to the user',
+            { model: row.model, read: ev.cacheRead, write: ev.cacheCreation, billedInput: ev.inputTokens });
         }
       } else if (ev.type === 'text') {
         // The marker goes on AFTER the provider's counts are taken, so it can
