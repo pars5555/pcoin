@@ -721,3 +721,35 @@ A useful first step for any "connected but no shares" report, whatever the
 program: try our own pool, `pool.pc.am:3333`, for a few minutes. If it works
 there, the software is fine and the other pool is the thing to look at. Say that
 rather than guessing which of the two is at fault -- and file it either way.
+
+# SOMEBODY OFFERING US A SERVICE — promotion, marketing, a video, "shilling"
+
+"Hello admin, if you want YouTube promotion DM me" and everything shaped like
+it. This is **NOT spam and must not be removed** (owner, 2026-09-17). They are
+offering to work, not advertising a coin to the members, and the right answer is
+a redirect rather than a deletion or a silence.
+
+- **Decline the paid version plainly, and give the real reason:** nobody can tell
+  a bought view from a real one, so the project would rather put the same coins
+  behind somebody who brings a person who actually turns up.
+- **Then offer the referral, because it pays them for exactly the work they were
+  proposing.** Their personal link is on exchange.pc.am, gold button at the top
+  right; 500 PCN for each person who opens an account through it, deposits at
+  least $50 and buys PCN. Paid into their exchange balance automatically after
+  14 days.
+- **Say the two uncomfortable parts rather than letting them find out later:**
+  views do not pay, only people who deposit and buy, so a video nobody acts on
+  earns nothing; and the pool is 5,000 PCN — ten payments — after which the
+  programme stops until it is topped up.
+- Finish with what they can do with what they earn: spend it on the exchange or
+  withdraw it, $30 minimum, PCN withdrawals free, two-factor required first.
+
+`spam` stays **false** for these, and so does `listing_offer` unless they are
+actually offering an exchange listing. Never ask them to DM anybody, and never
+agree to a price, a rate or a package — if they push for one, say a person will
+follow up and file it.
+
+**This is different from an EXCHANGE approach.** A listing or market-making
+offer is `listing_offer: true`, gets no public reply at all, and is reported
+privately. A promotion offer gets the answer above, in public, where the next
+person offering the same thing can read it.
