@@ -255,10 +255,9 @@ MAX_ANSWER_CHARS = int(os.environ.get("ANSWER_MAX_CHARS", "2000"))
 
 FORBIDDEN = [
     (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "an IP address"),
-    (re.compile(r"(?i)\b(?:/opt/|/etc/|/var/lib/|/usr/local/|/var/www/)"), "a server path"),
+    (re.compile(r"(?i)(?<![\w/])(?:/opt/|/etc/|/var/lib/|/usr/local/|/var/www/)"), "a server path"),  # \b NEVER MATCHED HERE: there is no word boundary between a space and a slash, so this rule only ever fired on the useless case (a/opt/x) and missed every real one (it is in /opt/x). Broken in all 11 backups; found 2026-09-17 by a test that asserted the rule FIRES, rather than one that asserted an answer passed.
     (re.compile(r"(?i)\b(systemctl|journalctl|ssh\s+root|sudo\s|crontab|docker\s|pm2\s)"), "a server command"),
     (re.compile(r"(?i)\b(bearer\s+[\w\-.]{12,}|api[_-]?key\s*[:=]|token\s*[:=])"), "a credential"),
-    (re.compile(r"\$0\.0\d{3,}"), "a live PCN rate"),
     (re.compile(r"(?i)\b(seed phrase|recovery phrase)\b.{0,40}\b(is|:)\s*\w+\s+\w+\s+\w+"), "a phrase"),
 
     # --- added 2026-09-13, rule 7: never describe how any of this is run ---
@@ -284,6 +283,40 @@ FORBIDDEN = [
 ]
 
 
+# Rates that are TRUE RIGHT NOW, filled in from pcoin-facts at the start of a
+# run. Empty means we could not read them -- and then no rate may be quoted.
+NL = chr(10)
+LIVE_RATES = []
+
+
+def rate_is_live(found):
+    """Is this dollar figure one we actually read from a live source just now?
+
+    THE OLD RULE BANNED EVERY RATE, and it had to: the bot was quoting numbers
+    out of its prompt, and the prompt went stale the moment an admin changed a
+    setting. Now the bot is GIVEN the live figures, so the useful question is
+    no longer "is this a rate" but "is this THE rate". An invented or
+    remembered price is still held; the true one goes out.
+
+    Tolerance is relative, because a model legitimately renders 0.03150784 as
+    0.0315 and both are honest. It is deliberately tight -- a wrong price that
+    happens to be close is still a wrong price.
+    """
+    if not LIVE_RATES:
+        return False
+    try:
+        v = float(found.replace("$", "").strip())
+    except ValueError:
+        return False
+    for good in LIVE_RATES:
+        if good and abs(v - good) <= max(good * 0.02, 1e-9):
+            return True
+    return False
+
+
+RATE_RE = re.compile(r"\$\s?0\.0\d{3,}")
+
+
 def guard(text):
     """Return the reason this draft must not be posted, or None.
 
@@ -299,6 +332,9 @@ def guard(text):
         # it looks like an answer and is not one.
         return ("it ran to %d characters, over the %d-character limit for one "
                 "message" % (len(t), MAX_ANSWER_CHARS))
+    for found in RATE_RE.findall(text):
+        if not rate_is_live(found):
+            return 'a PCN rate we did not read live (%s)' % found.strip()
     for rx, why in FORBIDDEN:
         if rx.search(t):
             return why
@@ -683,6 +719,46 @@ def main():
             system = fh.read()
     except OSError as e:
         sys.exit("cannot read the prompt at %s: %s" % (PROMPT, e))
+
+    # LIVE FACTS. Read-only, public sources only -- see pcoin-facts. This is
+    # what stops the bot answering out of a prompt that went stale: every
+    # setting an admin can change from a web page is read at answer time
+    # instead of remembered.
+    #
+    # A failure here is NOT fatal, and must not be: the bot can still answer
+    # the many questions that are not about a number, and pcoin-facts prints
+    # its own UNREADABLE lines, which tell the model to decline rather than
+    # guess. What a failure DOES do is leave LIVE_RATES empty, so no rate can
+    # be quoted at all -- silence about a price beats a stale price.
+    try:
+        facts = subprocess.run(["/usr/local/bin/pcoin-facts"],
+                               capture_output=True, text=True, timeout=45)
+        if facts.stdout.strip():
+            system = system + NL + NL + facts.stdout.strip()
+        blob = subprocess.run(["/usr/local/bin/pcoin-facts", "--json"],
+                              capture_output=True, text=True, timeout=45)
+        d = json.loads(blob.stdout).get("data", {})
+        p = d.get("price") or {}
+        x = d.get("exchange") or {}
+        stx = x.get("stats") or {}
+        la = d.get("ladder") or {}
+        pool = p.get("pool") or {}
+        for v in (p.get("creditRateUsd"), p.get("sellPriceUsd"),
+                  pool.get("spotUsd"), pool.get("medianUsd"),
+                  stx.get("bestBidUsd"), stx.get("bestAskUsd"),
+                  stx.get("lastPriceUsd"), stx.get("highUsd"), stx.get("lowUsd"),
+                  la.get("marginalPrice")):
+            try:
+                if v is not None:
+                    LIVE_RATES.append(float(v))
+            except (TypeError, ValueError):
+                pass
+        print("live facts: %d chars, %d quotable rates%s"
+            % (len(facts.stdout), len(LIVE_RATES),
+               "" if facts.returncode == 0 else " (some sources unreadable)"))
+    except Exception as e:
+        print("live facts UNAVAILABLE (%s) -- no rate may be quoted this run"
+            % type(e).__name__)
 
     tg = conf(ALERT_CONF).get("TELEGRAM_TOKEN", "")
     if live and not tg:

@@ -87,10 +87,10 @@ def telegram(text, reply_to, dry):
     print("posted t.me/PCoinPCNChat/%s" % r["result"]["message_id"])
 
 
-def discord(text, reply_to, dry):
+def discord(text, reply_to, dry, channel=None):
     c = conf(DISCORD_CONF)
     token = c.get("DISCORD_BOT_TOKEN")
-    chan = c.get("DISCORD_CHAT_CHANNEL_ID")
+    chan = channel or c.get("DISCORD_CHAT_CHANNEL_ID")
     if not token or not chan:
         sys.exit("DISCORD_BOT_TOKEN or DISCORD_CHAT_CHANNEL_ID missing from %s" % DISCORD_CONF)
     if dry:
@@ -119,6 +119,9 @@ def main():
     ap.add_argument("--file", help="read the message from this file instead")
     ap.add_argument("--reply-to", dest="reply_to", help="message id to reply to")
     ap.add_argument("--discord", action="store_true", help="post to Discord, not Telegram")
+    ap.add_argument("--channel", help="Discord channel id to post in; default is the "
+                                      "configured chat channel. A reply MUST go in the "
+                                      "same channel as the message it answers.")
     ap.add_argument("--dry-run", dest="dry", action="store_true",
                     help="print exactly what would be sent and send nothing")
     a = ap.parse_args()
@@ -131,7 +134,12 @@ def main():
     if len(text) > 4000:
         sys.exit("that is %d characters; Telegram refuses over 4096 and the group "
                  "deserves shorter than that anyway" % len(text))
-    (discord if a.discord else telegram)(text, a.reply_to, a.dry)
+    if a.discord:
+        discord(text, a.reply_to, a.dry, a.channel)
+    else:
+        if a.channel:
+            sys.exit("--channel is a Discord option; Telegram replies go to the group")
+        telegram(text, a.reply_to, a.dry)
 
 
 if __name__ == "__main__":

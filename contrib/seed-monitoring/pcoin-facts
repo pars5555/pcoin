@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""Live PCoin facts for the answer bot, read-only by construction.
+
+WHY THIS EXISTS. Every number in the answer bot's prompt is a setting that lives
+somewhere else, and the prompt goes stale silently. It has already published
+wrong facts in the group -- a referral of 200 PCN when the live setting was 500,
+a $100 daily withdrawal cap when the live cap was $50, and a denial that the pool
+bounty existed 51 minutes after that bounty was announced. A prompt cannot be the
+source of truth for a number an admin can change from a web page.
+
+So the bot no longer remembers these figures. It reads them, here, at answer time.
+
+READ-ONLY BY CONSTRUCTION, NOT BY PROMISE. This tool performs HTTP GET against
+public, unauthenticated endpoints and nothing else. It holds no credential, no
+API key and no SSH identity, so there is no privilege here to misuse: it cannot
+write, delete, edit or approve anything, even if something asked it to. That is a
+deliberate choice over the alternative -- handing the model a credentialed tool
+and trusting it to only read -- because read-only enforced by a request method is
+a mechanism, and read-only enforced by an instruction is a wish. This estate has
+already watched a survey agent run a write against a live database it had been
+asked to only read.
+
+A SOURCE THAT CANNOT BE READ SAYS SO. Every failure is reported as UNREADABLE and
+never as absence, zero, or a remembered value. This is the estate's oldest rule
+(CLAUDE.md 7.1, 7.2, and 8c rule 3): an unanswerable question must not collapse
+into a confident answer. A bot that says "I cannot read the current fee right
+now" is useful; one that invents a fee is the reason the bot was switched off.
+
+NOTHING PER-USER IS EXPOSED HERE, AND NOTHING SHOULD BE ADDED. Every field below
+is something we already publish on a public web page. Balances, deposits,
+addresses, e-mail addresses and withdrawal rows are deliberately absent: the
+answer bot posts into a PUBLIC group, so a tool that could read one person's
+balance is one careless question away from publishing it.
+
+    pcoin-facts            the block that goes into the prompt
+    pcoin-facts --json     the same data, machine readable
+    pcoin-facts --refresh  ignore the cache
+
+Cache: /var/lib/pcoin-facts/cache.json, at most CACHE_SECONDS old, so a busy
+minute in the group cannot become a burst against price.pc.am.
+"""
+import json
+import os
+import sys
+import time
+import urllib.request
+
+CACHE = "/var/lib/pcoin-facts/cache.json"
+CACHE_SECONDS = 60
+TIMEOUT = 12
+
+# Every one of these is public and unauthenticated. If a future source needs a
+# credential, it does NOT belong in this tool -- put it behind the admin panel
+# and keep this one powerless.
+SOURCES = {
+    "exchange": "https://exchange.pc.am/api/public",
+    "price": "https://price.pc.am/",
+    "chain": "https://explorer.pc.am/api/status",
+    "ladder": "https://market.pc.am/api/ladder/state",
+}
+
+
+def get(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "pcoin-facts"})
+    # ONE retry. A single dropped connection from a busy box is not an outage,
+    # but a source that fails twice really is unreadable and must say so rather
+    # than be retried forever into silence.
+    last = None
+    for attempt in (1, 2):
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+                return json.load(r), None
+        except Exception as e:
+            last = e
+            if attempt == 1:
+                time.sleep(1)
+    return None, "%s: %s" % (type(last).__name__, str(last)[:80])
+
+
+def collect():
+    out, errs = {}, {}
+    for name, url in SOURCES.items():
+        d, err = get(url)
+        if err:
+            errs[name] = err
+        else:
+            out[name] = d
+    return {"at": int(time.time()), "data": out, "unreadable": errs}
+
+
+def cached(refresh=False):
+    if not refresh:
+        try:
+            c = json.load(open(CACHE, encoding="utf-8"))
+            if time.time() - c.get("at", 0) < CACHE_SECONDS:
+                return c
+        except Exception:
+            pass
+    c = collect()
+    try:
+        os.makedirs(os.path.dirname(CACHE), exist_ok=True)
+        tmp = CACHE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(c, fh)
+        os.replace(tmp, CACHE)
+    except Exception:
+        pass
+    return c
+
+
+def n(v, dp=None):
+    """Render a number without inventing precision, and never render None as 0."""
+    if v is None:
+        return "unknown"
+    try:
+        f = float(v)
+    except Exception:
+        return str(v)
+    return ("%%.%df" % dp) % f if dp is not None else ("%g" % f)
+
+
+def block(c):
+    d, bad = c["data"], c["unreadable"]
+    out = []
+    age = int(time.time() - c["at"])
+    out.append("LIVE FACTS (read %ds ago -- these OVERRIDE any figure written in this prompt)" % age)
+
+    if "chain" in bad:
+        out.append("CHAIN: UNREADABLE (%s) -- do not state a height or a difficulty." % bad["chain"])
+    else:
+        ch = d["chain"]
+        cc, ix = ch.get("chain", {}), ch.get("index", {})
+        out.append("CHAIN: height %s, difficulty %s, %s transactions so far, node peers %s."
+                   % (cc.get("height"), n(cc.get("difficulty")), cc.get("tx_count"),
+                      ix.get("node_connections")))
+
+    if "price" in bad:
+        out.append("PRICE: UNREADABLE (%s) -- say you cannot read the rate right now." % bad["price"])
+    else:
+        p = d["price"]
+        pool = p.get("pool") or {}
+        out.append("PRICE: credit rate $%s per PCN. This is what the AI services CREDIT, and it "
+                   "is not a market price. Ladder sell price $%s. wPCN pool spot $%s."
+                   % (n(p.get("creditRateUsd"), 6), n(p.get("sellPriceUsd"), 6),
+                      n(pool.get("spotUsd"), 6)))
+        out.append("BUYBACK: %s. The project itself does not buy PCN back at price.pc.am."
+                   % ("OPEN" if p.get("buybackOpen") else "closed"))
+
+    if "exchange" in bad:
+        out.append("EXCHANGE: UNREADABLE (%s) -- do not quote a fee, a limit or a cap." % bad["exchange"])
+    else:
+        x = d["exchange"]
+        f = x.get("fees", {})
+        lim = x.get("limits", {})
+        w = x.get("withdrawals", {})
+        hb = x.get("houseBid", {})
+        st = x.get("stats", {})
+        ref = x.get("referral", {})
+        out.append("EXCHANGE exchange.pc.am is %s. This is where PCN can actually be sold for "
+                   "dollars. Trading fee %s%% per side. Order size $%s to $%s, at most %s PCN."
+                   % ("OPEN" if x.get("exchangeOpen") else "CLOSED",
+                      f.get("tradePercentEachSide"), n(lim.get("minOrderUsd"), 2),
+                      n(lim.get("maxOrderUsd"), 2), n(lim.get("maxOrderPcn"), 0)))
+        out.append("WITHDRAWALS: minimum $%s, paid by hand within %s hours. Fees: USDT on TRON "
+                   "$%s, USDT on BNB Smart Chain $%s, PCN %s. Two-factor is required first."
+                   % (n(w.get("minimumUsd"), 2), w.get("turnaroundHours"),
+                      n(w.get("feeTrc20Usd"), 2), n(w.get("feeBep20Usd"), 2),
+                      "free" if str(w.get("feePcn")) in ("0", "0.0") else w.get("feePcn")))
+        out.append("ORDER BOOK NOW: best bid $%s, best ask $%s, last trade $%s, 24h volume %s PCN "
+                   "across %s trades."
+                   % (n(st.get("bestBidUsd"), 6), n(st.get("bestAskUsd"), 6),
+                      n(st.get("lastPriceUsd"), 6), n(st.get("volumePcn"), 0),
+                      st.get("trades24h")))
+        out.append("HOUSE BID BOT: %s, budget $%s a day, $%s left today%s."
+                   % ("on" if hb.get("enabled") else "off", n(hb.get("dailyBudgetUsd"), 2),
+                      n(hb.get("leftTodayUsd"), 2),
+                      ", spent out for today" if hb.get("spentOut") else ""))
+        if ref.get("enabled"):
+            out.append("REFERRAL: %s PCN, paid once the person you introduced deposits at least "
+                       "$%s and buys, held %s days."
+                       % (n(ref.get("rewardPcn"), 0), n(ref.get("minDepositUsd"), 2),
+                          ref.get("holdDays")))
+
+    if "ladder" in bad:
+        out.append("MARKET.PC.AM: UNREADABLE (%s)" % bad["ladder"])
+    else:
+        la = d["ladder"]
+        out.append("MARKET.PC.AM ladder: $%s per PCN, %s PCN left of %s, orders $%s to $%s."
+                   % (n(la.get("marginalPrice"), 6), n(la.get("remainingPcn"), 0),
+                      n(la.get("totalPcn"), 0), n(la.get("minOrderUsd"), 0),
+                      n(la.get("maxOrderUsdNow"), 0)))
+
+    if bad:
+        out.append("NOTE: %d source(s) could not be read this time. For anything they cover, say "
+                   "you cannot check it right now. Do NOT fall back on a number from memory."
+                   % len(bad))
+    return "\n".join(out)
+
+
+def main():
+    c = cached(refresh="--refresh" in sys.argv)
+    if "--json" in sys.argv:
+        print(json.dumps(c, indent=1))
+    else:
+        print(block(c))
+    # Exit 1 when nothing at all could be read, so a caller that checks only the
+    # status can tell "every source is down" from "here are the facts".
+    return 1 if not c["data"] else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
