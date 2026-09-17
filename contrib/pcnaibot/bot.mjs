@@ -1318,9 +1318,14 @@ async function runTurnAgentic({ chatId, updateId, model, text, resv, attachments
         shown += ev.delta;
         await draft.maybePush(render());
       } else if (ev.type === 'tool') {
-        // `tool.finished` does not reliably carry the tool's name -- observed
-        // arriving as the literal "tool" -- so only `started` sets the status,
-        // and finishing simply clears it.
+        // Only `started` sets the status; finishing simply clears it.
+        //
+        // That was originally a workaround -- `tool.finished` had been observed
+        // arriving with the literal "tool" instead of the tool's name. Re-probed
+        // 2026-09-17 against the raw stream and it now carries `"name":"Bash"`
+        // correctly, so the workaround is no longer load-bearing. Kept anyway,
+        // because it is also just the right shape: the verb belongs on screen
+        // while the tool RUNS, and the answer replaces it when it is done.
         activity = ev.phase === 'started' ? toolVerb(ev.name) : null;
         await draft.maybePush(render());
       } else if (ev.type === 'run') {
@@ -1341,6 +1346,34 @@ async function runTurnAgentic({ chatId, updateId, model, text, resv, attachments
   }
 
   const out = runOutcome(run);
+
+  // A FAILED RUN THAT COST NOTHING IS WORTH ONE MORE ATTEMPT.
+  //
+  // This class does not throw: it arrives as HTTP 200 with status "failed", so
+  // it sailed straight past withSandboxRetry and the user saw the raw provider
+  // message. Measured 2026-09-17, fourteen identical runs of `echo hi` on
+  // mimo-v2.5: three failed, each with
+  //
+  //   "There's an issue with the selected model (mimo-v2.5). It may not exist
+  //    or you may not have access to it."
+  //
+  // for a model that completed the other eleven turns in the same batch and is
+  // the configured default. Roughly one turn in five, transient, and the
+  // message is actively misleading -- nothing is wrong with the model or the
+  // key. Reported upstream; retried here because a user should not see a one-in
+  // -five failure for something that works on the next attempt.
+  //
+  // GATED ON credits === 0. That is what makes the retry free and therefore
+  // safe: nothing was charged, so nothing is charged twice. A failure that DID
+  // cost something is surfaced and settled as it always was -- work happened,
+  // and re-running it would bill the user for the same turn again.
+  if (out.readable && out.failed && out.credits === 0) {
+    throw new AgentUnavailable(
+      out.text || out.error?.message || 'the run failed before doing any billable work',
+      { code: 'failed_zero_credits' },
+    );
+  }
+
   return { draft, out, sessionId: sessionIdSeen, text: shown };
 }
 
