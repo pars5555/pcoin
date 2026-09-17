@@ -48,7 +48,7 @@
 //   * It only sends to a pc1q... address (v0, 20 bytes). Anything else is
 //     refused rather than guessed at.
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
-import { createHash, scryptSync, createDecipheriv } from 'node:crypto';
+import { createHash, scryptSync, createDecipheriv, createCipheriv, randomBytes } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -81,22 +81,40 @@ const hash160 = (b) => createHash('ripemd160').update(sha256(b)).digest();
 function ask(question, { hidden = false } = {}) {
   return new Promise((resolve) => {
     const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
-    if (!hidden) return rl.question(question, (a) => { rl.close(); resolve(a); });
-    // Echo nothing at all rather than asterisks: the length of a passphrase is
-    // itself worth not showing to whoever is looking at the screen.
-    const onData = (ch) => { if (!String(ch).match(/[\r\n]/)) process.stdout.write(''); };
-    process.stdout.write(question);
-    rl.input.on('data', onData);
-    rl._writeToOutput = () => {};
-    rl.question('', (a) => { rl.input.off('data', onData); rl.close(); process.stdout.write('\n'); resolve(a); });
+    if (hidden) {
+      // Suppress the ECHO without suppressing the PROMPT. Writing the prompt
+      // separately and then blanking all output made readline's line redraw
+      // erase it, so the screen just sat there apparently waiting for nothing.
+      rl._writeToOutput = function (str) {
+        if (str.includes(question)) rl.output.write(question);
+        else rl.output.write('');
+      };
+    }
+    rl.question(question, (a) => {
+      rl.close();
+      if (hidden) process.stdout.write('\n');
+      resolve(a);
+    });
   });
 }
 
 function decrypt(blob, passphrase) {
-  const key = scryptSync(passphrase, Buffer.from(blob.salt, 'base64'), SCRYPT.keylen, SCRYPT);
+  // THE FIELD IS `ct`, NOT `ciphertext`. Reading the wrong name yields undefined,
+  // Buffer.from(undefined,'base64') is empty, and GCM then refuses to
+  // authenticate -- which surfaces as "wrong passphrase" and sends the owner
+  // hunting for a typo that was never there. It cost a real attempt.
+  //
+  // The KDF parameters come from the BLOB, not from a constant here: they are
+  // recorded per file so a future change to the cost factors cannot make old
+  // vaults unopenable.
+  const ct = blob.ct ?? blob.ciphertext;
+  if (!ct) throw new Error('this vault file has no ciphertext field (expected `ct`)');
+  const key = scryptSync(passphrase, Buffer.from(blob.salt, 'base64'), SCRYPT.keylen,
+                         { N: blob.N ?? SCRYPT.N, r: blob.r ?? SCRYPT.r, p: blob.p ?? SCRYPT.p,
+                           maxmem: SCRYPT.maxmem });
   const d = createDecipheriv('aes-256-gcm', key, Buffer.from(blob.iv, 'base64'));
   d.setAuthTag(Buffer.from(blob.tag, 'base64'));
-  return Buffer.concat([d.update(Buffer.from(blob.ciphertext, 'base64')), d.final()]).toString('utf8');
+  return Buffer.concat([d.update(Buffer.from(ct, 'base64')), d.final()]).toString('utf8');
 }
 
 function addressOf(pubkey) {
@@ -268,6 +286,33 @@ function selftest() {
      addressOf(Buffer.from('025476c2e83188368da1ff3e292e7acafcdb3566bb0ad253f62fc70f07aeee6357', 'hex')).slice(0, 4),
      'pc1q');
 
+  // THE FIELD-NAME BUG, PINNED. decrypt() read `blob.ciphertext` while every
+  // vault file on disk calls it `ct`. Buffer.from(undefined,'base64') is empty,
+  // GCM then refuses to authenticate, and the tool reported "that passphrase
+  // does not open this vault file" to somebody holding the correct passphrase.
+  // A round trip through a blob shaped like the real ones catches it.
+  {
+    const salt = randomBytes(16);
+    const iv = randomBytes(12);
+    const N = 1 << 14;                        // cheap: this is a test, not a vault
+    const key = scryptSync('correct horse', salt, 32, { N, r: 8, p: 1, maxmem: SCRYPT.maxmem });
+    const c = createCipheriv('aes-256-gcm', key, iv);
+    const secret = 'abandon abandon ability';
+    const ct = Buffer.concat([c.update(secret, 'utf8'), c.final()]);
+    const blob = {
+      v: 1, kdf: 'scrypt', N, r: 8, p: 1,
+      salt: salt.toString('base64'), iv: iv.toString('base64'),
+      ct: ct.toString('base64'), tag: c.getAuthTag().toString('base64'),
+    };
+    let got = '';
+    try { got = decrypt(blob, 'correct horse'); } catch (e) { got = 'THREW: ' + e.message; }
+    ok('decrypt reads the `ct` field the vault files actually use', got, secret);
+
+    let refused = false;
+    try { decrypt(blob, 'wrong passphrase'); } catch { refused = true; }
+    ok('and a wrong passphrase is still refused', String(refused), 'true');
+  }
+
   // Refusing a bad destination is a safety feature, so prove it refuses.
   for (const bad of ['bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4', 'pc1zw508d6qejxtdg4y5r3zarvaryvg6kdaj', 'nonsense']) {
     let threw = false;
@@ -372,6 +417,52 @@ async function listAll() {
   process.exit(0);
 }
 if (has('--list')) await listAll();
+
+/** Does this passphrase open this vault, and is it the right wallet?
+ *
+ *  Separated out because "the passphrase was refused" during a send is an
+ *  alarming thing to read when you are holding the right passphrase -- as
+ *  happened, from a bug in this file rather than anything the owner typed. This
+ *  answers the question on its own, spends nothing, and needs no destination.
+ */
+async function checkPass(name) {
+  const xf = join(HERE, `${name}-xpub.txt`);
+  const sf = join(HERE, `${name}-seed.enc.json`);
+  if (!existsSync(xf) || !existsSync(sf)) die(`no vault files for "${name}"`);
+  const xpub = readFileSync(xf, 'utf8').trim();
+  const blob = JSON.parse(readFileSync(sf, 'utf8'));
+  console.log(`\n  system   : ${name}`);
+  console.log(`  file     : ${sf}`);
+  console.log(`  kdf      : ${blob.kdf || 'scrypt'} N=${blob.N} r=${blob.r} p=${blob.p}`);
+  console.log(`  expects  : ${xpub.slice(0, 20)}…\n`);
+
+  const pass = await ask('  passphrase (nothing is echoed): ', { hidden: true });
+  let mnemonic;
+  try {
+    mnemonic = decrypt(blob, pass).trim();
+  } catch (e) {
+    console.error(`\n  NO: that passphrase does not open this file (${e.message.slice(0, 60)})\n`);
+    process.exit(1);
+  }
+  const words = mnemonic.split(/\s+/).length;
+  const valid = bip39.validateMnemonic(mnemonic, wordlist);
+  const acct = HDKey.fromMasterSeed(bip39.mnemonicToSeedSync(mnemonic)).derive(ACCOUNT_PATH);
+  const matches = acct.publicExtendedKey === xpub;
+  const addr0 = addressOf(HDKey.fromExtendedKey(xpub).deriveChild(0).deriveChild(0).publicKey);
+  mnemonic = null;
+
+  console.log(`  opened   : YES — ${words} words, checksum ${valid ? 'valid' : 'INVALID'}`);
+  console.log(`  xpub     : ${matches ? 'MATCHES the vault' : 'DOES NOT MATCH — wrong file for this system'}`);
+  console.log(`  address0 : ${addr0}${blob.address0 ? (blob.address0 === addr0 ? '  (as recorded)' : '  ** differs from the file **') : ''}`);
+  console.log(matches && valid ? '\n  This passphrase will sign for this wallet.\n'
+    : '\n  Something is wrong; do not use this for a send until it is understood.\n');
+  process.exit(matches && valid ? 0 : 1);
+}
+if (has('--check')) {
+  const n = flag('--check') && !String(flag('--check')).startsWith('--') ? flag('--check') : flag('--system');
+  if (!n) die('say which one: --check <system>   (or --check --system <name>)');
+  await checkPass(n);
+}
 
 const system = flag('--system');
 const to = flag('--to');
