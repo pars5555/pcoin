@@ -156,7 +156,13 @@ export async function readRate(store, cfg, { fetchImpl = fetch } = {}) {
   } catch (e) {
     // UNREACHABLE. A recent cache is a legitimate stand-in here, because we
     // never got an answer to refuse.
-    return fromCache(db, cacheMaxAge, `unreachable: ${e.message}`);
+    //
+    // This line said `db` until 2026-09-16 -- a name that does not exist in
+    // this function. So the ONE branch whose whole job is to soften an oracle
+    // outage threw a ReferenceError instead, which propagated out of the tick
+    // and killed the watcher: no deposit credited while price.pc.am was down,
+    // and the owner paged. The safety path was the only path never tested.
+    return fromCache(store, cacheMaxAge, `unreachable: ${e.message}`);
   }
 
   let reading;
