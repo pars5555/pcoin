@@ -463,8 +463,13 @@ async function renderExplorer(c) {
       ['Solo miners', N(cen.solo?.miners, 0),
         N(cen.solo?.blocks, 0) + ' blocks &middot; ' +
         (cen.blocksRead ? PCT((cen.solo?.blocks || 0) / cen.blocksRead * 100, 1) : DASH) + ' of the window'],
-      ['Our pool, connected right now', N(pool?.connectedMiners, 0),
-        'live from the pool itself — authoritative for ours, unlike the chain estimate'],
+      // The age goes NEXT TO the number, not in a footnote. This row says
+      // "connected now" and would go on saying it if the collector stopped —
+      // a stale figure that looks current is worse than no figure.
+      ['Our pool, connected', N(pool?.connectedMiners, 0),
+        pool?.at ? 'measured ' + agoEpoch(pool.at) + ' — from the pool itself, and the only '
+          + 'authoritative number here; the rest are inferred from the chain'
+          : '<b class="warn">no pool snapshot — this number is not being collected</b>'],
     ]) +
     tbl(['Pool', 'Whose', 'Blocks', 'Share', 'Miners paid', 'Last block'],
       (cen.pools || []).map(x => [
