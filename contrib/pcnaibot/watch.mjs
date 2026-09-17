@@ -21,7 +21,7 @@ import { nowSec } from './lib/time.mjs';
 import { ExplorerClient, indexHealth, addressTouched, isIndependentHost, BudgetExhausted } from './lib/explorer.mjs';
 import { readRate, floorParity } from './lib/rate.mjs';
 import { issuedAddresses, poolStats } from './lib/pool.mjs';
-import { creditDepositSafe, reconcile, creditedUsdLast30Days, CreditResult } from './lib/deposits.mjs';
+import { creditDepositSafe, reconcile, creditedUsdLast30Days, CreditResult, configureRebate } from './lib/deposits.mjs';
 import { TelegramClient, escapeHtml } from './lib/telegram.mjs';
 import { satsToPcnString, microUsdToString, satsToNanoUsd, splitNano } from './lib/money.mjs';
 
@@ -49,6 +49,33 @@ let creditedThisTick = 0n;
 installCrashHandlers();
 // A tick that cannot explain itself is a tick you debug by guesswork.
 setLevel(cfg.strOr('LOG_LEVEL', 'info'));
+
+// The P3 rebate, from the config file rather than the environment.
+//
+// This unit passes no environment variables at all -- config is a read-only
+// bind mount so `docker inspect` cannot print secrets -- so the env-only switch
+// could never be set in production. The result: the bounty page advertised
+// "10% back", the code was correct, and it had paid out zero times.
+//
+// Logged EVERY start, on or off. A money switch nobody can see the state of is
+// how this one stayed off for days without anybody noticing.
+{
+  const r = configureRebate({
+    ppm: cfg.strOr('REBATE_PPM', null),
+    capSat: cfg.strOr('REBATE_CAP_SAT', null),
+    from: cfg.strOr('REBATE_FROM', null),
+  });
+  if (r.ppm > 0n && r.from > 0n) {
+    log.info('P3 rebate is ON', {
+      percent: Number(r.ppm) / 10000, cap_pcn: Number(r.capSat) / 1e8,
+      from: new Date(Number(r.from) * 1000).toISOString(),
+    });
+  } else {
+    log.info('P3 rebate is OFF', {
+      why: r.ppm <= 0n ? 'REBATE_PPM is 0' : 'REBATE_FROM is unset, so no deposit qualifies',
+    });
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Heartbeat.

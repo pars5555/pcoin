@@ -19,6 +19,25 @@ export const REBATE = {
   from: BigInt(process.env.PCNAIBOT_REBATE_FROM ?? 0),
 };
 
+// THE SWITCH HAS TO BE REACHABLE FROM WHERE THE SETTINGS ACTUALLY LIVE.
+//
+// Read from the environment alone, this was unreachable in production and
+// nobody noticed: the bounty page promised "10% back", the code was correct and
+// committed, and it had paid out exactly zero times. The unit deliberately
+// passes NO environment variables -- config is a read-only bind mount, so that
+// `docker inspect` cannot print secrets -- so `PCNAIBOT_REBATE_PPM` could never
+// arrive, and setting it in pcnaibot.conf would not have worked either.
+//
+// The environment still wins where nothing is configured, because the tests use
+// it. This only overrides the keys the operator has actually written down.
+export function configureRebate({ ppm, capSat, from } = {}) {
+  const set = (v) => v !== undefined && v !== null && String(v).trim() !== '';
+  if (set(ppm)) REBATE.ppm = BigInt(String(ppm).trim());
+  if (set(capSat)) REBATE.capSat = BigInt(String(capSat).trim());
+  if (set(from)) REBATE.from = BigInt(String(from).trim());
+  return { ppm: REBATE.ppm, capSat: REBATE.capSat, from: REBATE.from };
+}
+
 export const CreditResult = {
   CREDITED: 'credited',
   ALREADY: 'already_credited',

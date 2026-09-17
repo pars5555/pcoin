@@ -270,3 +270,16 @@ AGENT_MAX_TURNS=12
 # no max_tokens to derive a worst case from here, so it is declared; max_turns
 # is what actually bounds the run. Measured: a trivial run costs 1.1-2.7.
 AGENT_MAX_CREDITS_PER_RUN=400
+
+# ---------------------------------------------------------------------------
+# P3, the "10% back on PCN spent here" rebate.
+#
+# OFF unless BOTH REBATE_PPM and REBATE_FROM are set: ppm is the rate, and
+# REBATE_FROM is the unix time from which a credited deposit qualifies, so
+# switching it on can never retroactively owe everybody who ever paid.
+#
+# These used to be read from the environment only, which the unit does not
+# pass -- so the switch was unreachable and the advertised rebate paid nothing.
+# REBATE_PPM=100000        # 100000 ppm = 10%
+# REBATE_CAP_SAT=5000000000  # 50 PCN of rebate per person per calendar month
+# REBATE_FROM=0            # unix seconds; 0 means never
