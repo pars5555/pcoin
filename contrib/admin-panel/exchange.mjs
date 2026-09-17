@@ -232,7 +232,7 @@ export function exchangeSection({ base, creds, actor }) {
     return `<div class="card"><p class="muted">Numbers are in base units: <b>_micro</b> = millionths of a dollar ($1 = 1000000),
       <b>_sat</b> = hundred-millionths of a PCN (1 PCN = 100000000), <b>_ppm</b> = parts per million (0.2% = 2000).
       Lists are comma-separated. Every change is audited and announced in the ops channel.
-      If a fee or limit changes, publish a new policy so users see it.</p></div>`
+      A fee or limit named in the terms as a <code>{{placeholder}}</code> updates them the moment you save it here, and every user is asked to accept the new version.</p></div>`
       + table(['setting', 'now', 'default', 'change'], rows, 'No settings.');
   }
 
@@ -347,7 +347,8 @@ Fund it below; the balance is the whole budget and cannot go negative, so a bug 
     return `<div class="card"><p>${p ? `Version <b>${esc(p.version)}</b>, published ${esc(when(p.created_at))}.` : '<b class="bad">No policy published — nobody can trade or withdraw until one is.</b>'}</p>
       <p class="muted">Publishing a new version makes every user accept it again before they can trade or withdraw.</p>
       <form method="POST" action="${self}">${hidden('action', 'policy')}
-        <p><textarea name="body" rows="20" style="width:100%">${esc(p ? p.body : '')}</textarea></p>
+      ${p && p.fields ? `<p class="muted">A number written as a placeholder is filled in from Settings, so the terms cannot drift from what the code does. Available now:<br>${Object.entries(p.fields).map(([k, v]) => `<code>{{${esc(k)}}}</code> → ${esc(v)}`).join(' · ')}</p>` : ''}
+        <p><textarea name="body" rows="20" style="width:100%">${esc(p ? (p.template ?? p.body) : '')}</textarea></p>
         <div class="inline" style="display:flex;gap:8px">${codeInput} <button type="submit">Publish</button></div></form></div>`;
   }
 
