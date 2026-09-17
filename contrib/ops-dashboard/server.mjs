@@ -154,6 +154,8 @@ async function census(window = 200) {
   if (hit && Date.now() - hit.at < 300e3) return hit.v;
 
   const counts = new Map();
+  const poolBlocksSeen = [];      // every multi-payout coinbase, kept for clustering
+  const soloBlocks = new Map();   // address -> blocks mined alone
   let read = 0;
   for (let h = tip; h > tip - window && h > 0; h--) {
     let b;
@@ -163,9 +165,58 @@ async function census(window = 200) {
     read++;
     const paid = [...new Set((cb.outputs || [])
       .filter(o => o.address && (o.value_sat || 0) > 0).map(o => o.address))];
-    if (paid.length > 1)      counts.set(POOL_KEY, (counts.get(POOL_KEY) || 0) + 1);
-    else if (paid.length === 1) counts.set(paid[0], (counts.get(paid[0]) || 0) + 1);
+    if (paid.length > 1) {
+      counts.set(POOL_KEY, (counts.get(POOL_KEY) || 0) + 1);
+      poolBlocksSeen.push({ height: h, paid });
+    } else if (paid.length === 1) {
+      counts.set(paid[0], (counts.get(paid[0]) || 0) + 1);
+      soloBlocks.set(paid[0], (soloBlocks.get(paid[0]) || 0) + 1);
+    }
   }
+
+  // ── which pool is which ────────────────────────────────────────────────────
+  // The chain does not say. A pool pays its miners in the coinbase, so blocks
+  // from one pool share payout addresses; union-find over those addresses gives
+  // one component per pool. See the header for where this is wrong -- it is
+  // shown to the owner as an estimate, never as a fact.
+  const parent = new Map();
+  const find = (x) => {
+    while (parent.get(x) !== x) { parent.set(x, parent.get(parent.get(x))); x = parent.get(x); }
+    return x;
+  };
+  const union = (a, b) => {
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  };
+  for (const blk of poolBlocksSeen) {
+    for (const a of blk.paid) if (!parent.has(a)) parent.set(a, a);
+    for (let i = 1; i < blk.paid.length; i++) union(blk.paid[0], blk.paid[i]);
+  }
+  const groups = new Map();
+  for (const blk of poolBlocksSeen) {
+    const root = find(blk.paid[0]);
+    let g = groups.get(root);
+    if (!g) { g = { blocks: 0, miners: new Set(), firstHeight: blk.height, lastHeight: blk.height }; groups.set(root, g); }
+    g.blocks++;
+    blk.paid.forEach((a) => g.miners.add(a));
+    g.firstHeight = Math.min(g.firstHeight, blk.height);
+    g.lastHeight = Math.max(g.lastHeight, blk.height);
+  }
+  // Ours is the component containing our pool's own payout address. If that is
+  // unknown we say so rather than guessing, because labelling somebody else's
+  // pool as ours would misstate concentration in the safe-looking direction.
+  let ourPoolAddress = null;
+  try { ourPoolAddress = (readState().pool || {}).address || null; } catch { /* unknown */ }
+  const ourRoot = ourPoolAddress && parent.has(ourPoolAddress) ? find(ourPoolAddress) : null;
+  const pools = [...groups.entries()].map(([root, g], i) => ({
+    id: root.slice(0, 10),
+    ours: ourRoot ? root === ourRoot : null,
+    blocks: g.blocks,
+    miners: g.miners.size,
+    firstHeight: g.firstHeight,
+    lastHeight: g.lastHeight,
+  })).sort((a, b) => b.blocks - a.blocks);
+  pools.forEach((p, i) => { p.rank = i + 1; });
   const rows = [...counts.entries()]
     .map(([address, blocks]) => address === POOL_KEY
       ? { address, blocks, pool: true, mine: false, label: null }
@@ -178,6 +229,15 @@ async function census(window = 200) {
     distinct: rows.filter(r => !r.pool).length,
     poolBlocks: counts.get(POOL_KEY) || 0,
     yours: rows.filter(r => r.mine).reduce((s, r) => s + r.blocks, 0),
+    // The breakdown the single POOL_KEY bucket could never give.
+    pools,
+    poolCount: pools.length,
+    poolMiners: pools.reduce((n, p) => n + p.miners, 0),
+    ourPoolKnown: !!ourRoot,
+    solo: {
+      miners: soloBlocks.size,
+      blocks: [...soloBlocks.values()].reduce((n, v) => n + v, 0),
+    },
   };
   cache.set(key, { at: Date.now(), v });
   return v;
