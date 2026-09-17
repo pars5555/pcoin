@@ -14,6 +14,18 @@
 // and these numbers decide how much money can leave.
 
 export const DEFS = {
+  // ── where an order came from ──────────────────────────────────────────
+  // Turns the IP we already record into a country and city for the operator's
+  // alert and the admin panel. Decoration on a money path: if any of this is
+  // wrong or the service is down, orders must proceed untouched.
+  geoipEnabled:        { type: 'bool', def: true,
+                         help: 'Look up the country/city for the IP behind each order.' },
+  geoipBaseUrl:        { type: 'str', def: 'http://116.203.221.42:65333', max: 200,
+                         re: /^https?:\/\/[\w.\-]+(:\d{1,5})?(\/\S*)?$/,
+                         help: 'GeoIP API base. NOTE geoip.pc.am serves only the marketing site; '
+                             + 'the API answers on this host and port, over plain HTTP.' },
+  geoipKey:            { type: 'str', def: '', max: 128,
+                         help: 'GeoIP API key. Sent as the X-API-Key header, never in the query string.' },
   saleOpen:            { type: 'bool', def: true,
     label: 'Sales open', help: 'Master switch. Off means no new orders at all.' },
   buybackOpen:         { type: 'bool', def: false,
@@ -185,6 +197,15 @@ export function makeSettings(pool, log = console) {
       if (['1', 'true', 'yes', 'on'].includes(s)) return true;
       if (['0', 'false', 'no', 'off', ''].includes(s)) return false;
       throw new Error(`${key} must be true or false`);
+    }
+    if (d.type === 'str') {
+      // Deliberately permissive about CONTENT and strict about SHAPE: this
+      // holds an API key and a base URL, and guessing at their format is how a
+      // valid credential gets rejected on a rotation day.
+      const v = String(raw ?? '').trim();
+      if (v.length > (d.max || 200)) throw new Error(`${key} must be at most ${d.max || 200} characters`);
+      if (d.re && v && !d.re.test(v)) throw new Error(`${key} does not look right`);
+      return v;
     }
     const n = Number(raw);
     if (!isFinite(n)) throw new Error(`${key} must be a number`);

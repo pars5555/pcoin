@@ -50,6 +50,30 @@ export function readNotifyConfig(path, { log = console } = {}) {
   }
 }
 
+// FIRE AND FORGET. Nothing that happens on api.telegram.org may delay a
+// customer.
+//
+// This used to be an ordinary async function that every caller awaited. It
+// could not THROW -- failures were already caught and swallowed -- but it could
+// still take up to fifteen seconds, and thirty call sites awaited it: placing
+// an order, delivering coins, an admin signing in. So a Telegram outage did not
+// break the market, it made every one of those operations hang for fifteen
+// seconds each, which to anyone using the site is the same thing as broken.
+// Owner, 2026-09-18: "if telegram goes down then our requests will die because
+// of telegram request".
+//
+// So the send is DETACHED. notify() hands the message to a background task and
+// returns immediately; `await notify(...)` at the call sites still works and now
+// costs nothing. Nobody used the return value, which is what makes this safe --
+// a caller that needed to know whether the message landed would have to use
+// sendNow() instead.
+//
+// IN-FLIGHT IS CAPPED. A detached send holds a timer for up to fifteen seconds;
+// a long outage plus busy traffic would otherwise pile up unboundedly. Past the
+// cap messages are dropped with a count, because losing an alert is better than
+// exhausting the memory of the process the alert is about.
+const MAX_IN_FLIGHT = 100;
+
 export function makeNotifier({ token, chatId, log = console, prefix = '' }) {
   if (!token || !chatId) {
     log.warn('[notify] no token or chat configured — messages will be logged only');
@@ -57,8 +81,10 @@ export function makeNotifier({ token, chatId, log = console, prefix = '' }) {
   }
 
   let consecutiveFailures = 0;
+  let inFlight = 0;
+  let dropped = 0;
 
-  return async function notify(text) {
+  async function sendNow(text) {
     const body = prefix ? `${prefix}\n${text}` : text;
     try {
       const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
@@ -87,5 +113,34 @@ export function makeNotifier({ token, chatId, log = console, prefix = '' }) {
       }
       return false;
     }
-  };
+  }
+
+  // The function the rest of the code calls. Returns an already-resolved
+  // promise so `await notify(...)` is a no-op rather than a wait.
+  function notify(text) {
+    if (inFlight >= MAX_IN_FLIGHT) {
+      dropped++;
+      if (dropped === 1 || dropped % 100 === 0) {
+        log.error(`[notify] ${inFlight} sends already in flight — DROPPING alerts (${dropped} so far). ` +
+                  `Telegram is probably down; the market is unaffected.`);
+      }
+      return Promise.resolve(false);
+    }
+    inFlight++;
+    // .finally, not a try/catch around an await: this is deliberately NOT
+    // awaited here, and an un-awaited promise that rejects would be an
+    // unhandled rejection. sendNow never throws, and the .catch() is the belt
+    // to that braces.
+    sendNow(text)
+      .catch(e => log.error(`[notify] unexpected: ${e && e.message}`))
+      .finally(() => { inFlight--; });
+    return Promise.resolve(true);
+  }
+
+  // For anything that genuinely needs to know the message landed. Nothing does
+  // today; it exists so that a future caller does not quietly re-introduce the
+  // blocking behaviour by reaching for notify().
+  notify.sendNow = sendNow;
+  notify.stats = () => ({ inFlight, dropped, consecutiveFailures });
+  return notify;
 }
