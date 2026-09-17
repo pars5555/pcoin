@@ -270,6 +270,82 @@ def census(blocks):
     return solo, pool_workers, pool_blocks, unreadable
 
 
+def cluster_pools(blocks):
+    """Group pool blocks into distinct pools, and count each one's miners.
+
+    The chain does not label pools. A pool pays its miners in the coinbase, so
+    blocks that share payout addresses come from the same pool -- union-find
+    over those addresses gives one component per pool.
+
+    Three ways this is wrong, none fixable from the chain, all stated in the
+    message rather than hidden here: one person mining on two pools merges them
+    into one; a "miner" is a distinct payout ADDRESS in the window, so one
+    person with three addresses counts three and one who earned nothing counts
+    zero; and a pool paying few enough addresses in a block is classified solo
+    by classify() anyway.
+    """
+    parent = {}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    pool_blocks = []
+    for block in blocks:
+        try:
+            kind, paying = classify(block)
+        except Exception:
+            continue
+        if kind != "pool":
+            continue
+        paid = sorted(set(paying))
+        pool_blocks.append(paid)
+        for a in paid:
+            parent.setdefault(a, a)
+        for a in paid[1:]:
+            union(paid[0], a)
+
+    groups = {}
+    for paid in pool_blocks:
+        g = groups.setdefault(find(paid[0]), {"blocks": 0, "miners": set()})
+        g["blocks"] += 1
+        g["miners"].update(paid)
+    out = [{"id": root[:10], "blocks": g["blocks"], "miners": len(g["miners"]),
+            "members": g["miners"]}
+           for root, g in groups.items()]
+    out.sort(key=lambda p: -p["blocks"])
+    return out
+
+
+def our_pool_address():
+    """Our own pool's payout address, so one row can be labelled as ours.
+
+    Read from the ops collector's state file on this same host -- NOT from the
+    pool's public API, which does not publish it: the pool pays its miners
+    straight into the coinbase, so there is no single "pool address" there to
+    fetch. A local file also means the heartbeat does not depend on a web
+    request to send.
+
+    On failure every pool is reported unlabelled rather than the biggest one
+    being assumed to be ours. That assumption would understate concentration at
+    exactly the moment it mattered -- when somebody else's pool got big.
+    """
+    for path in ("/opt/pcoin-ops/state.json",):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return (json.load(fh).get("pool") or {}).get("address")
+        except Exception:
+            continue
+    return None
+
+
 def build_report(cli, window, hours):
     info = rpc(cli, "getblockchaininfo")
     mempool = rpc(cli, "getmempoolinfo")
@@ -320,15 +396,16 @@ def build_report(cli, window, hours):
     else:
         distinct = len(r_solo) + (1 if r_pool_blocks else 0)
         lines.append(f"\nlast {r_n} blocks — who's winning right now:")
-        lines.append(f"  {distinct} distinct payee(s): {len(r_solo)} solo + "
-                     f"{'the pool' if r_pool_blocks else 'no pool blocks'}")
+        r_pools = cluster_pools(recent)
+        lines.append(f"  {len(r_pools)} pool(s) + {len(r_solo)} solo miner(s)")
         if r_solo:
             top_addr, top_n = r_solo.most_common(1)[0]
             top_pct = 100.0 * top_n / r_n
             flag = "  ⚠ MAJORITY RISK" if top_pct >= 50 else (" ⚠" if top_pct >= 40 else "")
             lines.append(f"  top solo: {short(top_addr)} — {top_pct:.0f}% ({top_n}/{r_n}){flag}")
-        if r_pool_blocks:
-            lines.append(f"  pool share: {100.0*r_pool_blocks/r_n:.0f}% ({r_pool_blocks}/{r_n})")
+        for i, p in enumerate(r_pools, 1):
+            lines.append(f"  pool {i} ({p['id']}…): {100.0*p['blocks']/r_n:.0f}% "
+                         f"({p['blocks']}/{r_n}) · {p['miners']} miners paid")
 
     # -- actual miners count: every distinct payee over the full window --
     f_solo, f_pool_workers, f_pool_blocks, f_unreadable = census(blocks)
@@ -337,12 +414,24 @@ def build_report(cli, window, hours):
         lines.append(f"\nactual miners (last ~{hours:.0f}h): no readable blocks")
     else:
         total = len(f_solo) + len(f_pool_workers)
-        lines.append(f"\nactual miners, last {actual_hours:.0f}h ({f_n} blocks) — "
-                     f"every address paid at least once:")
-        lines.append(f"  {total} distinct payout addresses total")
-        lines.append(f"    {len(f_solo)} solo-mining addresses")
-        lines.append(f"    {len(f_pool_workers)} pool-worker addresses "
-                     f"(harvested from on-chain payout splits, not the pool's own log)")
+        f_pools = cluster_pools(blocks)
+        ours = our_pool_address()
+        lines.append(f"\nwho is mining, last {actual_hours:.0f}h ({f_n} blocks):")
+        lines.append(f"  {len(f_pools)} pool(s) working · {len(f_solo)} solo miner(s)")
+        for i, p in enumerate(f_pools, 1):
+            if ours:
+                label = " (ours)" if ours in p["members"] else " (not ours)"
+            else:
+                label = ""
+            lines.append(f"    pool {i}{label}: {p['miners']} miners · "
+                         f"{100.0*p['blocks']/f_n:.0f}% of blocks ({p['blocks']}/{f_n})")
+        solo_blocks = sum(f_solo.values())
+        lines.append(f"    solo: {len(f_solo)} miners · "
+                     f"{100.0*solo_blocks/f_n:.0f}% of blocks ({solo_blocks}/{f_n})")
+        lines.append(f"  {total} payout addresses in total "
+                     f"({len(f_solo)} solo + {len(f_pool_workers)} on pools)")
+        if not ours:
+            lines.append("  (could not reach our pool to label which row is ours)")
         if f_unreadable:
             lines.append(f"  ({f_unreadable} block(s) in the window were unreadable and excluded)")
         lines.append("  this is a FLOOR: one address can be several machines "
