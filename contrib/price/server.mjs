@@ -230,7 +230,10 @@ async function pollPool() {
         if (held) {
           const why = {
             floor: 'the published floor',
-            marketInterlock: "market.pc.am's 20% sale interlock",
+            // Read the live number rather than hardcoding one. This said
+            // "20%" while poolMaxDivergencePct was 15, so the alert named a
+            // threshold that was not the one stopping anything.
+            marketInterlock: `the ${st.poolMaxDivergencePct}% interlock under the ladder ask`,
             dailyDrop: "one day's maximum fall",
           }[held] || held;
           await notify(
@@ -244,10 +247,15 @@ async function pollPool() {
             'spending the PCN at a rail is profitable by that gap, and it is paid ' +
             'out of market-hot.' +
             (held === 'marketInterlock'
-              ? '\n\n<b>This one needs a decision.</b> The rate cannot follow the pool ' +
-                'any further without market.pc.am pausing every sale. Lowering the ' +
-                'LADDER is the only thing that moves it, and no automatic rule should ' +
-                'make that call.'
+              ? '\n\n<b>This one needs a decision.</b> The rate is floored at ' +
+                `${st.poolMaxDivergencePct}% below the ladder ask and cannot follow the pool ` +
+                'any lower on its own.\n\nTwo levers, both deliberate: lower the LADDER, ' +
+                'or lower the interlock (<code>poolMaxDivergencePct</code>). No automatic ' +
+                'rule should make either call.\n\n<i>Note: this no longer stops market.pc.am ' +
+                'selling. That was true while its sale gate was 20%; the gate was raised to ' +
+                '1000 on 2026-09-14 so the market never refuses an order. The reason to act ' +
+                'is the arbitrage above, which is paid out of market-hot \u2014 not a stalled ' +
+                'market.</i>'
               : '\n\nIt may clear on its own — ' +
                 (held === 'dailyDrop' ? 'the daily limit resets.' : 'the floor does not.')));
         } else {
@@ -951,9 +959,20 @@ createServer(async (req, res) => {
         buybackPrice: st.buybackOpen ? Number(price().toFixed(9)) : null,
         buybackRemainingToday: st.buybackOpen
           ? Number((st.dailySellCapUsd - st.soldToday).toFixed(2)) : 0,
-        reserve: Number(st.reserve.toFixed(6)),
-        poolSupply: Number(st.supply.toFixed(6)),
-        feeBps: st.feeBps,
+        // reserve, poolSupply and feeBps USED TO BE PUBLISHED HERE and were
+        // removed on 2026-09-17. They described the buyback desk's inventory
+        // and spread, and that desk has been closed since 2026-09-09 -- so
+        // `reserve` advertised a USDT float that is not there, `poolSupply`
+        // (10,000,000) matched nothing real, and `feeBps` quoted a spread for
+        // trades that cannot happen. The comment above already says why a
+        // number here is a quote; these three were simply missed when
+        // buybackPrice was fixed.
+        //
+        // Every consumer was checked first -- aicontrol, webai, webbuilderbot,
+        // checker, pcnaibot, 3dmodels, 3dmodel, alik, pcnearner, market and
+        // the exchange -- and not one of them read any of the three. If a
+        // future integrator needs the curve's internals, publish them under a
+        // name that says what they are, not under the old desk's vocabulary.
         ladder: ladderKnown() ? {
           price: st.ladderPrice,
           soldPcn: st.ladderSoldPcn,
