@@ -387,12 +387,37 @@ SCAM_WORDS = re.compile(r"(?i)\b(airdrop|claim|giveaway|free (coins?|tokens?|pcn
 POOLISH = re.compile(r"(?i)(:\d{2,5}\b)|(\bpcoin\b)|(\bpcn\b)|(\bpool\b)")
 
 
+# A bare endpoint: host-or-IP with an explicit high port and nothing else said
+# about it. `http://80.241.218.206:3782/` is what a miner posts when asked to
+# share their pool, and it carries no POOL_WORDS at all.
+HOSTPORT = re.compile(r"(?i)^(?:https?://)?[a-z0-9.\-]+:(\d{2,5})(?:[/?#]|$)")
+
+
+def is_hostport(url):
+    m = HOSTPORT.match((url or "").strip())
+    if not m:
+        return False
+    try:
+        port = int(m.group(1))
+    except ValueError:
+        return False
+    return 1024 <= port <= 65535
+
+
 def is_pool_link(text, url):
     """True when this looks like somebody sharing a PCoin pool or mining setup,
     and nothing about it looks like a scam. Used to REPORT instead of delete."""
     if SCAM_WORDS.search(text or "") or SCAM_WORDS.search(url or ""):
         return False
-    return bool(POOL_WORDS.search(text or "")) and bool(POOLISH.search(url or ""))
+    if POOL_WORDS.search(text or "") and POOLISH.search(url or ""):
+        return True
+    # REQUIRING A POOL WORD IN THE TEXT DELETED A REAL POOL SHARE (2026-09-17,
+    # message 220: the whole message WAS the url). We pay 500 PCN for exactly
+    # that message, so a bare stratum-shaped endpoint is reported, never
+    # removed -- the owner still sees it and can act. The cost of being wrong
+    # in this direction is an advert the owner deletes by hand; the cost of
+    # being wrong in the other is a contributor who thinks we censored them.
+    return is_hostport(url)
 
 
 def link_allowed(url):
@@ -405,12 +430,18 @@ def link_allowed(url):
     host, _, path = u.partition("/")
     host = host.split(":")[0].rstrip(".")
     first = path.split("/")[0].split("?")[0]
+    # OUR OWN LINKS ARE NEVER DELETED (owner, 2026-09-17). Every PCoin surface
+    # lives under pc.am -- pc.am, pool.pc.am, exchange.pc.am, market.pc.am,
+    # explorer.pc.am, wrapdesk.pc.am, docs.pc.am, price.pc.am, webai.pc.am --
+    # so one suffix test covers all of them and covers any we add later.
     if host == "pc.am" or host.endswith(".pc.am"):
+        return True
+    if host == "oonak.ai" or host.endswith(".oonak.ai"):
         return True
     if host in ("t.me", "telegram.me"):
         return first in OUR_TG
     if host == "github.com":
-        return first == "pars5555"
+        return first in ("pars5555", "oonak-ai")
     if host == "discord.gg":
         return first == "dgmdwjkb9f"
     if host == "play.google.com":
@@ -734,6 +765,18 @@ def main():
                         "from_id": (msg.get("from") or {}).get("id"),
                         "text": msg.get("text") or "",
                         "described": text,
+                        # WHAT THIS MESSAGE IS ANSWERING. "You sure that
+                        # correct?" cannot be answered on its own, and that is
+                        # exactly what the answer bot used to be handed.
+                        "reply_to_id": ((msg.get("reply_to_message") or {}).get("message_id")),
+                        "reply_to_from": (who(msg["reply_to_message"])
+                                          if msg.get("reply_to_message") else None),
+                        "reply_to_text": (describe(msg["reply_to_message"])[:600]
+                                          if msg.get("reply_to_message") else None),
+                        # An attachment the bot CANNOT READ. It has to know one
+                        # exists, or it answers as though the message were whole.
+                        "has_image": bool(msg.get("photo") or msg.get("document")
+                                          or msg.get("video") or msg.get("sticker")),
                         "urgent": urgent,
                     }, ensure_ascii=False) + "\n")
                 # Trim by SIZE, not on every run: rewriting the file each minute to

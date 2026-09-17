@@ -326,6 +326,30 @@ def models_for(cfg):
     return out or ["deepseek-v4-flash"]
 
 
+def with_context(row, text):
+    """The question, plus whatever it leans on and does not contain.
+
+    A one-line reply and an attached screenshot are the two ways a message
+    arrives incomplete while reading as though it were finished. Handing the
+    model the fragment alone is what produced a confident answer about the
+    wrong mining program on 2026-09-17. Absent context is stated as absent --
+    never quietly omitted, because a gap the model cannot see is a gap it fills.
+    """
+    out = []
+    if row.get("reply_to_text"):
+        out.append("This is a REPLY to an earlier message, from %s:\n%s"
+                   % (row.get("reply_to_from") or "someone", row["reply_to_text"]))
+    if row.get("has_image"):
+        out.append("The message carries an IMAGE, and you CANNOT SEE IT. Do not guess "
+                   "what it shows, what software it proves they are running, or what "
+                   "the numbers on it are. Ask them what it says, or say a person will "
+                   "look at it -- those are both good answers. Inventing the contents "
+                   "is not.")
+    if not out:
+        return text
+    return text + "\n\n--- context you did not ask for but need ---\n" + "\n\n".join(out)
+
+
 def ask_model_with_fallback(cfg, system, message, author):
     """Try each model in turn. Returns (parsed, model_used).
 
@@ -760,7 +784,7 @@ def main():
             continue
 
         try:
-            out, used_model = ask_model_with_fallback(cfg, system, text, author)
+            out, used_model = ask_model_with_fallback(cfg, system, with_context(r, text), author)
         except Exception as e:
             # A RuntimeError we raised says something useful and carries no URL. A
             # transport error can carry the request URL, and the URL carries the
