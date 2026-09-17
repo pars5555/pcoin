@@ -153,6 +153,38 @@ async function census(window = 200) {
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < 300e3) return hit.v;
 
+  // NEVER BLOCK A PAGE LOAD ON THIS. Computing it cold is `window` sequential
+  // HTTP round-trips to the explorer -- about 200 of them -- which is slower
+  // than the admin panel's 15 s client timeout. So every cold load timed out,
+  // the client hung up, and the explorer (a threaded Python HTTP server) was
+  // left writing into a closed socket. Repeat that a few times and it reached
+  // 61 threads with a full accept queue at 0.6% CPU: not busy, wedged. The
+  // public explorer API stopped answering on 2026-09-17 and every payment rail
+  // went blind with it, because they all read the chain through it.
+  //
+  // So: any previous answer, however old, is served IMMEDIATELY and a refresh
+  // runs behind it. A five-minute-old census is worth far more than a fresh one
+  // that takes the explorer down to produce. Only the very first call, with
+  // nothing cached at all, waits -- and it says so by simply being slow rather
+  // than by returning zeroes.
+  const stale = [...cache.keys()].filter((k) => k.startsWith('census:') && k.endsWith(`:${window}`));
+  if (stale.length) {
+    const prev = cache.get(stale[stale.length - 1]);
+    if (prev && !censusRefreshing) {
+      censusRefreshing = true;
+      computeCensus(tip, window, key)
+        .catch(() => { /* a failed refresh keeps the old answer; it never blanks it */ })
+        .finally(() => { censusRefreshing = false; });
+      return prev.v;
+    }
+  }
+  return computeCensus(tip, window, key);
+}
+
+let censusRefreshing = false;
+
+async function computeCensus(tip, window, key) {
+
   const counts = new Map();
   const poolBlocksSeen = [];      // every multi-payout coinbase, kept for clustering
   const soloBlocks = new Map();   // address -> blocks mined alone

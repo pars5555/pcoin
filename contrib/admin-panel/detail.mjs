@@ -388,7 +388,58 @@ async function renderExplorer(c) {
   const d = r.data, ch = d.chain || {}, cen = d.census || {}, st = d.state || {},
         p = st.peers || {}, tips = st.tips || {}, pool = st.pool || null;
 
-  const body = tiles([
+  // ── the page, in words ───────────────────────────────────────────────────
+  // See the note inside: several numbers below mean something other than what
+  // they look like, and this is where that is said out loud.
+  const plain = [];
+  plain.push(`The chain is at height <b>${N(ch.height, 0)}</b> and the explorer is `
+    + (ch.blocksBehind === 0 ? 'in step with the node'
+      : `<b class="warn">${N(ch.blocksBehind, 0)} block(s) behind the node</b>`)
+    + (ch.tipAge !== undefined
+      ? `. The last block arrived <b>${N(ch.tipAge / 60, 1)} minutes ago</b>; the target is one
+         every 10 minutes, and gaps of half an hour happen often and are not a fault.` : '.'));
+
+  if (p && p.total !== undefined) {
+    plain.push(`<b>${N(p.total, 0)} connections</b> are open to the seed node — and that is
+      connections, <b>not machines</b>. They come from <b>${N(p.distinctIps, 0)} distinct
+      addresses</b>${p.inbound !== undefined
+        ? `, ${N(p.inbound, 0)} of them dialled in to us and ${N(p.outbound, 0)} dialled out by us`
+        : ''}, so the honest count of other computers is nearer
+      <b>${N(p.distinctIps, 0)}</b> than ${N(p.total, 0)}. One machine can hold several
+      connections. Measured ${p.at ? T(p.at) : 'at an unknown time'}.`);
+  }
+  if (ch.peersSeenByExplorerNode !== undefined && p && p.total !== undefined) {
+    plain.push(`Further down you will see <b>“Peers seen by this node: ${N(ch.peersSeenByExplorerNode, 0)}”</b>,
+      which looks like it contradicts the ${N(p.total, 0)} above. It does not: that one is the
+      <b>explorer's own node</b>, a separate daemon with its own peers, while ${N(p.total, 0)} is
+      the seed's. Two machines, two counts, both right.`);
+  }
+
+  if (cen && cen.blocksRead) {
+    const soloPct = cen.solo ? (cen.solo.blocks / cen.blocksRead * 100) : 0;
+    const poolPct = 100 - soloPct;
+    plain.push(`Of the last <b>${N(cen.blocksRead, 0)} blocks</b>, about
+      <b>${PCT(poolPct, 0)}</b> were found by <b>${N(cen.poolCount, 0)} pool(s)</b> and
+      <b>${PCT(soloPct, 0)}</b> by <b>${N(cen.solo?.miners, 0)} people mining alone</b>.`
+      + (cen.poolCount === 1
+        ? ' Only one pool has found a block in that window, so pool mining here is still one pool.'
+        : ''));
+    if (pool && pool.connectedMiners !== undefined) {
+      plain.push(`Our own pool has <b>${N(pool.connectedMiners, 0)} machines connected right now</b>,
+        but only <b>${N(cen.poolMiners, 0)} addresses were actually paid</b> in those
+        ${N(cen.blocksRead, 0)} blocks. Both are true: a machine that has joined but not yet
+        earned a share of a block appears in the first number and not the second. The connected
+        count comes from the pool itself and is the only figure on this page that is measured
+        rather than worked out from the chain.`);
+    }
+  }
+
+  const body = card('In plain words', plain.map(t => `<p>${t}</p>`).join('')
+    + note('Everything in this paragraph is read from the same live data as the cards below, '
+         + 'never typed in — a number written into prose is one that goes stale without '
+         + 'anybody noticing, and this is the part of the page most likely to be believed.')) +
+
+  tiles([
     ['Height', N(ch.height, 0)],
     ['Tip age', ch.tipAge !== undefined
       ? N(ch.tipAge / 60, 1) + ' <span class="muted" style="font-size:14px">min</span>' : DASH],
