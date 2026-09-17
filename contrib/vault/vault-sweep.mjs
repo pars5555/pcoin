@@ -267,8 +267,18 @@ function selftest() {
   ok('and the matching public key',
      pub.toString('hex'),
      '025476c2e83188368da1ff3e292e7acafcdb3566bb0ad253f62fc70f07aeee6357');
-  const compact = secp.sign(h, priv, { lowS: true });
-  ok('a signature over it verifies', String(secp.verify(compact, h, pub)), 'true');
+  const compact = secp.sign(h, priv, { lowS: true, prehash: false });
+  ok('a signature over it verifies', String(secp.verify(compact, h, pub, { prehash: false })), 'true');
+
+  // THE PIN THAT MATTERS. BIP143 publishes the finished witness for this input,
+  // so the DER signature is a known quantity -- and ECDSA here is deterministic
+  // (RFC6979), so it is reproducible. This is what catches signing the wrong
+  // bytes: a signature over sha256(sighash) is perfectly valid maths, verifies
+  // against itself, and is rejected by every node on the network.
+  ok('and matches the signature BIP143 publishes',
+     derSig(compact).toString('hex'),
+     '304402203609e17b84f6a7d30c80bfa610b5b4542f32a8a0d5447a12fb1366d7f01cc44a'
+     + '0220573a954c4518331561406f90300e8f3358f51928d43c212a8caed02de67eebee');
 
   // DER: the shape a witness actually carries, and the two rules that silently
   // break it. A value with the top bit set must gain a 0x00; a surplus leading
@@ -359,8 +369,16 @@ function buildAndSign(tx, keyFor) {
     const h = sighash(tx, i, code, inp.value);
     // lowS is relay policy: a high-S signature is valid maths and a
     // non-standard transaction that never propagates.
-    const compact = secp.sign(h, priv, { lowS: true });
-    if (!secp.verify(compact, h, pub)) throw new Error(`input ${i}: signature failed self-verification`);
+    // prehash:false IS LOAD-BEARING. Without it this library hashes the message
+    // again, so the signature is over sha256(sighash) instead of the sighash --
+    // and because verify() hashes too, a self-check passes happily. The node
+    // does not: it answers "Signature must be zero for failed CHECKSIG", which
+    // is the NULLFAIL rule telling you the signature simply did not validate.
+    // Both sign and verify must be told.
+    const compact = secp.sign(h, priv, { lowS: true, prehash: false });
+    if (!secp.verify(compact, h, pub, { prehash: false })) {
+      throw new Error(`input ${i}: signature failed self-verification`);
+    }
     return [Buffer.concat([derSig(compact), Buffer.from([0x01])]), Buffer.from(pub)];
   });
 
