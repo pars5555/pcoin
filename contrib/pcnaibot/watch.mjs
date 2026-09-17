@@ -338,7 +338,32 @@ async function tick() {
       `SELECT * FROM pcn_deposits WHERE status NOT IN ('credited','rejected') ORDER BY first_seen_at ASC LIMIT 50`
     ).all();
     for (const dep of open) {
-      const r = await redriveDeposit({ dep, tipHeight, rate, floorFlag, mempoolKnownHint: null });
+      // ONE BAD DEPOSIT MUST NOT STOP THE OTHERS.
+      //
+      // Without this, a throw here escapes to the tick-level catch, which
+      // RETURNS -- so the whole tick dies and nothing after it runs. The
+      // condition that caused the throw is usually persistent (a deposit to an
+      // address whose user row is gone throws `no users row for chat` every
+      // time), so the rail stops crediting for EVERY user, permanently, on
+      // account of one row. Measured 2026-09-16 with §8 test 6.
+      //
+      // `held` is the state that already exists for "we cannot resolve this
+      // one": it is not credited, not rejected, and a human is told. So the
+      // bad row is held and the loop carries on. This is §7.13 -- isolate
+      // every step that runs before money moves.
+      let r;
+      try {
+        r = await redriveDeposit({ dep, tipHeight, rate, floorFlag, mempoolKnownHint: null });
+      } catch (e) {
+        if (e instanceof BudgetExhausted) throw e;   // a tick-wide condition, not this deposit's
+        log.error('deposit could not be processed; holding it and continuing', {
+          deposit: dep.id, ...errFields(e),
+        });
+        db.prepare(`UPDATE pcn_deposits SET status='held', flagged_reason=? WHERE id=?`)
+          .run(`redrive threw: ${String(e.message).slice(0, 160)}`, dep.id);
+        held++;
+        continue;
+      }
       if (r === 'credited') credited++;
       else if (r === 'held') held++;
     }
