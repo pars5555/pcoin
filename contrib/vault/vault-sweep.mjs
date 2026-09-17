@@ -158,7 +158,7 @@ async function findUsed(xpub) {
       process.stdout.write(`\r  scanning ${Math.min(i + BULK, all.length)}/${all.length} addresses…   `);
     }
   }
-  process.stdout.write('\r' + ' '.repeat(60) + '\r');
+  if (process.stdout.isTTY) process.stdout.write('\r' + ' '.repeat(60) + '\r');
   return used;
 }
 
@@ -339,6 +339,40 @@ const has = (n) => argv.includes(n);
 
 if (has('--selftest')) selftest();
 
+/** What every vault wallet holds, read off the chain. No keys, no passphrase.
+ *
+ *  Exists so "which vault has coins in it" is a question this machine can
+ *  answer on its own. It is a full scan of both branches for every system, so
+ *  it takes a couple of minutes -- a faster partial scan would report a used
+ *  address beyond the cut-off as ZERO, and a wrong zero is worse than a wait.
+ */
+async function listAll() {
+  const names = readdirSync(HERE).filter((f) => f.endsWith('-xpub.txt')).map((f) => f.replace('-xpub.txt', '')).sort();
+  console.log(`\n  reading ${names.length} vault wallets off the chain (both branches, ${SCAN_TO} deep)…\n`);
+  const rows = [];
+  for (const name of names) {
+    const xpub = readFileSync(join(HERE, `${name}-xpub.txt`), 'utf8').trim();
+    let total = 0;
+    let addrs = 0;
+    try {
+      for (const a of await findUsed(xpub)) { total += a.spendable; addrs++; }
+    } catch (e) {
+      console.log(`  ${name.padEnd(16)} unreadable: ${e.message.slice(0, 60)}`);
+      continue;
+    }
+    rows.push({ name, total, addrs });
+    const note = name === 'exchange' ? '  <- CUSTOMERS\' deposits, never sweep'
+      : name === 'wpcn-reserve' ? '  <- backs wPCN 1:1; only the surplus is yours'
+        : '';
+    console.log(`  ${name.padEnd(16)} ${sat(total).padStart(16)} PCN   ${String(addrs).padStart(3)} address(es)${note}`);
+  }
+  const sweepable = rows.filter((r) => r.name !== 'exchange' && r.name !== 'wpcn-reserve')
+    .reduce((s, r) => s + r.total, 0);
+  console.log(`\n  freely sweepable (everything except exchange and the wPCN reserve): ${sat(sweepable)} PCN\n`);
+  process.exit(0);
+}
+if (has('--list')) await listAll();
+
 const system = flag('--system');
 const to = flag('--to');
 const amountArg = flag('--amount');
@@ -349,6 +383,8 @@ if (!system || !to || (!amountArg && !sendAll)) {
   const names = readdirSync(HERE).filter((f) => f.endsWith('-xpub.txt')).map((f) => f.replace('-xpub.txt', ''));
   console.log(`
   node vault-sweep.mjs --system <name> --to <pc1q…> (--all | --amount <PCN>) [--send]
+  node vault-sweep.mjs --list        what every vault holds, no passphrase needed
+  node vault-sweep.mjs --selftest    prove the signing against the BIP143 vector
 
   Builds and signs, and prints what would be sent. It broadcasts NOTHING until
   you add --send, because a transaction cannot be taken back.
