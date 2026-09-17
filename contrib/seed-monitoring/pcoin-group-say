@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""Post a reply into @PCoinPCNChat or the PCoin Discord chat, by hand.
+
+    pcoin-group-say --reply-to 241 --text "..."          Telegram group
+    pcoin-group-say --discord --reply-to 1549… --file m.txt
+    pcoin-group-say --dry-run --text "..."               print, send nothing
+
+WHY THIS IS IN THE REPO AND NOT A SCRATCH FILE. The automatic answer bot is
+switched off from time to time -- it published a confident wrong answer once and
+the owner would rather have silence than that -- and while it is off, questions
+in the group are answered by hand. Twice now the two-line sender that does it
+has been written from scratch in /tmp, used, and deleted with the tidy-up, which
+is exactly the loss CLAUDE.md section 2 describes: a helper whose only copy
+lives in a temp directory is a helper that has to be rewritten every time.
+
+IT IS NOT THE ANNOUNCE TOOL AND CANNOT REACH THE CHANNEL. `pcoin-announce`
+posts to @PCoinPCN, which is subscribers, needs a picture and needs the owner's
+approval first. This one writes to the discussion group, which is a conversation.
+The channel id is not reachable from here at all: the destination is read from
+GROUP_CHAT_ID, and a channel id passed by hand is refused below.
+
+Credentials come from the same files every other tool on the box uses and are
+never printed: TELEGRAM_TOKEN from /etc/pcoin/alert.conf, GROUP_CHAT_ID from
+/etc/pcoin/groups.conf, DISCORD_BOT_TOKEN and DISCORD_CHAT_CHANNEL_ID from
+/etc/pcoin/discord.conf.
+"""
+import argparse
+import json
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+ALERT_CONF = "/etc/pcoin/alert.conf"
+GROUPS_CONF = "/etc/pcoin/groups.conf"
+DISCORD_CONF = "/etc/pcoin/discord.conf"
+
+# The announcement channel. Named here ONLY so it can be refused: this tool must
+# never be the thing that posts to subscribers.
+ANNOUNCE_CHAT = "-1003712285504"
+
+
+def conf(path):
+    out = {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip().strip('"').strip("'")
+    except OSError as e:
+        sys.exit("cannot read %s: %s" % (path, e))
+    return out
+
+
+def telegram(text, reply_to, dry):
+    c = conf(ALERT_CONF)
+    g = conf(GROUPS_CONF)
+    token = c.get("TELEGRAM_TOKEN")
+    chat = g.get("GROUP_CHAT_ID")
+    if not token:
+        sys.exit("no TELEGRAM_TOKEN in %s" % ALERT_CONF)
+    if not chat:
+        sys.exit("no GROUP_CHAT_ID in %s -- refusing to guess a destination" % GROUPS_CONF)
+    if str(chat) == ANNOUNCE_CHAT:
+        sys.exit("GROUP_CHAT_ID is the ANNOUNCEMENT channel -- refusing. Use pcoin-announce.")
+    if dry:
+        print("(dry run) would post to %s%s:\n%s"
+              % (chat, " replying to %s" % reply_to if reply_to else "", text))
+        return
+    p = {"chat_id": chat, "text": text, "parse_mode": "HTML",
+         "disable_web_page_preview": "true"}
+    if reply_to:
+        p["reply_to_message_id"] = str(reply_to)
+        # A reply to a message somebody has deleted must still post, not vanish.
+        p["allow_sending_without_reply"] = "true"
+    req = urllib.request.Request("https://api.telegram.org/bot%s/sendMessage" % token,
+                                 data=urllib.parse.urlencode(p).encode())
+    try:
+        r = json.load(urllib.request.urlopen(req, timeout=30))
+    except urllib.error.HTTPError as e:
+        sys.exit("telegram refused it: HTTP %s %s" % (e.code, e.read().decode()[:300]))
+    if not r.get("ok"):
+        sys.exit("telegram refused it: %s" % r.get("description"))
+    print("posted t.me/PCoinPCNChat/%s" % r["result"]["message_id"])
+
+
+def discord(text, reply_to, dry):
+    c = conf(DISCORD_CONF)
+    token = c.get("DISCORD_BOT_TOKEN")
+    chan = c.get("DISCORD_CHAT_CHANNEL_ID")
+    if not token or not chan:
+        sys.exit("DISCORD_BOT_TOKEN or DISCORD_CHAT_CHANNEL_ID missing from %s" % DISCORD_CONF)
+    if dry:
+        print("(dry run) would post to discord channel %s%s:\n%s"
+              % (chan, " replying to %s" % reply_to if reply_to else "", text))
+        return
+    body = {"content": text, "allowed_mentions": {"parse": []}}
+    if reply_to:
+        body["message_reference"] = {"message_id": str(reply_to), "channel_id": chan,
+                                     "fail_if_not_exists": False}
+    req = urllib.request.Request(
+        "https://discord.com/api/v10/channels/%s/messages" % chan,
+        data=json.dumps(body).encode("utf-8"), method="POST",
+        headers={"Authorization": "Bot " + token, "content-type": "application/json",
+                 "User-Agent": "DiscordBot (https://pc.am, 1.0) pcoin-group-say"})
+    try:
+        r = json.load(urllib.request.urlopen(req, timeout=30))
+    except urllib.error.HTTPError as e:
+        sys.exit("discord refused it: HTTP %s %s" % (e.code, e.read().decode()[:300]))
+    print("posted discord message %s" % r.get("id"))
+
+
+def main():
+    ap = argparse.ArgumentParser(description="post one reply into the PCoin group")
+    ap.add_argument("--text", help="the message; HTML is allowed on Telegram")
+    ap.add_argument("--file", help="read the message from this file instead")
+    ap.add_argument("--reply-to", dest="reply_to", help="message id to reply to")
+    ap.add_argument("--discord", action="store_true", help="post to Discord, not Telegram")
+    ap.add_argument("--dry-run", dest="dry", action="store_true",
+                    help="print exactly what would be sent and send nothing")
+    a = ap.parse_args()
+    if bool(a.text) == bool(a.file):
+        sys.exit("give exactly one of --text or --file")
+    text = a.text if a.text else open(a.file, encoding="utf-8").read()
+    text = text.strip()
+    if not text:
+        sys.exit("refusing to post an empty message")
+    if len(text) > 4000:
+        sys.exit("that is %d characters; Telegram refuses over 4096 and the group "
+                 "deserves shorter than that anyway" % len(text))
+    (discord if a.discord else telegram)(text, a.reply_to, a.dry)
+
+
+if __name__ == "__main__":
+    main()
