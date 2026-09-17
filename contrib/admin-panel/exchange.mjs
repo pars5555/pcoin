@@ -19,6 +19,7 @@
 import http from 'node:http';
 import https from 'node:https';
 import { esc } from './ui.mjs';
+import { qrSvg } from './qr.mjs';
 
 const VIEWS = [
   ['overview', 'Overview'], ['activity', 'Activity'], ['withdrawals', 'Withdrawals'], ['deposits', 'Deposits'], ['settings', 'Settings'],
@@ -153,6 +154,96 @@ export function exchangeSection({ base, creds, actor }) {
       </div>`;
   }
 
+  /**
+   * A QR of the destination, so a payout can be sent from a phone instead of
+   * retyping an address (owner, 2026-09-17). Typing is the failure mode worth
+   * removing here: these are one-way payments to an address the recipient
+   * chose, and a single wrong character sends somebody else's money nowhere.
+   *
+   * PCN gets a `pcoin:` payment URI carrying the amount, which our own wallets
+   * parse (PaymentUri.cs accepts pcoin:, PCN: and bitcoin:), so the amount is
+   * filled in as well and cannot be mistyped either. USDT gets the bare
+   * address: every wallet reads that, whereas an EIP-681 or TRON amount URI is
+   * read by some and silently mangled by others, and a mangled amount on a
+   * chain with no undo is worse than typing the number by hand.
+   *
+   * The amount is NOT put in the PCN URI when the status is anything but
+   * approved/requested -- a paid withdrawal showing a scannable amount invites
+   * paying it twice.
+   */
+  //! Is this withdrawal still waiting to be sent? Everything else has either
+  //! been paid or returned, and neither wants a scannable destination.
+  function payable(w) { return ['requested', 'approved'].includes(w.status); }
+
+  //! Enough of the address to recognise it, not enough to pay it by eye.
+  // WHERE THE REQUEST CAME FROM. Three states, and they are NOT the same:
+  //   no ip at all      -- this row predates the recording, so we never knew
+  //   ip but no country -- we asked and the service could not place it
+  //   ip and a country  -- the useful case
+  // A blank cell would collapse all three into "nothing unusual", which is
+  // exactly the reading that makes a location field worthless.
+  function flagOf(cc) {
+    const c = String(cc || '').trim().toUpperCase();
+    if (!/^[A-Z]{2}$/.test(c)) return '';
+    return String.fromCodePoint(...[...c].map((ch) => 0x1f1e6 + ch.charCodeAt(0) - 65));
+  }
+  function geoCell(w) {
+    if (!w.ip) return '<span class="dim">not recorded — this request predates IP logging</span>';
+    const g = w.geo || {};
+    const bits = [];
+    const place = [g.city, g.country].filter(Boolean).join(', ');
+    if (place) bits.push(`${flagOf(g.country)} ${esc(place)}`.trim());
+    bits.push(mono(w.ip));
+    if (g.isp) bits.push(esc(g.isp));
+    if (!place) bits.push('<span class="dim">location unknown</span>');
+    return bits.join(' &middot; ');
+  }
+
+  function maskAddr(a) {
+    const s = String(a || '');
+    return s.length <= 18 ? s : s.slice(0, 8) + '…' + s.slice(-6);
+  }
+
+  function payQr(w) {
+    // ONCE SOMETHING HAS BEEN SENT, THERE IS NOTHING TO SCAN.
+    //
+    // Owner, 2026-09-17, looking at a paid_unverified row: "it should not show
+    // Scan to pay when open that, it should hide the address and tell already
+    // paid." He is right, and the reason is worse than untidiness: double
+    // payment is the standard failure of every manual payout flow, and a
+    // working QR on a row that has already been paid is the mechanism for it.
+    // The address is masked too -- recognisable, not re-payable by eye.
+    if (!payable(w)) {
+      const state = w.status === 'paid'
+        ? '<b class="ok">Already paid</b> and confirmed on the chain.'
+        : w.status === 'paid_unverified'
+          ? '<b class="warn">Already sent.</b> A transaction id is recorded and the chain has not confirmed it yet. <b>Do not send it again.</b>'
+          : `<b>${esc(w.status.replace('_', ' '))}</b> — nothing to send.`;
+      return `<div class="muted">${state}${w.txid ? `<br>Transaction: ${mono(w.txid)}` : ''}
+        <br>Destination ${mono(maskAddr(w.address))} — shown in full only while a payment is still owed.</div>`;
+    }
+    const payload = w.network === 'PCN'
+      ? `pcoin:${w.address}?amount=${String(w.amount).trim()}`
+      : String(w.address).trim();
+    let svg;
+    try {
+      svg = qrSvg(payload, { scale: 4, quiet: 3 });
+    } catch (e) {
+      // Never render a wrong QR. An address too long for the encoder, or any
+      // other refusal, shows as text rather than as a symbol that scans to
+      // something else.
+      return `<span class="bad">no QR (${esc(e.message)})</span>`;
+    }
+    return `<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+      <div style="background:#fff;padding:6px;border-radius:8px;line-height:0">${svg}</div>
+      <div class="muted" style="font-size:13px;max-width:30em">
+        ${w.network === 'PCN'
+          ? 'Scan with a PCoin wallet — address <b>and amount</b> are both in the code.'
+          : 'Scan with your USDT wallet. The code carries the <b>address only</b> — set the amount and the network yourself, and check both.'}
+        <br>Network: <b>${esc(w.network)}</b>
+      </div></div>`;
+  }
+
   async function withdrawals(url) {
     const all = url.searchParams.get('all') === '1';
     const r = await call('GET', `/admin/api/withdrawals${all ? '?all=1' : ''}`);
@@ -171,9 +262,11 @@ export function exchangeSection({ base, creds, actor }) {
           <tr><td style="width:28%">User</td><td>${esc(w.email)} (account ${esc(w.accountId)})</td></tr>
           <tr><td>Send exactly</td><td style="font-size:20px"><b>${esc(amount)}</b></td></tr>
           <tr><td>On network</td><td style="font-size:17px"><b>${esc(net)}</b></td></tr>
-          <tr><td>To address</td><td style="font-size:16px">${mono(w.address)}</td></tr>
+          <tr><td>To address</td><td style="font-size:16px">${payable(w) ? mono(w.address) : mono(maskAddr(w.address))}</td></tr>
+          <tr><td>${payable(w) ? 'Scan to pay' : 'Payment'}</td><td>${payQr(w)}</td></tr>
           <tr><td>Fee charged to the user</td><td>${esc(w.fee)}</td></tr>
           <tr><td>Waiting</td><td${w.ageSeconds >= 18 * 3600 ? ' class="bad"' : ''}>${esc(age(w.ageSeconds))} (promised within 24 h)</td></tr>
+          <tr><td>Requested from</td><td>${geoCell(w)}</td></tr>
           <tr><td>Balance came from</td><td>${w.sources.pcnDepositsCredited} PCN deposit(s), ${w.sources.usdDepositsCredited} USD deposit(s), ${w.sources.trades} trade(s)</td></tr>
           ${w.txid ? `<tr><td>Txid</td><td>${mono(w.txid)}</td></tr>` : ''}
           ${w.verifyDetail ? `<tr><td>Chain check</td><td${/MISMATCH/.test(w.verifyDetail) ? ' class="bad"' : ''}>${esc(w.verifyDetail)}</td></tr>` : ''}
