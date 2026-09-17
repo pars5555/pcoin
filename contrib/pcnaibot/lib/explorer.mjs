@@ -219,7 +219,19 @@ export function addressTouched(entry, previous) {
   if (entry.used === null || entry.used === undefined) {
     return { touched: true, reason: 'used is null/absent (unknown, not false)' };
   }
-  const lt = entry.lifetime;
+  // THE LIFETIME BLOCK IS NESTED UNDER `balance`, NOT AT THE TOP LEVEL.
+  //
+  // Read from `entry.lifetime` this was always undefined, so every address fell
+  // through to "lifetime block absent" and was treated as TOUCHED on every
+  // tick. That is fail-SAFE -- everything got checked -- which is exactly why
+  // nobody noticed: the rail was correct and simply did the expensive thing
+  // every time. It only becomes a fault at scale, when EXPLORER_REQ_BUDGET runs
+  // out mid-tick and the addresses after it are silently not checked at all.
+  //
+  // The top-level spelling is still accepted, so a future explorer that hoists
+  // the block does not quietly turn this back into "absent".
+  const lt = (entry.balance && typeof entry.balance === 'object' ? entry.balance.lifetime : null)
+    ?? entry.lifetime;
   if (!lt || typeof lt !== 'object') {
     return { touched: true, reason: 'lifetime block absent' };
   }

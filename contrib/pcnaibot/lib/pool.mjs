@@ -205,7 +205,11 @@ export function poolStats(db) {
 // NOTIFY, never on WHAT TO WATCH.
 export function issuedAddresses(db) {
   return db.prepare(
-    `SELECT derivation_index, address, chat_id
+    // last_tx_count / last_received_sat are what the touch detector compares
+    // against. Leaving them out of this SELECT made `previous` undefined for
+    // every address, so the comparison could never say "unchanged" -- the
+    // watcher wrote those columns every tick and then never read them back.
+    `SELECT derivation_index, address, chat_id, last_tx_count, last_received_sat
        FROM pcn_addresses
       WHERE assigned_at IS NOT NULL
       ORDER BY derivation_index ASC`
