@@ -20,7 +20,7 @@ export const DEFS = {
   // wrong or the service is down, orders must proceed untouched.
   geoipEnabled:        { type: 'bool', def: true,
                          help: 'Look up the country/city for the IP behind each order.' },
-  geoipBaseUrl:        { type: 'str', def: 'http://116.203.221.42:65333', max: 200,
+  geoipBaseUrl:        { type: 'str', def: 'https://geoip.pc.am', max: 200,
                          re: /^https?:\/\/[\w.\-]+(:\d{1,5})?(\/\S*)?$/,
                          help: 'GeoIP API base. NOTE geoip.pc.am serves only the marketing site; '
                              + 'the API answers on this host and port, over plain HTTP.' },
