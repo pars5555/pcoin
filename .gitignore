@@ -76,6 +76,12 @@ contrib/windows-tray/pcoin-pending-uri.txt
 # custody: one file linking every address a system will ever issue hands an
 # observer the whole deposit history in one read.
 *-pool-*.txt
+# Sweep receipts, written beside the vault by vault-sweep.mjs. They hold no key
+# material -- amount, destination, txid, and the signed hex -- but a signed
+# transaction is still a spend anyone can rebroadcast, and the set of them is a
+# record of every consolidation this project has ever made. Same reasoning as
+# the pool listings above: privacy, not custody.
+sweep-*.json
 contrib/vault/node_modules/
 
 
