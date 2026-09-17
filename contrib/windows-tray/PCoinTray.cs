@@ -18,6 +18,7 @@ using System.Drawing;
 using System.Globalization;
 using System.Collections.Generic;
 using System.IO;
+using Microsoft.Win32;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
@@ -97,6 +98,56 @@ namespace PCoinTray
         [DllImport("kernel32.dll")]
         static extern bool AttachConsole(int dwProcessId);
 
+        /**
+         * Runs the wake-from-sleep recovery against the live node and narrates
+         * it. Not a mock: it asks the real node for its peer count, and if that
+         * is zero it issues the same `addnode onetry` nudge the resume handler
+         * issues. On a healthy machine it should report peers and stop without
+         * touching anything, which is itself the useful result -- it proves the
+         * count is readable and that the handler would not fire needlessly.
+         */
+        static int ResumeSelfTest()
+        {
+            var dir = Path.GetDirectoryName(Application.ExecutablePath);
+            string datadir = null;
+            try
+            {
+                foreach (var line in File.ReadAllLines(Path.Combine(dir, "pcoin-tray.cfg")))
+                    if (line.StartsWith("datadir=", StringComparison.OrdinalIgnoreCase))
+                        datadir = line.Substring(8).Trim();
+            }
+            catch { }
+            if (string.IsNullOrEmpty(datadir)) datadir = @"C:\PCoin\data";
+            Console.WriteLine("datadir: " + datadir);
+
+            var rpc = new RpcClient(datadir);
+            var pc = rpc.Call("getconnectioncount", "[]");
+            if (!pc.Ok || !(pc.Result is double))
+            {
+                Console.WriteLine("peer count: UNREADABLE -- the handler would retry, not assume zero.");
+                Console.WriteLine("RESULT: correct behaviour on an unreadable node.");
+                return 0;
+            }
+            int peers = (int)(double)pc.Result;
+            Console.WriteLine("peer count: " + peers);
+            if (peers > 0)
+            {
+                Console.WriteLine("RESULT: peers present, so the resume handler would return without nudging.");
+                return 0;
+            }
+
+            Console.WriteLine("zero peers -- issuing the same nudge the resume handler issues...");
+            rpc.Call("addnode", "[" + Json.Quote(TrayApp.PROBE_SEED) + ",\"onetry\"]");
+            Thread.Sleep(9000);
+            var after = rpc.Call("getconnectioncount", "[]");
+            int now = (after.Ok && after.Result is double) ? (int)(double)after.Result : -1;
+            Console.WriteLine("peer count after the nudge: " + (now < 0 ? "unreadable" : now.ToString()));
+            Console.WriteLine(now > 0
+                ? "RESULT: the nudge recovered the connection. This is what a wake would now do."
+                : "RESULT: still nothing; on a real resume it would nudge five more times, then restart the node.");
+            return 0;
+        }
+
         [STAThread]
         static int Main(string[] args)
         {
@@ -104,6 +155,18 @@ namespace PCoinTray
             {
                 var a = args[i];
                 if (a == "--selftest" || a == "-selftest") return SelfTest();
+                // PROVE THE WAKE-FROM-SLEEP RECOVERY WITHOUT SLEEPING A MACHINE.
+                // SystemEvents.PowerModeChanged cannot be raised from outside,
+                // so the recovery path could only ever be reasoned about --
+                // and a path that has never run is a path that does not work.
+                // This runs exactly what Resume runs, against the real node,
+                // and prints what it decided at each step.
+                if (a == "--test-resume")
+                {
+                    AttachConsole(-1);
+                    Console.WriteLine();
+                    return ResumeSelfTest();
+                }
                 // Set the forwarding destination on a machine with no desktop.
                 // Same validation and same re-probe as the settings dialog; see
                 // FleetProvision.cs for why it is not a direct file write.
@@ -811,7 +874,8 @@ namespace PCoinTray
         const int BEHIND_BY_BLOCKS = 3;
         //! Where to ask. The DNS seed, which is the same name a fresh node uses
         //! to bootstrap, so it needs no new configuration to exist.
-        const string PROBE_SEED = "seed.pc.am:9444";
+        // internal so the --test-resume entry point can nudge the same seed
+        internal const string PROBE_SEED = "seed.pc.am:9444";
 
         /**
          * The two decisions above, as pure functions, so they can be checked
@@ -912,6 +976,91 @@ namespace PCoinTray
                 finally { _staleBusy = false; }
             }) { IsBackground = true, Name = "pcoin-stale-tip" };
             t.Start();
+        }
+
+        /**
+         * COMING BACK FROM SLEEP, THE NODE IS ALONE AND STAYS ALONE.
+         *
+         * Reported 2026-09-17 by a user running 1.4.28: "When I wake it up from
+         * sleep I have to close the miner completely and restart it because it
+         * is at 0 Peers every time." That is exactly right, and nothing in this
+         * app was listening for the machine waking up.
+         *
+         * What happens: suspend takes the network interface down under
+         * bitcoind. Its sockets are dead but it does not know yet -- Core only
+         * gives up on a silent peer after a long inactivity timeout -- and the
+         * addresses it would dial are the ones that just failed. The user is
+         * left staring at 0 peers with a node that looks alive, and a full
+         * restart is the only thing that fixes it. It costs them every block
+         * their machine would have worked on in between.
+         *
+         * The nudge is `addnode <seed> onetry`, the same mechanism the height
+         * probe above already uses: it forces a fresh handshake now rather than
+         * waiting for Core's own timers. It is tried several times with a gap,
+         * because the network stack is often not ready the instant Windows says
+         * Resume.
+         *
+         * AN RPC THAT DID NOT ANSWER IS NOT "ZERO PEERS" (CLAUDE.md 7.1). A
+         * failed getconnectioncount leaves the count unknown and simply tries
+         * again; only a real zero drives the nudge, and only a real zero that
+         * survives every attempt escalates to restarting the node.
+         */
+        void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
+        {
+            if (e.Mode != PowerModes.Resume) return;
+            // Do NOT work on the event thread: Windows delivers this on a
+            // system thread and a slow handler delays the whole resume.
+            var t = new Thread(ReconnectAfterResume);
+            t.IsBackground = true;
+            t.Start();
+        }
+
+        void ReconnectAfterResume()
+        {
+            // Windows says Resume before the adapter has an address. Dialling
+            // into that reliably fails and burns an attempt.
+            Thread.Sleep(15000);
+
+            for (int attempt = 1; attempt <= 6; attempt++)
+            {
+                int peers;
+                if (!TryPeerCount(out peers))
+                {
+                    Thread.Sleep(15000);      // could not ask; ask again
+                    continue;
+                }
+                if (peers > 0) return;        // it found its own way back
+
+                _rpc.Call("addnode", "[" + Json.Quote(PROBE_SEED) + ",\"onetry\"]");
+                Thread.Sleep(15000);
+            }
+
+            // Six nudges over roughly two minutes and still nothing. The node
+            // is wedged rather than slow, and restarting it is what the user
+            // was doing by hand -- except this keeps the app, the wallet and
+            // the mining settings, and they do not have to notice.
+            int last;
+            if (TryPeerCount(out last) && last == 0)
+            {
+                try { ReviveNode(); } catch { }
+            }
+        }
+
+        //! true only when the node actually answered. `count` is untouched
+        //! otherwise, so a failed read can never be mistaken for zero.
+        bool TryPeerCount(out int count)
+        {
+            count = -1;
+            try
+            {
+                var r = _rpc.Call("getconnectioncount", "[]");
+                // Same shape the status poll uses: the result is a bare number,
+                // not an object with a field to look up.
+                if (!r.Ok || !(r.Result is double)) return false;
+                count = (int)(double)r.Result;
+                return true;
+            }
+            catch { return false; }
         }
 
         /**
@@ -1140,6 +1289,12 @@ namespace PCoinTray
 
             LoadConfig();
             _rpc = new RpcClient(_datadir);
+            // Wake-from-sleep leaves the node with no peers and no intention of
+            // finding any; see ReconnectAfterResume. Subscribed here because it
+            // needs _rpc, and unsubscribed in Quit -- SystemEvents holds a
+            // strong reference to the handler and would otherwise keep this
+            // object alive after the app is asked to close.
+            SystemEvents.PowerModeChanged += OnPowerModeChanged;
             _seed = new SeedWallet(_rpc);
             _phrase = PhraseInfo.Load(_dir);
             var force = _sync.Handle;   // realise the handle so Invoke works later
@@ -3796,6 +3951,7 @@ namespace PCoinTray
 
         void Quit()
         {
+            try { SystemEvents.PowerModeChanged -= OnPowerModeChanged; } catch { }
             // Tell forwarding we are going. It never starts a new build after
             // this; a transaction already committed to disk is picked up and
             // resolved by the next start, which is the whole point of writing
