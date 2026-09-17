@@ -1,9 +1,14 @@
 // The rate oracle: https://price.pc.am
 //
-// Read `serviceRate`. NEVER `price` -- that is the ladder's marginal rung, what
-// the next PCN COSTS TO BUY, and the docs call confusing the two "the mistake
-// waiting to be made". NEVER PancakeSwap: ~$34 of selling moves it -10%, so
-// reading it as a price lets anyone who spends $20 set our credit rate.
+// Read `creditRateUsd` -- the field the oracle NOMINATES, in `rateFieldToUse`.
+// `serviceRate` is still read alongside it and a disagreement is alerted on;
+// this rail credited from serviceRate until 2026-09-17, and the two have been
+// identical every time they were compared, but only one of them is nominated.
+//
+// NEVER `price` -- that is the ladder's marginal rung, what the next PCN COSTS
+// TO BUY, and the docs call confusing the two "the mistake waiting to be made".
+// NEVER PancakeSwap: ~$34 of selling moves it -10%, so reading it as a price
+// lets anyone who spends $20 set our credit rate.
 //
 // THE RATE IS TAKEN FROM THE RESPONSE TEXT, NOT FROM JSON.parse. Parsing first
 // turns 0.03590242147375549 into a double, and quantising that back out with
@@ -26,6 +31,7 @@
 
 import { rateToE12 } from './money.mjs';
 import { nowSec } from './time.mjs';
+import { log } from './log.mjs';
 
 // A tiny store interface -- { getJson(key), setJson(key, value) } -- rather than
 // an import of db.mjs. That keeps the validator (and its adversarial tests)
@@ -77,12 +83,32 @@ export function validateRateBody(text, { maxStateAgeS, maxLadderAgeS, maxPoolAge
   }
 
   // --- check 1/2: the rate itself, from the TEXT -------------------------
-  const rateStr = rawNumber(text, 'serviceRate');
-  if (rateStr === null) throw new RateInsane('serviceRate is absent');
+  //
+  // WHICH FIELD IS THE CREDIT RATE. price.pc.am publishes `serviceRate` and
+  // `creditRateUsd`, and names the one integrators are to use in a third field,
+  // `rateFieldToUse` -- which reads "creditRateUsd". This rail read
+  // `serviceRate`. The two have been identical every time they have been
+  // compared, so nobody has ever been over- or under-credited, but they are
+  // separate fields and only one of them is nominated.
+  //
+  // Both are still read, so a divergence is REPORTED rather than discovered in
+  // somebody's balance. The oracle changing which field it nominates is
+  // reported too: silently following a renamed field is how a rail starts
+  // crediting from a number nobody chose.
+  const creditStr = rawNumber(text, 'creditRateUsd');
+  const serviceStr = rawNumber(text, 'serviceRate');
+  const rateStr = creditStr ?? serviceStr;
+  const fieldUsed = creditStr !== null ? 'creditRateUsd' : 'serviceRate';
+  if (rateStr === null) throw new RateInsane('neither creditRateUsd nor serviceRate is present');
   const rateNum = Number(rateStr);
-  if (!Number.isFinite(rateNum)) throw new RateInsane('serviceRate is not finite');
-  if (rateNum <= 0) throw new RateInsane(`serviceRate is not positive (${rateStr})`);
-  if (rateNum < 1e-7 || rateNum > 1.0) throw new RateInsane(`serviceRate ${rateStr} outside band [1e-7, 1.0]`);
+  if (!Number.isFinite(rateNum)) throw new RateInsane(`${fieldUsed} is not finite`);
+  if (rateNum <= 0) throw new RateInsane(`${fieldUsed} is not positive (${rateStr})`);
+  if (rateNum < 1e-7 || rateNum > 1.0) throw new RateInsane(`${fieldUsed} ${rateStr} outside band [1e-7, 1.0]`);
+
+  // A named field we do NOT honour is a fact worth surfacing, not a refusal:
+  // refusing here would stop the rail crediting over a naming change.
+  const fieldNamed = typeof body.rateFieldToUse === 'string' ? body.rateFieldToUse : null;
+  const diverged = creditStr !== null && serviceStr !== null && creditStr !== serviceStr;
 
   // --- check 3: no more than a 10x jump vs the last ACCEPTED rate --------
   // Against the last reading we ACCEPTED, not the last reading we took: a
@@ -90,7 +116,7 @@ export function validateRateBody(text, { maxStateAgeS, maxLadderAgeS, maxPoolAge
   if (lastAccepted && Number.isFinite(lastAccepted.rate) && lastAccepted.rate > 0) {
     const f = rateNum / lastAccepted.rate;
     if (f > maxJumpFactor || f < 1 / maxJumpFactor) {
-      throw new RateInsane(`serviceRate moved ${f.toFixed(3)}x vs last accepted (limit ${maxJumpFactor}x)`);
+      throw new RateInsane(`${fieldUsed} moved ${f.toFixed(3)}x vs last accepted (limit ${maxJumpFactor}x)`);
     }
   }
 
@@ -127,6 +153,14 @@ export function validateRateBody(text, { maxStateAgeS, maxLadderAgeS, maxPoolAge
     role: typeof body.role === 'string' ? body.role : null,
     at: typeof body.at === 'string' ? body.at : null,
     buybackOpen: body.buybackOpen === true,
+    // Which field the money came from, and whether the other one disagreed.
+    // Carried out of here so the caller can say so ONCE, loudly, rather than
+    // this file deciding on its own what is worth waking somebody for.
+    fieldUsed,
+    fieldNamed,
+    diverged,
+    creditRateText: creditStr,
+    serviceRateText: serviceStr,
   };
 }
 
@@ -176,6 +210,24 @@ export async function readRate(store, cfg, { fetchImpl = fetch } = {}) {
     }
     // Body did not decode -- treat as unreachable.
     return fromCache(store, cacheMaxAge, `undecodable: ${e.message}`);
+  }
+
+  // THE TWO RATE FIELDS DISAGREED. Not a refusal -- the reading is sound and
+  // the oracle nominates the one we used -- but it has never happened, so the
+  // first time it does somebody should find out from an alert rather than from
+  // a customer's balance.
+  if (reading.diverged) {
+    log.error('price oracle: creditRateUsd and serviceRate DISAGREE -- crediting from creditRateUsd', {
+      creditRateUsd: reading.creditRateText, serviceRate: reading.serviceRateText,
+    });
+  }
+  if (reading.fieldNamed && reading.fieldNamed !== reading.fieldUsed) {
+    log.error('price oracle nominates a field we are NOT crediting from', {
+      nominated: reading.fieldNamed, using: reading.fieldUsed,
+    });
+  }
+  if (reading.fieldUsed !== 'creditRateUsd') {
+    log.warn('creditRateUsd absent; fell back to serviceRate', { using: reading.fieldUsed });
   }
 
   const now = nowSec();
