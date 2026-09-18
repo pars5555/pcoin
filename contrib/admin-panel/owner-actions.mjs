@@ -37,7 +37,13 @@ import { needsYou } from './needs-you.mjs';
 
 const NOTIFY = process.env.PCOIN_NOTIFY || '/usr/local/bin/pcoin-notify';
 const STATE = process.env.OWNER_ACTIONS_STATE || '/var/lib/pcoin-monitor/owner-actions.json';
-const ADMIN_URL = process.env.ADMIN_URL || 'https://explorer.pc.am/549m0pyoivh2m5o4f5qym2bvsu';
+// NO DEFAULT, because a default would have to contain the panel's unguessable
+// path and this repository is PUBLIC. That path is not the security -- the
+// password and the second factor are -- but publishing it hands scanners the
+// front door for nothing. It is set in a systemd drop-in that stays on the box.
+// Unset, the message still lists every item and simply names the page instead of
+// linking it: degraded, never silent.
+const ADMIN_URL = process.env.ADMIN_URL || '';
 // Re-send an unchanged list this often, so a thing sitting for days is not
 // forgotten just because it has not changed.
 const REMIND_HOURS = Number(process.env.OWNER_ACTIONS_REMIND_HOURS || 12);
@@ -131,7 +137,9 @@ function render(items) {
       lines.push('');
       lines.push(`*${n}. ${it.title}*`);
       lines.push(`    ${instruction(it)}`);
-      lines.push(`    Where: *${label}*  →  \`${ADMIN_URL}${path}\``);
+      lines.push(ADMIN_URL
+        ? `    Where: *${label}*  →  \`${ADMIN_URL}${path}\``
+        : `    Where: *${label}*  (admin panel)`);
     }
   };
 

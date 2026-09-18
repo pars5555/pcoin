@@ -14,7 +14,12 @@ ExecStart=/usr/bin/node /opt/pcoin-admin/owner-actions.mjs
 # immediately regardless, so this only governs the nag for something that has
 # been sitting untouched.
 Environment=OWNER_ACTIONS_REMIND_HOURS=12
-Environment=ADMIN_URL=https://explorer.pc.am/549m0pyoivh2m5o4f5qym2bvsu
+# ADMIN_URL is deliberately NOT set here: it contains the panel's unguessable
+# path and this repository is public. Set it in a drop-in that stays on the box:
+#   systemctl edit pcoin-owner-actions
+#   [Service]
+#   Environment=ADMIN_URL=https://explorer.pc.am/<the-path>
+# Unset, the message names each page instead of linking it.
 
 # Needs to read /opt/pcoin-admin/upstream.json (0600) and run pcoin-notify,
 # which reads /etc/pcoin/alert.conf (0600 root). Both are root-only by design:
