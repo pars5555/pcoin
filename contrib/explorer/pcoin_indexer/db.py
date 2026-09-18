@@ -36,11 +36,36 @@ def connect(path, *, readonly=False, bulk=False):
     which is a correctness property and not just a crash-safety one. MEMORY
     keeps that and still avoids every journal fsync.
     """
+    # check_same_thread=False IS REQUIRED, and it is required BECAUSE of the
+    # explorer's connection pool.
+    #
+    # sqlite3 defaults this to True and refuses a connection used from any
+    # thread other than the one that opened it. That default was correct while
+    # the server kept one connection per thread in a threading.local() -- no
+    # connection ever crossed a thread. The bounded pool changed that: a
+    # connection opened by one request thread is returned and later handed to a
+    # different one, and sqlite3 then raises
+    #
+    #   ProgrammingError: SQLite objects created in a thread can only be used
+    #   in that same thread
+    #
+    # which surfaced as INTERMITTENT HTTP 500s -- about a third of page loads,
+    # depending on whether a borrowed connection happened to come from the
+    # calling thread. A user reported "explorer still down?" while /api/status
+    # was answering 200, because the monitor probed the API and people load the
+    # HTML.
+    #
+    # Turning the check off is safe here and would NOT be safe in general: the
+    # guard exists because sqlite3 cannot know whether callers serialise access.
+    # This pool does -- acquire() pops a connection out of the pool under a lock
+    # and behind a BoundedSemaphore, so exactly one thread holds it at a time,
+    # and release() puts it back only after the request is finished with it.
+    # Remove the pool and this flag becomes a real hazard again.
     if readonly:
         uri = "file:%s?mode=ro" % _uri_path(path)
-        conn = sqlite3.connect(uri, uri=True, timeout=30)
+        conn = sqlite3.connect(uri, uri=True, timeout=30, check_same_thread=False)
     else:
-        conn = sqlite3.connect(path, timeout=30)
+        conn = sqlite3.connect(path, timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     # Manual transaction control: every apply/unwind is one explicit
     # BEGIN IMMEDIATE ... COMMIT. Python's implicit handling would hide that.
