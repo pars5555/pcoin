@@ -27,6 +27,8 @@ Deliberate properties:
 """
 
 import json
+import contextlib
+import os
 import sqlite3
 import sys
 import threading
@@ -49,6 +51,11 @@ MAX_BODY = 1_000_000        # only reachable when an API application is mounted
 # optional: this one process serves every page and, with --with-api, the whole
 # API, so one visitor with 200 idle sockets is a total outage.
 REQUEST_TIMEOUT = 30
+# Back to 128. It was raised to 320 on 2026-09-18 on the theory that the wedge
+# was connection exhaustion; the thread dump showed it was database opens, and
+# a higher ceiling only let more threads pile into the same bottleneck. With the
+# pool above, concurrency past this point costs a waiting thread and nothing in
+# the database.
 MAX_CONNECTIONS = 128
 ADDRESS_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
 
@@ -71,10 +78,13 @@ class IndexUnavailable(RuntimeError):
 class Store:
     """One read-only SQLite connection per serving thread."""
 
-    def __init__(self, path):
+    def __init__(self, path, pool_size=None):
         self.path = path
-        self._local = threading.local()
         self.mode = None
+        size = pool_size or int(os.environ.get("EXPLORER_DB_POOL", "16"))
+        self._pool = []
+        self._lock = threading.Lock()
+        self._sem = threading.BoundedSemaphore(size)
 
     def _open(self):
         try:
@@ -95,21 +105,81 @@ class Store:
             self.mode = "query_only"
             return conn
 
-    def connection(self):
-        conn = getattr(self._local, "conn", None)
-        if conn is None:
-            try:
-                conn = self._open()
-            except sqlite3.Error as exc:
-                raise IndexUnavailable(str(exc)) from exc
-            self._local.conn = conn
-        return conn
+    # A BOUNDED POOL, NOT ONE CONNECTION PER THREAD.
+    #
+    # This used to keep the connection in threading.local(). The server is a
+    # ThreadingHTTPServer -- one thread per HTTP connection -- so "per thread"
+    # meant "per concurrent request", unbounded up to the connection ceiling,
+    # and every one of them opened its own SQLite handle with its own page
+    # cache. Nothing ever closed them either: a thread-local connection is
+    # released only when the thread object is collected.
+    #
+    # On 2026-09-18 the explorer wedged three times. A SIGUSR1 thread dump taken
+    # during the third showed 98 of 100 threads stopped inside db.connect() --
+    # not executing a query, OPENING. Concurrent opens of the same WAL database
+    # contend, so past some level of concurrency the server spends its time
+    # opening connections it is about to use once, the accept queue fills behind
+    # it, and Caddy returns 502 while systemd still reports the unit active.
+    #
+    # Now at most POOL_SIZE connections exist, ever. A request borrows one and
+    # gives it back; a request that arrives when all are busy WAITS a few
+    # milliseconds for one to be returned instead of opening a new handle. That
+    # is the whole fix: the database work is bounded by the pool rather than by
+    # how many people happen to be on the site.
+    def acquire(self):
+        """Borrow a connection, opening one only if the pool has never filled."""
+        self._sem.acquire()
+        try:
+            with self._lock:
+                conn = self._pool.pop() if self._pool else None
+            if conn is None:
+                try:
+                    conn = self._open()
+                except sqlite3.Error as exc:
+                    raise IndexUnavailable(str(exc)) from exc
+            return conn
+        except BaseException:
+            # Nothing was borrowed, so the slot must go back or the pool leaks
+            # one permit per failure until it deadlocks.
+            self._sem.release()
+            raise
+
+    def release(self, conn, *, discard=False):
+        """Return a connection. discard=True for one that errored -- a handle
+        whose transaction state is unknown must not be handed to anybody else."""
+        try:
+            if discard:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            else:
+                with self._lock:
+                    self._pool.append(conn)
+        finally:
+            self._sem.release()
+
+    @contextlib.contextmanager
+    def borrowed(self):
+        conn = self.acquire()
+        bad = False
+        try:
+            yield conn
+        except BaseException:
+            bad = True
+            raise
+        finally:
+            self.release(conn, discard=bad)
 
     def close(self):
-        conn = getattr(self._local, "conn", None)
-        if conn is not None:
-            conn.close()
-            self._local.conn = None
+        """Drop every idle connection. Used by the tests and at shutdown."""
+        with self._lock:
+            pool, self._pool = list(self._pool), []
+        for conn in pool:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 class Router:
@@ -186,10 +256,11 @@ class Router:
                     b"User-agent: *\nDisallow: /api/\nCrawl-delay: 10\n", ())
 
         try:
-            conn = self.store.connection()
+            conn = self.store.acquire()
         except IndexUnavailable as exc:
             return self._unavailable(path, str(exc))
 
+        bad = False
         conn.execute("BEGIN")
         try:
             return self._route(conn, path, params)
@@ -197,7 +268,10 @@ class Router:
             try:
                 conn.execute("ROLLBACK")
             except sqlite3.Error:
-                self.store.close()
+                # Its transaction state is now unknown, so it is closed rather
+                # than returned to the pool for somebody else to inherit.
+                bad = True
+            self.store.release(conn, discard=bad)
 
     def _route(self, conn, path, params):
         ctx = Ctx(conn, path=path,
@@ -591,7 +665,7 @@ class Server(ThreadingHTTPServer):
     allow_reuse_address = True
     # http.server has no request-size limits of its own worth relying on;
     # the router caps the request target and every query is parameterised.
-    request_queue_size = 64
+    request_queue_size = 512
     max_connections = MAX_CONNECTIONS
     over_capacity_response = (
         b"HTTP/1.1 503 Service Unavailable\r\n"
@@ -626,7 +700,43 @@ class Server(ThreadingHTTPServer):
             self._slots.release()
 
 
+# -- diagnosing a wedge, rather than guessing at one -------------------------
+#
+# On 2026-09-18 this server stopped answering TWICE. Both times the unit said
+# active, the process was alive and still bound, and the accept queue was full
+# behind a wall of connections in CLOSE-WAIT -- clients that had given up while
+# a handler thread still held the slot.
+#
+# Two plausible causes were investigated and BOTH were disproved by
+# measurement: SQLite WAL checkpoint starvation (a manual checkpoint completed
+# cleanly with busy=0, and the WAL file never grew from 26,446,312 bytes), and
+# request volume (the busiest client peaked at 21 requests a minute, below our
+# own servers). Raising MAX_CONNECTIONS 128 -> 320 and the accept backlog
+# 64 -> 512 did not prevent the second occurrence either; it only moved it.
+#
+# So the cause is UNKNOWN, and the way to stop guessing is to capture where the
+# threads actually are at the moment it happens:
+#
+#     kill -USR1 $(systemctl show -p MainPID --value pcoin-explorer)
+#     tail -200 /var/lib/pcoin-explorer/threads.log
+#
+# faulthandler is standard library, its handler is async-signal-safe by design,
+# and registering it changes no behaviour on any other path.
+def _arm_thread_dump():
+    try:
+        import faulthandler
+        import signal
+        path = os.environ.get("EXPLORER_THREAD_LOG",
+                              "/var/lib/pcoin-explorer/threads.log")
+        fh = open(path, "a", buffering=1)
+        faulthandler.register(signal.SIGUSR1, file=fh, all_threads=True, chain=False)
+    except Exception:
+        # Diagnostics must never be the reason the explorer fails to start.
+        pass
+
+
 def build(db_path, *, chain=None, access_log=True, api_app=None):
+    _arm_thread_dump()
     store = Store(db_path)
     router = Router(store, chain_override=chain, api_app=api_app)
     handler = type("BoundHandler", (Handler,),
@@ -642,9 +752,9 @@ def serve(db_path, *, host="127.0.0.1", port=8080, chain=None, access_log=True,
     # Touch the index once at startup so a misconfigured path fails loudly here
     # rather than as a 503 on someone's first request.
     try:
-        conn = store.connection()
-        state = conn.execute("SELECT chain, indexed_height FROM sync_state"
-                             " WHERE id=1").fetchone()
+        with store.borrowed() as conn:
+            state = conn.execute("SELECT chain, indexed_height FROM sync_state"
+                                 " WHERE id=1").fetchone()
         log("index %s opened %s: chain=%s height=%s"
             % (db_path, store.mode, state["chain"], state["indexed_height"]))
     except IndexUnavailable as exc:
