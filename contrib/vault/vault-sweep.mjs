@@ -39,9 +39,17 @@
 // ───────────────────────────────────────────────────────────────────────────
 // WHAT THIS DELIBERATELY WILL NOT DO
 // ───────────────────────────────────────────────────────────────────────────
-//   * It refuses the `exchange` wallet outright. Those coins are customers'
-//     deposits and the exchange's solvency check counts them; moving them
-//     halts trading. Sweeping it is never the right answer to "I need PCN".
+//   * `exchange` is swept like any other wallet. It was refused outright until
+//     2026-09-18 on a reason that was FALSE -- "moving them halts trading".
+//     The reconcile compares deposits RECEIVED against deposits RECORDED and
+//     deliberately does not compare the wallet against what is owed
+//     (pcn-deposits.mjs:339). PCN withdrawals are paid by hand from the owner's
+//     own wallet, as the USDT side already is, so what the ledger owes simply
+//     does not move with the coins.
+//     ONE narrow guard remains: with --amount, change would return to an address
+//     this exchange WATCHES, and a change output on a customer's deposit address
+//     is CREDITED TO THAT CUSTOMER. So --amount needs --change-to. --all leaves
+//     no change at all and is unaffected.
 //   * It refuses `wpcn-reserve` unless --i-know-the-reserve-backs-wpcn is
 //     given AND the amount leaves the backing whole. The reserve is not a
 //     balance, it is a promise with a balance attached.
@@ -430,7 +438,7 @@ async function listAll() {
     // and only the second one is actionable.
     const spendable = existsSync(join(HERE, `${name}-seed.enc.json`));
     rows.push({ name, total, addrs, spendable });
-    const note = name === 'exchange' ? "  <- CUSTOMERS' deposits, never sweep"
+    const note = name === 'exchange' ? "  <- customers are owed PCN here; you settle withdrawals by hand"
       : name === 'wpcn-reserve' ? '  <- backs wPCN 1:1; only the surplus is yours'
         : !spendable ? '  <- watch-only here (no seed file); sign where the wallet lives'
           : '';
@@ -438,7 +446,11 @@ async function listAll() {
   }
 
   const sum = (f) => rows.filter(f).reduce((s, r) => s + r.total, 0);
-  const locked = (r) => r.name === 'exchange' || r.name === 'wpcn-reserve';
+  // Only wpcn-reserve is genuinely not yours to move: it backs wPCN 1:1.
+  // `exchange` came out of this bucket on 2026-09-18 -- customers are owed PCN
+  // on its ledger, but that obligation is settled by hand from your own wallet
+  // and does not pin these particular coins in place.
+  const locked = (r) => r.name === 'wpcn-reserve';
   const sweepable = sum((r) => !locked(r) && r.spendable);
   const watchOnly = sum((r) => !locked(r) && !r.spendable);
   const everything = sum(() => true);
@@ -448,7 +460,7 @@ async function listAll() {
   if (watchOnly > 0) {
     console.log(`  yours, but signed elsewhere   ${sat(watchOnly).padStart(16)} PCN   (watch-only above)`);
   }
-  console.log(`  spoken for (exchange + wPCN)  ${sat(sum(locked)).padStart(16)} PCN   NOT yours to move`);
+  console.log(`  wPCN reserve backing          ${sat(sum(locked)).padStart(16)} PCN   NOT yours to move`);
   console.log(`  ${'─'.repeat(70)}`);
   console.log(`  everything this tool can see  ${sat(everything).padStart(16)} PCN`);
   console.log('\n  NOT INCLUDED: the treasury and the fleet PCs. They were not made by');
@@ -598,35 +610,19 @@ if (!system || !to || (!amountArg && !sendAll)) {
   process.exit(2);
 }
 
-if (system === 'exchange' && !has('--i-pay-pcn-withdrawals-by-hand')) {
-  // THE OLD REASON HERE WAS OUT OF DATE, and a wrong reason is worse than none:
-  // it said moving these coins "halts trading". It does not. The exchange's
-  // reconcile compares DEPOSITS RECEIVED against DEPOSITS RECORDED and
-  // deliberately does NOT compare the wallet balance against what is owed --
-  // owner's decision, 2026-09-16, written at pcn-deposits.mjs:339. onchain and
-  // pcnOwed sit side by side there for information only.
-  //
-  // The real reasons to stop and think are these two.
-  die('the `exchange` wallet holds CUSTOMERS\' PCN deposits.\n'
-    + '\n'
-    + '           1. WHAT YOU STILL OWE DOES NOT MOVE WITH THE COINS. Customers are\n'
-    + '              owed PCN on the exchange ledger. Emptying the wallet does not\n'
-    + '              cancel that; it means every PCN withdrawal is paid by hand from\n'
-    + '              your own wallet, exactly like the USDT side. Check what is owed\n'
-    + '              first -- the admin shows it as "PCN owed to users".\n'
-    + '\n'
-    + '           2. CHANGE MUST NOT LAND BACK IN THIS WALLET. Its addresses are\n'
-    + '              WATCHED. A change output on a customer\'s deposit address is\n'
-    + '              CREDITED TO THAT CUSTOMER (pcn-deposits.mjs:211) -- you would be\n'
-    + '              giving away your own coins. On an unassigned address it is held\n'
-    + '              for review instead. Use --all, which leaves no change at all, or\n'
-    + '              --change-to an address OUTSIDE this wallet.\n'
-    + '\n'
-    + '           It does NOT halt trading -- that was this message\'s old claim and it\n'
-    + '           is wrong; see the comment above this check.\n'
-    + '\n'
-    + '           Re-run with --i-pay-pcn-withdrawals-by-hand if that is what you mean.');
-}
+// `exchange` USED TO BE REFUSED OUTRIGHT, on a reason that turned out to be
+// false: it claimed moving these coins "halts trading". It does not. The
+// reconcile compares DEPOSITS RECEIVED against DEPOSITS RECORDED and
+// deliberately does NOT compare the wallet balance against what is owed --
+// owner's decision of 2026-09-16, at pcn-deposits.mjs:339, where onchain and
+// pcnOwed sit side by side "for information only".
+//
+// So it is swept like checker or 3dmodels (owner, 2026-09-18). PCN withdrawals
+// are paid by hand from his own wallet exactly as the USDT side already is,
+// which is what makes emptying it workable: what the ledger owes does not move
+// with the coins, and he settles it manually.
+//
+// ONE GUARD SURVIVES, and it is not an 'are you sure' -- see below.
 if (system === 'exchange' && !sendAll && !changeToArg) {
   die('sweeping `exchange` without --all needs --change-to.\n'
     + '           Change would otherwise return to an address this exchange WATCHES,\n'

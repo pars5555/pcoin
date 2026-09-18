@@ -558,10 +558,20 @@ export function vaultPage() {
     <code>market</code> · <code>oonak3d</code> · <code>pcnaibot</code> ·
     <code>pcnearner</code> · <code>portrait2video</code> · <code>webai</code> ·
     <code>webbuilderbot</code> · <code>wpcn-reserve</code></p>
-    <p class="muted"><b>Three of them will not sweep, and each refusal is deliberate:</b></p>
+    <p class="muted"><b>Two of them will not sweep normally, and each refusal is deliberate:</b></p>
     <ul class="muted" style="margin:8px 0 0 20px;line-height:1.75">
-      <li><code>exchange</code> &mdash; refused outright. Those are customers&#39; deposits and
-      the exchange&#39;s own solvency check counts them; moving them halts trading.</li>
+      <li><code>exchange</code> &mdash; sweeps like any other wallet. It was refused outright
+      until 2026-09-18, on a reason that was <b>false</b>: &ldquo;moving them halts
+      trading&rdquo;. It does not. The reconcile compares deposits <i>received</i> against
+      deposits <i>recorded</i> and deliberately does not compare the wallet against what is
+      owed. PCN withdrawals are paid by hand from your own wallet, exactly as the USDT side
+      already is, so what the ledger owes does not move with the coins.
+      <br><b>One narrow guard remains, and it is not an &ldquo;are you sure&rdquo;:</b> with
+      <code>--amount</code>, change returns to an address this exchange <b>watches</b>, and a
+      change output landing on a customer&#39;s deposit address is <b>credited to that
+      customer</b> &mdash; you would be giving away your own coins and nothing would look
+      wrong. So <code>--amount</code> requires <code>--change-to</code>.
+      <code>--all</code> leaves no change at all and is unaffected.</li>
       <li><code>wpcn-reserve</code> &mdash; refused without
       <code>--i-know-the-reserve-backs-wpcn</code>, and refused again if change would land
       anywhere but the main address.</li>
