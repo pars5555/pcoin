@@ -99,6 +99,25 @@ def rpc(cli, *args):
         return out
 
 
+def pool_miner_count(timeout=12):
+    """How many miners are connected to pool.pc.am, or None for UNKNOWN.
+
+    Public endpoint, no credential. None must render as "unknown" and never as
+    a number -- "the pool has no miners" and "I could not ask" are opposite
+    facts and this alert is read by someone deciding whether to worry.
+    """
+    import json as _json
+    import urllib.request as _u
+    try:
+        with _u.urlopen("https://pool.pc.am/api/pools/pcoin", timeout=timeout) as r:
+            d = _json.load(r)
+        p = d.get("pool") or d
+        n = (p.get("poolStats") or {}).get("connectedMiners")
+        return int(n) if n is not None else None
+    except Exception:
+        return None
+
+
 def classify(block):
     """-> ('pool', None) or ('solo', address) or (None, None) if unreadable.
 
@@ -284,17 +303,39 @@ def main():
     if pp >= a.crit:
         reason = send_decision(state.get("pool"), "WARNING", None, pp, remind_s, now)
         if reason:
-            notify("PCoin WARNING: the pool holds %.0f%% of blocks" % pp,
-                   "pool.pc.am found %.1f%% of the last %d blocks (95%% CI %.0f-%.0f%%).\n"
-                   "A pool majority is a softer failure than one solo miner -- its miners\n"
-                   "can leave in one config line -- but it is still a majority behind one\n"
-                   "endpoint we operate.\n\nRe-alert because: %s."
-                   % (pp, n, plo, phi, reason), a.dry_run)
+            miners = pool_miner_count()
+            who = ("`%d` miners are connected to it right now" % miners
+                   if miners is not None
+                   else "the connected-miner count could not be read just now")
+            notify("PCoin: our pool mined %.0f%% of the last %d blocks" % (pp, n),
+                   "pool.pc.am found *%.1f%%* of the last %d blocks (95%% CI %.0f-%.0f%%),\n"
+                   "and %s.\n"
+                   "\n"
+                   "*What this is NOT.* It is not one party holding %.0f%% of the hashrate.\n"
+                   "Almost none of that is ours -- the pool is a crowd of independent\n"
+                   "miners, and the biggest single one is a few percent of the network.\n"
+                   "Nobody on this chain is in a position to reorganise it.\n"
+                   "\n"
+                   "*What it IS.* %.0f%% of the network coordinates through ONE endpoint\n"
+                   "we operate. If `pool.pc.am` were compromised or went down, that whole\n"
+                   "share is affected at once. That is an availability and trust risk,\n"
+                   "not an ownership one.\n"
+                   "\n"
+                   "*What you can do.* Very little on your own -- the hashrate is not ours\n"
+                   "to move, so switching our own miners off would barely change this\n"
+                   "number. The lever is a SECOND pool: `198.244.169.49:3333` already\n"
+                   "exists and there is a 500 PCN bounty for independent pools. Pointing\n"
+                   "miners at an alternative is the only thing that lowers it.\n"
+                   "\n"
+                   "Re-alert because: %s."
+                   % (pp, n, plo, phi, who, pp, pp, reason), a.dry_run)
             state["pool"] = {"level": "WARNING", "addr": None, "value": pp, "at": now}
             dirty = True
     elif state.get("pool"):
-        notify("PCoin OK: pool majority cleared",
-               "pool.pc.am is now %.1f%% of the last %d blocks (95%% CI %.0f-%.0f%%)."
+        notify("PCoin OK: our pool is back under the threshold",
+               "pool.pc.am is now *%.1f%%* of the last %d blocks (95%% CI %.0f-%.0f%%).\n"
+               "More of the network is being mined outside our pool than before, which\n"
+               "is the direction we want."
                % (pp, n, plo, phi), a.dry_run)
         del state["pool"]
         dirty = True

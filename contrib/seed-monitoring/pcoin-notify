@@ -70,8 +70,7 @@ if [ -f "$STAMP" ]; then
 fi
 
 HOST=$(hostname)
-TEXT=$(printf '*%s*\n%s\n\n_%s — %s_' \
-        "$SUBJECT" "$BODY" "$HOST" "$(date -u '+%Y-%m-%d %H:%M UTC')")
+FOOTER="$HOST — $(date -u '+%Y-%m-%d %H:%M UTC')"
 
 # --data-urlencode so a message containing & or = cannot truncate itself.
 send() {
@@ -80,36 +79,114 @@ send() {
         --data-urlencode "chat_id=${ALERT_CHAT}" \
         --data-urlencode "disable_web_page_preview=true" "$@" 2>&1
 }
-RESP=$(send --data-urlencode "text=${TEXT}" --data-urlencode "parse_mode=Markdown")
 
-# The body is written by the checks and is NOT escaped for Markdown. A single
-# unpaired _ or * in it -- "<bsc_txhash>", "*** EXHAUSTED ***", a txid -- makes
-# Telegram reject the whole message with "can't parse entities", and the
-# wrap-desk nag was lost that way 22 times in a row (2026-08-31 20:12 to
-# 2026-09-01 18:39 UTC) while the log said "failed" and nothing else noticed. Formatting
-# is decoration; delivery is the job. On a parse rejection send it again as
-# plain text, losing the bold subject and nothing else.
-case "$RESP" in
-    *"can't parse entities"*)
-        log "Markdown rejected, resending as plain text: $SUBJECT"
-        PLAIN=$(printf '%s\n%s\n\n%s — %s' \
-                "$SUBJECT" "$BODY" "$HOST" "$(date -u '+%Y-%m-%d %H:%M UTC')")
-        RESP=$(send --data-urlencode "text=${PLAIN}")
-        ;;
-esac
+# TELEGRAM CAPS ONE MESSAGE AT 4096 CHARACTERS, AND PAST IT THE ALERT IS LOST.
+#
+# The API answers 400 "message is too long", which this script used to treat as
+# an ordinary delivery failure: log, record failed, exit 1. Nothing retries a
+# message that will be exactly as long next time. On 2026-09-18 10:25:42 UTC
+# "wrap desk: 34 thing(s) need you" was rejected that way and never arrived --
+# thirty-four items needing a human, and no trace of them in the channel.
+#
+# The doctrine below, written after the Markdown incident, applies here too:
+# formatting is decoration, DELIVERY IS THE JOB. So a long body is split on line
+# boundaries and sent as numbered parts. A split alert is worse than one short
+# message; a MISSING alert is worse than both.
+MAXCHARS="${ALERT_MAX_CHARS:-3500}"
 
-case "$RESP" in
-    *'"ok":true'*)
-        printf '%s' "$NOW" > "$STAMP"
-        log "sent: $SUBJECT"
-        MID=$(printf '%s' "$RESP" | grep -oE '"message_id":[0-9]+' | head -1 | cut -d: -f2)
-        tglog --status sent --subject "$SUBJECT" --body "$BODY" --message-id "${MID:-unknown}"
-        ;;
-    *)
-        # Deliberately do NOT write the stamp: an undelivered message must be
-        # retried on the next run, not suppressed as though it had arrived.
-        log "delivery FAILED: $(printf '%s' "$RESP" | head -c 200)"
-        tglog --status failed --subject "$SUBJECT" --body "$BODY" --error "$(printf '%s' "$RESP" | head -c 200)"
-        exit 1
-        ;;
-esac
+PARTDIR=$(mktemp -d /tmp/pcoin-notify.XXXXXX) || PARTDIR=""
+cleanup() { [ -n "$PARTDIR" ] && rm -rf "$PARTDIR"; }
+trap cleanup EXIT
+
+# Break on newlines so a line is never cut in half. A single line longer than
+# MAXCHARS is emitted alone rather than dropped -- Telegram still takes it while
+# it is under 4096, and dropping it would be the very bug this fixes.
+if [ -n "$PARTDIR" ]; then
+    printf '%s' "$BODY" | awk -v max="$MAXCHARS" -v dir="$PARTDIR" '
+      function flush(b,   f) { f = sprintf("%s/part.%03d", dir, n); print b > f; close(f); n++ }
+      BEGIN { n = 1; buf = "" }
+      {
+        if (length(buf) > 0 && length(buf) + length($0) + 1 > max) { flush(buf); buf = $0 }
+        else { buf = (length(buf) ? buf "\n" $0 : $0) }
+      }
+      END { if (length(buf) > 0) flush(buf) }
+    '
+fi
+
+set -- "$PARTDIR"/part.*
+if [ -z "$PARTDIR" ] || [ ! -f "$1" ]; then
+    # No split was possible (mktemp failed, or the body is empty). Send it whole
+    # -- degraded, but never silent.
+    PARTS_TOTAL=1
+    SINGLE=1
+else
+    PARTS_TOTAL=$#
+    SINGLE=0
+fi
+
+ALL_OK=1
+LAST_RESP=""
+MIDS=""
+IDX=0
+
+send_one() {   # $1 = subject to show, $2 = body chunk
+    local subj="$1" chunk="$2" text plain resp
+    text=$(printf '*%s*\n%s\n\n_%s_' "$subj" "$chunk" "$FOOTER")
+    resp=$(send --data-urlencode "text=${text}" --data-urlencode "parse_mode=Markdown")
+
+    # The body is written by the checks and is NOT escaped for Markdown. A single
+    # unpaired _ or * in it -- "<bsc_txhash>", "*** EXHAUSTED ***", a txid -- makes
+    # Telegram reject the whole message with "can't parse entities", and the
+    # wrap-desk nag was lost that way 22 times in a row (2026-08-31 20:12 to
+    # 2026-09-01 18:39 UTC) while the log said "failed" and nothing else noticed.
+    # On a parse rejection send it again as plain text, losing the bold subject
+    # and nothing else.
+    case "$resp" in
+        *"can't parse entities"*)
+            log "Markdown rejected, resending as plain text: $subj"
+            plain=$(printf '%s\n%s\n\n%s' "$subj" "$chunk" "$FOOTER")
+            resp=$(send --data-urlencode "text=${plain}")
+            ;;
+    esac
+    printf '%s' "$resp"
+}
+
+if [ "$SINGLE" -eq 1 ]; then
+    RESP=$(send_one "$SUBJECT" "$BODY")
+    case "$RESP" in
+        *'"ok":true'*) MIDS=$(printf '%s' "$RESP" | grep -oE '"message_id":[0-9]+' | head -1 | cut -d: -f2) ;;
+        *) ALL_OK=0; LAST_RESP="$RESP" ;;
+    esac
+else
+    for p in "$@"; do
+        IDX=$((IDX + 1))
+        if [ "$PARTS_TOTAL" -gt 1 ]; then
+            SUBJ="$SUBJECT ($IDX/$PARTS_TOTAL)"
+        else
+            SUBJ="$SUBJECT"
+        fi
+        RESP=$(send_one "$SUBJ" "$(cat "$p")")
+        case "$RESP" in
+            *'"ok":true'*)
+                MIDS="$MIDS $(printf '%s' "$RESP" | grep -oE '"message_id":[0-9]+' | head -1 | cut -d: -f2)"
+                ;;
+            *) ALL_OK=0; LAST_RESP="$RESP" ;;
+        esac
+    done
+fi
+
+if [ "$ALL_OK" -eq 1 ]; then
+    # Only now is the message actually in the channel. A PARTIAL send does not
+    # earn a stamp: half an alert delivered is a reason to retry, not a reason
+    # to suppress the rest for six hours.
+    printf '%s' "$NOW" > "$STAMP"
+    log "sent: $SUBJECT${PARTS_TOTAL:+ (${PARTS_TOTAL} part(s))}"
+    tglog --status sent --subject "$SUBJECT" --body "$BODY" \
+          --message-id "$(printf '%s' "${MIDS# }" | tr ' ' ',')"
+else
+    # Deliberately do NOT write the stamp: an undelivered message must be
+    # retried on the next run, not suppressed as though it had arrived.
+    log "delivery FAILED: $(printf '%s' "$LAST_RESP" | head -c 200)"
+    tglog --status failed --subject "$SUBJECT" --body "$BODY" --error "$(printf '%s' "$LAST_RESP" | head -c 200)"
+    exit 1
+fi

@@ -38,7 +38,8 @@ import { wrapdeskPage, wrapdeskState, CLOSED_FILE } from './wrapdesk.mjs';
 import { minersPage, minersData } from './miners.mjs';
 import { pricingPage, pricingData } from './pricing.mjs';
 import { vaultPage } from './vault.mjs';
-import { exchangeSection } from './exchange.mjs';
+import { exchangeSection, exchangeCall } from './exchange.mjs';
+import { needsYou, needsYouCard } from './needs-you.mjs';
 import { programsPage, programsData, programsAction } from './programs.mjs';
 import { reportsPage, loadReports, saveReports } from './reports.mjs';
 import { cachedVerdicts, verdictCell, vtKey } from './virustotal.mjs';
@@ -945,15 +946,41 @@ const server = createServer(async (req, res) => {
   };
   const dash = v => (v === null || v === undefined || v === '') ? '&mdash;' : esc(v);
   const bad = svcs.filter(x => x.status === 'bad' || x.status === 'unreadable').length;
-  const openTasks = tasks.filter(t => !t.done).length;
+
+  // Everything actually waiting on a person, not just the hand-typed list.
+  //
+  // The exchange is read here rather than inside needsYou() so that a slow or
+  // dead exchange costs this one call and not the whole page -- and so the
+  // FAILURE is passed in as a value. needsYou turns it into a visible item;
+  // it must never become a silently empty queue.
+  const exCreds = upstreamCreds();
+  let exOver = null;
+  if (exCreds && exCreds.exchange) {
+    try {
+      exOver = await exchangeCall(exCreds.exchange, 'dashboard', 'GET', '/admin/api/overview');
+    } catch (e) {
+      exOver = { readable: false, status: 0, json: null, reason: e.message };
+    }
+  }
+  let reports = [];
+  try { reports = loadReports(DATA); } catch { reports = []; }
+
+  const needs = needsYou({
+    svcs, tasks, exOver, wrap: wrapdeskState(), reports, base: BASE,
+  });
+  const needsAction = needs.filter(i => i.sev === 'action').length;
+  const openTasks = needs.length;
 
   return send(res, 200, shell2('', 'Overview', `
+    ${needsYouCard(needs, esc)}
+
     <div class="stats-grid">
       <div class="stat-box"><div class="label">Services healthy</div>
         <div class="value" style="color:${bad ? 'var(--red)' : 'var(--green)'}">
           ${svcs.length - bad}/${svcs.length || '?'}</div></div>
-      <div class="stat-box"><div class="label">Open tasks</div>
-        <div class="value">${openTasks}</div></div>
+      <div class="stat-box"><div class="label">Needs you</div>
+        <div class="value" style="color:${needsAction ? 'var(--red)'
+          : openTasks ? 'var(--yellow)' : 'var(--green)'}">${openTasks}</div></div>
       <div class="stat-box"><div class="label">PCN ask price</div>
         <div class="value">${dash(val('market.pc.am', 'Ask price'))}</div></div>
       <div class="stat-box"><div class="label">Sale gate</div>

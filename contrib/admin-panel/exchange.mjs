@@ -40,12 +40,15 @@ const pcn = (sat) => {
 const age = (s) => (s === null || s === undefined ? '—' : s < 3600 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`);
 const when = (t) => (t === null || t === undefined ? '—' : `${new Date(Number(t) * 1000).toISOString().replace('T', ' ').slice(0, 16)} UTC`);
 
-export function exchangeSection({ base, creds, actor }) {
-  const ex = creds && creds.exchange ? creds.exchange : null;
-  const self = `${base}/exchange`;
-
-  function call(method, path, { body = null, code = null } = {}) {
-    return new Promise((resolve) => {
+// Lifted out of exchangeSection so the DASHBOARD can make the same read-only
+// calls without rendering a page.
+//
+// The transport rules below are a security boundary -- loopback HTTP, or HTTPS
+// pinned to the exchange's own CA, and nothing else -- so they get exactly one
+// implementation. A second copy written for the dashboard is a second place for
+// the pinning to be quietly dropped.
+export function exchangeCall(ex, actor, method, path, { body = null, code = null } = {}) {
+  return new Promise((resolve) => {
       let u;
       try { u = new URL(path, ex.apiUrl); } catch (e) { return resolve({ readable: false, status: 0, json: null, reason: `bad apiUrl: ${e.message}` }); }
       const loopback = u.protocol === 'http:' && ['127.0.0.1', '::1', 'localhost'].includes(u.hostname);
@@ -76,8 +79,14 @@ export function exchangeSection({ base, creds, actor }) {
       req.on('error', (e) => resolve({ readable: false, status: 0, json: null, reason: e.message }));
       if (payload) req.write(payload);
       req.end();
-    });
-  }
+  });
+}
+
+export function exchangeSection({ base, creds, actor }) {
+  const ex = creds && creds.exchange ? creds.exchange : null;
+  const self = `${base}/exchange`;
+
+  const call = (method, path, opts = {}) => exchangeCall(ex, actor, method, path, opts);
 
   const ok = (r) => r.readable && r.status === 200;
   const tabs = (active) => `<div class="card" style="display:flex;flex-wrap:wrap;gap:14px">${VIEWS.map(([k, l]) =>

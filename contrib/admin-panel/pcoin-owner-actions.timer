@@ -1,0 +1,14 @@
+[Unit]
+Description=Check every 15 minutes for things waiting on the owner
+
+[Timer]
+OnBootSec=6min
+OnUnitActiveSec=15min
+# Spread the load so this never lands in the same second as the other watchers,
+# all of which read the same upstreams.
+RandomizedDelaySec=90
+# Catch up after a reboot rather than silently skipping a window.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

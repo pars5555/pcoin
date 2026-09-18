@@ -1,0 +1,23 @@
+[Unit]
+Description=PCoin — everything waiting on the owner, as ONE grouped message
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Reuses the admin panel's own needs-you.mjs, so the Telegram message and the
+# admin dashboard can never disagree about what is outstanding. One source of
+# truth, two renderings.
+WorkingDirectory=/opt/pcoin-admin
+ExecStart=/usr/bin/node /opt/pcoin-admin/owner-actions.mjs
+
+# How often an UNCHANGED list is repeated. A list that changes is sent
+# immediately regardless, so this only governs the nag for something that has
+# been sitting untouched.
+Environment=OWNER_ACTIONS_REMIND_HOURS=12
+Environment=ADMIN_URL=https://explorer.pc.am/549m0pyoivh2m5o4f5qym2bvsu
+
+# Needs to read /opt/pcoin-admin/upstream.json (0600) and run pcoin-notify,
+# which reads /etc/pcoin/alert.conf (0600 root). Both are root-only by design:
+# the credential never leaves the box and never reaches the checks themselves.
+User=root
+NoNewPrivileges=true

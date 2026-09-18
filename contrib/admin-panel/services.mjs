@@ -89,6 +89,29 @@ export async function collect() {
         s.rows.push(['Orders', String(Object.values(o).reduce((a, v) => a + v.count, 0)), line]);
       } else s.notes.push('orders unreadable: ' + d.ordersError);
       s.rows.push(['Sold', num(l.soldPcn, 0) + ' PCN', num(l.pctSold) + '% of the book']);
+
+      // MACHINE-READABLE, for the dashboard's "Needs you" panel.
+      //
+      // The rows above are formatted strings for humans. The dashboard must not
+      // parse them back into numbers -- a thousands separator or a renamed label
+      // would silently turn a real problem into no problem at all, which is the
+      // one failure mode a "what needs doing" list may never have. So the raw
+      // values are carried alongside, and nothing is inferred twice.
+      s.facts = {
+        remainingPcn: l.remainingPcn ?? null,
+        deliverablePcn: l.deliverablePcn ?? null,
+        sellableNowPcn: l.sellableNowPcn ?? null,
+        hotWalletPcn: f ? f.hotWalletPcn : null,
+        gateOpen: gate.ok ? !!gate.data.open : null,
+        divergencePct: gate.ok ? gate.data.divergencePct : null,
+        maxDivergencePct: d.settings?.maxDivergencePct ?? null,
+        // true = the backing figure is a number somebody typed, not one measured
+        // from the chain. It cannot fall on its own if the coins are spent.
+        backingManual: b ? !!b.manual : null,
+        backingDegraded: b ? !!b.degraded : null,
+        headroomPcn: b ? b.headroomPcn : null,
+        orders: o || null,
+      };
     } else {
       s.status = 'unreadable';
       s.notes.push('could not read /api/ops/summary: ' + mkt.error);
