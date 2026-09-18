@@ -37,6 +37,7 @@ import { approvalsPage } from './approvals.mjs';
 import { wrapdeskPage, wrapdeskState, CLOSED_FILE } from './wrapdesk.mjs';
 import { minersPage, minersData } from './miners.mjs';
 import { pricingPage, pricingData } from './pricing.mjs';
+import { vaultPage } from './vault.mjs';
 import { exchangeSection } from './exchange.mjs';
 import { programsPage, programsData, programsAction } from './programs.mjs';
 import { reportsPage, loadReports, saveReports } from './reports.mjs';
@@ -186,7 +187,8 @@ const NAV = [
   ['Work',     [['programs', '\u{1F381} Programs'],
                 ['tasks', '\u{1F4CB} Tasks'],
                 ['user-reports', '\u{1F41E} User reports']]],
-  ['Config',   [['security', '\u{1F512} Security (2FA)']]],
+  ['Config',   [['security', '\u{1F512} Security (2FA)'],
+                ['vault', '\u{1F511} Vault commands']]],
 ];
 
 const shell2 = (page, title, body) => shell(title, body, page);
@@ -698,6 +700,12 @@ const server = createServer(async (req, res) => {
 
   if (sub === '/telegram') {
     return send(res, 200, shell2('telegram', 'Telegram', telegramPage()));
+  }
+
+  // A reference page: it renders command TEXT and runs nothing. The keys these
+  // commands use exist only on the owner's machine, which is the whole point.
+  if (sub === '/vault') {
+    return send(res, 200, shell2('vault', 'Vault commands', vaultPage()));
   }
 
   if (sub === '/pricing') {
