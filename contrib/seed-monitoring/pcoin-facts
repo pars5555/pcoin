@@ -43,6 +43,8 @@ import json
 import os
 import sys
 import time
+import re
+import urllib.parse
 import urllib.request
 
 CACHE = "/var/lib/pcoin-facts/cache.json"
@@ -57,7 +59,14 @@ SOURCES = {
     "price": "https://price.pc.am/",
     "chain": "https://explorer.pc.am/api/status",
     "ladder": "https://market.pc.am/api/ladder/state",
+    # Counts only -- how many payouts were made and how many the chain has
+    # confirmed. It names nobody, which is what lets it sit in this tool.
+    "withdrawals": "https://exchange.pc.am/api/withdrawals-summary",
 }
+
+# One transaction, looked up by its own id. NOT in SOURCES because it is asked
+# per question rather than collected on a timer.
+WITHDRAWAL_STATUS = "https://exchange.pc.am/api/withdrawal-status?txid=%s"
 
 
 def get(url):
@@ -190,6 +199,26 @@ def block(c):
                       n(la.get("totalPcn"), 0), n(la.get("minOrderUsd"), 0),
                       n(la.get("maxOrderUsdNow"), 0)))
 
+    wd = d.get("withdrawals")
+    if isinstance(wd, dict):
+        # The gap between "we paid it" and "the chain agrees" is the number that
+        # matters; reporting only the first would hide the failure it catches.
+        unver = wd.get("paidButUnverified")
+        oldest = wd.get("queueOldestSeconds")
+        out.append("WITHDRAWALS PAID SO FAR: %s, of which %s are confirmed on the chain%s. "
+                   "%s"
+                   % (wd.get("paid"), wd.get("verifiedOnChain"),
+                      "" if not unver else " (%s not yet confirmed)" % unver,
+                      "Nothing is waiting in the payout queue."
+                      if oldest is None else
+                      "The oldest request still waiting is %d hours old." % (oldest // 3600)))
+        out.append("If somebody says a withdrawal failed: every payout the exchange has sent has "
+                   "confirmed successfully so far. Ask them for the transaction id and which "
+                   "network, and say it will be checked -- do NOT tell them it failed, and do "
+                   "NOT guess. USDT on BNB Smart Chain is a TOKEN with 18 decimals (contract "
+                   "0x55d398326f99059ff775485246999027b3197955); a wallet that has not added it "
+                   "shows nothing, which is the usual cause of 'it never arrived'.")
+
     if bad:
         out.append("NOTE: %d source(s) could not be read this time. For anything they cover, say "
                    "you cannot check it right now. Do NOT fall back on a number from memory."
@@ -197,7 +226,38 @@ def block(c):
     return "\n".join(out)
 
 
+def txid_line(t):
+    """One transaction, in a sentence the assistant can repeat.
+
+    The id is shape-checked HERE as well as on the server, so a junk string
+    never becomes a request. And an unknown id says "no record", never
+    "it failed" -- somebody pasting a hash from another service must not be
+    told their money is gone.
+    """
+    t = str(t or "").strip().lower()
+    if not re.fullmatch(r"(0x)?[0-9a-f]{64}", t):
+        return "THAT IS NOT A TRANSACTION ID. Ask for the full hash."
+    d, err = get(WITHDRAWAL_STATUS % urllib.parse.quote(t, safe=""))
+    if err:
+        return "UNREADABLE: the exchange could not be asked about that transaction just now. "                "Say you will check it, and do not guess."
+    if not d.get("found"):
+        return ("NO RECORD: the exchange has no withdrawal paid with that transaction. That does "
+                "NOT mean it failed -- it may be from another service, or mistyped. Ask them to "
+                "check the hash. Never tell them their money is lost.")
+    return ("WITHDRAWAL FOUND: %s %s on %s, status %s, requested %s, paid %s. Chain check: %s"
+            % (d.get("amount"), d.get("asset"), d.get("network"), d.get("status"),
+               time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(d.get("requestedAt") or 0)),
+               time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(d.get("paidAt") or 0))
+               if d.get("paidAt") else "not yet",
+               d.get("verifyDetail") or "not verified yet"))
+
+
 def main():
+    # Asked about ONE transaction: answer that and nothing else.
+    if "--txid" in sys.argv:
+        i = sys.argv.index("--txid")
+        print(txid_line(sys.argv[i + 1] if len(sys.argv) > i + 1 else ""))
+        return 0
     c = cached(refresh="--refresh" in sys.argv)
     if "--json" in sys.argv:
         print(json.dumps(c, indent=1))

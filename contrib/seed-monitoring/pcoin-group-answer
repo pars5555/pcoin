@@ -381,6 +381,28 @@ def with_context(row, text):
                    "the numbers on it are. Ask them what it says, or say a person will "
                    "look at it -- those are both good answers. Inventing the contents "
                    "is not.")
+    # A TRANSACTION ID IS A QUESTION WITH AN ANSWER, so look it up rather than
+    # letting the model reason about it. "Did my withdrawal fail" is the one
+    # support question where guessing does the most damage: telling somebody
+    # their money is gone when it is not, or that it arrived when it did not,
+    # are both harm a confident sentence can do in a single line.
+    #
+    # The lookup is read-only and keyed on the id itself -- see pcoin-facts. It
+    # cannot see who the person is and cannot reach anybody else's payout.
+    for t in list(dict.fromkeys(re.findall(r"(?:0x)?[0-9a-fA-F]{64}", text or "")))[:4]:
+        try:
+            r = subprocess.run(["/usr/local/bin/pcoin-facts", "--txid", t],
+                               capture_output=True, text=True, timeout=45)
+            line = r.stdout.strip()
+        except Exception:
+            line = ""
+        # An unreadable lookup must never become a confident answer, and must
+        # not stop the rest of the reply either.
+        out.append(("They mentioned transaction %s. Checked just now:" + NL + "%s") % (t, line)
+                   if line else
+                   "They mentioned transaction %s and it could NOT be checked just now. "
+                   "Say it will be checked; do not say whether it worked." % t)
+
     if not out:
         return text
     return text + "\n\n--- context you did not ask for but need ---\n" + "\n\n".join(out)
