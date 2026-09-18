@@ -1005,6 +1005,14 @@ namespace PCoinTray
          * again; only a real zero drives the nudge, and only a real zero that
          * survives every attempt escalates to restarting the node.
          */
+        //! 0 = idle, 1 = a recovery is already running. A laptop lid can
+        //! produce several Resume events in quick succession, and suspend/wake
+        //! cycles overlap: without this, two recoveries would nudge in step and
+        //! could both reach the escalation and restart the node on top of each
+        //! other. One at a time; the later events have nothing to add because
+        //! the running one re-reads the peer count every fifteen seconds.
+        int _resumeBusy;
+
         void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
         {
             if (e.Mode != PowerModes.Resume) return;
@@ -1016,6 +1024,13 @@ namespace PCoinTray
         }
 
         void ReconnectAfterResume()
+        {
+            if (Interlocked.CompareExchange(ref _resumeBusy, 1, 0) != 0) return;
+            try { ReconnectAfterResumeCore(); }
+            finally { Interlocked.Exchange(ref _resumeBusy, 0); }
+        }
+
+        void ReconnectAfterResumeCore()
         {
             // Windows says Resume before the adapter has an address. Dialling
             // into that reliably fails and burns an attempt.
@@ -1039,10 +1054,22 @@ namespace PCoinTray
             // is wedged rather than slow, and restarting it is what the user
             // was doing by hand -- except this keeps the app, the wallet and
             // the mining settings, and they do not have to notice.
+            //
+            // RestartNodeForStall(), NOT ReviveNode(). The two are not
+            // interchangeable and the difference is the whole escalation:
+            // ReviveNode() opens with `if (NodeOwnsOurDatadir()) return;`
+            // because its job is to START a node that has GONE, and starting a
+            // second bitcoind on a live datadir corrupts it. Here the node is
+            // demonstrably alive -- it just answered getconnectioncount -- so
+            // that guard fires every time and the escalation did nothing at
+            // all. RestartNodeForStall() stops our node, waits for the datadir
+            // lock to clear, and brings it back, which is what a wedged-but-
+            // running node needs and what the stale-tip path already uses.
             int last;
             if (TryPeerCount(out last) && last == 0)
             {
-                try { ReviveNode(); } catch { }
+                Program.Note("resume: still 0 peers after six nudges; restarting the node");
+                try { RestartNodeForStall(); } catch { }
             }
         }
 
@@ -2466,11 +2493,19 @@ namespace PCoinTray
                 // measuring during the build would read slow light-mode rates.
                 StartMining(h);
                 SetCalibStatus("Auto-tuning: preparing...");
+                // Whether the sweep below is measuring the machine we MEANT to
+                // measure. Fast mode was asked for; if the node never got there,
+                // every number the sweep produces describes a different machine.
+                bool sweptInLightMode = false;
                 for (int i = 0; i < 120 && !_cancelCalibrate; i++)
                 {
                     var r = Poll(false);
                     if (r.NodeUp && (r.Mode == "fast" || r.Mode == "mixed") && r.DatasetProgress >= 100) break;
-                    if (i > 40 && r.NodeUp && r.Mode == "light" && r.DatasetProgress == 0) break; // fast mode not coming
+                    if (i > 40 && r.NodeUp && r.Mode == "light" && r.DatasetProgress == 0)
+                    {
+                        sweptInLightMode = true;   // fast mode not coming
+                        break;
+                    }
                     Thread.Sleep(1500);
                 }
                 if (_cancelCalibrate) return;
@@ -2504,6 +2539,41 @@ namespace PCoinTray
                 if (_cancelCalibrate) return;
 
                 Program.Note("auto-tune: " + string.Join(" ", log.ToArray()) + " -> best " + bestN + " (" + (int)bestH + " H/s)");
+
+                // A SWEEP RUN IN THE WRONG MODE MUST NOT OVERWRITE A GOOD ONE.
+                //
+                // Measured on office02, 2026-09-18. It tuned properly at 15:05 --
+                // "3:2185 4:2254 5:2150 ... -> best 4 (2254 H/s)". Large pages
+                // then failed to allocate (physical fragmentation, which only a
+                // reboot clears), so the node came up in LIGHT mode while the
+                // config still said fastmode=1. The wait loop above gave up
+                // after a minute, the sweep ran anyway, and at 15:41 it wrote
+                // "3:190 4:210 ... 8:302 -> best 8 (302 H/s)" straight over the
+                // good figures. The machine then carried an `optimal` and a
+                // `hashrate` describing a crippled node, and would have kept
+                // them after large pages came back.
+                //
+                // Light-mode numbers are not a worse measurement of the same
+                // thing; they measure a different machine. So when fast mode was
+                // intended, was not reached, and this machine already has a
+                // recorded result that is materially better, keep the recorded
+                // one. Mine at what was just measured for this session -- it is
+                // the best available right now -- but do not write it down.
+                bool degraded = sweptInLightMode && _optimalThreads > 0
+                                && _measuredHps > 0 && bestH < _measuredHps * 0.75;
+                if (degraded)
+                {
+                    Program.Note(string.Format(CultureInfo.InvariantCulture,
+                        "auto-tune NOT saved: measured {0} H/s in light mode, which is below the {1} H/s " +
+                        "recorded in fast mode; keeping optimal={2}. Large pages are probably unavailable " +
+                        "until this PC is restarted.",
+                        (int)bestH, (int)_measuredHps, _optimalThreads));
+                    _mining = true;
+                    StartMining(bestN);
+                    SetCalibStatus(null);
+                    return;
+                }
+
                 _optimalThreads = bestN;
                 // Keep the measurement, not only the thread count it picked.
                 // This is the one place this machine's real rate is ever known.
@@ -3094,6 +3164,12 @@ namespace PCoinTray
         class Reading
         {
             public bool Full;               // chain fields were refreshed too
+            //! getblockchaininfo ANSWERED. Distinct from Full, which only says a
+            //! full poll was attempted. The fallback below fills Height from
+            //! getblockcount and sets Headers = Height, which makes `Syncing`
+            //! compute to false out of nothing -- so without this flag an
+            //! unreadable chain is indistinguishable from a caught-up one.
+            public bool ChainRead;
             public bool NodeUp;
             public string Problem;          // why not, in words, when NodeUp is false
             public bool Hashing;
@@ -3286,6 +3362,7 @@ namespace PCoinTray
                 // Two blocks of slack: a node one block behind the headers it
                 // has seen is not "syncing", it is simply between blocks.
                 r.Syncing = r.InitialBlockDownload || r.Headers - r.Height > 2;
+                r.ChainRead = true;
             }
             else
             {
@@ -3384,7 +3461,10 @@ namespace PCoinTray
             // the previous values stand rather than being zeroed.
             if (r.Full)
             {
-                _haveChainInfo = true;
+                // Same distinction: a full poll whose getblockchaininfo failed
+                // has not given us chain info, and SoloBlockedBySync() reads
+                // _haveChainInfo as "we know where the chain is".
+                if (r.ChainRead) _haveChainInfo = true;
                 if (r.Height > 0) _height = r.Height;
                 _headers = r.Headers;
                 _progress = r.Progress;
@@ -3394,8 +3474,22 @@ namespace PCoinTray
                 // tell it apart from a caught-up node - see MaybeRecoverStaleTip.
                 NoteTipHeight(r.Height);
                 // Count up on agreement, reset to zero on a single disagreement.
-                if (r.Syncing) _syncOkPolls = 0;
-                else if (_syncOkPolls < SYNC_OK_POLLS_REQUIRED) _syncOkPolls++;
+                //
+                // ONLY A POLL THAT ACTUALLY READ THE CHAIN MAY MOVE THIS.
+                // When getblockchaininfo fails the fallback above sets
+                // Headers = Height from getblockcount -- and 0 - 0 > 2 is false,
+                // as is InitialBlockDownload -- so `Syncing` comes out false on
+                // a node that answered nothing. Three such polls used to satisfy
+                // the gate and release solo mining, which is the one thing this
+                // gate exists to stop: a fresh solo install once mined three
+                // blocks onto its own fork from height 16. An unreadable chain
+                // resolves nothing (CLAUDE.md 7.1) -- it neither advances the
+                // count nor clears it, so the run must simply be re-earned.
+                if (r.ChainRead)
+                {
+                    if (r.Syncing) _syncOkPolls = 0;
+                    else if (_syncOkPolls < SYNC_OK_POLLS_REQUIRED) _syncOkPolls++;
+                }
                 _difficulty = r.Difficulty;
                 _networkHps = r.NetworkHashps;
                 _peers = r.Peers;
@@ -3623,8 +3717,17 @@ namespace PCoinTray
             // Clearing the suspension is part of turning it on: a user ticking
             // the box after a transient failure is asking for THIS session to
             // use fast mode, not only the next one.
+            // A SUSPENDED SESSION LOOKS IDENTICAL TO AN UNCHANGED SETTING.
+            // When a start failure suspends fast mode, `_fastMode` stays true --
+            // the preference was never revoked, only ignored for this session --
+            // so a user who ticks Fast mode back on hits `_fastMode == on` and
+            // returns here. The suspension clears, FastModeActive flips to true
+            // and the window starts SAYING fast mode, while the node it is
+            // reporting on is still the light-mode one nobody restarted. The
+            // display was the only thing that changed.
+            bool resuming = on && _fastModeSuspended;
             if (on) _fastModeSuspended = false;
-            if (_fastMode == on) return;
+            if (_fastMode == on && !resuming) return;
             _fastMode = on;
             SaveConfig();
             Balloon("PCoin",
@@ -3674,13 +3777,41 @@ namespace PCoinTray
                     // and cannot leave the machine worse than it started.
                     if (!_nodeUp && on)
                     {
-                        Program.Note("fast mode: node did not start, reverting");
-                        _fastMode = false;
-                        SaveConfig();
-                        EnsureNode();
-                        Balloon("PCoin",
-                                "This node does not support fast mode yet, so it has been "
-                                + "turned back off. Mining continues normally.", true);
+                        // THE SAME DISCRIMINATOR THE STARTUP PATH USES, FOR THE
+                        // SAME REASON. "It did not come back" is not "it rejects
+                        // the option": a datadir lock still held by the old
+                        // process, a slow disk, antivirus and a genuinely
+                        // unknown argument all look identical from here. This
+                        // site used to persist fastmode=0 on all of them, which
+                        // is the sticky-fastmode bug v1.4.27 fixed at startup --
+                        // one machine sat at about an eighth of its rate until
+                        // somebody noticed by hand. Ask the binary instead, and
+                        // only write the preference off when it really lacks the
+                        // option. Anything else is suspended for this session,
+                        // so the next start tries again.
+                        OptionSupport support = ProbeFastModeOption();
+                        if (support == OptionSupport.Absent)
+                        {
+                            Program.Note("fast mode: this bitcoind does not list -randomxfastmode, reverting");
+                            _fastMode = false;
+                            _fastModeSuspended = false;
+                            SaveConfig();
+                            EnsureNode();
+                            Balloon("PCoin",
+                                    "This node does not support fast mode yet, so it has been "
+                                    + "turned back off. Mining continues normally.", true);
+                        }
+                        else
+                        {
+                            Program.Note("fast mode: node did not come back (binary reports the option "
+                                         + support + "); suspending for this session only");
+                            _fastModeSuspended = true;   // session only; never written
+                            EnsureNode();
+                            Balloon("PCoin",
+                                    "The node did not restart in fast mode just now, so mining has "
+                                    + "resumed without it. Your setting is unchanged and it will be "
+                                    + "tried again next time PCoin starts.", true);
+                        }
                     }
 
                     if (_nodeUp && _mining) SetMode(_percent);

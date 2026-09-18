@@ -160,7 +160,14 @@ def verify(version, sha, quiet=False):
     except Exception as e:                                    # noqa: BLE001
         bad.append("pc.am/dl/SHA256SUMS.txt unreadable (%s)" % type(e).__name__)
         sums = ""
-    pending, found = None, None
+    # EVERY occurrence, not the last one. This used to assign `found` on each
+    # match, so a stale duplicate earlier in the file was overwritten by the
+    # fresh entry and the check passed -- which is how pc.am came to list
+    # pcoin-win64-miner.zip TWICE (v1.4.31 and v1.4.32, different hashes) while
+    # this verifier called all four surfaces consistent. A user running the
+    # command this very file advertises then sees "1 computed checksum did NOT
+    # match" -- indistinguishable from a tampered download.
+    pending, hits = None, []
     for line in sums.split("\n"):
         f = re.match(r"^#\s*from release v?([0-9][0-9.]*)\s*$", line.strip())
         if f:
@@ -169,14 +176,18 @@ def verify(version, sha, quiet=False):
         m = re.match(r"^([0-9a-f]{64})\s+\*?(\S+)\s*$", line.strip())
         if m:
             if m.group(2).lower() == ASSET.lower():
-                found = (pending, m.group(1))
+                hits.append((pending, m.group(1)))
             pending = None
-    if not found:
+    if not hits:
         bad.append("SHA256SUMS.txt does not name %s" % ASSET)
-    elif found[0] != version or found[1] != sha:
-        bad.append("SHA256SUMS.txt says %s/%s for %s" % (found[0], found[1][:12], ASSET))
+    elif len(hits) > 1:
+        bad.append("SHA256SUMS.txt lists %s %d times (%s) -- sha256sum -c FAILS on every copy but one"
+                   % (ASSET, len(hits),
+                      ", ".join("v%s/%s" % (h[0] or "?", h[1][:12]) for h in hits)))
+    elif hits[0][0] != version or hits[0][1] != sha:
+        bad.append("SHA256SUMS.txt says %s/%s for %s" % (hits[0][0], hits[0][1][:12], ASSET))
     else:
-        say("  pc.am SHA256SUMS.txt  : %s + matching hash" % version)
+        say("  pc.am SHA256SUMS.txt  : %s + matching hash, listed once" % version)
 
     return bad
 
@@ -276,8 +287,15 @@ def main():
                 # Drop the old entry AND the provenance line above it.
                 while out_lines and re.match(r"^#\s*from release", out_lines[-1].strip()):
                     out_lines.pop()
-                out_lines.append("# from release v%s" % v)
-                out_lines.append("%s  %s" % (sha, ASSET))
+                # Write the new entry ONCE. A file that already holds two
+                # entries for this asset would otherwise come out holding two
+                # NEW ones -- the rewrite preserved the duplicate instead of
+                # healing it, and the verifier below now refuses on exactly
+                # that. Later duplicates are dropped along with their
+                # provenance line.
+                if not replaced:
+                    out_lines.append("# from release v%s" % v)
+                    out_lines.append("%s  %s" % (sha, ASSET))
                 replaced = True
             else:
                 out_lines.append(lines[i])

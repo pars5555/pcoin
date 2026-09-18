@@ -1,4 +1,4 @@
-# PCoin Windows installer.
+﻿# PCoin Windows installer.
 #
 # Installs the node, CLI and miner tray app, configures them, and starts the
 # tray app in the current desktop session.
@@ -522,22 +522,54 @@ if ($keep.ContainsKey('percent')) { $percent = $keep['percent'] }
 # stopped a machine that had been mining, and the one-liner published on
 # pc.am does not include -Threads -- the advertised way to upgrade was also
 # the way to stop earning. Only an EXPLICIT -Threads is an instruction.
+$cores = [Math]::Max(1, [Environment]::ProcessorCount)
+
+# THE TRAY STORES THE MINING LEVEL AS `percent`, NOT `threads`.
+#
+# SaveConfig has not written a `threads` key since August 2026 -- grep
+# PCoinTray.cs, there is no `threads=` in it -- so on any machine whose tray has
+# saved its config even once, `$keep['threads']` is absent and the branch that
+# read it was dead. Every ordinary upgrade therefore fell straight through to
+# the default below, which set half the cores and recomputed `percent` to 50.
+#
+# That silently overturned the owner's choice on every upgrade: a deliberate
+# 10% or 25% became 50%, and `percent=0` -- "I switched mining off in the tray"
+# -- became mining ON at half the machine. Measured 2026-09-19 on a fleet PC
+# that went from 33% to 50% during a routine upgrade.
+#
+# Same shape as the -Threads and autostart incidents documented above: the
+# installer only has an opinion about datadir; the mining level belongs to the
+# person at the keyboard.
 $threadsOut = $Threads
-if (-not $PSBoundParameters.ContainsKey('Threads') -and $keep.ContainsKey('threads')) {
-  $threadsOut = $keep['threads']
-  Write-Output "  keeping existing thread count ($threadsOut)"
+$keptPercent = $null
+if ($keep.ContainsKey('percent') -and $keep['percent'] -match '^\d+$') { $keptPercent = [int]$keep['percent'] }
+if (-not $PSBoundParameters.ContainsKey('Threads')) {
+  if ($keep.ContainsKey('threads') -and $keep['threads'] -match '^\d+$' -and [int]$keep['threads'] -gt 0) {
+    $threadsOut = [int]$keep['threads']
+    Write-Output "  keeping existing thread count ($threadsOut)"
+  } elseif ($null -ne $keptPercent) {
+    $threadsOut = [int][Math]::Round($cores * $keptPercent / 100.0)
+    if ($keptPercent -gt 0 -and $threadsOut -lt 1) { $threadsOut = 1 }
+    Write-Output "  keeping existing mining level ($keptPercent% = $threadsOut of $cores threads)"
+  }
 }
 
-# -Mine: ensure mining is ON. The exact count barely matters -- the tray's
-# auto-calibration re-tunes it on start -- but it must be > 0, and BOTH threads=
-# and percent= must agree, or the tray's percent line wins and cancels mining.
-if (-not $NoMine) {
-  if ($threadsOut -le 0) { $threadsOut = [Math]::Max(1, [int]([Environment]::ProcessorCount / 2)) }
-  $percent = [int][Math]::Round($threadsOut * 100.0 / [Math]::Max(1, [Environment]::ProcessorCount))
-  if ($percent -lt 1) { $percent = 50 }
-  Write-Output "  mining ON (auto-calibration will tune the thread count on start)"
-} else {
+# -Mine forces mining ON; -NoMine forces it off; otherwise an upgrade leaves the
+# machine as it is. BOTH threads= and percent= must agree, or the tray's percent
+# line wins and cancels mining.
+if ($NoMine) {
+  $threadsOut = 0
+  $percent = 0
   Write-Output '  -NoMine: installed, not mining'
+} elseif ($null -ne $keptPercent -and $keptPercent -eq 0 -and -not $Mine -and -not $PSBoundParameters.ContainsKey('Threads')) {
+  $threadsOut = 0
+  $percent = 0
+  Write-Output '  mining stays OFF (your setting from the tray)'
+} else {
+  if ($threadsOut -le 0) { $threadsOut = [Math]::Max(1, [int]($cores / 2)) }
+  $percent = [int][Math]::Round($threadsOut * 100.0 / $cores)
+  if ($percent -lt 1) { $percent = 50 }
+  Write-Output "  mining ON at $percent% ($threadsOut of $cores threads; auto-calibration re-tunes on start)"
 }
 
 @("address=$addr",
