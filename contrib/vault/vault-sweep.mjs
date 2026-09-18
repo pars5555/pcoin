@@ -70,6 +70,7 @@ const SCRYPT = { N: 1 << 17, r: 8, p: 1, keylen: 32, maxmem: 256 * 1024 * 1024 }
 const SCAN_TO = Number(process.env.VAULT_SCAN_TO || 2000);
 const BULK = 200;
 
+const NL = String.fromCharCode(10);
 const die = (m) => { console.error('\n  REFUSED: ' + m + '\n'); process.exit(1); };
 const sat = (n) => (Number(n) / 1e8).toFixed(8);
 
@@ -576,12 +577,14 @@ const system = flag('--system');
 const to = flag('--to');
 const amountArg = flag('--amount');
 const sendAll = has('--all');
+const changeToArg = flag('--change-to');
 const doSend = has('--send');
 
 if (!system || !to || (!amountArg && !sendAll)) {
   const names = readdirSync(HERE).filter((f) => f.endsWith('-xpub.txt')).map((f) => f.replace('-xpub.txt', ''));
   console.log(`
   node vault-sweep.mjs --system <name> --to <pc1q…> (--all | --amount <PCN>) [--send]
+  node vault-sweep.mjs ... --amount <PCN> --change-to <pc1q…>   where the REST goes
   node vault-sweep.mjs --list        what every vault holds, no passphrase needed
   node vault-sweep.mjs --check-all   test ONE passphrase against every vault
   node vault-sweep.mjs --check <sys> test it against one, and show address0
@@ -613,6 +616,9 @@ if (!existsSync(seedFile)) die(`no encrypted seed for "${system}" (looked for ${
 
 const xpub = readFileSync(xpubFile, 'utf8').trim();
 const toHash = decodeAddress(to);
+// Validated HERE, next to --to, so a typo fails before a passphrase is typed
+// rather than after the wallet has been decrypted.
+const changeToHash = changeToArg ? decodeAddress(changeToArg) : null;
 
 console.log(`\n  system      : ${system}`);
 console.log(`  destination : ${to}`);
@@ -667,8 +673,41 @@ if (sendAll) {
   // Dust would cost more to spend than it is worth; give it to the fee rather
   // than create an output nobody will ever economically move.
   if (change > 1000) {
-    const ch = HDKey.fromExtendedKey(xpub).deriveChild(1).deriveChild(0);
-    outs.push({ value: change, script: scriptPubKey(hash160(ch.publicKey)), changeTo: addressOf(ch.publicKey) });
+    // ── WHERE THE REMAINDER LANDS IS A PUBLIC FACT FOR THE wPCN RESERVE ──
+    //
+    // An input is spent whole, so sending part of one returns the rest as
+    // change -- normally to m/84'/9444'/0'/1/0 of the same wallet, which is
+    // still the wallet and still ours.
+    //
+    // For wpcn-reserve that is NOT good enough, and the reason is that the
+    // proof-of-backing page does not scan the wallet. reserveBalance() in
+    // contrib/wrapdesk/server.mjs sums the MAIN address plus the per-customer
+    // deposit addresses the desk has handed out, and a change address is
+    // neither. Caught 2026-09-18 with the transaction already signed: the one
+    // input chosen was the 50,000 PCN founding deposit sitting on the main
+    // address, so the send would have left that address empty, parked 42,836
+    // PCN somewhere the page cannot see, and published "14.3% backed" on a page
+    // whose entire purpose is to say otherwise. It would not even have failed
+    // safe -- that function returns null only when the main address is
+    // UNREADABLE, and zero reads perfectly well.
+    //
+    // So this REFUSES rather than warning. A warning printed above a signed
+    // transaction is read after the decision, not before it.
+    if (system === 'wpcn-reserve' && !changeToHash) {
+      die('this would leave ' + sat(change) + ' PCN as change at a derived address.'
+        + NL + '           The proof-of-backing page counts the MAIN reserve address plus'
+        + NL + '           the deposit addresses it handed out -- it does NOT scan the whole'
+        + NL + '           wallet, so change would be invisible to it and'
+        + NL + '           wrapdesk.pc.am/proof would under-report the backing publicly.'
+        + NL + NL + '           Re-run with --change-to <the main reserve address> so the'
+        + NL + '           remainder goes back where the page can see it.');
+    }
+    if (changeToHash) {
+      outs.push({ value: change, script: scriptPubKey(changeToHash), changeTo: changeToArg });
+    } else {
+      const ch = HDKey.fromExtendedKey(xpub).deriveChild(1).deriveChild(0);
+      outs.push({ value: change, script: scriptPubKey(hash160(ch.publicKey)), changeTo: addressOf(ch.publicKey) });
+    }
   } else if (change > 0) {
     fee += change;
   }
