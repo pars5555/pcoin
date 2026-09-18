@@ -227,9 +227,37 @@ def main():
                       "That wallet held one UTXO unspent since height 5765. Any "
                       "spend from it is an emergency."
                       % (st["core_pcn"], core_pcn, st["core_pcn"] - core_pcn))
-    if core_sent > 0:
-        alerts.append("A. The core reserve has SPENT %.8f PCN over its lifetime. "
-                      "It should never have spent anything." % core_sent)
+    # A NEW spend, never the lifetime total.
+    #
+    # `core_sent` only ever counts UP, so gating on "> 0" meant the first
+    # legitimate surplus withdrawal pinned this alert on permanently: the
+    # monitor could never return to ok, and a monitor that is always red hides
+    # every alert after it. That is the same mistake `blocks_unwound == 0` made
+    # when one ordinary reorg stopped all six PCN rails for three and a half
+    # days -- a cumulative counter is not a health flag.
+    #
+    # It fired for real on 2026-09-18, on a surplus withdrawal that was correct,
+    # documented in PCOIN-WPCN-RUNBOOK.md, and left backing at 100.0025%.
+    #
+    # What is worth waking someone for is a spend NOBODY EXPECTED, so the
+    # question is whether it MOVED since the last look -- and whether backing
+    # survived it, which is what separates a withdrawal from a theft.
+    if st["core_sent"] is None:
+        if core_sent > 0:
+            warns.append("A. First look at this reserve: %.8f PCN has been spent over "
+                         "its lifetime. On its own that is history, not evidence -- "
+                         "check it against PCOIN-WPCN-RUNBOOK.md." % core_sent)
+    elif core_sent > st["core_sent"] + 1e-8:
+        moved = core_sent - st["core_sent"]
+        if total + 1e-8 >= ISSUED:
+            warns.append("A. The core reserve spent %.8f PCN since the last check "
+                         "(lifetime %.8f), and backing is still whole. That is the "
+                         "shape of a surplus withdrawal -- confirm it was you, and "
+                         "record it in PCOIN-WPCN-RUNBOOK.md." % (moved, core_sent))
+        else:
+            alerts.append("A. The core reserve spent %.8f PCN since the last check "
+                          "(lifetime %.8f) AND backing is no longer whole. A spend "
+                          "that breaks backing is an emergency." % (moved, core_sent))
 
     # B - the invariant that protects holders
     if total + 1e-8 < supply:
