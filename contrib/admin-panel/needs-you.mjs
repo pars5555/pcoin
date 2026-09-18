@@ -58,11 +58,18 @@ export function needsYou({ svcs = [], tasks = [], exOver = null, wrap = null,
     if (typeof f.remainingPcn === 'number' && typeof f.deliverablePcn === 'number'
         && f.remainingPcn > f.deliverablePcn + 0.5) {
       const gap = f.remainingPcn - f.deliverablePcn;
-      add('action', `Market book lists ${n2(gap, 0)} PCN more than it can deliver`,
-        `The ladder still has ${n2(f.remainingPcn, 0)} PCN on it, but only `
-        + `${n2(f.deliverablePcn, 0)} PCN is deliverable. Nobody can over-buy — the buy `
-        + `path sells the smaller number — but the two should be reconciled, by raising `
-        + `the backing cap against coins that exist or by trimming the book.`,
+      // Deliberately NOT "listed for sale". market.pc.am's own page binds
+      // "Available to buy" to sellableNowPcn -- the SMALLER figure -- and the
+      // buy path enforces it, so no customer is shown or sold the larger one.
+      // Calling it "listed" overstated this and made a bookkeeping gap read as
+      // an over-promise to buyers. What is actually exposed is the public API
+      // field remainingPcn, which an integrator could read as available supply.
+      add('warn', `Market ladder holds ${n2(gap, 0)} PCN more than it can deliver`,
+        `The ladder's internal stock is ${n2(f.remainingPcn, 0)} PCN but only `
+        + `${n2(f.deliverablePcn, 0)} is deliverable. Customers are neither shown nor sold `
+        + `the larger number — the page and the buy path both use the smaller one — so this `
+        + `is a bookkeeping gap, not an over-promise. It still leaks through the PUBLIC `
+        + `api/ladder/state field remainingPcn, which an integrator may read as supply.`,
         `${base}/services/market`);
     }
 
