@@ -83,14 +83,35 @@ def _unclosed_tags(html_text):
 
 
 class StubStore:
-    """A Store that hands out one already-open connection."""
+    """A Store that lends out one already-open connection.
+
+    It speaks the POOL contract the Router relies on -- acquire()/release() and
+    the borrowed() context -- by handing back the same handle every time. It
+    grew that contract on 2026-09-19: the real Store became a bounded pool weeks
+    earlier and this stub kept the old connection() method, so 46 tests errored
+    with "no attribute acquire" and the suite could no longer catch a regression
+    in any page. A test double that lags the interface it doubles is not a
+    weaker test; it is no test.
+    """
 
     def __init__(self, conn):
         self.conn = conn
         self.mode = "test"
 
-    def connection(self):
+    def acquire(self):
         return self.conn
+
+    def release(self, conn, *, discard=False):
+        # One shared handle owned by the test. It is never closed here, even on
+        # discard -- the next test in the class still needs it.
+        pass
+
+    @contextlib.contextmanager
+    def borrowed(self):
+        yield self.conn
+
+    def close_thread(self):
+        pass
 
     def close(self):
         pass

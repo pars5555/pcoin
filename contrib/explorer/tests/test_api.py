@@ -683,9 +683,9 @@ class HttpBehaviourTests(ApiTestCase):
 
 class ReadOnlyTests(ApiTestCase):
     def test_the_api_connection_cannot_write(self):
-        conn = self.env.store._conn()
-        with self.assertRaises(sqlite3.OperationalError) as cm:
-            conn.execute("INSERT INTO addresses (address, balance) VALUES ('x', 1)")
+        with self.env.store.borrowed() as conn:
+            with self.assertRaises(sqlite3.OperationalError) as cm:
+                conn.execute("INSERT INTO addresses (address, balance) VALUES ('x', 1)")
         self.assertIn("readonly", str(cm.exception))
 
     def test_a_request_sees_one_consistent_snapshot(self):
