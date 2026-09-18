@@ -171,6 +171,18 @@ class Store:
         finally:
             self.release(conn, discard=bad)
 
+    def close_thread(self):
+        """Nothing to do: a thread owns no connection here, it borrows one.
+
+        THIS MUST STAY A NO-OP. `close()` below drops every idle connection in
+        the pool, so calling that at the end of every request thread would empty
+        the pool continuously and force a reopen for the next caller -- exactly
+        the contention that wedged this service three times on 2026-09-18, with
+        a thread dump showing 98 of 100 threads stopped inside db.connect().
+        The per-thread hook and the shutdown hook are different operations and
+        must never be collapsed into one name.
+        """
+
     def close(self):
         """Drop every idle connection. Used by the tests and at shutdown."""
         with self._lock:
@@ -697,6 +709,29 @@ class Server(ThreadingHTTPServer):
         try:
             super().process_request_thread(request, client_address)
         finally:
+            # Release whatever THIS thread still holds, before it ends. The
+            # semaphore below was always released here; a database handle is the
+            # same kind of resource, and leaving one of the two to the garbage
+            # collector is what OOM-killed explorer3 23 times on 2026-09-18.
+            #
+            # Each Store decides what that means for itself: the API's is one
+            # connection per thread and closes it; this module's is a bounded
+            # pool and does nothing. Never assume which one you have -- the same
+            # call means "free a handle" in one and "empty the pool" in the
+            # other, and the second wedges the service.
+            for store in (getattr(self, "store", None),
+                          getattr(self, "api_store", None)):
+                hook = getattr(store, "close_thread", None)
+                if hook is None:
+                    continue
+                try:
+                    hook()
+                except Exception:
+                    # A failed release must never take down the thread and must
+                    # never skip the semaphore below -- that would leak a
+                    # concurrency permit permanently and the server would answer
+                    # 503 for ever after.
+                    pass
             self._slots.release()
 
 
@@ -749,6 +784,11 @@ def serve(db_path, *, host="127.0.0.1", port=8080, chain=None, access_log=True,
     store, _router, handler = build(db_path, chain=chain, access_log=access_log,
                                     api_app=api_app)
     httpd = Server((host, port), handler)
+    # What process_request_thread releases per thread. Set after construction and
+    # read with getattr, so a Server built any other way (the tests build one
+    # directly) skips the hook rather than raising.
+    httpd.store = store
+    httpd.api_store = getattr(api_app, "store", None)
     # Touch the index once at startup so a misconfigured path fails loudly here
     # rather than as a 503 on someone's first request.
     try:

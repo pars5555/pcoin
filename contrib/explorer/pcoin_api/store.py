@@ -54,6 +54,25 @@ class Store:
             conn.close()
             self._local.conn = None
 
+    # Same operation, named for the caller that matters: the HTTP server calls
+    # this when a serving thread is about to end.
+    #
+    # WHY IT IS NEEDED. This Store keeps one connection per thread in a
+    # threading.local(), and the server runs one daemon thread per HTTP
+    # connection. A daemon thread is never joined, so its thread-local values
+    # are released only when the interpreter finalises it -- "eventually", with
+    # every handle holding a SQLite page cache until then. Measured on
+    # explorer3.pc.am 2026-09-18: ~70 handles behind 5-12 live threads, and 23
+    # OOM kills in a day while systemd reported the unit active throughout.
+    #
+    # pcoin_explorer's own Store was given a bounded pool for this. THIS one was
+    # not, and /api/* is what the payment rails call -- the half under the most
+    # load kept the unfixed half of the bug. A pool here is the better end
+    # state; this is the part that does not require restructuring a read path
+    # that decides what customers are credited.
+    def close_thread(self):
+        self.close()
+
     class _Snapshot:
         def __init__(self, conn):
             self.conn = conn
