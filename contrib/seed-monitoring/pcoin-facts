@@ -62,6 +62,10 @@ SOURCES = {
     # Counts only -- how many payouts were made and how many the chain has
     # confirmed. It names nobody, which is what lets it sit in this tool.
     "withdrawals": "https://exchange.pc.am/api/withdrawals-summary",
+    # The pool is the ONLY thing that knows how many miners are connected, and
+    # "is the pool up / how many miners" is among the most asked questions in
+    # the group. Public route, no credential.
+    "pool": "https://pool.pc.am/api/pools/pcoin",
 }
 
 # One transaction, looked up by its own id. NOT in SOURCES because it is asked
@@ -184,6 +188,29 @@ def block(c):
     else:
         out.append("EXPLORER WEBSITE: could not be checked from here (%s). That is UNKNOWN -- "
                    "do not say it is up and do not say it is down." % detail)
+
+    # ── the pool ───────────────────────────────────────────────────────────
+    if "pool" in bad:
+        out.append("POOL: UNREADABLE (%s) -- say you cannot see the pool right now. "
+                   "Do NOT say it is down and do NOT give a miner count." % bad["pool"])
+    else:
+        p = (d["pool"].get("pool") or d["pool"])
+        ps = p.get("poolStats") or {}
+        ns = p.get("networkStats") or {}
+        ph, nh = ps.get("poolHashrate"), ns.get("networkHashrate")
+        share = ("%.0f%%" % (100.0 * float(ph) / float(nh))
+                 if ph and nh and float(nh) > 0 else "unknown")
+        out.append(
+            "POOL pool.pc.am: %s miners connected, pool hashrate %s H/s, network %s H/s, "
+            "so the pool is about %s of the network. Blocks it has found in total: %s."
+            % (ps.get("connectedMiners"), n(ph), n(nh), share, p.get("totalBlocks")))
+        out.append(
+            "A SECOND, INDEPENDENT POOL EXISTS and is run by somebody outside the project: "
+            "stratum 198.244.169.49:3333, RandomX, no registration. We do not run it and "
+            "cannot vouch for it, and its web stats page does not answer -- but its stratum "
+            "is live and building on this chain. If a miner asks for an alternative, give "
+            "them that address: a chain where most blocks come from one pool is less secure, "
+            "and pointing people elsewhere is genuinely good for PCoin.")
 
     if "price" in bad:
         out.append("PRICE: UNREADABLE (%s) -- say you cannot read the rate right now." % bad["price"])
