@@ -1,0 +1,177 @@
+#!/bin/bash
+# Is explorer.pc.am actually ANSWERING? Nothing else asked.
+#
+# WHY THIS EXISTS, and it is a specific failure rather than a hypothetical.
+#
+# On 2026-09-18 explorer.pc.am returned 502 for at least ninety minutes and the
+# first anyone heard of it was a user in the Telegram group -- "Admin,
+# explorer.pc.am is down but the rest of pc.am domain is normal" -- followed by
+# a second in Discord. Ten monitors were running on that host at the time and
+# every one of them was green.
+#
+# They were green because none of them was asking this question. The chain
+# watchers, the deposit watchers and the ElectrumX watcher all CONSUME the
+# explorer, and every one of them correctly models an unreadable source as "I
+# could not check" rather than "the explorer is down" -- that is the §7.1
+# doctrine and it is right. But it leaves a hole exactly the shape of this
+# outage: the thing every rail reads had no monitor of its own.
+#
+# WHAT THE FAILURE ACTUALLY LOOKED LIKE, because it defeats the obvious check.
+# `systemctl is-active pcoin-explorer` said **active**. The process was alive,
+# holding 129 threads at 1.8% CPU, and it was still bound to 127.0.0.1:8080.
+# What had happened is that its accept queue had filled -- `ss -lnt` showed
+# Recv-Q 65 against a backlog of 64 -- so the kernel was refusing new
+# connections while the process sat there looking perfectly healthy. A unit
+# check, a port check and a process check all pass in that state. Only an
+# actual request fails.
+#
+# So this makes a real HTTP request, over the public hostname, with certificate
+# verification on, and reads the answer.
+#
+# AND IT SEPARATES "DOWN" FROM "I COULD NOT LOOK", for the reason written at
+# length in pcoin-electrumx-watch: the first version of that script treated
+# "could not verify" as "failed" and produced two false alarms in six hours,
+# which is how a channel gets muted along with the one real alert in it. Here,
+# a DNS failure or a missing curl on THIS box is exit 2 and says so; a server
+# that answers wrongly is exit 1.
+#
+# Conventions match the rest of contrib/seed-monitoring: this decides WHAT is
+# wrong, exits non-zero, and lets OnFailure= + pcoin-notify decide where that
+# goes. No credential lives in here, and it reads only public endpoints.
+set -u
+
+# Both public explorers. Checked by HOSTNAME, never by loopback: the 2026-09-18
+# outage was visible from outside while the box itself looked fine, and a
+# loopback check would also skip Caddy, the CDN and the certificate -- three
+# things that can take the explorer off the internet on their own.
+ENDPOINTS=${ENDPOINTS:-"https://explorer.pc.am https://explorer3.pc.am"}
+
+# A stalled index is an outage that answers 200. Heights are compared between
+# the two instances; this is how far apart they may drift before it is real.
+# Generous on purpose -- one miner finds most blocks on this chain, so a lag of
+# one or two is constant and means nothing.
+MAX_SPREAD=${MAX_SPREAD:-6}
+
+# Consecutive bad rounds before escalating. At a 5-minute timer, 2 means an
+# endpoint has to be bad for ~10 minutes. One 502 during a Caddy reload is not
+# an outage, and this host's Caddy is bounced ~11x/day by another project's
+# watchdog (see memory: caddy-restarts-521-every-pcoin-site).
+FAIL_LIMIT=${FAIL_LIMIT:-2}
+
+TIMEOUT=${TIMEOUT:-15}
+STATE_DIR=${STATE_DIR:-/var/lib/pcoin-explorer-watch}
+mkdir -p "$STATE_DIR" 2>/dev/null || true
+
+command -v curl >/dev/null 2>&1 || { echo "UNCHECKABLE: no curl on this host"; exit 2; }
+command -v python3 >/dev/null 2>&1 || { echo "UNCHECKABLE: no python3 on this host"; exit 2; }
+
+problems=()
+unchecked=()
+heights=()
+names=()
+
+for base in $ENDPOINTS; do
+	host=${base#https://}
+	key=$STATE_DIR/$(echo "$host" | tr -c 'a-zA-Z0-9' '_')
+	body=$(mktemp)
+	# --fail-with-body is deliberately NOT used: a 502 body is evidence and we
+	# want the status code either way.
+	code=$(curl -s -o "$body" -w '%{http_code}' --max-time "$TIMEOUT" \
+		-H 'User-Agent: pcoin-explorer-watch' "$base/api/status" 2>/dev/null)
+	rc=$?
+
+	verdict=""
+	height=""
+	if [ "$rc" -ne 0 ]; then
+		# 6 DNS, 7 connect refused, 28 timeout, 35/60 TLS. All of these are the
+		# server's problem from a client's point of view, which is the only
+		# point of view that matters here.
+		verdict="unreachable (curl exit $rc)"
+	elif [ "$code" != "200" ]; then
+		verdict="HTTP $code"
+	else
+		height=$(python3 -c "
+import json,sys
+try:
+    d=json.load(open('$body'))
+except Exception as e:
+    print('BADJSON'); sys.exit()
+h=((d.get('chain') or {}).get('height'))
+print(h if isinstance(h,int) and h>0 else 'NOHEIGHT')
+" 2>/dev/null)
+		case "$height" in
+			BADJSON)  verdict="answered 200 but the body is not JSON" ;;
+			NOHEIGHT) verdict="answered 200 but reports no chain height" ;;
+			"")       verdict="answered 200 but could not be parsed" ;;
+		esac
+	fi
+	rm -f "$body"
+
+	if [ -n "$verdict" ]; then
+		streak=$(( $(cat "$key" 2>/dev/null || echo 0) + 1 ))
+		echo "$streak" > "$key"
+		if [ "$streak" -ge "$FAIL_LIMIT" ]; then
+			problems+=("$host: $verdict (${streak} consecutive checks)")
+		else
+			# Below the limit it is noted and not shouted about. Said out loud so
+			# a human reading the journal can see the check is working.
+			echo "  $host: $verdict (${streak}/${FAIL_LIMIT}, not escalating yet)"
+		fi
+	else
+		: > "$key"
+		names+=("$host")
+		heights+=("$height")
+		echo "  $host: ok, height $height"
+	fi
+done
+
+# A stalled index answers 200 with a height that stopped moving, which no
+# status code reveals. With two instances the cheap check is to compare them.
+if [ "${#heights[@]}" -ge 2 ]; then
+	a=${heights[0]}; b=${heights[1]}
+	spread=$(( a > b ? a - b : b - a ))
+	if [ "$spread" -gt "$MAX_SPREAD" ]; then
+		problems+=("the two explorers disagree by $spread blocks (${names[0]}=$a, ${names[1]}=$b) -- one index has stalled")
+	fi
+fi
+
+if [ "${#problems[@]}" -eq 0 ]; then
+	# Below the escalation limit is not the same as healthy, and saying
+	# "is answering" when nothing answered is how a monitor teaches people to
+	# stop believing it. Report what was actually observed.
+	if [ "${#names[@]}" -eq 0 ]; then
+		echo "nothing answered yet, but not for long enough to escalate"
+	else
+		echo "explorer is answering (${names[*]})"
+	fi
+	exit 0
+fi
+
+# Every rail reads this, so say so: an explorer outage is not cosmetic, it is
+# deposits not being credited.
+echo "EXPLORER PROBLEM -- every PCN payment rail reads this:"
+for p in "${problems[@]}"; do echo "  * $p"; done
+
+if [ "${#names[@]}" -eq 0 ]; then
+	echo "  BOTH explorers are bad. Wallets, rails and the Komodo listing all read these."
+fi
+
+# The remedy that fixed 2026-09-18, written here so whoever is woken does not
+# have to rediscover it at 3am. Note the process looked healthy throughout.
+cat <<'EOT'
+
+  Most likely cause, and how it presents: the process is alive and `is-active`
+  says active, but its accept queue is full and the kernel is refusing
+  connections. Confirm with:
+
+      ss -lnt | grep :8080        # Recv-Q at or above the backlog == wedged
+
+  Remedy on 178.105.3.51:
+
+      systemctl restart pcoin-explorer
+
+  Then find out WHAT filled the queue before calling it fixed:
+
+      tail -2000 /var/log/caddy/explorer.pc.am.log   # one URI dominating = a client in a retry loop
+EOT
+exit 1
