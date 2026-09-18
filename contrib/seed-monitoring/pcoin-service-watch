@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""Is every public PCoin surface actually answering? Ask all of them, from outside.
+
+WHY THIS EXISTS
+
+explorer.pc.am returned 502 for ninety minutes on 2026-09-18 and the first
+anyone heard of it was a user in the Telegram group, followed by a second in
+Discord. Ten monitors were running on that host and every one was green, because
+each of them CONSUMED the explorer and correctly modelled an unreadable source
+as "I could not check" rather than "it is down". That doctrine is right and it
+leaves a hole: the thing everything reads had no monitor of its own.
+
+pcoin-explorer-watch closed that hole for one service. This closes it for the
+rest, because the same reasoning applies to every one of them -- price.pc.am is
+read by six payment rails, market.pc.am takes money, exchange.pc.am holds
+customer balances, and nothing was asking whether any of them answers.
+
+WHY A STATUS CODE IS NOT ENOUGH
+
+The explorer outage would have been caught by a plain 200 check, but the more
+common failure is worse: a service that answers 200 with a broken body. A
+stalled index answers 200. A price oracle with a dead upstream answers 200 and
+serves a null. So every service here declares something that must be TRUE of the
+response -- a JSON key that must exist, or a string that must appear. "It
+responded" and "it works" are different claims and only the second one matters.
+
+WHAT IT DELIBERATELY DOES NOT DO
+
+It does not restart anything. The 2026-09-18 remedy was a restart, and a monitor
+that restarts on its own would have hidden the cause -- a third-party client in
+a retry loop, still running afterwards. Alert, name the likely cause, let a human
+decide.
+
+Conventions match the rest of contrib/seed-monitoring: decide WHAT is wrong, exit
+non-zero, and let OnFailure= + pcoin-notify decide where that goes. No credential
+lives here and every endpoint checked is public.
+"""
+import json
+import os
+import ssl
+import sys
+import time
+import urllib.error
+import urllib.request
+
+# name, url, and what must be true of the body.
+#   key=...  a dotted path that must exist and be non-null in the JSON
+#   has=...  a substring that must appear in the text
+# A service with neither is checked for status only, which is the weakest form
+# and is used where there is no machine-readable surface to assert on.
+SERVICES = [
+    ("pc.am",          "https://pc.am/",                        {"has": "PCoin"}),
+    ("explorer",       "https://explorer.pc.am/api/status",     {"key": "chain.height"}),
+    ("explorer3",      "https://explorer3.pc.am/",              {}),
+    ("market",         "https://market.pc.am/api/ladder/state", {"key": "marginalPrice"}),
+    ("price",          "https://price.pc.am/",                  {"key": "sellPriceUsd"}),
+    ("exchange",       "https://exchange.pc.am/api/public",     {"key": "limits.minOrderUsd"}),
+    ("wrapdesk",       "https://wrapdesk.pc.am/proof",          {"has": "Proof of backing"}),
+    ("docs",           "https://docs.pc.am/",                   {}),
+    ("pool",           "https://pool.pc.am/",                   {}),
+    ("pcnearner",      "https://pcnearner.pc.am/",              {}),
+    ("webai",          "https://webai.pc.am/",                  {}),
+    ("checker",        "https://checker.pc.am/",                {}),
+]
+
+TIMEOUT = float(os.environ.get("SERVICE_TIMEOUT", "20"))
+# Consecutive bad rounds before escalating. At a 5-minute timer, 2 means a
+# service has to be bad for ~10 minutes. Caddy on 178.105.3.51 is bounced ~11
+# times a day by another project's watchdog, so a single blip is not an outage.
+FAIL_LIMIT = int(os.environ.get("SERVICE_FAIL_LIMIT", "2"))
+STATE = os.environ.get("SERVICE_STATE", "/var/lib/pcoin-service-watch/state.json")
+ONLY = [s for s in os.environ.get("SERVICE_ONLY", "").split(",") if s]
+
+
+def dig(obj, path):
+    """Follow a dotted path. Returns None when any step is missing, which is the
+    same as the key being null -- both mean the body did not carry the fact."""
+    cur = obj
+    for part in path.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+
+def probe(url, want):
+    """(ok, detail). ok=False means this service is bad, and detail says how."""
+    req = urllib.request.Request(url, headers={"User-Agent": "pcoin-service-watch"})
+    try:
+        # Certificate verification stays ON. An expired certificate takes a
+        # service off the internet just as surely as a dead process, and is
+        # exactly the kind of thing that fails quietly at 3am.
+        with urllib.request.urlopen(req, timeout=TIMEOUT,
+                                    context=ssl.create_default_context()) as r:
+            body = r.read(400_000).decode("utf-8", "replace")
+            code = r.getcode()
+    except urllib.error.HTTPError as e:
+        return False, "HTTP %s" % e.code
+    except Exception as e:
+        return False, "unreachable (%s)" % type(e).__name__
+
+    if code != 200:
+        return False, "HTTP %s" % code
+    if "has" in want and want["has"] not in body:
+        return False, "answered 200 but %r is missing from the page" % want["has"]
+    if "key" in want:
+        try:
+            d = json.loads(body)
+        except Exception:
+            return False, "answered 200 but the body is not JSON"
+        v = dig(d, want["key"])
+        if v is None:
+            return False, "answered 200 but %s is missing or null" % want["key"]
+        return True, "%s=%s" % (want["key"], str(v)[:24])
+    return True, "200"
+
+
+def load_state():
+    try:
+        with open(STATE, encoding="utf-8") as fh:
+            s = json.load(fh)
+    except Exception:
+        s = {}
+    # Normalise rather than only handling an unreadable file: a state file that
+    # PARSES but lacks a key is how pcoin-wrapdesk-watch died on a fresh install.
+    if not isinstance(s, dict):
+        s = {}
+    s.setdefault("streak", {})
+    s.setdefault("last_alert", "")
+    return s
+
+
+def save_state(s):
+    try:
+        os.makedirs(os.path.dirname(STATE), exist_ok=True)
+        tmp = STATE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(s, fh, indent=1)
+        os.replace(tmp, STATE)
+    except Exception as e:
+        print("  (state not written: %s)" % e)
+
+
+def main():
+    dry = "--dry-run" in sys.argv
+    st = load_state()
+    bad, good = [], []
+
+    for name, url, want in SERVICES:
+        if ONLY and name not in ONLY:
+            continue
+        ok, detail = probe(url, want)
+        if ok:
+            st["streak"][name] = 0
+            good.append(name)
+            print("  %-12s ok    %s" % (name, detail))
+        else:
+            n = st["streak"].get(name, 0) + 1
+            st["streak"][name] = n
+            print("  %-12s BAD   %s  (%d/%d)" % (name, detail, n, FAIL_LIMIT))
+            if n >= FAIL_LIMIT:
+                bad.append((name, url, detail, n))
+
+    if bad:
+        lines = ["%d of %d PCoin services are not answering:" % (len(bad), len(good) + len(bad))]
+        for name, url, detail, n in bad:
+            lines.append("  * %-11s %s" % (name, detail))
+            lines.append("    %s  (failing %d checks in a row)" % (url, n))
+        lines.append("")
+        lines.append("Healthy: %s" % (", ".join(good) or "none"))
+        lines.append("")
+        # The 2026-09-18 shape, written down so whoever is woken does not have to
+        # rediscover it: the process was ALIVE and systemctl said active.
+        lines.append("A service can be 'active' and still refuse connections -- on 2026-09-18")
+        lines.append("the explorer's accept queue was full (ss -lnt showed Recv-Q above the")
+        lines.append("backlog) while the unit looked perfectly healthy. Check the queue before")
+        lines.append("concluding the process is fine, and find what filled it before calling")
+        lines.append("it fixed.")
+        text = "\n".join(lines)
+        fp = "|".join(sorted(n for n, _, _, _ in bad))
+        print()
+        print(text)
+        if dry:
+            print("\n  (dry run: nothing sent)")
+        elif st["last_alert"] != fp:
+            st["last_alert"] = fp
+        else:
+            print("\n  (same services as the last run - not re-sending)")
+        if not dry:
+            save_state(st)
+        return 1
+
+    print("all %d services are answering" % len(good))
+    if st["last_alert"] not in ("", "ok"):
+        print("  (recovered)")
+    st["last_alert"] = "ok"
+    if not dry:
+        save_state(st)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
