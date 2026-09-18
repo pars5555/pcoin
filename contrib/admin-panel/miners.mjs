@@ -10,9 +10,17 @@
 // the object is touched or rendered. Reading a config by picking named keys
 // rather than by pattern is the rule this project has paid for five times.
 //
-// BALANCES ARE READ LIVE from explorer.pc.am, cached briefly. A page render
+// BALANCES ARE READ LIVE from the explorer index, cached briefly. A page render
 // must not make fifteen HTTP calls every time somebody clicks, and a stale
 // number is fine here as long as the page SAYS how stale -- which it does.
+//
+// OVER LOOPBACK FIRST. This panel runs on the box that IS the explorer, so
+// reaching it by its public name would send every one of those calls out
+// through DNS, Cloudflare, the rate limiter and TLS and back to 127.0.0.1.
+// All four can fail while the index is perfectly healthy, and on 2026-09-18
+// three of them did -- the explorer spent part of that day refusing 44% of all
+// traffic with 429s, our own rails included. The public name stays as a
+// fallback; PCOIN_EXPLORER overrides both.
 //
 // The payment rails in that same map are deliberately NOT shown. They are not
 // miners, they are somebody's deposit address, and four of them belong to
@@ -68,11 +76,28 @@ export function fleet() {
   });
 }
 
+const EXPLORERS = [process.env.PCOIN_EXPLORER, 'http://127.0.0.1:8080',
+                   'https://explorer.pc.am'].filter(Boolean);
+
 async function addressInfo(a) {
-  const r = await fetch(`https://explorer.pc.am/api/address/${a}`,
-    { signal: AbortSignal.timeout(15000) });
-  if (!r.ok) throw new Error('HTTP ' + r.status);
-  const d = await r.json();
+  // Try each base in order and take the first that answers. A base that fails
+  // is not an answer of zero -- if every one of them fails we throw, and the
+  // caller renders the error instead of a balance, because a zero balance and
+  // an unreachable explorer look identical in a number and could not differ
+  // more in meaning.
+  let d = null, last = null;
+  for (const base of EXPLORERS) {
+    try {
+      const r = await fetch(`${base}/api/address/${a}`,
+        { signal: AbortSignal.timeout(15000) });
+      if (!r.ok) { last = new Error('HTTP ' + r.status); continue; }
+      d = await r.json();
+      break;
+    } catch (e) {
+      last = e;
+    }
+  }
+  if (d === null) throw last || new Error('no explorer answered');
   const c = (d.balance || {}).confirmed || {};
   const lt = (d.balance || {}).lifetime || {};
   return {
@@ -87,9 +112,14 @@ export async function minersData() {
   let rows = [], error = null, pool = null;
   try {
     const list = fleet().filter(x => x.kind !== 'rail');
-    // Sequential on purpose. Fifteen parallel requests at a public explorer
-    // from one IP is the shape of something that gets rate-limited, and this
-    // page is not urgent enough to be rude.
+    // Sequential on purpose, and still so over loopback. The original reason
+    // was rate limiting -- fifteen parallel requests at a public explorer from
+    // one IP is the shape of something that gets blocked. Going direct removes
+    // that, but replaces it with a better one: the explorer serves from a
+    // BOUNDED pool of 16 SQLite connections, so fifteen at once from one admin
+    // page render would occupy nearly the whole pool and make every other
+    // caller queue behind a page nobody is waiting on. This page is not urgent
+    // enough to be rude in either direction.
     for (const m of list) {
       try { rows.push({ ...m, ...(await addressInfo(m.address)) }); }
       catch (e) { rows.push({ ...m, error: e.message }); }
@@ -159,7 +189,7 @@ export function minersPage(data) {
 
   return '<h1>Miners</h1>'
     + '<p class="muted">Your own machines and what they have earned. Balances are read from '
-    + 'explorer.pc.am and cached for 90 seconds &mdash; last read '
+    + 'the explorer index and cached for 90 seconds &mdash; last read '
     + (data.at ? agoIso(new Date(data.at).toISOString()) : DASH) + '.</p>'
     + head
     + section('Mining now', 'mining',

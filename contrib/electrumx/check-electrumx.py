@@ -50,7 +50,18 @@ import sys
 import time
 import urllib.request
 
-EXPLORER = "https://explorer.pc.am"
+# LOCAL CALLERS TALK TO THE EXPLORER OVER LOOPBACK FIRST.
+#
+# This box IS the explorer. Reaching it by its public name sends the request out
+# through DNS, Cloudflare, the rate limiter and TLS and back to 127.0.0.1 --
+# four things that can fail while the index is perfectly healthy, and on
+# 2026-09-18 three of them did.
+#
+# The public name stays as a FALLBACK so a host with no local explorer, or one
+# on a different port, still works. PCOIN_EXPLORER overrides both.
+EXPLORERS = [e for e in (os.environ.get("PCOIN_EXPLORER", ""),
+                         "http://127.0.0.1:8080",
+                         "https://explorer.pc.am") if e]
 GENESIS = ("a95d51f0cbf25cad10c35961c6189356"
            "525d079835f02e83e2395f382fbe264a")
 
@@ -378,16 +389,19 @@ class Electrum:
 # ------------------------------------------------------------------- main --
 
 def explorer_json(path, timeout=20):
-    """GET explorer.pc.am/<path> as JSON, or None if it could not be read.
+    """GET <explorer><path> as JSON, or None if it could not be read.
 
-    None means UNKNOWN. Callers must fail the check rather than substitute a
-    value -- see the module docstring.
+    Tries each base in EXPLORERS in order -- loopback first -- and returns the
+    first that answers. None means UNKNOWN: every base failed. Callers must fail
+    the check rather than substitute a value -- see the module docstring.
     """
-    try:
-        with urllib.request.urlopen(f"{EXPLORER}{path}", timeout=timeout) as r:
-            return json.load(r)
-    except Exception:
-        return None
+    for base in EXPLORERS:
+        try:
+            with urllib.request.urlopen(f"{base}{path}", timeout=timeout) as r:
+                return json.load(r)
+        except Exception:
+            continue
+    return None
 
 
 def explorer_balance(addr):
@@ -521,12 +535,12 @@ def main():
         if not isinstance(status, dict):
             # Unreadable reference is UNKNOWN, not "in sync" -- and not this
             # server's fault either.
-            unverified("lag", "could not read explorer.pc.am/api/status to compare")
+            unverified("lag", "could not read the explorer index to compare")
         else:
             exp_h = status["chain"]["height"]
             lag = exp_h - head["height"]
             if lag > a.max_lag:
-                fail("lag", f"{lag} blocks behind explorer.pc.am (which is at {exp_h})")
+                fail("lag", f"{lag} blocks behind the explorer index (which is at {exp_h})")
             else:
                 good("lag", f"{lag} block(s) behind explorer.pc.am ({exp_h})")
 

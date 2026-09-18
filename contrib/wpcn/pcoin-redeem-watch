@@ -153,17 +153,38 @@ def check_address(addr):
     return "bad", "does not look like a PCoin address at all"
 
 
+# LOCAL CALLERS TALK TO THE EXPLORER OVER LOOPBACK FIRST.
+#
+# This box IS the explorer. Reaching it by its public name sends the request out
+# through DNS, Cloudflare, the rate limiter and TLS and back to 127.0.0.1 --
+# four things that can fail while the index is perfectly healthy, and on
+# 2026-09-18 three of them did.
+#
+# The public name stays as a FALLBACK so a host with no local explorer, or one
+# on a different port, still works. PCOIN_EXPLORER overrides both.
+EXPLORERS = [e for e in (os.environ.get("PCOIN_EXPLORER", ""),
+                         "http://127.0.0.1:8080",
+                         "https://explorer.pc.am") if e]
+
+
 def reserve_balance(reserve):
-    """Confirmed spendable PCN at the reserve, or None for UNKNOWN."""
-    try:
-        with urllib.request.urlopen(
-                f"https://explorer.pc.am/api/address/{reserve}", timeout=25) as r:
-            d = json.load(r)
-        bal = ((d.get("balance") or {}).get("confirmed") or {})
-        sat = bal.get("onchain_unspent_sat")
-        return None if sat is None else sat / 1e8
-    except Exception:
-        return None
+    """Confirmed spendable PCN at the reserve, or None for UNKNOWN.
+
+    Tries each base in EXPLORERS in order, loopback first. None still means
+    UNKNOWN and must never be read as "the reserve is empty" -- this decides
+    whether a redemption can be covered.
+    """
+    for base in EXPLORERS:
+        try:
+            with urllib.request.urlopen(
+                    f"{base}/api/address/{reserve}", timeout=25) as r:
+                d = json.load(r)
+            bal = ((d.get("balance") or {}).get("confirmed") or {})
+            sat = bal.get("onchain_unspent_sat")
+            return None if sat is None else sat / 1e8
+        except Exception:
+            continue
+    return None
 
 
 def main() -> int:

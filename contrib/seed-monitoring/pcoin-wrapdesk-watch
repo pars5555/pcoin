@@ -70,7 +70,18 @@ MAX_SEND = float(os.environ.get("WRAP_MAX_SEND", PER_PERSON))
 # peg tightness for a brake on dumping, not a considered revenue decision.
 FEE_PCT = float(os.environ.get("WRAP_FEE_PCT", 5.0))
 
-EXPLORER = "https://explorer.pc.am"
+# LOCAL CALLERS TALK TO THE EXPLORER OVER LOOPBACK FIRST.
+#
+# This box IS the explorer. Reaching it by its public name sends the request out
+# through DNS, Cloudflare, the rate limiter and TLS and back to 127.0.0.1 --
+# four things that can fail while the index is perfectly healthy, and on
+# 2026-09-18 three of them did.
+#
+# The public name stays as a FALLBACK so a host with no local explorer, or one
+# on a different port, still works. PCOIN_EXPLORER overrides both.
+EXPLORERS = [e for e in (os.environ.get("PCOIN_EXPLORER", ""),
+                         "http://127.0.0.1:8080",
+                         "https://explorer.pc.am") if e]
 RESERVE = os.environ.get("WRAP_RESERVE", "pc1q7hhzmdkkx0zjtzj6qkwmuvhlgwfqjrc6j2dk52")
 
 
@@ -165,6 +176,19 @@ def get(url, timeout=25):
             return json.load(r)
     except Exception:
         return None
+
+
+def explorer_get(path, timeout=25):
+    """GET <explorer><path>, trying each base in EXPLORERS -- loopback first.
+
+    None means every base failed, which is UNKNOWN. It is emphatically not
+    "no deposits": the caller keeps every existing task open on a None.
+    """
+    for base in EXPLORERS:
+        d = get(f"{base}{path}", timeout=timeout)
+        if d is not None:
+            return d
+    return None
 
 
 def load_state():
@@ -344,14 +368,15 @@ def main() -> int:
     # --released resolves an abbreviated txid against.
     st["outstanding"] = {}
     for watch_addr, requester in watch.items():
-        addr = get(f"{EXPLORER}/api/address/{watch_addr}")
+        addr = explorer_get(f"/api/address/{watch_addr}")
         who = (f"\nRequester BSC address: {requester}" if requester
                else "\n(sent to the main reserve address directly)")
         if addr is None:
             # Cannot read this address. That is not "no wraps pending" -- say so
             # and keep every existing task open.
             tasks.append((f"unreadable:{watch_addr}", "warn",
-                          f"Could not read {watch_addr} on explorer.pc.am. "
+                          f"Could not read {watch_addr} on any explorer "
+                          f"({', '.join(EXPLORERS)}). "
                           f"Wrap deposits there cannot be checked right now. "
                           f"This is UNKNOWN, not 'nothing pending'.{who}"))
             continue
@@ -705,6 +730,46 @@ if __name__ == "__main__":
         if len(sys.argv) <= 3:
             print("NOTE: no PCoin txid recorded. Re-run with it so the refund stays "
                   "checkable against the chain later.")
+        sys.exit(0)
+
+
+    # --not-a-deposit closes out money that arrived at a watched address without
+    # anybody having deposited it.
+    #
+    # The desk reads RECEIVE history, so ANY credit to the reserve looks like a
+    # customer. On 2026-09-18 the surplus withdrawal returned its change to the
+    # main reserve address on purpose -- the proof page sums that address, so
+    # change sent to a derived one would have read as a 42,836 PCN shortfall --
+    # and the watcher then reported that change as a wrap deposit "arrived after
+    # the desk closed", to be refunded to a depositor who does not exist.
+    #
+    # Deliberately NOT --refunded. It has the same effect on the ledger, and
+    # using it would have been quicker, but it would leave a permanent record
+    # saying money was paid back that was never paid back. The state file is the
+    # only account of what happened here; a wrong reason in it is worse than a
+    # missing flag, because the next person reads it as fact.
+    if len(sys.argv) >= 3 and sys.argv[1] == "--not-a-deposit":
+        s_ = load_state()
+        txid = sys.argv[2]
+        if txid.startswith("wrap:"):
+            txid = txid[5:]
+        if ":" not in txid:
+            print(f"REFUSED: {txid!r} has no address part. Use <txid>:<address>, "
+                  f"copied from the alert.")
+            sys.exit(2)
+        key = f"wrap:{txid}"
+        s_.setdefault("seen", {}).setdefault(key, {})
+        # `refunded` is what the allocation maths and the report filter read, so
+        # it is set for the effect; `not_a_deposit` and `reason` record the truth
+        # alongside it, so the state never claims a refund that did not happen.
+        s_["seen"][key]["refunded"] = True
+        s_["seen"][key]["not_a_deposit"] = True
+        s_["seen"][key]["reason"] = (sys.argv[3] if len(sys.argv) > 3
+                                     else "our own change, not a customer deposit")
+        s_["seen"][key]["at"] = int(time.time())
+        save_state(s_)
+        print(f"marked not-a-deposit: {key}")
+        print(f"  reason: {s_['seen'][key]['reason']}")
         sys.exit(0)
 
 
