@@ -218,7 +218,9 @@ export function vaultPage() {
           + 'leaves the reserve a hair under 1:1 and the public proof page stops saying '
           + '&ldquo;fully backed&rdquo;.',
       text: cmd('vault-sweep.mjs --system wpcn-reserve --to pc1qYOURADDRESS \\\n'
-              + '  --amount <SURPLUS> --i-know-the-reserve-backs-wpcn'),
+              + '  --amount <SURPLUS> --i-know-the-reserve-backs-wpcn \
+'
+              + '  --change-to pc1q7hhzmdkkx0zjtzj6qkwmuvhlgwfqjrc6j2dk52'),
       after: note('Add <code>--send</code> to broadcast. Never <code>--all</code> on this '
                 + 'wallet: it would unback every wPCN in circulation.'),
     }),
