@@ -59,7 +59,27 @@ def connect(path, *, readonly=False, bulk=False):
             conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA temp_store=MEMORY")
-    conn.execute("PRAGMA cache_size=-65536")  # 64 MiB page cache
+    # PAGE CACHE IS PER CONNECTION, AND THE EXPLORER OPENS ONE PER THREAD.
+    #
+    # 64 MiB is right for the indexer: one long-lived writer, and the cache is
+    # what keeps a reindex from re-reading the same pages thousands of times.
+    # It is ruinous for the explorer, which is a ThreadingHTTPServer -- a thread
+    # per connection, a read-only SQLite connection per thread, and therefore
+    # 64 MiB requested PER CONCURRENT REQUEST. At the 320-connection ceiling
+    # that is 20 GB on a 7.7 GB box.
+    #
+    # This is not theoretical. On 2026-09-18 the explorer wedged three times;
+    # a SIGUSR1 thread dump taken during the third showed 98 of 100 threads
+    # stopped inside this function, 46 of them on this exact line. Threads block
+    # allocating, the accept queue fills behind them, and Caddy returns 502
+    # while systemd still reports the unit active. Raising the connection
+    # ceiling 128 -> 320 earlier that day made it arrive sooner, not later.
+    #
+    # Readers get 2 MiB. The index is ~180 MB and queries are point lookups
+    # against covering indexes, so the cache buys little per reader and the
+    # operating system's own page cache still holds the hot pages once, for
+    # everybody, instead of once per thread.
+    conn.execute("PRAGMA cache_size=%d" % (-65536 if not readonly else -2048))
     return conn
 
 
