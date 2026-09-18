@@ -60,7 +60,6 @@ const RATE_SAMPLES       = 3;      // judge the ceiling on the WORST public rate
 const PUBLIC_RATE_URL    = 'https://price.pc.am/price';
 const STATE              = '/opt/pcoin-price/state.json';
 const HISTORY            = '/opt/pcoin-market/cap-history.json';
-const GATE_PCT           = 20;     // maxDivergencePct -- what closes the market
 
 const apply     = process.argv.includes('--apply');
 const forceDrop = process.argv.includes('--force-drop');
@@ -133,6 +132,53 @@ cap = Math.max(cap, floor);              // askCap() in ladder.mjs clamps the sa
 
 const divOf = p => (p - rate) / rate * 100;
 
+/** How much further can the pool fall before the sale gate shuts on everybody?
+ *
+ *  Called on EVERY run, including the "no material change" one, because the
+ *  whole point of the number is to say how urgent the NEXT run is -- and the
+ *  quiet runs are exactly the ones where nobody is looking otherwise.
+ *
+ *  Both inputs are read live and neither is assumed:
+ *    * what a customer is actually charged is `marginalPrice` from the curve.
+ *      NOT the ask cap -- that has been inert for pricing since 077fa32, and
+ *      computing headroom from it described a price nobody pays.
+ *    * the gate is `maxDivergencePct`, a SETTING. It was hardcoded as 20 here
+ *      until 2026-09-14, by which time the real value was 1000.
+ *
+ *  Swallows everything. An informational line must never be able to stop a cap
+ *  from being written, and "I could not read it" is printed rather than hidden.
+ */
+async function printHeadroom() {
+  let live;
+  try {
+    const res = await fetch('http://127.0.0.1:8789/api/ladder/state',
+                            { signal: AbortSignal.timeout(15000) });
+    live = await res.json();
+  } catch (e) {
+    console.log('  headroom               UNKNOWN -- could not read market.pc.am (' +
+                e.message + '). Not guessing.');
+    return;
+  }
+  const gate    = Number(S.get('maxDivergencePct'));
+  const charged = Number(live && live.marginalPrice);
+  if (!isFinite(gate) || gate <= 0 || !isFinite(charged) || charged <= 0) {
+    console.log('  headroom               UNKNOWN -- need a live marginalPrice and ' +
+                'maxDivergencePct, and at least one did not read as a positive number.');
+    return;
+  }
+  const div   = divOf(charged);
+  const slack = 1 - (1 + div / 100) / (1 + gate / 100);
+  console.log('  charged (curve)        $' + f(charged) +
+              '   -> divergence ' + div.toFixed(2) + '%   (gate ' + gate + '%)');
+  if (slack <= 0) {
+    console.log('  headroom               NONE -- divergence is already at or past the gate, ' +
+                'so the market is refusing every sale right now.');
+  } else {
+    console.log('  headroom               the pool may fall a further ' + (slack * 100).toFixed(1) +
+                '% before the ' + gate + '% gate closes the market');
+  }
+}
+
 console.log('\n  ladder ask cap  --  ' + new Date(now).toISOString());
 console.log('  ' + '-'.repeat(68));
 console.log('  pool spot              $' + f(st.poolPrice));
@@ -164,13 +210,22 @@ console.log('  cap proposed           $' + f(cap) + '   -> divergence ' + divOf(
 // urgent is this" must not round towards comfortable.
 //
 // Derivation, from the relation stated at the top of this file:
-//   divergence = (ladderPrice - serviceRate) / serviceRate
-//   the gate closes when divergence >= GATE, i.e. serviceRate <= cap/(1+GATE)
+//   divergence = (price charged - serviceRate) / serviceRate
+//   the gate closes when divergence >= GATE, i.e. serviceRate <= price/(1+GATE)
 //   so the tolerated fall from today's serviceRate is
-//       1 - (cap/(1+GATE)) / serviceRate  =  1 - (1 + div) / (1 + GATE)
-const slack = 1 - (1 + divOf(cap) / 100) / (1 + GATE_PCT / 100);
-console.log('  headroom               the pool may fall a further ' + (slack * 100).toFixed(1) +
-            '% before the ' + GATE_PCT + '% gate closes the market');
+//       1 - (price/(1+GATE)) / serviceRate  =  1 - (1 + div) / (1 + GATE)
+//
+// PRINTED AT THE END, NOT HERE. Two of its three inputs are not known at this
+// point in the run: the price a customer actually pays is `marginalPrice` off
+// the live curve, not the cap this script computes -- the cap has been inert for
+// pricing since 077fa32 -- and the gate is a SETTING, not a constant. Both are
+// read in the verification block below, where a failure to read them prints
+// "unknown" instead of a number.
+//
+// The version that stood here until 2026-09-14 used `divOf(cap)` and a hardcoded
+// GATE_PCT = 20, and by then the cap was inert and the real gate was 1000. It
+// was not slightly off; it was about a different price and a different
+// threshold, and it still read as an urgent, precise percentage.
 // A wPCN figure belongs here too -- a percentage is not a decision, and what
 // actually closes the market is somebody SELLING. It is NOT printed because
 // this file does not hold the pool reserves, and the first version of this fix
@@ -188,6 +243,9 @@ if (cap < D.min || cap > D.max) {
 }
 
 if (current > 0 && Math.abs(movePct) < 0.05) {
+  // Still say how close the gate is. A run that changes nothing is not a run
+  // with nothing to report -- the pool moves whether or not the cap does.
+  await printHeadroom();
   console.log('\n  No material change. Nothing written.');
   await pool.end();
   process.exit(0);
@@ -273,6 +331,9 @@ try {
   console.log('  live askCapUsd         $' + f(live.askCapUsd) + '  ' + (ok ? 'MATCHES' : '*** DOES NOT MATCH ***'));
   console.log('  live marginalPrice     $' + f(live.marginalPrice) +
               '   (uncapped rung $' + f(live.rungMarginalPrice) + ')');
+
+
+  await printHeadroom();
   await pool.end();
   process.exit(ok ? 0 : 3);
 } catch (e) {
