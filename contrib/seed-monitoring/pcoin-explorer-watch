@@ -80,9 +80,30 @@ for base in $ENDPOINTS; do
 		-H 'User-Agent: pcoin-explorer-watch' "$base/api/status" 2>/dev/null)
 	rc=$?
 
+	# THE HTML PAGE, WHICH IS WHAT PEOPLE ACTUALLY OPEN.
+	#
+	# /api/status is cheap and answers from a different code path. On
+	# 2026-09-18 it returned 200 for hours while a third of page loads
+	# returned 500, so every monitor reported healthy while the explorer was
+	# visibly broken to users. Probed TWICE because that fault was
+	# intermittent: one 200 from a page failing a third of the time proves
+	# nothing, and a check satisfiable by luck is barely a check.
+	html_bad=""
+	if [ "$rc" -eq 0 ] && [ "$code" = "200" ]; then
+		h1=$(curl -s -o /dev/null -w '%{http_code}' --max-time "$TIMEOUT" \
+			-H 'User-Agent: pcoin-explorer-watch' "$base/" 2>/dev/null)
+		h2=$(curl -s -o /dev/null -w '%{http_code}' --max-time "$TIMEOUT" \
+			-H 'User-Agent: pcoin-explorer-watch' "$base/blocks" 2>/dev/null)
+		if [ "$h1" != "200" ] || [ "$h2" != "200" ]; then
+			html_bad="the API is fine but the pages people load are not: / -> $h1, /blocks -> $h2"
+		fi
+	fi
+
 	verdict=""
 	height=""
-	if [ "$rc" -ne 0 ]; then
+	if [ -n "$html_bad" ]; then
+		verdict="$html_bad"
+	elif [ "$rc" -ne 0 ]; then
 		# 6 DNS, 7 connect refused, 28 timeout, 35/60 TLS. All of these are the
 		# server's problem from a client's point of view, which is the only
 		# point of view that matters here.
