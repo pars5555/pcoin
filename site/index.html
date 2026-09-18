@@ -795,6 +795,13 @@ stats    not answering today &mdash; the stratum works, the web stats do not</co
           <code>stopmining</code> stops it, and <code>startmining "&lt;your address&gt;" 4</code> puts
           you back on solo.
         </p>
+        <p style="margin:10px 0 0">
+          <b>There are two pools, on two different servers.</b> <code>pool.pc.am:3333</code> is the
+          primary; <code>pool2.pc.am:3333</code> runs the same software with the same 2% fee and the
+          same PPLNS payout, on another machine. If one is unreachable, use the other; a miner that
+          supports a failover pool should list both. Each pool keeps its own share ledger, so shares
+          you send to one are paid by that one.
+        </p>
         <div class="honest-box" style="max-width:100%;margin-top:14px">
           <b>That command does not survive a restart. Set it in the config too.</b>
           <p style="margin:10px 0 0">

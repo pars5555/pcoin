@@ -102,6 +102,29 @@ wallet; the absence of one is the security model.
 
 ---
 
+## The two pools we run
+
+| name | host | since |
+|---|---|---|
+| `pool.pc.am:3333` | 178.105.178.27 | 2026-08-13 |
+| `pool2.pc.am:3333` | 152.53.171.190 | 2026-09-19 |
+
+Same software, same 2% fee, same PPLNS window, same payout address; each has
+its own share ledger and its own watchers. pool2 exists because one box held
+~61% of the network's hashrate: a pool is stateful, so it is NOT put behind one
+round-robin name (that would scatter a miner's shares across two ledgers and
+PPLNS pays from whichever pool finds the block). The intended shape is
+FAILOVER: `pool.pc.am` points at the primary, a health-checked DNS record moves
+it to pool2 when the primary is unhealthy, and every shipped miner re-resolves
+the name on reconnect (`src/node/poolclient.cpp`), so nobody needs an update.
+Shares already on the failed pool are paid by it when it returns.
+
+pool2 runs on Node 22 installed privately under `/opt/node22` (store.mjs needs
+`node:sqlite`, the system node there is 20), talks to that box's wallet-less
+node through its own `pool` rpcauth identity, and publishes stats at
+`https://pool2.pc.am/` on a Let's Encrypt cert (the name is DNS-only, so the
+Cloudflare origin cert the other vhosts use would not be trusted).
+
 ## Tell people it exists
 
 A pool nobody knows about does not reduce concentration. Once yours is running:

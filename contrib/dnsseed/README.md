@@ -76,7 +76,17 @@ The zone must be delegated to this box. In Cloudflare, on `pc.am`:
 | Type | Name | Content | Proxy |
 |---|---|---|---|
 | `A` | `ns1` | `152.53.171.190` | **DNS only** |
+| `A` | `ns2` | `167.233.113.189` | **DNS only** |
 | `NS` | `dnsseed` | `ns1.pc.am` | n/a |
+| `NS` | `dnsseed` | `ns2.pc.am` | n/a |
+
+**Two seeders since 2026-09-19.** `ns1` is 152.53.171.190, `ns2` is
+167.233.113.189 (a different provider box), each a full crawler with its own
+state and both listed in the other's `ns`. Resolvers try the second NS when the
+first does not answer, so losing one box no longer takes the zone down. `ns2`
+binds its public address rather than `0.0.0.0`, because systemd-resolved on
+that box holds `127.0.0.53:53`. Port 53 on 178.105.3.51 is taken by another
+project's DNS, which is why the second one is not there.
 
 `ns1` **must not be proxied** — Cloudflare's proxy carries HTTP only, and this
 is DNS on port 53.
