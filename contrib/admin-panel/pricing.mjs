@@ -31,16 +31,27 @@
 //
 // The rungs still exist and still record inventory. They no longer set price.
 import { esc, num, N, USD, PCT, card, note, kv, tbl, tiles, failed, DASH } from './ui.mjs';
+import { upstreamCreds } from './services.mjs';
+
+// The market's read-only token. /api/ladder/state serves the pricing-policy
+// fields only to our own callers now; an anonymous caller gets the public
+// subset. Without this the page would quietly render dashes for soldPcn and
+// retiredPcn rather than say anything was wrong, which is the failure mode this
+// panel exists to avoid.
+const mktAuth = () => {
+  const t = upstreamCreds()?.market?.readToken;
+  return t ? { Authorization: 'Bearer ' + t } : {};
+};
 
 const TTL_MS = 60_000;
 const cache = new Map();
 
-async function get(url) {
+async function get(url, headers = {}) {
   const hit = cache.get(url);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.val;
   let val;
   try {
-    const r = await fetch(url, { signal: AbortSignal.timeout(12000) });
+    const r = await fetch(url, { headers, signal: AbortSignal.timeout(12000) });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     val = { ok: true, data: await r.json() };
   } catch (e) {
@@ -53,7 +64,11 @@ async function get(url) {
 export async function pricingData() {
   const [price, state, gate] = await Promise.all([
     get('https://price.pc.am/'),
-    get('https://market.pc.am/api/ladder/state'),
+    // soldPcn and retiredPcn are no longer served to anonymous callers --
+    // /api/ladder/state now gives the public only what the public page needs,
+    // because the policy fields let anyone compute how much buying trips the
+    // sale gate. The read token gets us the full view.
+    get('https://market.pc.am/api/ladder/state', mktAuth()),
     get('https://market.pc.am/api/ladder/gate'),
   ]);
   // Quote a few real sizes, so the page SHOWS that size changes the price

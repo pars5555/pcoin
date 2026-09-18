@@ -102,7 +102,11 @@ export async function detailFor(slug, BASE) {
 async function renderMarket(c) {
   const [sum, state, gate] = await Promise.all([
     upstreamGet('https://market.pc.am/api/ops/summary', B(c.market?.readToken)),
-    upstreamGet('https://market.pc.am/api/ladder/state'),
+    // With the read token: /api/ladder/state serves the policy fields
+    // (askCapUsd, rungMarginalPrice, soldPcn, reservedPcn...) only to our own
+    // callers now. Anonymous callers get the public subset, because those
+    // fields let anyone compute how much buying trips the sale gate.
+    upstreamGet('https://market.pc.am/api/ladder/state', B(c.market?.readToken)),
     upstreamGet('https://market.pc.am/api/ladder/gate'),
   ]);
   if (!sum.ok) return { status: 'unreadable', body: failed('market.pc.am', sum.error) };

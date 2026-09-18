@@ -1309,7 +1309,20 @@ createServer(async (req, res) => {
           sellableNowPcn = Number.isFinite(rem) ? Math.min(rem, deliverablePcn) : deliverablePcn;
         }
       } catch { /* unreadable backing stays unknown, never a number */ }
-      return json(res, 200, {
+      // PUBLIC vs INTERNAL. See the header of ladder_trim_patch.py: the page
+      // needs price, stock and limits, and nothing else. The policy fields
+      // (askCapUsd, rungMarginalPrice) let anyone compute how much buying trips
+      // the sale gate, which closes the market to everybody.
+      //
+      // X-Forwarded-For, not remoteAddress: Caddy proxies to 127.0.0.1 so every
+      // request looks like loopback. Caddy always sets XFF and a public caller
+      // cannot strip it, so its ABSENCE means one of our own processes on this
+      // box. A Bearer read token grants the same, for the admin on another host.
+      const viaProxy = !!req.headers['x-forwarded-for'];
+      const tokMatch = (req.headers.authorization || '').match(/^Bearer\s+(.+)$/i);
+      const internal = !viaProxy || (cfg.readToken && tokMatch && tokMatch[1] === cfg.readToken);
+
+      const full = {
         ...ladSt,
         deliverablePcn,
         sellableNowPcn,
@@ -1335,7 +1348,19 @@ createServer(async (req, res) => {
         maxOrderPcn: capPcn,
         maxOrderUsdNow: capUsd,
         autoMaxUsd: S.get('autoMaxUsd'),
-      });
+      };
+
+      // Everything the PUBLIC may see. Anything not on this list is ours.
+      const PUBLIC_FIELDS = [
+        'at', 'marginalPrice', 'floorPrice', 'topPrice', 'rungCount', 'stepPct',
+        'totalPcn', 'pctSold', 'remainingPcn', 'ladderRemainingPcn', 'sellableNowPcn',
+        'buybackOpen', 'minOrderUsd', 'maxOrderUsd', 'maxOrderPcn', 'maxOrderUsdNow',
+        'autoMaxUsd',
+      ];
+      if (internal) return json(res, 200, full);
+      const pub = {};
+      for (const k of PUBLIC_FIELDS) if (k in full) pub[k] = full[k];
+      return json(res, 200, pub);
     }
 
     // Whether selling is currently open, and why not if it is not. Public so

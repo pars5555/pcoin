@@ -66,6 +66,11 @@ const mins = ms => Math.round(ms / 60000);
 // ── 1. is the market reachable from the PUBLIC internet? ────────────────────
 // Deliberately the public URL and not 127.0.0.1. Those are different claims and
 // only one of them is the one a customer makes.
+// Switched to loopback on 2026-09-19 and switched straight back the same day.
+// The loopback-for-local-callers rule is about not spending the PUBLIC rate
+// limit on our own reads. A MONITOR is the exception: the public path IS the
+// claim it makes, so probing 127.0.0.1 here would report healthy right through
+// a Caddy or Cloudflare outage -- the only outage this check exists to catch.
 let reachable = null;   // null = could not tell, which is NOT the same as down
 try {
   const r = await fetch('https://market.pc.am/api/ladder/state', { signal: AbortSignal.timeout(20000) });

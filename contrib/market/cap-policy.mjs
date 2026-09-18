@@ -254,9 +254,20 @@ try {
 // ALL. A write that looks fine and leaves the ladder uncapped is the worst
 // outcome available here, so the write is not finished until the live service
 // has been asked what it is actually selling at.
+// Read over LOOPBACK, and here that is REQUIRED, not a preference. Since the
+// public/internal split, /api/ladder/state serves anonymous callers a subset that
+// does NOT include askCapUsd -- so fetching the public URL would read undefined,
+// compare NaN against the cap, and report *** DOES NOT MATCH *** on a write that
+// was perfectly fine. The absence of X-Forwarded-For on a loopback request is what
+// marks this as one of our own processes and returns the full object.
+//
+// This is the OPPOSITE call from pcoin-market-watch.mjs next door, and deliberately
+// so: that one asks "can a customer reach us", which only the public URL answers.
+// This one asks "did my own write survive a reload", which only the local socket
+// answers. Same endpoint, two different questions.
 await new Promise(r => setTimeout(r, 35000));       // the server reloads every 30s
 try {
-  const res = await fetch('https://market.pc.am/api/ladder/state', { signal: AbortSignal.timeout(20000) });
+  const res = await fetch('http://127.0.0.1:8789/api/ladder/state', { signal: AbortSignal.timeout(20000) });
   const live = await res.json();
   const ok = Math.abs(Number(live.askCapUsd) - cap) < 1e-9;
   console.log('  live askCapUsd         $' + f(live.askCapUsd) + '  ' + (ok ? 'MATCHES' : '*** DOES NOT MATCH ***'));
@@ -265,7 +276,7 @@ try {
   await pool.end();
   process.exit(ok ? 0 : 3);
 } catch (e) {
-  console.log('  COULD NOT VERIFY against market.pc.am (' + e.message + ') -- check askCapUsd by hand.');
+  console.log('  COULD NOT VERIFY against the live service (' + e.message + ') -- check askCapUsd by hand.');
   await pool.end();
   process.exit(4);
 }
