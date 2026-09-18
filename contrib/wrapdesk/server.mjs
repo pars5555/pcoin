@@ -544,10 +544,13 @@ price.pc.am, and the <b>liquidity is not locked</b> — the project holds the LP
 tokens. Only send what you can afford to lose.</p></div>`;
 
 // ── pages ───────────────────────────────────────────────────────────────────
-const home = (msg = '', acct = null, leftPcn = null) => page('PCoin wrap desk — turn PCN into wPCN', '/', `
+const home = (msg = '', acct = null, leftPcn = null) => page('PCoin wrap desk — wPCN and PCN, both directions', '/', `
 ${intakeClosed() !== null ? `<div class="card" style="border-left:4px solid #e5484d">
-<h1 style="margin-top:0">The wrap desk is closed</h1>
-<p class="lead">New wrap requests are not being accepted. This is temporary.</p>
+<h1 style="margin-top:0">Wrapping is closed &mdash; redeeming still works</h1>
+<p class="lead"><b>PCN &rarr; wPCN is closed.</b> New wrap requests are not being
+accepted. This is temporary.<br>
+<b>wPCN &rarr; PCN is open as normal</b> &mdash;
+<a href="/redeem">redeem your wPCN here</a> and the PCN is sent to you.</p>
 <p><b>Nothing you are already owed is affected.</b> Every wrap that reached 100
 confirmations has been paid, and anything still confirming will be paid the same
 way.</p>
@@ -555,8 +558,7 @@ way.</p>
 are no longer wrapped. PCN that arrives at one now is <b>returned, not
 converted</b> &mdash; by a person, which takes time. This applies even though the
 address still belongs to you and still works on the chain.</p>
-<p><b>Going the other way still works.</b> wPCN &rarr; PCN is open as normal:
-<a href="/redeem">redeem your wPCN</a> and the PCN is sent to you.</p>
+
 <p>You can still buy and sell wPCN on PancakeSwap (wPCN/USDT), and buy PCN
 directly at <a href="https://market.pc.am">market.pc.am</a>.</p>
 </div>` : ''}
@@ -1172,7 +1174,7 @@ createServer(async (req, res) => {
       // FIRST, before anything is parsed or validated. A closed desk must not
       // reach the allocation, the account cap or the state file at all.
       if (intakeClosed() !== null) {
-        return send(503, home(`<p class="err"><b>The wrap desk is closed.</b>
+        return send(503, home(`<p class="err"><b>Wrapping is closed &mdash; but <a href="/redeem">redeeming wPCN &rarr; PCN still works</a>.</b>
           New wrap requests are not being accepted. Nothing you are already owed
           is affected &mdash; every wrap that reached 100 confirmations has been
           paid and anything still confirming will be.<br><br>
