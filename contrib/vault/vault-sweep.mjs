@@ -598,9 +598,39 @@ if (!system || !to || (!amountArg && !sendAll)) {
   process.exit(2);
 }
 
-if (system === 'exchange') {
-  die('the `exchange` wallet holds CUSTOMERS\' deposits and its solvency check counts them.\n'
-    + '           Moving coins out of it halts trading. This tool will not do it.');
+if (system === 'exchange' && !has('--i-pay-pcn-withdrawals-by-hand')) {
+  // THE OLD REASON HERE WAS OUT OF DATE, and a wrong reason is worse than none:
+  // it said moving these coins "halts trading". It does not. The exchange's
+  // reconcile compares DEPOSITS RECEIVED against DEPOSITS RECORDED and
+  // deliberately does NOT compare the wallet balance against what is owed --
+  // owner's decision, 2026-09-16, written at pcn-deposits.mjs:339. onchain and
+  // pcnOwed sit side by side there for information only.
+  //
+  // The real reasons to stop and think are these two.
+  die('the `exchange` wallet holds CUSTOMERS\' PCN deposits.\n'
+    + '\n'
+    + '           1. WHAT YOU STILL OWE DOES NOT MOVE WITH THE COINS. Customers are\n'
+    + '              owed PCN on the exchange ledger. Emptying the wallet does not\n'
+    + '              cancel that; it means every PCN withdrawal is paid by hand from\n'
+    + '              your own wallet, exactly like the USDT side. Check what is owed\n'
+    + '              first -- the admin shows it as "PCN owed to users".\n'
+    + '\n'
+    + '           2. CHANGE MUST NOT LAND BACK IN THIS WALLET. Its addresses are\n'
+    + '              WATCHED. A change output on a customer\'s deposit address is\n'
+    + '              CREDITED TO THAT CUSTOMER (pcn-deposits.mjs:211) -- you would be\n'
+    + '              giving away your own coins. On an unassigned address it is held\n'
+    + '              for review instead. Use --all, which leaves no change at all, or\n'
+    + '              --change-to an address OUTSIDE this wallet.\n'
+    + '\n'
+    + '           It does NOT halt trading -- that was this message\'s old claim and it\n'
+    + '           is wrong; see the comment above this check.\n'
+    + '\n'
+    + '           Re-run with --i-pay-pcn-withdrawals-by-hand if that is what you mean.');
+}
+if (system === 'exchange' && !sendAll && !changeToArg) {
+  die('sweeping `exchange` without --all needs --change-to.\n'
+    + '           Change would otherwise return to an address this exchange WATCHES,\n'
+    + '           and a customer would be credited with your coins.');
 }
 if (system === 'wpcn-reserve' && !has('--i-know-the-reserve-backs-wpcn')) {
   die('`wpcn-reserve` backs every wPCN in circulation 1:1.\n'
