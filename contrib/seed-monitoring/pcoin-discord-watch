@@ -241,7 +241,10 @@ MOD_TTL = 3600
 
 
 # Words that make a link a MINING link rather than an advert.
-POOL_WORDS = re.compile(r"(?i)\b(pool|stratum|mining|miner|hashrate|hash rate|randompcn|worker|rig|solo)\b")
+# Miner SOFTWARE names count too. SRBMiner-Multi and XMRig forks are how
+# people actually mine this chain, so a link naming one is a mining link even
+# when the poster wrote no sentence around it.
+POOL_WORDS = re.compile(r"(?i)\b(pool|stratum|mining|miner|hashrate|hash rate|randompcn|worker|rig|solo|xmrig|srbminer|hiveos|cpuminer|randomx)\b")
 # Words that make a "PCoin" link dangerous no matter how it is dressed up. A
 # drainer site calls itself pcoin-something; a pool does not need any of these.
 SCAM_WORDS = re.compile(r"(?i)\b(airdrop|claim|giveaway|free (coins?|tokens?|pcn)|bonus|double|presale|"
@@ -251,12 +254,50 @@ SCAM_WORDS = re.compile(r"(?i)\b(airdrop|claim|giveaway|free (coins?|tokens?|pcn
 POOLISH = re.compile(r"(?i)(:\d{2,5}\b)|(\bpcoin\b)|(\bpcn\b)|(\bpool\b)")
 
 
+# A bare host:port, ported from pcoin-group-watch. Telegram learned on
+# 2026-09-17 (message 220) that requiring a pool WORD deletes a real pool
+# share when the whole message is the endpoint. Discord never got that fix,
+# so the same message was treated differently depending on where it landed.
+HOSTPORT = re.compile(r"(?i)^(?:https?://)?[a-z0-9.\-]+:(\d{2,5})(?:[/?#]|$)")
+
+
+def is_hostport(url):
+    m = HOSTPORT.match((url or "").strip())
+    if not m:
+        return False
+    try:
+        port = int(m.group(1))
+    except ValueError:
+        return False
+    return 1024 <= port <= 65535
+
+
 def is_pool_link(text, url):
     """True when this looks like somebody sharing a PCoin pool or mining setup,
     and nothing about it looks like a scam. Used to REPORT instead of delete."""
     if SCAM_WORDS.search(text or "") or SCAM_WORDS.search(url or ""):
         return False
-    return bool(POOL_WORDS.search(text or "")) and bool(POOLISH.search(url or ""))
+    # THE URL COUNTS AS WORDS, not only the sentence around it.
+    #
+    # Rabid Mining posted gitlab.com/rabidmining/xmrig-rabid-pcoin on BOTH
+    # platforms. On Telegram he wrote "here is the miner I was using" and it was
+    # correctly kept for a human to judge. On Discord he posted the bare URL,
+    # the sentence had no mining word in it, and the identical link from the
+    # identical person was DELETED -- twice. He noticed: "posted it before but
+    # think the server auto deleted it".
+    #
+    # Splitting the URL on / and - turns "xmrig-rabid-pcoin" into words, so a
+    # link that NAMES a miner counts as one whether or not the poster described
+    # it. Deleting a contributor's own work because he was terse is the false
+    # positive this filter can least afford.
+    hay = "%s %s" % (text or "", (url or "").replace("/", " ").replace("-", " "))
+    if POOL_WORDS.search(hay) and POOLISH.search(url or ""):
+        return True
+    # We pay 500 PCN for somebody standing up an independent pool, so a
+    # stratum-shaped endpoint is REPORTED, never removed. Being wrong this
+    # way costs the owner one manual delete; being wrong the other way costs
+    # a contributor who believes we censored them.
+    return is_hostport(url)
 
 
 def link_allowed(url, guild=""):
