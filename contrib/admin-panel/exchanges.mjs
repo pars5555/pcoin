@@ -25,6 +25,43 @@ const STATE_COLOUR = {
   dormant: 'muted', 'invited us': 'green', listed: 'green',
 };
 
+const CH_COLOUR = {
+  'listed': 'green', 'already lists us': 'green',
+  'in their verification queue': 'yellow', 'unanswered': 'yellow',
+  'not applied': 'yellow', 'rejected': 'red',
+};
+const chColour = (st) => CH_COLOUR[st] || (String(st).startsWith('running') ? 'green'
+  : String(st).startsWith('active') ? 'green' : 'muted');
+
+/** Everywhere PCoin is represented that is NOT an exchange desk: the trackers we
+ *  have not applied to, the one subreddit that tolerates us, the server
+ *  directories, and the independent pool somebody else runs.
+ *
+ *  Separate from the venues above because they are a different question with
+ *  different answers -- and because mixing a Discord directory into a page built
+ *  around verbatim listing-desk quotes would blur the one rule that page keeps. */
+function channelsCard(channels) {
+  if (!Array.isArray(channels) || !channels.length) return '';
+  const byKind = {};
+  for (const c of channels) (byKind[c.kind] = byKind[c.kind] || []).push(c);
+  const KIND_ORDER = ['tracker', 'community', 'directory', 'independent operator', 'software'];
+  const kinds = [...KIND_ORDER.filter(k => byKind[k]), ...Object.keys(byKind).filter(k => !KIND_ORDER.includes(k))];
+
+  return card('Where else PCoin stands',
+    '<p class="muted">Everything that is not an exchange desk. Every status here is copied '
+    + 'from a record rather than recalled &mdash; where the truth is &ldquo;nobody '
+    + 'replied&rdquo;, it says so.</p>'
+    + kinds.map((k) => `<h3 style="margin:18px 0 6px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">${esc(k)}</h3>`
+      + tbl(['', 'State', 'Where it stands', 'What is next', 'Blocker'],
+        byKind[k].map((c) => [
+          `<b>${esc(c.name)}</b>`,
+          `<span class="${chColour(c.state)}">${esc(c.state)}</span>`,
+          esc(c.summary || ''),
+          esc(c.next || ''),
+          `<span class="muted">${esc(c.blocker || '')}</span>`,
+        ]))).join(''));
+}
+
 export function exchangesPage(data) {
   if (!data || !Array.isArray(data.venues)) {
     return '<h1>Exchange listings</h1>' + card('No record',
@@ -100,7 +137,7 @@ export function exchangesPage(data) {
     + 'though NonKYC had given them as their reasons. Going back to the actual messages: '
     + 'they never said any of it. The only thing NonKYC ever objected to was being asked '
     + 'for a discount, and the block came with no reason at all. Work done against the '
-    + 'invented reasons was still worth doing; believing they came from NonKYC was not.</p>'
+    + 'invented reasons was still worth doing + channelsCard(data.channels); believing they came from NonKYC was not.</p>'
     + '</div>'
     + card('Every venue', overview)
     + detail
