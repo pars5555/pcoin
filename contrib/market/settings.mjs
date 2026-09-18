@@ -135,6 +135,14 @@ export const DEFS = {
           'read your wallet: you know what you can deliver, it does not. Watching addresses ' +
           'looks smarter and is not — every spend you make sends change to a NEW address the ' +
           'server has never heard of, and the figure silently collapses. That happened twice.' },
+  backingFloatOnly:    { type: 'bool', def: false,
+    label: 'Back sales with the HOT WALLET only',
+    help: 'On, the market may promise exactly what is in the hot wallet right now -- read live ' +
+          'from the wallet that actually sends the coins, so it falls with every sale and rises ' +
+          'when you top it up. No address list, no cap to re-type, nothing to go stale. This is ' +
+          'the setting for "we sell what is in the till and no more". It overrides both the ' +
+          'deliverable cap and the backing addresses. If the wallet cannot be read, sales STOP ' +
+          'rather than continue against a guess.' },
   backingAddresses:    { type: 'list', def: '', max: 200,
     label: 'Backing addresses',
     help: 'One PCN address per line. Their combined balance, plus the hot wallet, is what the ' +

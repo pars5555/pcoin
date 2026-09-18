@@ -670,6 +670,29 @@ export function makeBacking({ pool, explorerUrl, ownerAddress, settings = null,
   }
 
   async function ownerSpendable() {
+    // FLOAT-ONLY: the hot wallet IS the backing, read live.
+    //
+    // Checked FIRST, before the cap, because it is the only figure here that
+    // cannot go stale -- it comes from the wallet that actually sends the
+    // coins, so it falls with every delivery and rises when the wallet is
+    // topped up. "We sell what is in the till and no more", kept true by
+    // construction rather than by somebody remembering to re-type a number.
+    //
+    // The float is REQUIRED in this mode, not additive. An unreadable wallet is
+    // UNKNOWN and stops sales: it must never read as a backing of zero, which
+    // renders as "sold out", and must never fall through to the cap or to an
+    // address list that describes different coins.
+    if (settings && settings.get('backingFloatOnly')) {
+      if (!floatBalance) throw new Error('backingFloatOnly is on but there is no hot wallet reader');
+      const fv = Number(await floatBalance());
+      if (!isFinite(fv) || fv < 0) throw new Error('hot wallet balance unreadable');
+      clearAlert('float');
+      clearAlert('read');
+      clearAlert('expired');
+      cache = { pcn: fv, at: Date.now() };
+      return { pcn: fv, ageMs: 0, addresses: 0, floatOnly: true };
+    }
+
     // A number you set beats a number the server infers. With a cap configured
     // the explorer is not consulted at all: no address list to maintain, no
     // change addresses to chase, nothing to go stale behind your back. The

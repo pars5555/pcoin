@@ -3,10 +3,15 @@
 //
 // WHY THIS EXISTS. The dashboard already had an "Open tasks" number, but it
 // counted only tasks somebody had TYPED IN by hand. Meanwhile a withdrawal
-// could sit in the exchange queue, the market could be listing more PCN than it
-// can deliver, and the wrap desk could be holding something — and none of it
-// appeared anywhere on the front page. The owner's words for this: "so i enter
-// the admin and see all pending tasks in dashboard".
+// could sit in the exchange queue, a deposit could be held, the address pool
+// could be running dry, and the wrap desk could be holding something — and none
+// of it appeared anywhere on the front page. The owner's words for this: "so i
+// enter the admin and see all pending tasks in dashboard".
+//
+// AND THE OTHER HALF OF THAT INSTRUCTION: only things that are actually a
+// FAULT belong here. A check that fires on the intended configuration teaches
+// people to ignore the panel, which costs more than the check was ever worth.
+// See the market section for one that was removed for exactly that reason.
 //
 // THE RULE THIS FILE KEEPS, AND IT IS THE WHOLE POINT:
 //
@@ -54,33 +59,21 @@ export function needsYou({ svcs = [], tasks = [], exOver = null, wrap = null,
   } else {
     const f = mkt.facts || {};
 
-    // The book vs what can actually be handed over.
-    if (typeof f.remainingPcn === 'number' && typeof f.deliverablePcn === 'number'
-        && f.remainingPcn > f.deliverablePcn + 0.5) {
-      const gap = f.remainingPcn - f.deliverablePcn;
-      // Deliberately NOT "listed for sale". market.pc.am's own page binds
-      // "Available to buy" to sellableNowPcn -- the SMALLER figure -- and the
-      // buy path enforces it, so no customer is shown or sold the larger one.
-      // Calling it "listed" overstated this and made a bookkeeping gap read as
-      // an over-promise to buyers. What is actually exposed is the public API
-      // field remainingPcn, which an integrator could read as available supply.
-      add('warn', `Market ladder holds ${n2(gap, 0)} PCN more than it can deliver`,
-        `The ladder's internal stock is ${n2(f.remainingPcn, 0)} PCN but only `
-        + `${n2(f.deliverablePcn, 0)} is deliverable. Customers are neither shown nor sold `
-        + `the larger number — the page and the buy path both use the smaller one — so this `
-        + `is a bookkeeping gap, not an over-promise. It still leaks through the PUBLIC `
-        + `api/ladder/state field remainingPcn, which an integrator may read as supply.`,
-        `${base}/services/market`);
-    }
-
-    // A hand-set backing figure is an assertion, not a measurement.
-    if (f.backingManual) {
-      add('warn', 'The market’s deliverable figure is hand-set, not measured',
-        'backingCapPcn is configured, so the explorer is never consulted and the figure '
-        + 'cannot fall on its own if those coins are spent elsewhere. It is only as true '
-        + 'as the last time somebody checked it against real coins.',
-        `${base}/services/market`);
-    }
+    // THE BOOK-VS-DELIVERABLE CHECK IS GONE ON PURPOSE.
+    //
+    // It used to fire because the ladder held more PCN than the market could
+    // deliver. That is no longer a fault, it is the POLICY: the market now
+    // backs sales with the hot wallet alone (backingFloatOnly), read live, and
+    // the ladder is deliberately larger than the till. Owner, 2026-09-18:
+    // "we dont sell more than that ... there should not be any todo for market".
+    //
+    // The hand-set-cap warning is gone for the same reason -- there is no cap
+    // to keep honest any more, because nothing is hand-set. An alarm that fires
+    // on the intended configuration is how people learn to ignore the panel.
+    //
+    // What is still checked below is anything that would actually STOP a sale
+    // or lose money: a degraded backing read, a closed gate, orders needing
+    // review. Those are faults, not policy.
     if (f.backingDegraded) {
       add('action', 'Market is selling on a cached backing figure',
         'The backing read is failing and sales are continuing on a stale number. '

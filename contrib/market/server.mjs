@@ -1313,6 +1313,20 @@ createServer(async (req, res) => {
         ...ladSt,
         deliverablePcn,
         sellableNowPcn,
+        // THE HEADLINE FIGURE IS WHAT WE WILL ACTUALLY SELL.
+        //
+        // ...ladSt above carries the ladder's own remainingPcn -- the internal
+        // price book, 100,000 PCN less what has sold and been retired. That is
+        // not a promise we can keep, and this endpoint is public and
+        // uncredentialled, so anything reading it as available supply was being
+        // misled. The book figure is still published, under a name that says
+        // what it is.
+        //
+        // null when the backing is unreadable, deliberately: falling back to the
+        // book number would restore the over-statement at the one moment nobody
+        // can verify it.
+        remainingPcn: sellableNowPcn,
+        ladderRemainingPcn: ladSt.remainingPcn,
         // The oracle mirrors this so it can stop advertising a buyback that is
         // switched off. The market owns the switch; one source of truth.
         buybackOpen: S.get('buybackOpen'),

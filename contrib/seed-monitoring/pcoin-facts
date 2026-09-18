@@ -128,6 +128,34 @@ def n(v, dp=None):
     return ("%%.%df" % dp) % f if dp is not None else ("%g" % f)
 
 
+def explorer_health(timeout=8):
+    """Are the explorer's PAGES serving? -> (state, detail).
+
+    state is "ok", "bad" or None for unknown. Deliberately probes the HTML that
+    people open rather than /api/status: on 2026-09-18 the API answered 200 for
+    hours while a third of page loads returned 500, and every monitor on the
+    estate called that healthy. Two probes, because that fault was intermittent.
+    """
+    import urllib.request as _u
+    codes = []
+    for path in ("/", "/blocks"):
+        try:
+            req = _u.Request("https://explorer.pc.am" + path,
+                             headers={"User-Agent": "pcoin-facts"})
+            with _u.urlopen(req, timeout=timeout) as r:
+                codes.append(r.status)
+        except Exception as e:
+            code = getattr(e, "code", None)
+            if code is None:
+                # Could not reach it AT ALL from this box. That is UNKNOWN, not
+                # "down" -- our network and the user's are different things.
+                return None, type(e).__name__
+            codes.append(code)
+    if all(c == 200 for c in codes):
+        return "ok", ""
+    return "bad", "/ -> %s, /blocks -> %s" % tuple(codes + ["?"])[:2]
+
+
 def block(c):
     d, bad = c["data"], c["unreadable"]
     out = []
@@ -142,6 +170,20 @@ def block(c):
         out.append("CHAIN: height %s, difficulty %s, %s transactions so far, node peers %s."
                    % (cc.get("height"), n(cc.get("difficulty")), cc.get("tx_count"),
                       ix.get("node_connections")))
+
+    # The explorer as a WEBSITE, which is a different question from the chain.
+    st, detail = explorer_health()
+    if st == "ok":
+        out.append("EXPLORER WEBSITE: the pages are serving normally right now "
+                   "(checked just now, not from memory). If somebody says it is down for them, "
+                   "it is worth asking what they see -- do not tell them they are wrong.")
+    elif st == "bad":
+        out.append("EXPLORER WEBSITE: IT IS BROKEN RIGHT NOW (%s). If somebody reports it is "
+                   "down, THEY ARE RIGHT -- say it is a known problem being worked on, and do "
+                   "not ask them to try again as though it were their side." % detail)
+    else:
+        out.append("EXPLORER WEBSITE: could not be checked from here (%s). That is UNKNOWN -- "
+                   "do not say it is up and do not say it is down." % detail)
 
     if "price" in bad:
         out.append("PRICE: UNREADABLE (%s) -- say you cannot read the rate right now." % bad["price"])
