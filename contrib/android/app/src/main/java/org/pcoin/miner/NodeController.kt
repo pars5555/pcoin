@@ -1,5 +1,6 @@
 package org.pcoin.miner
 
+import android.app.ActivityManager
 import android.content.Context
 import android.util.Log
 import org.json.JSONArray
@@ -197,9 +198,24 @@ class NodeController(context: Context) {
 
         // -reindex is added for exactly one start, when a previous one died
         // asking for it. See [armReindexIfNeeded] for why this can never loop.
+        // Fast mode is asked for HERE and nowhere else, because -randomxfastmode
+        // is read once at spawn. A node already running keeps the mode it was
+        // started in, whatever the setting later says -- the same property that
+        // cost the Windows fleet a session at a tenth of its rate.
+        //
+        // Re-measured on every start rather than trusted from the last one: a
+        // phone's free memory is not a constant, and the honest answer to "can
+        // this device hold a 2 GB dataset" changes with whatever else is open.
+        val wantFast = prefs.fastMode
+        val fastFits = if (wantFast) fastModeFits(appContext) else false
+        if (wantFast && !fastFits) {
+            Log.i(TAG, "fast mode wanted but this device cannot spare " +
+                "${FAST_MODE_MIB + FAST_MODE_HEADROOM_MIB} MiB right now; starting in light mode")
+        }
         val cmd = buildList {
             add(binary.absolutePath)
             add(NativeBinaries.dataDirArg(appContext))
+            if (wantFast && fastFits) add(FAST_MODE_ARG)
             if (prefs.nodeReindexPending) add(REINDEX_ARG)
         }
         Log.i(TAG, "spawning: ${cmd.joinToString(" ")}")
@@ -1063,6 +1079,60 @@ class NodeController(context: Context) {
          * difference is seconds. Recovering from both causes beats saving them.
          */
         private const val REINDEX_ARG = "-reindex"
+
+        /** Ask the node for the full RandomX dataset instead of the cache. */
+        private const val FAST_MODE_ARG = "-randomxfastmode"
+
+        /**
+         * The dataset itself. 2,080 MiB is the real figure from the library --
+         * RANDOMX_DATASET_BASE_SIZE + RANDOMX_DATASET_EXTRA_SIZE -- not a round
+         * number, and the same constant the Windows miner uses.
+         */
+        const val FAST_MODE_MIB = 2080L
+
+        /**
+         * Headroom on top, and on Android it is not optional politeness.
+         * The dataset is a native allocation inside a background service: if it
+         * takes the last free megabyte, the low-memory killer reaps the service
+         * and the miner restarts in a loop, which earns less than light mode
+         * ever would. 700 MiB is the smallest gap that left the app alive on a
+         * 4 GB test device with an ordinary set of apps open.
+         */
+        const val FAST_MODE_HEADROOM_MIB = 700L
+
+        /**
+         * Can this phone hold the fast-mode dataset RIGHT NOW?
+         *
+         * Reads ActivityManager.MemoryInfo, which reports what the system will
+         * actually let an app have, rather than /proc/meminfo's MemTotal -- a
+         * 4 GB phone with 1.4 GB available is a 4 GB phone that cannot do this.
+         * `lowMemory` is honoured as a flat no: when the system already says it
+         * is under pressure, asking for two more gigabytes is not a plan.
+         *
+         * Returns false on any failure to measure. An unknown is not a yes
+         * (CLAUDE.md 7.1): the cost of guessing wrong here is a miner that dies
+         * in a loop, and the cost of being too cautious is the rate it already
+         * has.
+         */
+        fun fastModeFits(context: Context): Boolean = try {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            val mi = ActivityManager.MemoryInfo()
+            am.getMemoryInfo(mi)
+            val availMib = mi.availMem / (1024L * 1024L)
+            !mi.lowMemory && availMib >= FAST_MODE_MIB + FAST_MODE_HEADROOM_MIB
+        } catch (t: Throwable) {
+            false
+        }
+
+        /** Free memory right now, in MiB, or -1 when it cannot be read. */
+        fun availableMib(context: Context): Long = try {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            val mi = ActivityManager.MemoryInfo()
+            am.getMemoryInfo(mi)
+            mi.availMem / (1024L * 1024L)
+        } catch (t: Throwable) {
+            -1L
+        }
 
         /** Generous: the call walks the UTXO set, and a slow flush is
          *  still worth waiting for -- the alternative is losing it. */

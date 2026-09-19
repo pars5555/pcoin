@@ -63,6 +63,31 @@ class Prefs(context: Context) {
         set(value) = sp.edit().putBoolean(KEY_ON_BATTERY, value).apply()
 
     /**
+     * RandomX fast mode: mine against the full 2,080 MiB dataset instead of the
+     * 256 MiB cache. It is worth roughly ten times the hash rate and it is the
+     * same proof of work -- fast and light produce identical hashes, so this is
+     * purely how the machine computes them.
+     *
+     * OFF by default, and deliberately not a thing the app turns on by itself.
+     * The dataset is a two-gigabyte native allocation living inside a
+     * background service, which is exactly the shape Android's low-memory
+     * killer goes looking for; on a phone that cannot spare the memory the
+     * honest outcome is a miner that dies and restarts rather than a faster
+     * one. So the app MEASURES first (see fastModeFits) and only then offers.
+     *
+     * The offer is made once. [fastModeOffered] records that it has been, so a
+     * person who said no is not asked again at every start.
+     */
+    var fastMode: Boolean
+        get() = sp.getBoolean(KEY_FAST_MODE, false)
+        set(value) = sp.edit().putBoolean(KEY_FAST_MODE, value).apply()
+
+    /** True once the fast-mode suggestion has been shown, so it is shown once. */
+    var fastModeOffered: Boolean
+        get() = sp.getBoolean(KEY_FAST_MODE_OFFERED, false)
+        set(value) = sp.edit().putBoolean(KEY_FAST_MODE_OFFERED, value).apply()
+
+    /**
      * Payout address. Created once and reused forever.
      *
      * For a seeded wallet this is m/84'/9444'/0'/0/0, so the twelve words
@@ -482,6 +507,8 @@ class Prefs(context: Context) {
         private const val KEY_NODE_PID = "node_pid"
         private const val KEY_THERMAL = "thermal_limit"
         private const val KEY_ON_BATTERY = "mine_on_battery"
+        private const val KEY_FAST_MODE = "fast_mode"
+        private const val KEY_FAST_MODE_OFFERED = "fast_mode_offered"
         private const val KEY_PAYOUT_WALLET = "payout_wallet"
         private const val KEY_PAYOUT_EXTERNAL = "payout_is_external"
         private const val KEY_POOL_URL = "pool_url"
