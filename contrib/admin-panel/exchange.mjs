@@ -20,10 +20,11 @@ import http from 'node:http';
 import https from 'node:https';
 import { esc } from './ui.mjs';
 import { qrSvg } from './qr.mjs';
+import { makeLister, listParams, cleanListQs, pill } from './exchange-lists.mjs';
 
 const VIEWS = [
   ['overview', 'Overview'], ['activity', 'Activity'], ['withdrawals', 'Withdrawals'], ['deposits', 'Deposits'], ['settings', 'Settings'],
-  ['users', 'Users'], ['referrals', 'Referrals'], ['book', 'Book & trades'], ['price', 'Price influence'], ['policy', 'Policy'], ['pool', 'Address pool'], ['audit', 'Audit log'],
+  ['users', 'Users'], ['referrals', 'Referrals'], ['book', 'Book & trades'], ['orders', 'Orders'], ['price', 'Price influence'], ['policy', 'Policy'], ['pool', 'Address pool'], ['audit', 'Audit log'],
 ];
 
 const big = (v) => { try { return BigInt(String(v)); } catch { return null; } };
@@ -89,17 +90,22 @@ export function exchangeSection({ base, creds, actor }) {
   const call = (method, path, opts = {}) => exchangeCall(ex, actor, method, path, opts);
 
   const ok = (r) => r.readable && r.status === 200;
-  const tabs = (active) => `<div class="card" style="display:flex;flex-wrap:wrap;gap:14px">${VIEWS.map(([k, l]) =>
-    `<a href="${self}?view=${k}"${k === active ? ' style="font-weight:700;text-decoration:underline"' : ''}>${esc(l)}</a>`).join('')}</div>`;
+  const tabs = (active) => `<div class="card xtabs">${VIEWS.map(([k, l]) =>
+    `<a href="${self}?view=${k}"${k === active ? ' class="on"' : ''}>${esc(l)}</a>`).join('')}</div>`;
+  // The list state (search, filters, page) of the page being rendered, carried
+  // through every form as `ret` so an action lands back on the same filtered
+  // page instead of dumping the owner at the top of an unfiltered list.
+  let retQs = '';
   const unknown = (what, r) => `<div class="card"><p class="bad"><b>UNKNOWN</b> — could not read ${esc(what)} from the exchange:
     ${esc(r.reason || (r.json && r.json.error) || `HTTP ${r.status}`)}</p><p class="muted">This is not "nothing to do". Check the pcoin-exchange container on this host.</p></div>`;
   const hidden = (n, v) => `<input type="hidden" name="${esc(n)}" value="${esc(v)}">`;
   const codeInput = '<input name="code" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="exchange 2FA" required style="width:9em">';
   const form = (action, fields, label, danger = false) => `<form method="POST" action="${self}" class="inline" style="margin:4px 0">
-    ${hidden('action', action)}${fields}${codeInput}<button type="submit"${danger ? ' style="background:var(--red);border-color:var(--red)"' : ''}>${esc(label)}</button></form>`;
+    ${hidden('action', action)}${retQs ? hidden('ret', retQs) : ''}${fields}${codeInput}<button type="submit"${danger ? ' style="background:var(--red);border-color:var(--red)"' : ''}>${esc(label)}</button></form>`;
   const table = (head, rows, empty) => `<div class="card" style="padding:0;overflow-x:auto"><table><tr>${head.map((h) => `<th>${esc(h)}</th>`).join('')}</tr>
     ${rows.length ? rows.join('') : `<tr><td colspan="${head.length}" class="muted">${esc(empty)}</td></tr>`}</table></div>`;
   const mono = (s) => `<code>${esc(s)}</code>`;
+  const listPage = makeLister({ self, call, unknown });
 
   async function overview() {
     const [r, h] = await Promise.all([call('GET', '/admin/api/overview'), call('GET', '/admin/api/house')]);
@@ -253,18 +259,13 @@ export function exchangeSection({ base, creds, actor }) {
       </div></div>`;
   }
 
-  async function withdrawals(url) {
-    const all = url.searchParams.get('all') === '1';
-    const r = await call('GET', `/admin/api/withdrawals${all ? '?all=1' : ''}`);
-    if (!ok(r)) return unknown('the withdrawal queue', r);
-    const rows = r.json;
-    const focusId = url.searchParams.get('id') || (rows.find((w) => ['requested', 'approved', 'paid_unverified'].includes(w.status)) || {}).id;
-    const w = rows.find((x) => x.id === focusId);
-    let focus = '<div class="card"><p>Nothing waiting.</p></div>';
-    if (w) {
-      const amount = w.network === 'PCN' ? `${w.amount} PCN` : `${w.amount} USDT`;
-      const net = { TRC20: 'TRON (TRC20)', BEP20: 'BNB Smart Chain (BEP20)', PCN: 'PCoin' }[w.network];
-      focus = `<div class="card" style="border-left:4px solid var(--blue)">
+  // The payout card. Unchanged in substance -- this is what the owner reads
+  // before sending money -- only lifted into its own function so the list
+  // below can page and filter independently of which withdrawal is open.
+  function withdrawalCard(w) {
+    const amount = w.network === 'PCN' ? `${w.amount} PCN` : `${w.amount} USDT`;
+    const net = { TRC20: 'TRON (TRC20)', BEP20: 'BNB Smart Chain (BEP20)', PCN: 'PCoin' }[w.network];
+    return `<div class="card" style="border-left:4px solid var(--blue)">
         <h2>Withdrawal #${esc(w.id)} — ${esc(w.status.replace('_', ' '))}</h2>
         ${w.requestedWithTwofa ? '' : '<p class="bad"><b>Requested WITHOUT two-factor.</b> Sign-in is shared with market.pc.am; if that account were compromised this is what it would look like. Confirm with the user before paying.</p>'}
         <table>
@@ -274,7 +275,7 @@ export function exchangeSection({ base, creds, actor }) {
           <tr><td>To address</td><td style="font-size:16px">${payable(w) ? mono(w.address) : mono(maskAddr(w.address))}</td></tr>
           <tr><td>${payable(w) ? 'Scan to pay' : 'Payment'}</td><td>${payQr(w)}</td></tr>
           <tr><td>Fee charged to the user</td><td>${esc(w.fee)}</td></tr>
-          <tr><td>Waiting</td><td${w.ageSeconds >= 18 * 3600 ? ' class="bad"' : ''}>${esc(age(w.ageSeconds))} (promised within 24 h)</td></tr>
+          <tr><td>Waiting</td><td${w.ageSeconds >= 18 * 3600 && payable(w) ? ' class="bad"' : ''}>${esc(age(w.ageSeconds))}${payable(w) ? ' (promised within 24 h)' : ''}</td></tr>
           <tr><td>Requested from</td><td>${geoCell(w)}</td></tr>
           <tr><td>Balance came from</td><td>${w.sources.pcnDepositsCredited} PCN deposit(s), ${w.sources.usdDepositsCredited} USD deposit(s), ${w.sources.trades} trade(s)</td></tr>
           ${w.txid ? `<tr><td>Txid</td><td>${mono(w.txid)}</td></tr>` : ''}
@@ -289,30 +290,94 @@ export function exchangeSection({ base, creds, actor }) {
         ${w.status === 'paid_unverified' ? `<p class="muted">Waiting for the chain to confirm. If the txid was pasted against the wrong withdrawal, clear it.</p>
           ${form('clear', `${hidden('id', w.id)}<input name="reason" type="text" placeholder="why" required>`, 'Clear the txid')}` : ''}
         </div></div>`;
+  }
+
+  // The flag OR the code, never both: Windows draws a flag emoji as its two
+  // letters, so "flag + code" read as "AM AM" on the owner's own machine.
+  const place = (country, ip) => {
+    if (!ip && !country) return '<span class="dim">—</span>';
+    const tag = flagOf(country) || esc(country || '');
+    return `${tag ? `<span title="${esc(country || '')}">${tag}</span> ` : ''}${ip ? `<span class="dim" style="font-size:11px">${esc(ip)}</span>` : ''}`;
+  };
+  const who = (email, id) => (email ? esc(email) : `<span class="dim">account ${esc(id)}</span>`);
+  const WD_DEFAULTS = { f_status: 'open', sort: 'created', dir: 'asc' };
+
+  async function withdrawals(url) {
+    // Which withdrawal is open: the one in the URL, or else the oldest in the
+    // queue. Fetched on its own so the focus survives paging and filtering --
+    // it used to be found in "the rows on this page", which paging would break.
+    let w = null;
+    const focusId = url.searchParams.get('id');
+    if (focusId && /^\d{1,18}$/.test(focusId)) {
+      const r = await call('GET', `/admin/api/withdrawals/${focusId}`);
+      if (ok(r)) w = r.json;
     }
-    const list = rows.map((x) => `<tr><td><a href="${self}?view=withdrawals&amp;id=${esc(x.id)}">#${esc(x.id)}</a></td><td>${esc(age(x.ageSeconds))}</td>
-      <td>${esc(x.network)}</td><td>${esc(x.amount)}</td><td>${esc(x.status)}</td><td>${x.requestedWithTwofa ? '2FA' : '<span class="bad">no 2FA</span>'}</td><td>${esc(x.email)}</td></tr>`);
-    return focus + table(['#', 'waiting', 'network', 'amount', 'status', '2FA', 'user'], list, all ? 'No withdrawals yet.' : 'Queue empty.')
-      + `<p class="muted"><a href="${self}?view=withdrawals${all ? '' : '&amp;all=1'}">${all ? 'show open only' : 'show all, including paid and rejected'}</a></p>`;
+    let queueUnknown = null;
+    if (!w) {
+      const q = await call('GET', '/admin/api/list/withdrawals?f_status=open&sort=created&dir=asc&per=10');
+      if (!ok(q)) queueUnknown = unknown('the withdrawal queue', q);
+      else if (q.json.rows.length) w = q.json.rows[0];
+    }
+    const focus = queueUnknown || (w ? withdrawalCard(w) : '<div class="card"><p class="ok"><b>Nothing waiting.</b> Every withdrawal has been paid or rejected.</p></div>');
+    const keep = listParams(url, WD_DEFAULTS).toString().replace(/&/g, '&amp;');
+    const L = await listPage(url, {
+      view: 'withdrawals', list: 'withdrawals', title: 'the withdrawal list',
+      defaults: WD_DEFAULTS, virtualLabels: { open: 'open — the queue' },
+      searchHint: 'Search email, address, txid, #id, IP, city…', dateLabel: 'requested',
+      columns: [{ label: '#', sort: 'id' }, { label: 'requested', sort: 'created' }, { label: 'network' },
+        { label: 'amount', sort: 'amount' }, { label: 'status', sort: 'status' }, { label: '2FA' }, { label: 'from' }, { label: 'user' }],
+      row: (x) => `<tr${w && x.id === w.id ? ' style="background:rgba(96,165,250,.10)"' : ''}>
+        <td><a href="${self}?view=withdrawals&amp;id=${esc(x.id)}&amp;${keep}">#${esc(x.id)}</a></td>
+        <td>${esc(when(x.createdAt))}${payable(x) || x.status === 'paid_unverified' ? `<br><span class="dim">${esc(age(x.ageSeconds))} ago</span>` : ''}</td>
+        <td>${esc(x.network)}</td><td><b>${esc(x.amount)}</b></td><td>${pill(x.status)}</td>
+        <td>${x.requestedWithTwofa ? '<span class="ok">2FA</span>' : '<span class="bad">no 2FA</span>'}</td>
+        <td>${x.ip ? place(x.geo && x.geo.country, x.ip) : '<span class="dim">not recorded</span>'}</td>
+        <td>${who(x.email, x.accountId)}</td></tr>`,
+      empty: 'No withdrawals yet.',
+    });
+    return focus + L.html;
   }
 
-  async function deposits() {
-    const r = await call('GET', '/admin/api/deposits');
-    if (!ok(r)) return unknown('deposits', r);
-    const p = r.json.pcn.map((d) => `<tr><td>${esc(d.id)}</td><td>${esc(d.email || '—')}</td><td>${esc(pcn(d.amount_sat))}</td>
-      <td${d.status === 'held' ? ' class="bad"' : ''}>${esc(d.status)}${String(d.reorg_suspect) === '1' ? ' <b class="bad">REORG</b>' : ''}</td>
-      <td>${esc(d.confirmations ?? '—')}</td><td>${mono(d.txid)}</td><td>${esc(d.hold_reason || '')}
-      ${['held', 'seen'].includes(d.status) ? form('orphan', `${hidden('id', d.id)}<input name="reason" type="text" placeholder="why this must never be credited" required>`, 'Orphan') : ''}</td></tr>`);
-    const u = r.json.usd.map((d) => `<tr><td>${esc(d.payment_id)}</td><td>${esc(d.email || '—')}</td><td>${esc(d.status)}</td>
-      <td>${d.outcome_amount_micro === null ? '—' : esc(usd(d.outcome_amount_micro))} ${esc(d.outcome_currency || '')}</td><td>${esc(when(d.credited_at))}</td><td>${mono(d.order_id)}</td></tr>`);
-    return '<div class="card"><h2>PCN</h2></div>' + table(['id', 'user', 'amount', 'status', 'conf', 'txid', 'note'], p, 'No PCN deposits.')
-      + '<div class="card"><h2>USD (NOWPayments)</h2></div>' + table(['payment', 'user', 'status', 'credited', 'at', 'order'], u, 'No USD deposits.');
+  async function deposits(url) {
+    const kind = url.searchParams.get('kind') === 'usd' ? 'usd' : 'pcn';
+    const sub = `<div class="xtabs sub">
+      <a class="${kind === 'pcn' ? 'on' : ''}" href="${self}?view=deposits&amp;kind=pcn">PCN deposits</a>
+      <a class="${kind === 'usd' ? 'on' : ''}" href="${self}?view=deposits&amp;kind=usd">USD (NOWPayments)</a></div>`;
+    if (kind === 'pcn') {
+      const L = await listPage(url, {
+        view: 'deposits', sub: { name: 'kind', value: 'pcn' }, list: 'deposits_pcn', title: 'PCN deposits',
+        searchHint: 'Search email, txid, address, #id…', dateLabel: 'seen',
+        columns: [{ label: 'id', sort: 'id' }, { label: 'seen', sort: 'seen' }, { label: 'user' }, { label: 'amount', sort: 'amount' },
+          { label: 'status' }, { label: 'conf' }, { label: 'height', sort: 'height' }, { label: 'txid' }, { label: 'note' }],
+        row: (d) => `<tr><td>${esc(d.id)}</td><td>${esc(when(d.first_seen_at))}</td><td>${who(d.email, d.account_id)}</td>
+          <td><b>${esc(pcn(d.amount_sat))}</b>${String(d.is_coinbase) === '1' ? ' <span class="xpill warn">mined</span>' : ''}</td>
+          <td>${pill(d.status)}${String(d.reorg_suspect) === '1' ? ' <b class="bad">REORG</b>' : ''}</td>
+          <td>${esc(d.confirmations ?? '—')}</td><td>${esc(d.height ?? '—')}</td><td>${mono(d.txid)}</td>
+          <td>${esc(d.hold_reason || '')}
+          ${['held', 'seen'].includes(d.status) ? form('orphan', `${hidden('id', d.id)}<input name="reason" type="text" placeholder="why this must never be credited" required>`, 'Orphan') : ''}</td></tr>`,
+        empty: 'No PCN deposits yet.',
+      });
+      return sub + L.html;
+    }
+    const L = await listPage(url, {
+      view: 'deposits', sub: { name: 'kind', value: 'usd' }, list: 'deposits_usd', title: 'USD deposits',
+      searchHint: 'Search email, payment id, order…', dateLabel: 'updated',
+      columns: [{ label: 'payment', sort: 'id' }, { label: 'user' }, { label: 'status' }, { label: 'amount', sort: 'amount' },
+        { label: 'credited at', sort: 'credited' }, { label: 'order' }],
+      row: (d) => `<tr><td>${esc(d.payment_id)}</td><td>${who(d.email, d.account_id)}</td><td>${pill(d.status)}</td>
+        <td>${d.outcome_amount_micro === null ? '—' : `<b>${esc(usd(d.outcome_amount_micro))}</b>`} ${esc(d.outcome_currency || '')}</td>
+        <td>${d.credited_at === null ? '<span class="dim">not credited</span>' : esc(when(d.credited_at))}</td><td>${mono(d.order_id)}</td></tr>`,
+      empty: 'No USD deposits yet.',
+    });
+    return sub + L.html;
   }
 
-  async function settings() {
+  async function settings(url) {
     const r = await call('GET', '/admin/api/settings');
     if (!ok(r)) return unknown('settings', r);
     const { values, defs } = r.json;
+    const q = String(url.searchParams.get('q') || '').trim().toLowerCase();
+    const changed = url.searchParams.get('changed') === '1';
     const human = (k, v) => {
       if (Array.isArray(v)) return v.join(', ') || '(empty)';
       if (k.endsWith('_micro')) return usd(v);
@@ -320,7 +385,10 @@ export function exchangeSection({ base, creds, actor }) {
       if (k.endsWith('_ppm')) return `${Number(v) / 10000}% (×${Number(v) / 1e6})`;
       return String(v);
     };
-    const rows = Object.entries(defs).map(([k, d]) => {
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    const all = Object.entries(defs);
+    const shown = all.filter(([k, d]) => (!q || k.toLowerCase().includes(q)) && (!changed || !same(values[k], d.default)));
+    const rows = shown.map(([k, d]) => {
       const v = values[k];
       const input = d.type === 'bool'
         ? `<select name="value"><option${v === true ? ' selected' : ''}>true</option><option${v === false ? ' selected' : ''}>false</option></select>`
@@ -328,27 +396,44 @@ export function exchangeSection({ base, creds, actor }) {
           ? `<select name="value">${d.values.map((x) => `<option${x === v ? ' selected' : ''}>${esc(x)}</option>`).join('')}</select>`
           : `<input name="value" type="text" value="${esc(Array.isArray(v) ? v.join(', ') : v)}" style="width:15em">`;
       const warn = k === 'bot_bid_daily_budget_micro' ? '<br><b class="bad">This is the ONLY limit on what you can owe.</b>' : '';
-      return `<tr><td><b>${esc(k)}</b>${warn}</td><td>${esc(human(k, v))}</td><td class="muted">${esc(human(k, d.default))}</td>
+      return `<tr><td><b>${esc(k)}</b>${warn}</td><td>${esc(human(k, v))}${same(v, d.default) ? '' : ' <span class="xpill warn">changed</span>'}</td><td class="muted">${esc(human(k, d.default))}</td>
         <td>${form('setting', hidden('key', k) + hidden('type', d.type) + input, 'Save')}</td></tr>`;
     });
-    return `<div class="card"><p class="muted">Numbers are in base units: <b>_micro</b> = millionths of a dollar ($1 = 1000000),
+    return `<div class="card"><form method="GET" action="${self}" class="xfilters">${hidden('view', 'settings')}
+        <input type="search" name="q" value="${esc(q)}" placeholder="Search setting names — e.g. bot, fee, withdraw, price">
+        <label><input type="checkbox" name="changed" value="1"${changed ? ' checked' : ''}> only the ones changed from default</label>
+        <button type="submit">Filter</button><a class="reset" href="${self}?view=settings">Reset</a></form>
+      <p class="muted" style="margin-top:12px">Numbers are in base units: <b>_micro</b> = millionths of a dollar ($1 = 1000000),
       <b>_sat</b> = hundred-millionths of a PCN (1 PCN = 100000000), <b>_ppm</b> = parts per million (0.2% = 2000).
       Lists are comma-separated. Every change is audited and announced in the ops channel.
       A fee or limit named in the terms as a <code>{{placeholder}}</code> updates them the moment you save it here, and every user is asked to accept the new version.</p></div>`
-      + table(['setting', 'now', 'default', 'change'], rows, 'No settings.');
+      + `<div class="xsummary"><span>Showing <b>${shown.length}</b> of <b>${all.length}</b> settings</span></div>`
+      + table(['setting', 'now', 'default', 'change'], rows, q || changed ? 'No setting matches.' : 'No settings.');
   }
 
-  async function users() {
-    const r = await call('GET', '/admin/api/users');
-    if (!ok(r)) return unknown('users', r);
-    const rows = r.json.map((u) => `<tr><td>${esc(u.id)}</td><td>${esc(u.email)}</td><td>${u.hasTwofa ? '2FA' : '<span class="bad">no 2FA</span>'}</td>
-      <td>$${esc(u.usd.available)} + $${esc(u.usd.locked)}</td><td>${esc(u.pcn.available)} + ${esc(u.pcn.locked)}</td><td>${u.disabled ? '<b class="bad">disabled</b>' : 'active'}</td>
-      <td>${form('user_disable', `${hidden('id', u.id)}${hidden('disabled', u.disabled ? 'false' : 'true')}<input name="reason" type="text" placeholder="reason" required>`, u.disabled ? 'Enable' : 'Disable')}
-      ${u.hasTwofa ? form('twofa_reset', `${hidden('id', u.id)}<input name="reason" type="text" placeholder="how you verified them" required>`, 'Reset 2FA') : ''}
-      ${form('user_credit', `${hidden('id', u.id)}<select name="asset"><option value="USD">USD</option><option value="PCN">PCN</option></select><input name="amount" type="text" inputmode="decimal" placeholder="amount" required style="width:90px">`, 'Test credit')}
-      ${form('user_adjust', `${hidden('id', u.id)}<select name="asset"><option value="USD">USD</option><option value="PCN">PCN</option></select><input name="amount" type="text" inputmode="decimal" placeholder="+ or -" required style="width:80px"><input name="reason" type="text" placeholder="why (required)" required>`, 'Adjust')}</td></tr>`);
+  async function users(url) {
+    const L = await listPage(url, {
+      view: 'users', list: 'users', title: 'users',
+      searchHint: 'Search email, account id, IP, country, city…', dateLabel: 'joined',
+      columns: [{ label: 'id', sort: 'id' }, { label: 'email', sort: 'email' }, { label: 'joined', sort: 'created' },
+        { label: 'last seen', sort: 'seen' }, { label: '2FA' }, { label: 'USD available + locked' }, { label: 'PCN available + locked' },
+        { label: 'state' }, { label: '' }],
+      row: (u) => `<tr><td>${esc(u.id)}</td><td>${esc(u.email)}</td>
+        <td>${esc(when(u.createdAt))}<br>${place(u.signup && u.signup.country, u.signup && u.signup.ip)}</td>
+        <td>${u.last && u.last.seenAt ? esc(when(u.last.seenAt)) : '<span class="dim">—</span>'}<br>${place(u.last && u.last.country, u.last && u.last.ip)}</td>
+        <td>${u.hasTwofa ? '<span class="ok">2FA</span>' : '<span class="bad">no 2FA</span>'}</td>
+        <td>$${esc(u.usd.available)} + $${esc(u.usd.locked)}</td><td>${esc(u.pcn.available)} + ${esc(u.pcn.locked)}</td>
+        <td>${pill(u.disabled ? 'disabled' : 'active')}</td>
+        <td><details><summary class="muted" style="cursor:pointer">actions</summary><div style="margin-top:6px">
+        ${form('user_disable', `${hidden('id', u.id)}${hidden('disabled', u.disabled ? 'false' : 'true')}<input name="reason" type="text" placeholder="reason" required>`, u.disabled ? 'Enable' : 'Disable')}
+        ${u.hasTwofa ? form('twofa_reset', `${hidden('id', u.id)}<input name="reason" type="text" placeholder="how you verified them" required>`, 'Reset 2FA') : ''}
+        ${form('user_credit', `${hidden('id', u.id)}<select name="asset"><option value="USD">USD</option><option value="PCN">PCN</option></select><input name="amount" type="text" inputmode="decimal" placeholder="amount" required style="width:90px">`, 'Test credit')}
+        ${form('user_adjust', `${hidden('id', u.id)}<select name="asset"><option value="USD">USD</option><option value="PCN">PCN</option></select><input name="amount" type="text" inputmode="decimal" placeholder="+ or -" required style="width:80px"><input name="reason" type="text" placeholder="why (required)" required>`, 'Adjust')}
+        </div></details></td></tr>`,
+      empty: 'No users yet.',
+    });
     return '<div class="card"><p class="muted">A 2FA reset is exactly what an impersonator asks for. Verify the person another way first.<br><b>Test credit</b> puts a balance on an account for testing before opening. It is refused the moment the exchange is open, because a real balance comes from a real deposit.<br><b>Adjust</b> is the one that works while the exchange is OPEN: it corrects a balance that is wrong — a payment that arrived but was never credited, a double credit to claw back, a goodwill payment. A minus takes money away. It writes a ledger row so the books still balance, records who did it and why, and sends it to Telegram at once, so an adjustment nobody made is visible in seconds rather than at the next reconciliation.</p></div>'
-      + table(['id', 'email', '2FA', 'USD available + locked', 'PCN available + locked', 'state', ''], rows, 'No users yet.');
+      + L.html;
   }
 
   // Who invited whom, and what is left to pay them with.
@@ -358,20 +443,26 @@ export function exchangeSection({ base, creds, actor }) {
   // referrals simply wait instead of overspending. An empty budget is a normal
   // state and never an outage -- but nobody gets paid until it is topped up, so
   // it is shown first and in red when it is gone.
-  async function referrals() {
-    const r = await call('GET', '/admin/api/referrals');
-    if (!ok(r)) return unknown('referrals', r);
-    const { budgetPcn, referrals: list } = r.json;
+  async function referrals(url) {
+    const b = await call('GET', '/admin/api/referrals?limit=1');
+    if (!ok(b)) return unknown('the referral budget', b);
+    const budgetPcn = b.json.budgetPcn;
     const empty = Number(budgetPcn) <= 0;
-    const rows = list.map((x) => {
-      const when = x.paidAt ?? x.qualifiedAt ?? x.createdAt;
-      const state = x.state === 'paid' ? '<b class="good">paid</b>'
-        : x.state === 'refused' ? `<b class="bad">refused</b> <span class="muted">${esc(x.refusedReason || '')}</span>`
-          : x.state === 'holding' ? 'qualified, in the hold' : esc(x.state);
-      return `<tr><td>${esc(x.id)}</td><td>${esc(x.code)}</td><td>${esc(x.referrer)}</td><td>${esc(x.referee)}</td>
-        <td>${esc(x.rewardPcn)} PCN</td><td>${state}</td><td class="muted">${esc(new Date(when * 1000).toISOString().slice(0, 16).replace('T', ' '))}</td>
-        <td>${x.state === 'paid' || x.state === 'refused' ? ''
-          : form('referral_refuse', `${hidden('id', x.id)}<input name="reason" type="text" placeholder="why (required)" required>`, 'Refuse')}</td></tr>`;
+    const L = await listPage(url, {
+      view: 'referrals', list: 'referrals', title: 'referrals',
+      searchHint: 'Search code, referrer or referee email…', dateLabel: 'created',
+      columns: [{ label: 'id', sort: 'id' }, { label: 'code' }, { label: 'referrer' }, { label: 'referee' },
+        { label: 'reward', sort: 'reward' }, { label: 'state' }, { label: 'when', sort: 'created' }, { label: '' }],
+      row: (x) => {
+        const at = x.paidAt ?? x.qualifiedAt ?? x.createdAt;
+        const state = x.state === 'refused' ? `${pill('refused')} <span class="muted">${esc(x.refusedReason || '')}</span>`
+          : x.state === 'holding' ? `${pill('holding')} <span class="dim">qualified, in the hold</span>` : pill(x.state);
+        return `<tr><td>${esc(x.id)}</td><td>${mono(x.code)}</td><td>${esc(x.referrer)}</td><td>${esc(x.referee)}</td>
+          <td>${esc(x.rewardPcn)} PCN</td><td>${state}</td><td class="muted">${esc(when(at))}</td>
+          <td>${x.state === 'paid' || x.state === 'refused' ? ''
+            : form('referral_refuse', `${hidden('id', x.id)}<input name="reason" type="text" placeholder="why (required)" required>`, 'Refuse')}</td></tr>`;
+      },
+      empty: 'No referrals yet.',
     });
     return `<div class="card"><p>Budget left to pay with: <b class="${empty ? 'bad' : 'good'}">${esc(budgetPcn)} PCN</b>${empty ? ' — nobody is being paid until it is funded.' : ''}</p>
       <p>${form('house_balance', `${hidden('which', 'bounty:PCN')}Set the pool to <input name="amount" type="text" inputmode="decimal" placeholder="3000" required style="width:120px"> PCN`, 'Set pool')}</p>
@@ -379,38 +470,74 @@ export function exchangeSection({ base, creds, actor }) {
       No coins move — it is a ledger balance, and real PCN only leaves when somebody actually withdraws.</p>
       <p class="muted">A referral is paid only when the referee has BOTH deposited real money and bought PCN with it, and only after the hold.
 Fund it below; the balance is the whole budget and cannot go negative, so a bug costs at most what you funded. <b>Refuse</b> stops one before it is paid — a paid referral is already a ledger fact and cannot be undone here.</p></div>`
-      + table(['id', 'code', 'referrer', 'referee', 'reward', 'state', 'when', ''], rows, 'No referrals yet.');
+      + L.html;
   }
 
   // Everything that happened, newest first. The exchange writes these rows as it
   // works and sends them to Telegram from its tick loop, so this page and the
   // channel show the same thing — and a Telegram outage delays the channel, never
   // the exchange.
-  async function activity() {
-    const r = await call('GET', '/admin/api/activity');
-    if (!ok(r)) return unknown('the activity feed', r);
-    const KIND = { account: '🆕', signin: '🔑', order: '📋', trade: '💱', deposit: '💰' };
-    const rows = r.json.events.map((e) => `<tr><td>${esc(when(e.at))}</td><td>${KIND[e.kind] || ''} ${esc(e.kind)}</td>
-      <td>${esc(e.text)}</td><td>${e.sent_at ? '<span class="muted">sent</span>' : '<b>waiting</b>'}</td></tr>`);
-    const waiting = Number(r.json.waitingToSend || 0);
+  async function activity(url) {
+    const KIND = { account: '🆕', signin: '🔑', order: '📋', trade: '💱', deposit: '💰', cancel: '✖', adjust: '⚖', check: '🔎', referral: '🎁' };
+    const L = await listPage(url, {
+      view: 'activity', list: 'events', title: 'the activity feed',
+      searchHint: 'Search the text, an email, an IP…', dateLabel: 'from',
+      virtualLabels: {},
+      columns: [{ label: 'time', sort: 'at' }, { label: 'what', sort: 'kind' }, { label: 'detail' }, { label: 'IP' }, { label: 'telegram' }],
+      row: (e) => `<tr><td style="white-space:nowrap">${esc(when(e.at))}</td><td style="white-space:nowrap">${KIND[e.kind] || ''} ${esc(e.kind)}</td>
+        <td>${esc(e.text)}</td><td>${e.ip ? `<span class="dim" style="font-size:11px">${esc(e.ip)}</span>` : ''}</td>
+        <td>${e.sent_at ? '<span class="muted">sent</span>' : '<b class="warn">waiting</b>'}</td></tr>`,
+      empty: 'Nothing yet.',
+    });
+    const tg = L.data && L.data.facets.telegram ? (L.data.facets.telegram.values.find((v) => v.value === 'waiting') || { count: 0 }).count : null;
     return '<div class="card"><p class="muted">Sign-ups, sign-ins, orders, fills and deposit credits — kept for 30 days. '
-      + (waiting ? `<b>${waiting} waiting to reach Telegram</b> (they go out on the next tick; nothing is lost if it refuses).` : 'Everything has reached Telegram.')
-      + ' Withdrawals have their own page, and each request is announced the moment it is made.</p></div>'
-      + table(['time', 'what', 'detail', 'telegram'], rows, 'Nothing yet.');
+      + (tg === null ? '' : tg ? `<b>${tg} waiting to reach Telegram</b> (they go out on the next tick; nothing is lost if it refuses).` : 'Everything has reached Telegram.')
+      + ' Withdrawals have their own page, and each request is announced the moment it is made.</p></div>' + L.html;
   }
 
-  async function book() {
-    const [b, t] = await Promise.all([call('GET', '/admin/api/book'), call('GET', '/admin/api/trades')]);
+  async function book(url) {
+    const b = await call('GET', '/admin/api/book');
     if (!ok(b)) return unknown('the order book', b);
-    if (!ok(t)) return unknown('trades', t);
     const level = (x) => `<tr><td>${esc(usd(x.price_micro))}</td><td>${esc(pcn(x.qty_sat))}</td><td>${esc(x.orders)}</td></tr>`;
-    return '<div class="card"><h2>Asks</h2></div>' + table(['price', 'PCN', 'orders'], b.json.asks.map(level), 'No asks.')
-      + '<div class="card"><h2>Bids</h2></div>' + table(['price', 'PCN', 'orders'], b.json.bids.map(level), 'No bids.')
-      + '<div class="card"><h2>Trades</h2></div>' + table(['time', 'price', 'PCN', 'taker', 'house'],
-        t.json.map((x) => `<tr><td>${esc(when(x.at))}</td><td>${esc(usd(x.price_micro))}</td><td>${esc(pcn(x.qty_sat))}</td><td>${esc(x.taker_side)}</td><td>${String(x.house_involved) === '1' ? 'house' : 'users'}</td></tr>`), 'No trades.');
+    const L = await listPage(url, {
+      view: 'book', list: 'trades', title: 'trades',
+      searchHint: 'Search buyer or seller email, account id, order id…', dateLabel: 'traded',
+      columns: [{ label: 'time', sort: 'at' }, { label: 'price', sort: 'price' }, { label: 'PCN', sort: 'qty' }, { label: 'value', sort: 'notional' },
+        { label: 'buyer' }, { label: 'seller' }, { label: 'taker' }, { label: 'house' }],
+      row: (x) => `<tr><td style="white-space:nowrap">${esc(when(x.at))}</td><td>${esc(usd(x.price_micro))}</td><td>${esc(pcn(x.qty_sat))}</td>
+        <td><b>${esc(usd(x.notional_micro))}</b></td><td>${who(x.buyer_email, x.buyer_id)}</td><td>${who(x.seller_email, x.seller_id)}</td>
+        <td>${esc(x.taker_side)}</td><td>${String(x.house_involved) === '1' ? pill('house bot') : pill('users only')}</td></tr>`,
+      empty: 'No trades yet.',
+    });
+    return `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px">
+        <div><div class="card" style="padding:12px 20px"><h2 style="margin:0;color:var(--red)">Asks — selling PCN</h2></div>${table(['price', 'PCN', 'orders'], b.json.asks.map(level), 'No asks.')}</div>
+        <div><div class="card" style="padding:12px 20px"><h2 style="margin:0;color:var(--green)">Bids — buying PCN</h2></div>${table(['price', 'PCN', 'orders'], b.json.bids.map(level), 'No bids.')}</div>
+      </div><div class="card" style="padding:12px 20px"><h2 style="margin:0">Trades</h2></div>` + L.html;
   }
 
-  // What trading here is doing to the PCN price everyone reads.
+  // Every order anybody placed, including the house bots' -- the book above
+  // shows only what is resting now; this is the history behind it.
+  async function orders(url) {
+    const L = await listPage(url, {
+      view: 'orders', list: 'orders', title: 'orders',
+      virtualLabels: { live: 'live — resting on the book' },
+      searchHint: 'Search email, account id, order id, IP, country…', dateLabel: 'placed',
+      columns: [{ label: '#', sort: 'id' }, { label: 'placed', sort: 'created' }, { label: 'by' }, { label: 'side' },
+        { label: 'price', sort: 'price' }, { label: 'PCN', sort: 'qty' }, { label: 'filled' }, { label: 'status' }, { label: 'closed' }, { label: 'from' }],
+      row: (o) => {
+        const by = o.email ? esc(o.email) : `<span class="xpill warn">${esc(o.account_name || `account ${o.account_id}`)}</span>`;
+        const filledPct = big(o.qty_sat) ? Number((big(o.filled_sat) * 10000n) / big(o.qty_sat)) / 100 : 0;
+        return `<tr><td>${esc(o.id)}</td><td style="white-space:nowrap">${esc(when(o.created_at))}</td><td>${by}</td>
+          <td><b class="${o.side === 'buy' ? 'ok' : 'bad'}">${esc(o.side)}</b></td><td>${esc(usd(o.price_micro))}</td><td>${esc(pcn(o.qty_sat))}</td>
+          <td>${filledPct}%</td><td>${pill(o.status)}</td>
+          <td>${o.closed_at ? `${esc(when(o.closed_at))}<br><span class="dim">${esc(o.close_reason || '')}</span>` : '<span class="dim">—</span>'}</td>
+          <td>${o.ip || o.geo_country ? place(o.geo_country, o.ip) : '<span class="dim">—</span>'}</td></tr>`;
+      },
+      empty: 'No orders yet.',
+    });
+    return L.html;
+  }
+
   async function price() {
     const r = await call('GET', '/admin/api/price');
     if (!ok(r)) return unknown('the price influence', r);
@@ -468,14 +595,20 @@ Fund it below; the balance is the whole budget and cannot go negative, so a bug 
         <div style="display:flex;gap:8px">${codeInput} <button type="submit">Import</button></div></form></div>`;
   }
 
-  async function audit() {
-    const r = await call('GET', '/admin/api/audit');
-    if (!ok(r)) return unknown('the audit log', r);
-    return table(['time', 'actor', 'action', 'subject', 'old', 'new', 'detail'], r.json.map((a) => `<tr><td>${esc(when(a.at))}</td><td>${esc(a.actor)}</td>
-      <td>${esc(a.action)}</td><td>${esc(a.subject || '')}</td><td>${esc(a.old_value || '')}</td><td>${esc(a.new_value || '')}</td><td>${esc(a.detail || '')}</td></tr>`), 'Nothing yet.');
+  async function audit(url) {
+    const L = await listPage(url, {
+      view: 'audit', list: 'audit', title: 'the audit log',
+      searchHint: 'Search actor, action, subject, values, detail…', dateLabel: 'from',
+      columns: [{ label: 'time', sort: 'at' }, { label: 'actor' }, { label: 'action', sort: 'action' }, { label: 'subject' },
+        { label: 'old' }, { label: 'new' }, { label: 'detail' }],
+      row: (a) => `<tr><td style="white-space:nowrap">${esc(when(a.at))}</td><td>${esc(a.actor)}</td><td>${esc(a.action)}</td>
+        <td>${esc(a.subject || '')}</td><td>${esc(a.old_value || '')}</td><td>${esc(a.new_value || '')}</td><td>${esc(a.detail || '')}</td></tr>`,
+      empty: 'Nothing yet.',
+    });
+    return L.html;
   }
 
-  const RENDER = { overview, activity, withdrawals, deposits, settings, users, referrals, book, price, policy, pool, audit };
+  const RENDER = { overview, activity, withdrawals, deposits, settings, users, referrals, book, orders, price, policy, pool, audit };
 
   async function page(url, flash = null) {
     if (!ex || !ex.apiUrl || !ex.readToken) {
@@ -483,6 +616,10 @@ Fund it below; the balance is the whole budget and cannot go negative, so a bug 
     }
     const requested = url.searchParams.get('view');
     const view = RENDER[requested] ? requested : 'overview';
+    const rq = cleanListQs(url.searchParams.toString());
+    const kind = url.searchParams.get('kind');
+    if (kind === 'pcn' || kind === 'usd') rq.set('kind', kind);
+    retQs = rq.toString();
     const note = flash ? `<div class="card" style="border-left:4px solid var(--${flash.ok ? 'green' : 'red'})"><p${flash.ok ? '' : ' class="bad"'}>${esc(flash.text)}</p></div>` : '';
     return `<p class="muted" style="margin-top:-10px;margin-bottom:14px">Read here; every change asks for the code from your <b>PCoin Exchange admin</b> authenticator entry.</p>`
       + tabs(view) + note + await RENDER[view](url);
@@ -493,6 +630,11 @@ Fund it below; the balance is the whole budget and cannot go negative, so a bug 
       const u = new URL(url);
       u.search = '';
       u.searchParams.set('view', view);
+      // Back to the same filtered page the form was posted from -- only list
+      // keys survive, so nothing else a form carries can steer the redirect.
+      for (const [k, v] of cleanListQs(f.get('ret'))) u.searchParams.set(k, v);
+      const k = new URLSearchParams(String(f.get('ret') || '')).get('kind');
+      if (view === 'deposits' && (k === 'pcn' || k === 'usd')) u.searchParams.set('kind', k);
       if (id) u.searchParams.set('id', id);
       return u;
     };
