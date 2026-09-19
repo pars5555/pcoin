@@ -763,7 +763,21 @@ directly at <a href="https://market.pc.am">market.pc.am</a>.</p>
 </div>` : ''}
 ${intakeClosed() !== null ? '' : `<h1>Turn PCN into wPCN</h1>
 <p class="lead">wPCN is PCoin wrapped as a BEP-20 on BNB Smart Chain, so it can
-trade on PancakeSwap. Backed 1:1 by the PCN you send.</p>`}
+trade on PancakeSwap. Backed 1:1 by the PCN you send.</p>
+
+<div class="card">
+<div class="dir">
+ <span class="tag open">open</span>
+ <div><b>PCN &rarr; wPCN.</b> What this page does. ${PER_PERSON} PCN per person,
+ ${FEE_PCT}% fee, ${CONFIRMATIONS} confirmations before the wPCN is sent.
+ <span class="muted">Use the form below.</span></div>
+</div>
+<div class="dir">
+ <span class="tag open">open</span>
+ <div><b>wPCN &rarr; PCN.</b> The other way round: 1 for 1, no fee on that side.
+ <br><a class="golink" href="/redeem">Redeem wPCN &rarr; PCN</a></div>
+</div>
+</div>`}
 ${msg}
 ${intakeClosed() !== null ? CLOSED_FORM_NOTE : `<div class="card"><form method="POST" action="/request">
 <label>Your BSC address — where the wPCN will be sent. Use a wallet <b>you</b>
