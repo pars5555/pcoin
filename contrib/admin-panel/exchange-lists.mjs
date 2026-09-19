@@ -94,14 +94,33 @@ export function makeLister({ self, call, unknown }) {
       ];
       return `<select name="f_${esc(name)}" title="${esc(f.label)}">${opts.join('')}</select>`;
     }).join('');
+    // SORT AS ITS OWN CONTROL, with the direction separate. Clicking a header
+    // works too, but only tells you the order after you have clicked it, and a
+    // column you cannot see (balances were the owner's example) is not
+    // discoverable at all. Labels come from the columns, so a list that gains a
+    // sortable column gains the option here with no extra wiring.
+    const sortNames = [];
+    for (const c of spec.columns) {
+      if (c.sort && d.sortable.includes(c.sort) && !sortNames.some((x) => x.key === c.sort)) {
+        sortNames.push({ key: c.sort, label: c.label });
+      }
+    }
+    for (const k of d.sortable) if (!sortNames.some((x) => x.key === k)) sortNames.push({ key: k, label: k });
+    const sortSel = `<label>sort by <select name="sort">${sortNames.map((o) =>
+      `<option value="${esc(o.key)}"${o.key === d.sort ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select></label>
+      <select name="dir" title="direction">
+        <option value="desc"${d.dir === 'desc' ? ' selected' : ''}>▼ highest / newest first</option>
+        <option value="asc"${d.dir === 'asc' ? ' selected' : ''}>▲ lowest / oldest first</option>
+      </select>`;
     const perSel = `<select name="per" title="rows per page">${(d.perAllowed || [25, 50, 100]).map((n) =>
       `<option value="${n}"${n === d.per ? ' selected' : ''}>${n} / page</option>`).join('')}</select>`;
     const filterBar = `<div class="card"><form method="GET" action="${self}" class="xfilters">
-      ${hid('view', spec.view)}${spec.sub ? hid(spec.sub.name, spec.sub.value) : ''}${hid('sort', d.sort)}${hid('dir', d.dir)}
+      ${hid('view', spec.view)}${spec.sub ? hid(spec.sub.name, spec.sub.value) : ''}
       <input type="search" name="q" value="${esc(d.applied.q)}" placeholder="${esc(spec.searchHint || 'Search…')}">
       ${selects}
       <label>${esc(spec.dateLabel || 'from')} <input type="date" name="from" value="${esc(d.applied.from || '')}"></label>
       <label>to <input type="date" name="to" value="${esc(d.applied.to || '')}"></label>
+      ${sortSel}
       ${perSel}
       <span style="display:flex;gap:4px;align-items:center"><button type="submit">Filter</button>
       <a class="reset" href="${self}?${base.toString().replace(/&/g, '&amp;')}&amp;reset=1" title="clear every filter, including the default one">Reset</a></span>

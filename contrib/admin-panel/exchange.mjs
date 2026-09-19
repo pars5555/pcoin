@@ -416,7 +416,8 @@ export function exchangeSection({ base, creds, actor }) {
       view: 'users', list: 'users', title: 'users',
       searchHint: 'Search email, account id, IP, country, city…', dateLabel: 'joined',
       columns: [{ label: 'id', sort: 'id' }, { label: 'email', sort: 'email' }, { label: 'joined', sort: 'created' },
-        { label: 'last seen', sort: 'seen' }, { label: '2FA' }, { label: 'USD available + locked' }, { label: 'PCN available + locked' },
+        { label: 'last seen', sort: 'seen' }, { label: '2FA' }, { label: 'USD available + locked', sort: 'usd' },
+        { label: 'PCN available + locked', sort: 'pcn' },
         { label: 'state' }, { label: '' }],
       row: (u) => `<tr><td>${esc(u.id)}</td><td>${esc(u.email)}</td>
         <td>${esc(when(u.createdAt))}<br>${place(u.signup && u.signup.country, u.signup && u.signup.ip)}</td>
