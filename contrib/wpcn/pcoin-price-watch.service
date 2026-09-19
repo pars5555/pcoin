@@ -1,0 +1,29 @@
+[Unit]
+# Report every MOVE of the PCN/wPCN price machinery to the ops channel.
+#
+# The other watchers here report FAILURE. This one reports the thing working:
+# the pool crossing a price band, the ask following it down, and -- the line
+# that matters most -- how much wPCN sits outside our own three wallets, which
+# is the assumption floor mode rests on and the number that moves days before
+# the pool does.
+#
+# It holds no key, signs nothing and writes only its own state file.
+Description=PCN/wPCN price watch — report pool, ask and outside-supply moves
+After=network-online.target
+Wants=network-online.target
+OnFailure=pcoin-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/wpcn/.venv/bin/python /usr/local/bin/pcoin-price-watch
+TimeoutStartSec=180
+Nice=10
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/pcoin-price-watch
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes

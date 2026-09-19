@@ -1,0 +1,312 @@
+#!/usr/bin/env python3
+"""Watch the PCN/wPCN price machinery and report every MOVE to the ops channel.
+
+    pcoin-price-watch                 check and alert
+    pcoin-price-watch --dry-run       print what it would send, send nothing
+    pcoin-price-watch --force         ignore the damping and report everything
+
+WHY THIS EXISTS, 2026-09-19. The keeper stopped defending parity and the PCN ask
+started following the wPCN pool down on a schedule. Both of those are watched for
+FAILURE -- `OnFailure=` pages ops, the keeper alerts on its own trades -- but
+nothing watched the thing they are supposed to do, or the assumption underneath
+them.
+
+THE ASSUMPTION IS THE INTERESTING PART. Floor mode is safe because the wPCN that
+could be dumped into the pool is mostly OURS: measured 2026-09-19, of 49,999
+wPCN the owner's inventory held 18,163, the pool 19,509 and the keeper 9,250,
+leaving 3,077 -- about 6% -- genuinely outside. Pushing the pool to the $0.015
+floor takes ~9,709 wPCN of selling, so outsiders held under a third of what
+would be needed.
+
+That is a fact with a shelf life. It changes every time somebody wraps, and
+`WRAP_TOTAL_ALLOC` is a running total a human raises. So this watcher's most
+useful line is not the price at all -- it is OUTSIDE SUPPLY, which moves days
+before the pool does. A price alarm tells you the dump is happening; this tells
+you somebody is assembling the means.
+
+DESIGN RULES IT FOLLOWS, all of them paid for elsewhere in this project:
+  * An unreadable input is UNKNOWN. It is reported as unknown and never
+    substituted with a zero, a last-known value, or "no change".
+  * Alerts fire on CHANGE, not on persistence. A condition that has been true
+    for six hours is not news every fifteen minutes -- that is how the first
+    concentration watcher taught everyone to ignore it.
+  * Bands, not thresholds, so a price hovering on a boundary cannot flap.
+  * It holds no key and can move nothing. Read-only, everywhere.
+"""
+import json
+import os
+import sys
+import time
+import urllib.request
+
+STATE = os.environ.get("PRICE_WATCH_STATE", "/var/lib/pcoin-price-watch/state.json")
+# Sending goes through the house notifier, never straight at the Telegram API.
+# Two reasons, both learned here: pcoin-notify is what WRITES THE TELEGRAM LOG,
+# so an alert that bypasses it is invisible to `pcoin-telegram-log show` and to
+# anyone reconstructing what happened; and its own header states the rule --
+# "no script that detects a problem should also contain a credential". The first
+# version of this file read TELEGRAM_TOKEN itself and posted directly. It worked,
+# it was never recorded anywhere, and it checked only for an exception -- while
+# the way alerts actually vanish here is HTTP 200 with ok:false.
+NOTIFY = os.environ.get("PCOIN_NOTIFY", "/usr/local/bin/pcoin-notify")
+WPCN_CONF = os.environ.get("WPCN_CONF", "/opt/wpcn/wpcn.conf")
+KEEPER_CONF = os.environ.get("KEEPER_CONF", "/etc/pcoin/keeper.conf")
+
+DRY = "--dry-run" in sys.argv
+FORCE = "--force" in sys.argv
+
+# Pool price bands. Crossing one in either direction is news; moving inside one
+# is not. The bottom band is the floor itself.
+BANDS = [0.035, 0.030, 0.025, 0.020, 0.0175, 0.015]
+
+# Outside-held wPCN. 9,709 is what it takes to reach the floor at the depth
+# measured on 2026-09-19; the bands below are fractions of that, so the first
+# alert lands while it is still a curiosity rather than a problem.
+OUTSIDE_BANDS = [3500, 5000, 6500, 8000, 9709]
+
+ASK_MOVE_PCT = 1.0        # report an ask move of at least this much
+KEEPER_USDT_LOW = 100.0   # the float that holds the floor in the pool
+KEEPER_BNB_LOW = 0.005    # gas; without it the keeper cannot act at all
+ASK_TIMER_MAX_MIN = 100   # hourly timer + 5 min jitter; late past this is news
+
+
+def conf(path, want):
+    """Read named keys only. Never scan a secrets file for a value pattern."""
+    out = {}
+    try:
+        for line in open(path):
+            line = line.strip()
+            if line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k = k.strip()
+            if k in want:
+                out[k] = v.strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return out
+
+
+def band(value, bands):
+    """Index of the band `value` sits in. Bands are descending for prices and
+    ascending for supply; the caller passes them the right way round."""
+    if value is None:
+        return None
+    for i, b in enumerate(bands):
+        if (bands[0] > bands[-1] and value >= b) or (bands[0] < bands[-1] and value < b):
+            return i
+    return len(bands)
+
+
+def edge_crossed(prev, now, bands):
+    """WHICH threshold was actually crossed, going from band `prev` to `now`.
+
+    Not the band you landed in -- the line you stepped over. Falling out of the
+    top band into the next one crosses bands[0]; naming the boundary of the band
+    you arrived in reports a number the price never touched, which the first
+    version of this did. It said "fell through $0.0300" at a price of $0.033645.
+
+    band() indexes so that value sits in [bands[i], bands[i-1]) for descending
+    bands. Moving DOWN by one or many, the deepest line crossed is bands[now-1];
+    moving UP, it is bands[now]. Ascending bands (supply) work out the same way
+    because the index has the same meaning in the direction of travel.
+    """
+    i = now - 1 if now > prev else now
+    return bands[max(0, min(i, len(bands) - 1))]
+
+
+def get_json(url, timeout=20):
+    with urllib.request.urlopen(url, timeout=timeout) as r:
+        return json.load(r)
+
+
+def main():
+    try:
+        st = json.load(open(STATE))
+        if not isinstance(st, dict):
+            raise ValueError("not an object")
+    except Exception:
+        st = {}
+    # Normalise rather than only handling an unreadable file: a state file that
+    # PARSES but lacks a key is the case that crashed pcoin-wrapdesk-watch on
+    # its first install.
+    st.setdefault("pool_band", None)
+    st.setdefault("outside_band", None)
+    st.setdefault("ask", None)
+    st.setdefault("nagged", {})
+
+    lines, unknown = [], []
+
+    # ---- 1. the chain side: pool, distribution, keeper float ---------------
+    pool_price = outside = keeper_usdt = keeper_bnb = None
+    try:
+        from web3 import Web3
+        from eth_account import Account
+        c = conf(WPCN_CONF, {"RPC", "TOKEN", "PAIR"})
+        w3 = Web3(Web3.HTTPProvider(c["RPC"], request_kwargs={"timeout": 25}))
+        CS = Web3.to_checksum_address
+        erc = [{"constant": True, "inputs": [{"name": "a", "type": "address"}],
+                "name": "balanceOf", "outputs": [{"name": "", "type": "uint256"}],
+                "type": "function"},
+               {"constant": True, "inputs": [], "name": "totalSupply",
+                "outputs": [{"name": "", "type": "uint256"}], "type": "function"}]
+        tok = w3.eth.contract(address=CS(c["TOKEN"]), abi=erc)
+        E = 10 ** 8
+        supply = tok.functions.totalSupply().call() / E
+
+        pair = w3.eth.contract(address=CS(c["PAIR"]), abi=[
+            {"constant": True, "inputs": [], "name": "getReserves",
+             "outputs": [{"name": "r0", "type": "uint112"}, {"name": "r1", "type": "uint112"},
+                         {"name": "t", "type": "uint32"}], "type": "function"},
+            {"constant": True, "inputs": [], "name": "token0",
+             "outputs": [{"name": "", "type": "address"}], "type": "function"}]).functions
+        r0, r1, _ = pair.getReserves().call()
+        wp, us = ((r0 / E, r1 / 1e18) if CS(pair.token0().call()) == CS(c["TOKEN"])
+                  else (r1 / E, r0 / 1e18))
+        pool_price = us / wp
+
+        kp = Account.from_key(
+            conf(KEEPER_CONF, {"KEEPER_PRIVATE_KEY"})["KEEPER_PRIVATE_KEY"]).address
+        INVENTORY = "0x37cefF465A3a2f72979062aD781DDa7293477b8a"
+        held = sum(tok.functions.balanceOf(CS(a)).call() / E
+                   for a in (c["PAIR"], kp, INVENTORY))
+        outside = supply - held
+
+        usdt = w3.eth.contract(
+            address=CS("0x55d398326f99059fF775485246999027B3197955"), abi=erc)
+        keeper_usdt = usdt.functions.balanceOf(CS(kp)).call() / 1e18
+        keeper_bnb = w3.eth.get_balance(CS(kp)) / 1e18
+    except Exception as e:
+        unknown.append("the BSC side is UNREADABLE (%s: %s) -- pool price, outside "
+                       "supply and the keeper float are all unknown this tick, not "
+                       "unchanged." % (type(e).__name__, str(e)[:120]))
+
+    # ---- 2. the ask ---------------------------------------------------------
+    ask = None
+    try:
+        ask = float(get_json("https://market.pc.am/api/ladder/state")["marginalPrice"])
+    except Exception as e:
+        unknown.append("market.pc.am is UNREADABLE (%s) -- the ask is unknown."
+                       % str(e)[:100])
+
+    # ---- 3. did the ask-follow timer run? ----------------------------------
+    late = None
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["systemctl", "show", "pcoin-ask-follow.service",
+             "-p", "ExecMainExitTimestampMonotonic", "-p", "Result"],
+            capture_output=True, text=True, timeout=20).stdout
+        kv = dict(l.split("=", 1) for l in out.strip().split("\n") if "=" in l)
+        mono = int(kv.get("ExecMainExitTimestampMonotonic", "0")) / 1e6
+        up = float(open("/proc/uptime").read().split()[0])
+        late = (up - mono) / 60 if mono > 0 else None
+        if kv.get("Result") not in (None, "success"):
+            lines.append("ask-follow last run FAILED (Result=%s)" % kv.get("Result"))
+    except Exception:
+        pass   # informational only; OnFailure= is the real guard
+
+    # ---- 4. decide what is worth saying ------------------------------------
+    pb = band(pool_price, BANDS)
+    ob = band(outside, OUTSIDE_BANDS)
+
+    if pb is not None and pb != st["pool_band"]:
+        if st["pool_band"] is None:
+            lines.append("pool $%.6f (first reading)" % pool_price)
+        else:
+            falling = pb > st["pool_band"]
+            lines.append("pool %s $%.4f — now $%.6f"
+                         % ("FELL THROUGH" if falling else "rose back above",
+                            edge_crossed(st["pool_band"], pb, BANDS), pool_price))
+
+    if ob is not None and ob != st["outside_band"]:
+        if st["outside_band"] is None:
+            lines.append("wPCN outside our wallets: %.0f (first reading)" % outside)
+        else:
+            lines.append("wPCN OUTSIDE OUR WALLETS %s %d — now %.0f. "
+                         "It takes ~9,709 to push the pool to the $0.015 floor."
+                         % ("rose through" if ob > st["outside_band"] else "fell back under",
+                            edge_crossed(st["outside_band"], ob, OUTSIDE_BANDS), outside))
+
+    if ask is not None and st["ask"]:
+        move = (ask - st["ask"]) / st["ask"] * 100
+        if abs(move) >= ASK_MOVE_PCT:
+            lines.append("PCN ask %+.2f%%: $%.6f → $%.6f" % (move, st["ask"], ask))
+
+    # Low-float and late-timer are PERSISTENT conditions, so they nag at most
+    # once every six hours rather than every tick.
+    def nag(key, text, hours=6):
+        last = float(st["nagged"].get(key, 0))
+        if FORCE or time.time() - last > hours * 3600:
+            st["nagged"][key] = time.time()
+            lines.append(text)
+
+    if keeper_usdt is not None and keeper_usdt < KEEPER_USDT_LOW:
+        nag("usdt", "keeper USDT $%.2f, below $%.0f — that float is what holds "
+                    "$0.015 IN THE POOL." % (keeper_usdt, KEEPER_USDT_LOW))
+    if keeper_bnb is not None and keeper_bnb < KEEPER_BNB_LOW:
+        nag("bnb", "keeper BNB %.6f, below %.4f — out of gas means it cannot act "
+                   "at all." % (keeper_bnb, KEEPER_BNB_LOW))
+    if late is not None and late > ASK_TIMER_MAX_MIN:
+        nag("late", "pcoin-ask-follow has not completed for %.0f min (expected "
+                    "hourly)." % late, hours=3)
+    for u in unknown:
+        nag("unknown:" + u[:24], "UNKNOWN: " + u, hours=3)
+
+    # ---- 5. report ----------------------------------------------------------
+    def fmt(v, f, d="?"):
+        return f % v if v is not None else d
+
+    ctx = ("pool %s | ask %s | outside %s wPCN | keeper %s USDT"
+           % (fmt(pool_price, "$%.6f"), fmt(ask, "$%.6f"),
+              fmt(outside, "%.0f"), fmt(keeper_usdt, "$%.2f")))
+
+    if lines or FORCE:
+        # Plain text, no markup. An alert whose text breaks the parser comes
+        # back as HTTP 200 with ok:false and simply does not appear, which reads
+        # as a quiet channel -- and a quiet ops channel has already been taken
+        # here as evidence that nothing happened. Nothing below is formatted, so
+        # nothing can break.
+        NL = chr(10)
+        body = NL.join("- " + l for l in lines) + NL + NL + ctx
+        if DRY:
+            print("WOULD SEND:" + NL + "PCN price watch" + NL + body)
+        elif os.path.exists(NOTIFY):
+            import subprocess
+            try:
+                r = subprocess.run([NOTIFY, "PCN price watch", body],
+                                   timeout=60, capture_output=True, text=True)
+                if r.returncode != 0:
+                    print("notifier exited %d: %s"
+                          % (r.returncode, (r.stderr or r.stdout or "").strip()[:200]),
+                          file=sys.stderr)
+            except Exception as e:
+                # A failed send must not lose the state update below, or every
+                # later tick re-reports the same crossing for ever.
+                print("notifier failed: %s" % e, file=sys.stderr)
+        else:
+            print("[no notifier at %s]" % NOTIFY + NL +
+                  "PCN price watch" + NL + body)
+    else:
+        print("no change — " + ctx)
+
+    if pb is not None:
+        st["pool_band"] = pb
+    if ob is not None:
+        st["outside_band"] = ob
+    if ask is not None:
+        st["ask"] = ask
+    if not DRY:
+        try:
+            os.makedirs(os.path.dirname(STATE), exist_ok=True)
+            tmp = STATE + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(st, f, indent=1)
+            os.replace(tmp, STATE)
+        except Exception as e:
+            print("could not save state: %s" % e, file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

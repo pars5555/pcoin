@@ -1,0 +1,14 @@
+[Unit]
+Description=Check the PCN/wPCN price machinery every 15 minutes
+
+[Timer]
+# 15 minutes. The ask only moves hourly and the 24h median moves slower still,
+# but the POOL can move in one transaction, and outside supply changes the
+# moment a wrap is released -- so the cadence is set by the fastest input, not
+# by the slowest. Alerts are damped on change, so a quiet estate stays quiet.
+OnBootSec=3min
+OnUnitActiveSec=15min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

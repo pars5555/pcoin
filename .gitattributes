@@ -45,6 +45,7 @@ contrib/seed-monitoring/pcoin-chain-heartbeat     text eol=lf
 # exec. Same gap as the four above, found the same way.
 contrib/wpcn/pcoin-wpcn-keeper   text eol=lf
 contrib/wpcn/pcoin-redeem-watch  text eol=lf
+contrib/wpcn/pcoin-price-watch   text eol=lf
 # systemd tolerates CRLF, but there is no reason to ship it to a Linux box.
 *.service  text eol=lf
 *.timer    text eol=lf
