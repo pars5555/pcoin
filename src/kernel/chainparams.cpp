@@ -195,6 +195,12 @@ public:
         assert(genesis.hashMerkleRoot == uint256{"a7cf99f4692673756afae432320aaa2fcc3a50638b50962bcf12d37b3a56171f"});
 
         vSeeds.emplace_back("seed.pc.am."); // PCoin's initial seed; more community-run seeds should be added over time
+        // Crawler-backed seed (contrib/dnsseed), served by two of our boxes since
+        // 2026-09-19. Core asks x9.<seed> first, and x9.seed.pc.am has always been
+        // NXDOMAIN -- so until this line every node bootstrapped through the slow
+        // ADDR_FETCH fallback. This zone answers the x-subdomains with nodes it has
+        // itself handshaked with, ours or anyone's. Not consensus: peer discovery only.
+        vSeeds.emplace_back("dnsseed.pc.am.");
 
         base58Prefixes[PUBKEY_ADDRESS] = std::vector<unsigned char>(1,55);
         base58Prefixes[SCRIPT_ADDRESS] = std::vector<unsigned char>(1,56);
