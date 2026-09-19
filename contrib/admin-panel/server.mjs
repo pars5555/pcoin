@@ -289,7 +289,96 @@ color:var(--muted);white-space:nowrap}
 details>summary{list-style:none}details>summary::-webkit-details-marker{display:none}
 @media(max-width:760px){.layout{flex-direction:column}.sidebar{width:100%}
 .main{padding:20px 16px}.logout-btn{top:20px;right:16px}}
-</style></head><body>
+</style>
+<script>
+/* LIVE FILTERING. Owner, 2026-09-20: "when i change the sorting it should sort
+   instantly i should not click on filter button ... even search no need".
+
+   It refetches THIS PAGE with the form's values and swaps only #xres -- the
+   results -- so the search box keeps the caret and the half-typed word. The
+   Filter button is the no-JS fallback and is hidden only once this runs; if
+   anything here throws, the form is an ordinary GET form and still works.
+
+   Typing is debounced and each keystroke ABORTS the request before it: at one
+   request per keystroke a slow answer can arrive after a faster later one and
+   paint stale rows over fresh ones, which is worse than waiting. */
+(function () {
+/* This script is in <head>, so the body does not exist yet: without waiting for
+   DOMContentLoaded the form lookup returns null and live filtering silently
+   never happens -- the page would look exactly as it does now, minus the
+   feature. The defer attribute does not apply to inline scripts. */
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}
+function init() {
+  var f = document.querySelector('form.xfilters');
+  var res = document.getElementById('xres');
+  if (!f || !res || !window.fetch || !window.DOMParser) return;
+  var go = f.querySelector('button.xgo');
+  if (go) go.style.display = 'none';
+
+  var timer = 0, ctl = null, seq = 0;
+
+  function urlFor() {
+    var p = new URLSearchParams(new FormData(f));
+    var out = new URLSearchParams();
+    p.forEach(function (v, k) { if (v !== '') out.append(k, v); });
+    /* An all-empty form must not fall back to the view's default filter -- the
+       owner cleared it on purpose. Same flag the Reset link uses. */
+    var onlyView = true;
+    out.forEach(function (v, k) { if (k !== 'view' && k !== 'kind') onlyView = false; });
+    if (onlyView) out.append('reset', '1');
+    return location.pathname + '?' + out.toString();
+  }
+
+  function load(url, push) {
+    var mine = ++seq;
+    if (ctl) { try { ctl.abort(); } catch (e) {} }
+    ctl = (window.AbortController ? new AbortController() : null);
+    res.style.opacity = '.5';
+    fetch(url, ctl ? { signal: ctl.signal, credentials: 'same-origin' } : { credentials: 'same-origin' })
+      .then(function (r) { return r.text(); })
+      .then(function (html) {
+        if (mine !== seq) return;                    /* a newer keystroke won */
+        var nu = new DOMParser().parseFromString(html, 'text/html').querySelector('#xres');
+        if (!nu) { location.href = url; return; }    /* logged out, or an error page */
+        res.innerHTML = nu.innerHTML;
+        res.style.opacity = '1';
+        try { history[push ? 'pushState' : 'replaceState']({}, '', url); } catch (e) {}
+      })
+      .catch(function (e) {
+        if (e && e.name === 'AbortError') return;
+        res.style.opacity = '1';
+        location.href = url;                          /* never leave it stale */
+      });
+  }
+
+  f.addEventListener('change', function (e) {
+    if (e.target.matches('select, input[type=date], input[type=checkbox]')) load(urlFor(), false);
+  });
+  f.addEventListener('input', function (e) {
+    if (!e.target.matches('input[type=search], input[type=text]')) return;
+    clearTimeout(timer);
+    timer = setTimeout(function () { load(urlFor(), false); }, 120);
+  });
+  /* Enter in the search box should not reload the whole page. */
+  f.addEventListener('submit', function (e) { e.preventDefault(); clearTimeout(timer); load(urlFor(), false); });
+
+  /* Sort headers, pager and the chips' remove links live INSIDE #xres and are
+     replaced on every load, so they are handled by delegation rather than bound. */
+  res.addEventListener('click', function (e) {
+    var a = e.target.closest('a');
+    if (!a || e.metaKey || e.ctrlKey || e.shiftKey || a.target === '_blank') return;
+    if (!a.matches('.xsort, .xpager a, .xchip')) return;
+    e.preventDefault();
+    load(a.getAttribute('href'), true);
+  });
+  window.addEventListener('popstate', function () { location.reload(); });
+}
+})();
+</script></head><body>
 ${page === null ? `<div style="padding:24px">${body}</div>` : `<div class="layout">
 <div class="sidebar">
   <div class="sidebar-logo"><h2>&#9889; PCoin admin</h2><small>${esc(HOSTLABEL)}</small></div>

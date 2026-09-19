@@ -122,9 +122,9 @@ export function makeLister({ self, call, unknown }) {
       <label>to <input type="date" name="to" value="${esc(d.applied.to || '')}"></label>
       ${sortSel}
       ${perSel}
-      <span style="display:flex;gap:4px;align-items:center"><button type="submit">Filter</button>
+      <span style="display:flex;gap:4px;align-items:center"><button type="submit" class="xgo">Filter</button>
       <a class="reset" href="${self}?${base.toString().replace(/&/g, '&amp;')}&amp;reset=1" title="clear every filter, including the default one">Reset</a></span>
-    </form>${chips()}</div>`;
+    </form></div>`;
 
     function chips() {
       const c = [];
@@ -173,10 +173,12 @@ export function makeLister({ self, call, unknown }) {
       return `<div class="xpager">${out.join('')}</div>`;
     })() : '';
 
-    const table = `<div class="xsummary">${summary}${pager}</div>
+    const table = `${chips()}<div class="xsummary">${summary}${pager}</div>
       <div class="card" style="padding:0;overflow-x:auto"><table><tr>${head}</tr>${body}</table></div>
       ${pager ? `<div class="xsummary"><span></span>${pager}</div>` : ''}`;
 
-    return { html: filterBar + table, data: d, qs };
+    // ONE REPLACEABLE REGION. The filter controls stay put -- they hold the
+    // caret and the user's half-typed word -- and only the result is swapped.
+    return { html: `${filterBar}<div id="xres">${table}</div>`, data: d, qs };
   };
 }
