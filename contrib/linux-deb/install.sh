@@ -20,7 +20,7 @@
 # Bump VER on a LINUX release only; the .deb and its checksum come from one tag.
 set -eu
 
-VER="v1.4.4"
+VER="v1.4.34"
 BASE="https://github.com/pars5555/pcoin/releases/download/$VER"
 DEB="pcoin-linux-amd64-miner.deb"
 
