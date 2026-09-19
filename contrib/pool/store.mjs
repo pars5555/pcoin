@@ -258,7 +258,7 @@ class Sqlite {
    * OR IGNORE no-op or because it failed. Callers that care distinguish the two
    * by reading the row back, never by assuming.
    */
-  run(sql) {
+  run(sql, ms = RUN_TIMEOUT_MS) {
     if (!this.alive) return Promise.reject(new Error('store is not running'));
     return new Promise((resolve, reject) => {
       const w = { resolve, reject };
@@ -266,8 +266,8 @@ class Sqlite {
       w.timer = setTimeout(() => {
         const i = this.q.indexOf(w);
         if (i >= 0) this.q.splice(i, 1);
-        reject(new Error('store timed out after 15s'));
-      }, 15000);
+        reject(new Error(`store timed out after ${Math.round(ms / 1000)}s`));
+      }, ms);
       this.q.push(w);
       this.p.stdin.write(`${sql}\nSELECT '${SENTINEL}'||total_changes();\n`);
     });
@@ -275,6 +275,29 @@ class Sqlite {
 
   close() { this.alive = false; try { this.p.stdin.end(); this.p.kill(); } catch { /* gone */ } }
 }
+
+// THE BOUND IS PER CALL, AND THE DEFAULT IS DELIBERATELY STILL TIGHT.
+//
+// A hung query stalls every connected miner in silence, so the everyday bound
+// stays short. But a handful of calls are legitimately slow and get slower as
+// the table grows, and on 2026-09-19 that cost a real outage: the pool was
+// restarted, `open()` could not finish inside 15s, it exited 1 with "FATAL no
+// template at startup", and systemd's next two attempts did the same. Miners
+// were disconnected for ~40s.
+//
+// MEASURED THAT DAY, on 8.04 million shares: a PPLNS-shaped scan takes 9.1s
+// even with shares_at_miner covering it, and startup runs COUNT(*) over the
+// whole table before that. 15s had no margin left and had quietly become a
+// coin flip. It was NOT the 367 MB WAL -- a PASSIVE checkpoint showed only 178
+// live pages, and a read-only open returned instantly -- so the size of the
+// file was never the problem. The ROW COUNT is.
+//
+// So: everyday calls keep 15s; the few that scan the share history get a
+// generous bound because being slow there is recoverable and dying is not.
+// If this stops being enough, the answer is fewer rows (shorter share
+// retention), not a bigger number here.
+const RUN_TIMEOUT_MS = 15000;
+const SCAN_TIMEOUT_MS = 120000;
 
 /** SQL string literal. Doubling the quote is SQLite's escape. */
 const lit = (s) => {
@@ -392,7 +415,7 @@ export class Store {
       SCHEMA,
     ].join('\n'));
     await this.migrate();
-    const [n] = (await this.db.run('SELECT COUNT(*) FROM shares;')).rows;
+    const [n] = (await this.db.run('SELECT COUNT(*) FROM shares;', SCAN_TIMEOUT_MS)).rows;
     this.log(`store ${this.o.path}: ${n} share(s) already recorded`);
     return this;
   }
@@ -498,10 +521,11 @@ export class Store {
     for (;;) {
       const [covered] = (await this.db.run(
         `SELECT IFNULL(SUM(weight),0) FROM (SELECT weight FROM shares`
-        + ` WHERE id <= ${num(lastShareId)} ORDER BY id DESC LIMIT ${num(limit)});`)).rows;
+        + ` WHERE id <= ${num(lastShareId)} ORDER BY id DESC LIMIT ${num(limit)});`,
+        SCAN_TIMEOUT_MS)).rows;
       if (BigInt(covered) >= N) break;
       const [have] = (await this.db.run(
-        `SELECT COUNT(*) FROM shares WHERE id <= ${num(lastShareId)};`)).rows;
+        `SELECT COUNT(*) FROM shares WHERE id <= ${num(lastShareId)};`, SCAN_TIMEOUT_MS)).rows;
       // Every share that exists still weighs less than N: the window IS the
       // whole table, and looking wider cannot add a row.
       if (limit >= Number(have)) { limit = Number(have) || 1; break; }
@@ -513,7 +537,7 @@ export class Store {
       + `  SELECT miner, weight, SUM(weight) OVER (ORDER BY id DESC ROWS UNBOUNDED PRECEDING) AS cum`
       + `  FROM (SELECT id, miner, weight FROM shares WHERE id <= ${num(lastShareId)}`
       + `        ORDER BY id DESC LIMIT ${num(limit)})`
-      + `) WHERE cum - weight < ${num(N)} GROUP BY miner ORDER BY 2 DESC;`);
+      + `) WHERE cum - weight < ${num(N)} GROUP BY miner ORDER BY 2 DESC;`, SCAN_TIMEOUT_MS);
     const entries = r.rows.map((line) => {
       const [m, w, n] = line.split('|');
       return { miner: m, weight: BigInt(w), shares: Number(n) };
