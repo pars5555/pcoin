@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PCoin — Listing kit</title>
+<meta name="description" content="Everything a mining calculator, pool directory, price tracker or exchange needs to list PCoin (PCN): chain facts, live API endpoints with sample responses, pools, market feed, logos and contacts.">
+<meta name="theme-color" content="#0a0b10">
+<link rel="icon" href="/brand/pcoin-64.png">
+<style>
+  :root{
+    --bg:#0a0b10; --panel:#11131d; --line:rgba(255,255,255,.09); --line-soft:rgba(255,255,255,.06);
+    --text:#e9ebf4; --muted:#9aa2b8; --dim:#6b7288; --violet:#8b5cf6; --teal:#2dd4bf;
+    --radius:16px; --mono:ui-monospace,"Cascadia Code",Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    font-size:16.5px;line-height:1.65;-webkit-font-smoothing:antialiased}
+  a{color:var(--teal);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:860px;margin:0 auto;padding:0 24px}
+  header.nav{position:sticky;top:0;z-index:50;background:rgba(10,11,16,.82);
+    backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid var(--line-soft)}
+  .nav-inner{display:flex;align-items:center;gap:28px;padding:14px 24px;max-width:1080px;margin:0 auto;flex-wrap:wrap}
+  .brand{display:flex;align-items:center;gap:11px;font-weight:700;font-size:1.15rem;color:var(--text)}
+  .brand:hover{text-decoration:none}
+  .brand img{width:28px;height:28px;border-radius:7px}
+  nav.links{display:flex;gap:22px;margin-left:auto;flex-wrap:wrap;align-items:center}
+  nav.links a{color:var(--muted);font-size:.93rem;font-weight:500}
+  nav.links a:hover{color:var(--text);text-decoration:none}
+  .hero{padding-block:64px 30px;border-bottom:1px solid var(--line-soft)}
+  h1{font-size:2.4rem;line-height:1.15;letter-spacing:-.02em;font-weight:800}
+  .lede{color:var(--muted);margin-top:14px;font-size:1.05rem;max-width:62ch}
+  main{padding:36px 0 90px}
+  h2{font-size:.8rem;letter-spacing:.09em;text-transform:uppercase;color:var(--violet);margin:34px 0 12px}
+  .card{border:1px solid var(--line-soft);background:var(--panel);border-radius:var(--radius);padding:20px 22px;margin-bottom:18px}
+  .card p+p{margin-top:10px}
+  table{width:100%;border-collapse:collapse;font-size:.95rem}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+  th{color:var(--muted);font-weight:600;white-space:nowrap}
+  td.k{color:var(--muted);white-space:nowrap;width:38%}
+  code{font-family:var(--mono);font-size:.88em;background:rgba(255,255,255,.06);border-radius:6px;padding:1px 6px;color:var(--text)}
+  pre{font-family:var(--mono);font-size:.82rem;background:rgba(255,255,255,.04);border:1px solid var(--line-soft);
+    border-radius:10px;padding:12px 14px;overflow-x:auto;margin-top:10px;color:var(--text)}
+  .note{color:var(--muted);font-size:.93rem;margin-top:12px}
+  .logos{display:flex;gap:18px;flex-wrap:wrap;align-items:center;margin-top:12px}
+  .logos img{background:#fff;border-radius:12px;padding:6px}
+  footer{border-top:1px solid var(--line-soft);padding:26px 0 40px;color:var(--dim);font-size:.9rem;text-align:center}
+</style>
+</head>
+<body>
+<header class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="/"><img src="/brand/pcoin-64.png" alt="">PCoin</a>
+    <nav class="links">
+      <a href="/">Home</a>
+      <a href="/download/">Download</a>
+      <a href="/news/">News</a>
+      <a href="/bounty/">Earn PCN</a>
+      <a href="https://explorer.pc.am">Explorer</a>
+      <a href="https://docs.pc.am">Docs</a>
+      <a href="https://github.com/pars5555/pcoin">GitHub</a>
+    </nav>
+  </div>
+</header>
+<section class="hero wrap">
+  <h1>Listing kit</h1>
+  <p class="lede">Everything a mining calculator, pool directory, price tracker or exchange needs to list
+  PCoin (PCN) &mdash; the chain facts, the live endpoints with their exact shapes, the pools, the market feed,
+  the logos. Every number on this page is either a constant of the chain or read live from the linked API;
+  nothing here is typed in by hand.</p>
+</section>
+
+<main class="wrap">
+
+<h2>The coin</h2>
+<div class="card">
+  <table>
+    <tr><td class="k">Name / ticker</td><td>PCoin / <b>PCN</b></td></tr>
+    <tr><td class="k">What it is</td><td>An independent Layer-1 blockchain: its own genesis, network and UTXO set. A fork of Bitcoin Core v29.4 with RandomX proof-of-work and LWMA difficulty. Not a token on any other chain.</td></tr>
+    <tr><td class="k">Proof-of-work</td><td><b>RandomX</b>, fixed key <code>PCoin/RandomX/v1</code>, light mode (~256&nbsp;MiB). Hashed: the 80-byte block header. Miner names: <code>randompcn</code> (SRBMiner-Multi ≥&nbsp;3.5.6), <code>rx/pcoin</code> (stratum <code>algo</code> field). Block ids are still double-SHA256; only the PoW hash is RandomX.</td></tr>
+    <tr><td class="k">Block time / reward</td><td>600&nbsp;s target &middot; <b>50 PCN</b> per block &middot; halving every 210,000 blocks &middot; 21,000,000 cap &middot; coinbase maturity 100 blocks</td></tr>
+    <tr><td class="k">Difficulty</td><td>LWMA (N=60), retargets every block, since height 2800. Before that, Bitcoin's 2016-block retarget.</td></tr>
+    <tr><td class="k">Genesis</td><td><code>a95d51f0cbf25cad10c35961c6189356525d079835f02e83e2395f382fbe264a</code><br>timestamp 1785600628 (2026-08-01 UTC)</td></tr>
+    <tr><td class="k">Ports</td><td>P2P <b>9444</b> &middot; RPC 9443 (loopback only on our nodes) &middot; network magic <code>cf a2 d1 b8</code></td></tr>
+    <tr><td class="k">Addresses</td><td>bech32 <code>pc1q…</code> (SegWit v0), base58 P2PKH prefix 55, P2SH prefix 56 &middot; BIP44 coin type <b>9444</b> &middot; derivation <code>m/84'/9444'/0'</code></td></tr>
+    <tr><td class="k">Explorer</td><td><a href="https://explorer.pc.am">explorer.pc.am</a> (and <a href="https://explorer3.pc.am">explorer3.pc.am</a>, an independent second index on another host)</td></tr>
+    <tr><td class="k">Source</td><td><a href="https://github.com/pars5555/pcoin">github.com/pars5555/pcoin</a> &middot; releases carry Linux, Windows and Android builds with <code>SHA256SUMS</code></td></tr>
+    <tr><td class="k">Whitepaper / docs</td><td><a href="/whitepaper/">pc.am/whitepaper</a> &middot; <a href="https://docs.pc.am">docs.pc.am</a> (integration guide)</td></tr>
+  </table>
+</div>
+
+<h2>Network data &mdash; live</h2>
+<div class="card">
+  <p>One call, no key, CORS open. Height, difficulty, supply and the block timestamp come straight from the index; <code>index.stale</code> is <code>true</code> when the index is behind the node, so a reader can refuse stale numbers instead of trusting them.</p>
+  <pre>GET https://explorer.pc.am/api/status
+
+{ "chain": { "height": 8603, "difficulty": 0.11962281, "supply_pcn": "430150.00000000",
+             "block_time": 1789783875, "best_hash": "…", "tx_count": 9597 },
+  "index": { "status": "ok", "stale": false, "node_connections": 51, "blocks_behind": 0 } }</pre>
+  <p>Network hashrate (and the same difficulty/height) from the pool API, MiningCore-shaped:</p>
+  <pre>GET https://pool.pc.am/api/pools/pcoin
+
+{ "pool": { "networkStats": { "networkHashrate": 734238.3, "networkDifficulty": 0.11962281,
+                              "blockHeight": 8603, "lastNetworkBlockTime": "…" },
+            "poolStats": { "connectedMiners": 171, "poolHashrate": 418585.0 },
+            "poolFeePercent": 2, "totalBlocks": 3043 } }</pre>
+  <p class="note">Blocks and transactions: <code>/api/block/&lt;height|hash&gt;</code>, <code>/api/tx/&lt;txid&gt;</code>, <code>/api/address/&lt;addr&gt;</code>, <code>/api/blocks</code>. Raw node REST (read-only, no wallet): <code>https://explorer.pc.am/rest/chaininfo.json</code>, <code>/rest/block/…</code>, <code>/rest/tx/…</code>. Full reference at <a href="https://docs.pc.am">docs.pc.am</a>.</p>
+</div>
+
+<h2>Pools</h2>
+<div class="card">
+  <table>
+    <tr><th>pool</th><th>stratum</th><th>fee / payout</th><th>stats API</th></tr>
+    <tr><td>pool.pc.am (ours)</td><td><code>pool.pc.am:3333</code></td><td>2% &middot; PPLNS, paid in the coinbase</td><td><a href="https://pool.pc.am/api/pools/pcoin">pool.pc.am/api/pools/pcoin</a></td></tr>
+    <tr><td>pool2.pc.am (ours, separate server)</td><td><code>pool2.pc.am:3333</code></td><td>2% &middot; PPLNS</td><td><a href="https://pool2.pc.am/api/pools/pcoin">pool2.pc.am/api/pools/pcoin</a></td></tr>
+    <tr><td>independent (not run by us)</td><td><code>198.244.169.49:3333</code></td><td>see its operator</td><td>&mdash;</td></tr>
+  </table>
+  <p class="note">Protocol: Monero-style stratum over raw TCP (<code>login</code> / <code>job</code> / <code>submit</code> / <code>keepalived</code>), no TLS, no registration; the payout address is the login. Solo mining needs no pool: the node ships a built-in miner (<code>startmining</code>). Miner integration notes: <a href="https://github.com/pars5555/pcoin/blob/main/contrib/pool/MINER-INTEGRATION.md">MINER-INTEGRATION.md</a>.</p>
+</div>
+
+<h2>Market data &mdash; live, no login</h2>
+<div class="card">
+  <p><a href="https://exchange.pc.am">exchange.pc.am</a> is a PCN/USDT limit-order book run by the project. Its public feed follows the CoinMarketCap and CoinGecko exchange specifications; every path also answers under <code>/api/v1/…</code>.</p>
+  <table>
+    <tr><th>CoinMarketCap shape</th><th>CoinGecko shape</th></tr>
+    <tr><td><a href="https://exchange.pc.am/api/cmc/summary">/api/cmc/summary</a></td><td><a href="https://exchange.pc.am/api/cg/pairs">/api/cg/pairs</a></td></tr>
+    <tr><td><a href="https://exchange.pc.am/api/cmc/assets">/api/cmc/assets</a></td><td><a href="https://exchange.pc.am/api/cg/tickers">/api/cg/tickers</a></td></tr>
+    <tr><td><a href="https://exchange.pc.am/api/cmc/ticker">/api/cmc/ticker</a></td><td><a href="https://exchange.pc.am/api/cg/orderbook">/api/cg/orderbook</a></td></tr>
+    <tr><td><a href="https://exchange.pc.am/api/cmc/orderbook/PCN_USDT">/api/cmc/orderbook/PCN_USDT</a></td><td><a href="https://exchange.pc.am/api/cg/historical_trades">/api/cg/historical_trades</a></td></tr>
+    <tr><td><a href="https://exchange.pc.am/api/cmc/trades/PCN_USDT">/api/cmc/trades/PCN_USDT</a></td><td>candles: <a href="https://exchange.pc.am/api/candles?interval=15m">/api/candles?interval=15m</a></td></tr>
+  </table>
+  <pre>GET https://exchange.pc.am/api/cmc/ticker
+
+{ "PCN_USDT": { "last_price": "0.020100", "base_volume": "1210.00000000",
+                "quote_volume": "27.254350", "isFrozen": 0, "trade_count_24h": 4,
+                "disclosure": "PCN/USDT is the only market. The operator runs a bid and an ask bot …" } }</pre>
+  <p class="note"><b>Read the disclosure field.</b> The house bots' fills are counted in volume and excluded from <code>last_price</code>; the feed says so on every response rather than leaving it to be discovered. The market is young and thin. <a href="https://price.pc.am">price.pc.am</a> is the project's <em>reference</em> rate used by its own services &mdash; it is not a traded price and should not be quoted as one. wPCN, a 1:1 wrapped form on BNB Smart Chain, trades on PancakeSwap (wPCN/USDT).</p>
+</div>
+
+<h2>Where it stands</h2>
+<div class="card">
+  <table>
+    <tr><td class="k">Launched</td><td>1 August 2026 &middot; blocks every day since</td></tr>
+    <tr><td class="k">Nodes / seeds</td><td>Five project seeds plus a crawler-backed DNS seed (<code>dnsseed.pc.am</code>) that answers with any reachable node, ours or not</td></tr>
+    <tr><td class="k">Wallets</td><td>Windows (tray + wallet), Linux (.deb), Android (Google Play: <code>am.pc.pcoinwallet</code>), plus any Electrum-protocol client via <code>electrum1.pc.am</code> / <code>electrum2.pc.am</code> (SSL 50002)</td></tr>
+    <tr><td class="k">Trackers</td><td>Not yet on CoinMarketCap or CoinGecko. exchange.pc.am becomes eligible for CMC's exchange listing on 15 November 2026 (60-day rule).</td></tr>
+  </table>
+</div>
+
+<h2>Logos</h2>
+<div class="card">
+  <div class="logos">
+    <img src="/brand/pcoin-round-128.png" width="64" height="64" alt="PCoin round logo">
+    <img src="/brand/pcoin-128.png" width="64" height="64" alt="PCoin square logo">
+  </div>
+  <p class="note">Round: <a href="/brand/pcoin-round.svg">SVG</a> &middot; <a href="/brand/pcoin-round-64.png">64</a> &middot; <a href="/brand/pcoin-round-128.png">128</a> &middot; <a href="/brand/pcoin-round-256.png">256</a> &middot; <a href="/brand/pcoin-round-512.png">512</a> px PNG.
+  Square: <a href="/brand/pcoin-64.png">64</a> &middot; <a href="/brand/pcoin-128.png">128</a> &middot; <a href="/brand/pcoin-200.png">200</a> &middot; <a href="/brand/pcoin-256.png">256</a> &middot; <a href="/brand/pcoin-512.png">512</a> px PNG.</p>
+</div>
+
+<h2>Contact</h2>
+<div class="card">
+  <p>Telegram <a href="https://t.me/PCoinPCNChat">@PCoinPCNChat</a> (chat) &middot; <a href="https://t.me/PCoinPCN">@PCoinPCN</a> (announcements) &middot;
+  Discord <a href="https://discord.gg/dGmdwJkb9f">PCoin (PCN)</a> &middot; email <a href="mailto:pcoinpcn@gmail.com">pcoinpcn@gmail.com</a> &middot;
+  X <a href="https://x.com/PCoinPCN">@PCoinPCN</a></p>
+  <p class="note">If your listing needs an endpoint that is not here, ask &mdash; the explorer and the exchange are ours to extend.</p>
+</div>
+
+</main>
+<footer>
+  <p>PCoin (PCN) &mdash; an independent Layer-1 blockchain.
+  <a href="/">pc.am</a> &middot;
+  <a href="https://github.com/pars5555/pcoin">source</a> &middot;
+  <a href="https://t.me/PCoinPCN">Telegram</a> &middot;
+  <a href="https://discord.gg/dGmdwJkb9f">Discord</a></p>
+</footer>
+</body>
+</html>
