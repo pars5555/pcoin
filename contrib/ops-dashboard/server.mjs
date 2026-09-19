@@ -599,6 +599,30 @@ function snapshotAge(t) {
 }
 
 // ── pages ──────────────────────────────────────────────────────────────────
+// One panel per pool we run. The primary comes from st.pool (unchanged
+// contract); any other pool a collector has named comes from st.pools. Each
+// panel is the same markup the single-pool overview always had.
+function poolPanels(st) {
+  const entries = [['pool.pc.am', st.pool || null]];
+  for (const [name, snap] of Object.entries(st.pools || {})) {
+    if (name !== 'pool.pc.am') entries.push([name, snap]);
+  }
+  return entries.map(([name, pool]) => {
+    const href = name === 'pool.pc.am' ? './pool' : `./pool?pool=${encodeURIComponent(name)}`;
+    const poolAge = pool ? snapshotAge(pool.at) : null;
+    return `<div class="panel">
+    <a class="more" href="${href}">pool miners →</a>
+    <h2>Mining pool · ${esc(name)}</h2>
+    ${pool ? `<p style="margin:0">${pool.connectedMiners ?? '—'} workers connected ·
+       ${pool.poolHashrate != null ? Math.round(pool.poolHashrate).toLocaleString() + ' H/s' : '—'}
+       ${pool.poolHashrate && pool.networkHashrate ? ` (${(pool.poolHashrate / pool.networkHashrate * 100).toFixed(0)}% of network)` : ''}
+       · ${pool.blocks?.found24h ?? '—'} blocks in 24 h · fee ${pool.feePercent ?? '—'}%</p>
+       <p class="muted" style="margin:6px 0 0">${poolAge.stale ? `<span class="warn">⚠ snapshot ${esc(poolAge.text)} — the collector on that pool host may be down</span>` : esc(poolAge.text)}</p>`
+      : `<p class="muted">No snapshot yet from ${esc(name)}. Its collector posts one every few minutes.</p>`}
+  </div>`;
+  }).join('');
+}
+
 async function dashboardPage() {
   const [c, ce, fl] = await Promise.all([chain(), census(200), fleetBalances().catch(() => null)]);
   const st = readState();
@@ -653,16 +677,7 @@ async function dashboardPage() {
     <div class="note">${ce.distinct} distinct solo payout addresses plus the pool as one entity — a <b>proxy</b>, not a miner count. Details on the census page.</div>
   </div>
 
-  <div class="panel">
-    <a class="more" href="./pool">pool miners →</a>
-    <h2>Mining pool</h2>
-    ${pool ? `<p style="margin:0">${pool.connectedMiners ?? '—'} workers connected ·
-       ${pool.poolHashrate != null ? Math.round(pool.poolHashrate).toLocaleString() + ' H/s' : '—'}
-       ${pool.poolHashrate && pool.networkHashrate ? ` (${(pool.poolHashrate / pool.networkHashrate * 100).toFixed(0)}% of network)` : ''}
-       · ${pool.blocks?.found24h ?? '—'} blocks in 24 h · fee ${pool.feePercent ?? '—'}%</p>
-       <p class="muted" style="margin:6px 0 0">${poolAge.stale ? `<span class="warn">⚠ snapshot ${esc(poolAge.text)} — the collector on the pool host may be down</span>` : esc(poolAge.text)}</p>`
-      : '<p class="muted">No pool snapshot yet. The collector on the pool host posts one every few minutes.</p>'}
-  </div>
+  ${poolPanels(st)}
 
   <div class="panel">
     <a class="more" href="./peers">peer list →</a>
@@ -751,10 +766,19 @@ async function peersPage(url) {
 
 async function poolPage(url) {
   const st = readState();
-  const pool = st.pool || null;
+  // ?pool=<name> picks any pool a collector has named; no parameter, or the
+  // primary's name, is the primary exactly as before.
+  const which = url.searchParams.get('pool') || 'pool.pc.am';
+  const pool = which === 'pool.pc.am' ? (st.pool || null) : ((st.pools || {})[which] || null);
+  const poolBase = which === 'pool.pc.am' ? './pool' : `./pool?pool=${encodeURIComponent(which)}`;
+  const known = ['pool.pc.am', ...Object.keys(st.pools || {}).filter(n => n !== 'pool.pc.am')];
+  const switcher = known.length > 1
+    ? `<p class="muted" style="margin:0 0 14px">Pools: ${known.map(n => n === which ? `<b>${esc(n)}</b>`
+        : `<a href="${n === 'pool.pc.am' ? './pool' : `./pool?pool=${encodeURIComponent(n)}`}">${esc(n)}</a>`).join(' · ')}</p>`
+    : '';
   if (!pool) {
-    return shell('pool', 'Pool miners', null,
-      '<div class="panel"><p class="muted">No pool snapshot yet. The collector on the pool host posts one every few minutes.</p></div>');
+    return shell('pool', `Pool miners · ${which}`, null,
+      switcher + `<div class="panel"><p class="muted">No snapshot yet from ${esc(which)}. Its collector posts one every few minutes.</p></div>`);
   }
   const age = snapshotAge(pool.at);
   const now = Math.floor(Date.now() / 1000);
@@ -797,7 +821,7 @@ async function poolPage(url) {
       the rest went to <a href="./census">${ce.distinct} solo miner${ce.distinct === 1 ? '' : 's'}</a> mining on their own.`;
   } catch { /* explorer unreadable -- say nothing rather than guess */ }
 
-  return shell('pool', 'Pool miners', `who is actually mining through the pool — from its own log; the chain cannot show this`, `
+  return shell('pool', `Pool miners · ${which}`, `who is actually mining through ${which} — from its own log; the chain cannot show this`, switcher + `
   ${age.stale ? `<div class="note warn" style="margin:0 0 18px"><b>Snapshot is stale</b> — ${esc(age.text)}. The collector on the pool host normally posts every few minutes; these numbers describe the pool as of then, not now.</div>` : ''}
 
   <div class="panel" style="font-size:15px;line-height:1.7">
@@ -818,7 +842,7 @@ async function poolPage(url) {
     <h2>Every miner in the pool</h2>
     <table><thead><tr><th class="num">#</th><th>Miner (payout address)</th><th>Status</th><th class="num">Share of work (24 h)</th><th class="num">≈ Speed</th><th class="num">Last seen</th><th class="num">Blocks found</th><th class="num">Earned PCN</th></tr></thead>
     <tbody>${rows || '<tr><td colspan="8" class="muted">no workers on record</td></tr>'}</tbody></table>
-    ${pager('./pool', p, pages)}
+    ${pager(poolBase, p, pages)}
     <div class="note"><b>How to read this table.</b><br>
     <b>Miner</b> — the PCoin address a machine asked to be paid at. One person can run several machines on one
     address, so this is "one payee", not necessarily "one computer".<br>
@@ -1214,7 +1238,19 @@ async function wrapPage() {
       if (got.length !== want.length || !timingSafeEqual(got, want)) return send(401, 'text/plain', 'no');
       const payload = JSON.parse(await body(req));
       const prev = readState();
-      writeFileSync(STATE, JSON.stringify({ ...prev, ...payload, at: new Date().toISOString() }, null, 2));
+      // More than one pool posts here now. A snapshot that names a pool other
+      // than the primary goes under pools[name] and leaves st.pool alone --
+      // otherwise pool2's collector and the primary's would overwrite each
+      // other every four minutes. The primary keeps landing in st.pool (every
+      // reader of that field is unchanged) and is mirrored into pools[] too.
+      const PRIMARY_POOL = 'pool.pc.am';
+      const next = { ...prev, ...payload };
+      if (payload.pool) {
+        const name = payload.pool.name || PRIMARY_POOL;
+        next.pools = { ...(prev.pools || {}), [name]: payload.pool };
+        if (name !== PRIMARY_POOL) next.pool = prev.pool;   // not the primary: do not displace it
+      }
+      writeFileSync(STATE, JSON.stringify({ ...next, at: new Date().toISOString() }, null, 2));
       return send(200, 'application/json', '{"ok":true}');
     }
 
