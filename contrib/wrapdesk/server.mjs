@@ -47,7 +47,7 @@
  */
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
-import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'node:fs';
 import { createHmac, timingSafeEqual, randomBytes } from 'node:crypto';
 import { dirname } from 'node:path';
 
@@ -67,10 +67,45 @@ const STATE_FILE = process.env.WRAPDESK_STATE || '/var/lib/wrapdesk/requests.jso
 // Closing stops NEW requests and nothing else. Wraps already in flight keep
 // counting confirmations and are still paid. Closing the door and repudiating a
 // debt are different acts, and only the first one was announced.
-const CLOSED_FILE = process.env.WRAP_CLOSED_FILE || '/etc/pcoin/wrapdesk-closed';
+// A LIST, and the desk is closed if ANY of them exists.
+//
+// The first is the one the admin panel owns. It lives under /etc/pcoin/control
+// because the panel runs ProtectSystem=strict and /etc/pcoin is read-only to
+// it -- which is why the panel's close button could never work until
+// 2026-09-19, and failed with "could not change it" every time it was pressed.
+// The control directory is granted to the panel precisely because it holds no
+// secrets; /etc/pcoin holds this desk's SSO secret and the keeper's private key
+// and must never be panel-writable.
+//
+// The second is where this flag lived until then. It is still honoured, and
+// that is deliberate: an operator who creates it from memory or from an older
+// runbook must still close the desk. A safety flag that silently stopped
+// working because it moved is the worst possible outcome here.
+const CLOSED_FILES = (process.env.WRAP_CLOSED_FILES
+  || '/etc/pcoin/control/wrapdesk-closed,/etc/pcoin/wrapdesk-closed')
+  .split(',').map((x) => x.trim()).filter(Boolean);
+
+// Every flag file that exists, with whatever note is in it.
+function closedBy() {
+  const out = [];
+  for (const path of CLOSED_FILES) {
+    // existsSync decides; the read only fetches the note. These were one call
+    // before, inside a try/catch that returned null -- so a flag file that
+    // existed but could NOT be read (a permission change, a full disk) opened
+    // the desk. An unreadable safety flag is UNKNOWN, and unknown must fail
+    // closed, not open. This is CLAUDE.md 7.1 on the one switch that decides
+    // whether money can arrive.
+    if (!existsSync(path)) continue;
+    let note = '';
+    try { note = readFileSync(path, 'utf8'); }
+    catch (e) { note = `(this flag exists but could not be read: ${e.message})`; }
+    out.push({ path, note });
+  }
+  return out;
+}
 function intakeClosed() {
-  try { return readFileSync(CLOSED_FILE, 'utf8'); }
-  catch { return null; }          // absent = open
+  const hits = closedBy();
+  return hits.length ? hits.map((h) => h.note).join(String.fromCharCode(10)) : null;   // null = open
 }
 // Shown in place of the request form while the desk is closed.
 const CLOSED_FORM_NOTE = `<div class="card"><p class="muted" style="margin:0">
@@ -1993,6 +2028,11 @@ Times are estimates: PCoin blocks average ten minutes but vary a lot.</p>`));
   console.log(`  allocation ${TOTAL_ALLOC} wPCN total, enforced`);
   console.log(`  returns -> inventory ${INVENTORY}, ledger ${RETURNS_FILE}, ` +
               `signature check ${RECOVER_CMD ? 'via ' + RECOVER_CMD : 'OFF (claims recorded unverified)'}`);
+  // Say which state the intake is in, and on whose authority, every start.
+  // "The desk is closed" must never be something anyone infers.
+  const shut = closedBy();
+  if (shut.length) console.log(`  intake CLOSED by: ${shut.map((h) => h.path).join(', ')}`);
+  else console.log(`  intake OPEN -- none of ${CLOSED_FILES.join(', ')} exists`);
   // Say which state we are in, every start. "The captcha is on" must never be
   // something anyone infers from the config file they think they deployed.
   if (HCAPTCHA_ON) console.log('  hCaptcha ON');
