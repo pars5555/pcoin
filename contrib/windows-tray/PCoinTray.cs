@@ -1205,6 +1205,9 @@ namespace PCoinTray
         bool _hashing;                 // observed: is the node actually hashing?
         Process _node;                 // set only if we launched it ourselves
         bool _startedNode;
+        //! One attempt per session to get an ADOPTED node into fast mode. See
+        //! MaybeRestartAdoptedLightNode.
+        bool _adoptedLightFixTried;
         double _hashrate;
         long _blocksFound;
         bool _poolMining;              // observed from the node, not from _poolUrl
@@ -2559,15 +2562,35 @@ namespace PCoinTray
                 // recorded result that is materially better, keep the recorded
                 // one. Mine at what was just measured for this session -- it is
                 // the best available right now -- but do not write it down.
-                bool degraded = sweptInLightMode && _optimalThreads > 0
-                                && _measuredHps > 0 && bestH < _measuredHps * 0.75;
+                // THREE WAYS A SWEEP PRODUCES NUMBERS THAT DESCRIBE NOTHING.
+                //
+                // Measured on JTIIJES, 2026-09-19, and this is why the guard is
+                // no longer about light mode alone. The sweep read
+                // "4:2 6:7 7:11 8:11 9:12 10:14 12:17 16:19 -> best 16 (19 H/s)"
+                // on a machine that does 3162 H/s at 6 threads: it was not
+                // really hashing, so every sample was noise near zero. The
+                // candidates ascend and each only has to beat the last by 2%,
+                // so a rising line of noise always elects the LARGEST thread
+                // count -- the worst one on this hardware. It wrote optimal=16,
+                // percent=100 and hashrate=19.8 over a good record.
+                //
+                // So the test is no longer "was this measured in the wrong
+                // mode", it is "is this plausibly the same machine we measured
+                // before". A sweep that found nothing, or that lands far below
+                // a rate this PC has actually achieved, is not a worse
+                // measurement of the same thing -- it is not a measurement.
+                bool nothingMeasured = bestH < 1.0;
+                bool farBelowRecord = _optimalThreads > 0 && _measuredHps > 0
+                                      && bestH < _measuredHps * 0.75;
+                bool degraded = nothingMeasured || farBelowRecord;
                 if (degraded)
                 {
                     Program.Note(string.Format(CultureInfo.InvariantCulture,
-                        "auto-tune NOT saved: measured {0} H/s in light mode, which is below the {1} H/s " +
-                        "recorded in fast mode; keeping optimal={2}. Large pages are probably unavailable " +
-                        "until this PC is restarted.",
-                        (int)bestH, (int)_measuredHps, _optimalThreads));
+                        "auto-tune NOT saved: best was {0} H/s{1}, against {2} H/s already recorded; " +
+                        "keeping optimal={3}. The sweep did not measure this machine as it really is.",
+                        (int)bestH,
+                        sweptInLightMode ? " and it ran in light mode" : "",
+                        (int)_measuredHps, _optimalThreads));
                     _mining = true;
                     StartMining(bestN);
                     SetCalibStatus(null);
@@ -3439,6 +3462,8 @@ namespace PCoinTray
             _nodeUp = true;
             _nodeEverUp = true;
             _problem = null;
+            // An adopted node can be in the wrong mode for the whole session.
+            MaybeRestartAdoptedLightNode(r);
             bool mining = r.Hashing;
             _hashing = r.Hashing && r.Threads > 0;
             _threads = r.Threads;
@@ -3636,6 +3661,45 @@ namespace PCoinTray
          * crashing on startup, retrying in a tight loop would bury the reason
          * under thousands of log lines and hammer the disk.
          */
+        /**
+         * THE TRAY CAN ONLY PUT -randomxfastmode ON A NODE IT LAUNCHED.
+         *
+         * NodeArgs() is read at spawn, so a bitcoind that was already running
+         * when this app started keeps whatever mode it was started in, for the
+         * whole session. EnsureNode() adopts it deliberately -- starting a
+         * second node on one data directory corrupts it -- and that is right.
+         * What was missing is the step after: noticing that the node we adopted
+         * is NOT in the mode the owner asked for, and doing something about it.
+         *
+         * Seen on a fleet machine 2026-09-19: a restart raced, the tray found a
+         * node already up, adopted it, logged "not a rejected option, it will be
+         * retried next start" -- correct, and the config kept fastmode=1 -- and
+         * then mined all session at about a tenth of the machine's rate. The
+         * retry never came, because nothing restarts the tray on an always-on
+         * miner.
+         *
+         * So: if fast mode is wanted, the node is up, and it is running in light
+         * mode with NO reason of its own for doing so, restart it once. A node
+         * that refused fast mode for lack of memory says so in modereason, and
+         * that case must be left alone -- restarting it would just fail again.
+         * Once per session: if the restart does not take, something else is
+         * wrong and looping would be worse than a slow miner.
+         */
+        void MaybeRestartAdoptedLightNode(Reading r)
+        {
+            if (_adoptedLightFixTried) return;
+            if (!FastModeActive || !_nodeUp || r == null) return;
+            if (_startedNode) return;              // we passed the flag ourselves
+            if (r.Mode != "light" || r.DatasetProgress != 0) return;
+            if (SoloBlockedBySync()) return;       // not while the chain is still catching up
+
+            _adoptedLightFixTried = true;
+            Program.Note("fast mode wanted but the node we adopted is running in light mode; restarting it once so it starts with -randomxfastmode");
+            var t = new Thread(() => { try { RestartNodeForStall(); } catch { } })
+            { IsBackground = true };
+            t.Start();
+        }
+
         void ReviveNode()
         {
             if (_reviveBusy) return;
