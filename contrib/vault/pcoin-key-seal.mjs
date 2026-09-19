@@ -48,12 +48,27 @@ function die(m) { console.error('\n  ' + m + '\n'); process.exit(1); }
 // passphrase is the only thing between a stolen blob and the money.
 const SCRYPT = { N: 1 << 17, r: 8, p: 1, keylen: 32, maxmem: 256 * 1024 * 1024 };
 
+// BYTES, NOT TEXT, AND THAT IS A CORRECTION (2026-09-19).
+//
+// `seal` used to read its input with readFileSync(file, 'utf8'). For the text
+// secrets this tool was written for -- keeper.conf, bearer tokens -- that is
+// harmless. Hand it anything binary and every byte that is not valid UTF-8
+// becomes U+FFFD before it is ever encrypted: a 194,560-byte tar holding a
+// wallet went in and 296,274 bytes of replacement characters came out. The
+// blob then passed its own round-trip check, and `verify` agreed, because both
+// were comparing the corrupted text with itself. A backup that validates and
+// cannot be restored is worse than no backup, so the encoding is gone and the
+// plaintext is a Buffer from end to end.
+//
+// Old blobs are unaffected: their plaintext was text, decrypt hands back the
+// same bytes as a Buffer, sha256 over those bytes is unchanged, and `open`
+// writes them unchanged.
 function encrypt(plaintext, passphrase) {
   const salt = randomBytes(16);
   const key = scryptSync(passphrase, salt, SCRYPT.keylen, SCRYPT);
   const iv = randomBytes(12);
   const c = createCipheriv('aes-256-gcm', key, iv);
-  const ct = Buffer.concat([c.update(plaintext, 'utf8'), c.final()]);
+  const ct = Buffer.concat([c.update(Buffer.from(plaintext)), c.final()]);
   return {
     v: 1, kdf: 'scrypt', N: SCRYPT.N, r: SCRYPT.r, p: SCRYPT.p,
     salt: salt.toString('base64'), iv: iv.toString('base64'),
@@ -66,7 +81,7 @@ function decrypt(blob, passphrase) {
                          { N: blob.N, r: blob.r, p: blob.p, maxmem: SCRYPT.maxmem });
   const d = createDecipheriv('aes-256-gcm', key, Buffer.from(blob.iv, 'base64'));
   d.setAuthTag(Buffer.from(blob.tag, 'base64'));
-  return Buffer.concat([d.update(Buffer.from(blob.ct, 'base64')), d.final()]).toString('utf8');
+  return Buffer.concat([d.update(Buffer.from(blob.ct, 'base64')), d.final()]);
 }
 
 function ask(question, { hidden = false } = {}) {
@@ -96,7 +111,16 @@ function selftest() {
   const blob = encrypt(secret, 'correct horse battery staple');
   ok('blob declares v/kdf/N', blob.v === 1 && blob.kdf === 'scrypt' && blob.N === (1 << 17));
   ok('ciphertext is not the plaintext', !Buffer.from(blob.ct, 'base64').toString('utf8').includes('KEEPER'));
-  ok('round trip returns the exact bytes', decrypt(blob, 'correct horse battery staple') === secret);
+  ok('round trip returns the exact bytes', decrypt(blob, 'correct horse battery staple').toString('utf8') === secret);
+
+  // THE CASE THAT USED TO CORRUPT IN SILENCE: every byte 0x00-0xff, which is
+  // not valid UTF-8 anywhere. A text read turns most of it into U+FFFD and
+  // grows the payload by half. The length is asserted as well as the content,
+  // because a wrong length was the only visible symptom the day this was found.
+  const binary = Buffer.from(Array.from({ length: 256 }, (_, i) => i));
+  const bb = decrypt(encrypt(binary, 'correct horse battery staple'), 'correct horse battery staple');
+  ok('BINARY survives byte for byte', Buffer.isBuffer(bb) && bb.equals(binary));
+  ok('binary keeps its exact length', bb.length === 256);
 
   let threw = false;
   try { decrypt(blob, 'wrong passphrase'); } catch { threw = true; }
@@ -124,10 +148,10 @@ if (cmd === 'seal') {
   if (!inFile || !outFile) die('usage: seal --in <secret file> --out <name>.enc.json');
   if (!existsSync(inFile)) die(`${inFile} not found`);
   if (existsSync(outFile)) die(`${outFile} already exists — refusing to overwrite a sealed blob`);
-  const plain = readFileSync(inFile, 'utf8');
-  if (!plain.trim()) die(`${inFile} is empty — refusing to seal nothing`);
+  const plain = readFileSync(inFile);
+  if (!plain.length) die(`${inFile} is empty — refusing to seal nothing`);
 
-  console.log(`\n  Sealing ${inFile}  (${Buffer.byteLength(plain)} bytes, sha256 ${sha(plain).slice(0, 16)}…)`);
+  console.log(`\n  Sealing ${inFile}  (${plain.length} bytes, sha256 ${sha(plain).slice(0, 16)}…)`);
   console.log('  The passphrase is typed, never echoed, and never stored. If you lose');
   console.log('  it the blob is unrecoverable — that is the point.\n');
   const p1 = await ask('  Passphrase: ', { hidden: true });
@@ -144,7 +168,7 @@ if (cmd === 'seal') {
   // Open it again immediately. An unverified seal is how a corrupt backup gets
   // filed and trusted for a year.
   const back = decrypt(JSON.parse(readFileSync(outFile, 'utf8')), p1);
-  if (back !== plain) die('re-opening the blob did NOT return the original — do not trust this file');
+  if (!back.equals(plain)) die('re-opening the blob did NOT return the original — do not trust this file');
   console.log(`\n  Sealed  : ${outFile}`);
   console.log(`  Verified: re-opened and byte-identical to the source`);
   console.log(`  sha256  : ${sha(plain)}`);
@@ -169,7 +193,7 @@ if (cmd === 'verify' || cmd === 'open') {
     console.log(`  content : ${match ? 'matches the recorded sha256' : 'DOES NOT MATCH the recorded sha256'}`);
     if (!match) process.exit(1);
   }
-  console.log(`  opened  : ${Buffer.byteLength(plain)} bytes, sha256 ${sha(plain).slice(0, 16)}…`);
+  console.log(`  opened  : ${plain.length} bytes, sha256 ${sha(plain).slice(0, 16)}…`);
   console.log(`  sealed  : ${blob.sealed_at || 'unknown'}  from ${blob.source || 'unknown'}`);
 
   if (cmd === 'open') {
