@@ -1,0 +1,206 @@
+#!/usr/bin/env python3
+"""Move pool.pc.am between the two pools by editing DNS, for free.
+
+WHAT THIS REPLACES. Cloudflare's Load Balancer product ($5/month) does one thing
+we care about: a health check that rewrites the DNS answer when an origin dies.
+Cloudflare's DNS API is free, so this does the same job from a third box.
+
+WHY DNS AND NOT ROUND-ROBIN. A pool is stateful: each has its own share ledger
+and PPLNS pays from whichever pool finds the block. Two IPs behind one name
+would scatter every miner's shares across two ledgers. So exactly ONE pool owns
+the name at a time, and the name moves only on failure.
+
+WHY IT REACHES EVERY MINER. The node's built-in pool client re-resolves the
+hostname on every reconnect (src/node/poolclient.cpp) with a 1 s -> 60 s
+backoff, so after a flip every miner lands on the other pool within about a
+minute of the record's TTL. No app update, no miner-side config.
+
+THE RULES, each the answer to a way this could hurt more than it helps:
+  * Flip only after FAILS consecutive failed probes of the primary, and only if
+    the standby is healthy at that moment. Moving 170 miners onto a dead pool
+    is worse than leaving them on a dead one -- at least the dead one comes back
+    with their pending shares.
+  * A probe is a real stratum `login`, not a TCP connect. A wedged pool accepts
+    connections and never answers; the connect would say "healthy".
+  * Flip BACK only after the primary has answered RECOVER consecutive probes
+    (10 minutes). Flapping between two ledgers every few minutes is the one
+    outcome strictly worse than either pool alone.
+  * If the record points at neither pool, somebody changed it by hand: alert
+    and do NOT touch it. A human's edit outranks this script.
+  * Every DNS write and every failed write goes to the ops channel. A flip
+    nobody heard about is a ledger nobody reconciles.
+  * A failed API call resolves nothing: the state does not advance, the next
+    cycle tries again. Unknown is not "still healthy" and not "failed".
+
+The token file is the same DNS-scoped Cloudflare token certbot uses for DNS-01,
+root-only. It can edit this zone's DNS records and nothing else.
+"""
+import argparse
+import json
+import os
+import socket
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+ZONE_NAME = os.environ.get("FAILOVER_ZONE", "pc.am")
+RECORD = os.environ.get("FAILOVER_RECORD", "pool.pc.am")
+PRIMARY = os.environ.get("FAILOVER_PRIMARY", "178.105.178.27")
+STANDBY = os.environ.get("FAILOVER_STANDBY", "152.53.171.190")
+PORT = int(os.environ.get("FAILOVER_PORT", "3333"))
+TOKEN_FILE = os.environ.get("FAILOVER_TOKEN_FILE", "/etc/pcoin-pool-failover/cloudflare.ini")
+STATE = os.environ.get("FAILOVER_STATE", "/var/lib/pcoin-pool-failover/state.json")
+NOTIFY = os.environ.get("PCOIN_NOTIFY", "/usr/local/bin/pcoin-notify")
+INTERVAL = int(os.environ.get("FAILOVER_INTERVAL", "30"))      # seconds between probes
+FAILS = int(os.environ.get("FAILOVER_FAILS", "3"))             # consecutive failures before a flip
+RECOVER = int(os.environ.get("FAILOVER_RECOVER", "20"))        # consecutive successes before flipping back
+TTL = int(os.environ.get("FAILOVER_TTL", "60"))
+PROBE_ADDR = "pc1qlvw6kx8wkcz8f6p0d6kswv69fjt33ll079f64e"      # any valid address; the pool credits nothing for a login
+
+API = "https://api.cloudflare.com/client/v4"
+
+
+def log(msg):
+    print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), msg, flush=True)
+
+
+def token():
+    for line in open(TOKEN_FILE, encoding="utf-8"):
+        if line.startswith("dns_cloudflare_api_token"):
+            return line.split("=", 1)[1].strip()
+    raise RuntimeError("no dns_cloudflare_api_token in " + TOKEN_FILE)
+
+
+def cf(method, path, body=None):
+    req = urllib.request.Request(API + path, method=method,
+                                 data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Authorization": "Bearer " + token(), "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        d = json.load(r)
+    if not d.get("success"):
+        raise RuntimeError("cloudflare: %s" % json.dumps(d.get("errors"))[:300])
+    return d["result"]
+
+
+def probe(ip):
+    """True only if the pool answers a stratum login with status OK."""
+    try:
+        s = socket.create_connection((ip, PORT), timeout=8)
+        f = s.makefile("rwb")
+        f.write((json.dumps({"id": 1, "method": "login", "params": {"login": PROBE_ADDR, "pass": "x", "agent": "pcoin-pool-failover/1"}}) + "\n").encode())
+        f.flush()
+        s.settimeout(8)
+        d = json.loads(f.readline())
+        s.close()
+        return (d.get("result") or {}).get("status") == "OK"
+    except Exception:
+        return False
+
+
+def notify(subject, body):
+    try:
+        subprocess.run([NOTIFY, subject, body], timeout=30, check=False)
+    except Exception as e:
+        log("notify failed: %s" % e)
+
+
+def load_state():
+    st = {"fail": 0, "ok": 0, "zone": None, "rid": None, "last_flip": None}
+    try:
+        st.update(json.load(open(STATE)))
+    except Exception:
+        pass
+    return st
+
+
+def save_state(st):
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    tmp = STATE + ".tmp"
+    json.dump(st, open(tmp, "w"))
+    os.replace(tmp, STATE)
+
+
+def record(st):
+    if not st.get("zone"):
+        st["zone"] = cf("GET", "/zones?name=%s" % ZONE_NAME)[0]["id"]
+    recs = cf("GET", "/zones/%s/dns_records?type=A&name=%s" % (st["zone"], RECORD))
+    if len(recs) != 1:
+        raise RuntimeError("%s has %d A records; expected exactly one" % (RECORD, len(recs)))
+    st["rid"] = recs[0]["id"]
+    return recs[0]
+
+
+def point(st, ip, dry):
+    if dry:
+        log("DRY-RUN: would point %s at %s (ttl %d)" % (RECORD, ip, TTL))
+        return
+    cf("PATCH", "/zones/%s/dns_records/%s" % (st["zone"], st["rid"]),
+       {"type": "A", "name": RECORD, "content": ip, "ttl": TTL, "proxied": False})
+    st["last_flip"] = time.time()
+    log("DNS: %s -> %s" % (RECORD, ip))
+
+
+def cycle(st, dry):
+    rec = record(st)
+    current = rec["content"]
+    p_ok, s_ok = probe(PRIMARY), probe(STANDBY)
+    st["fail"] = 0 if p_ok else st["fail"] + 1
+    st["ok"] = st["ok"] + 1 if p_ok else 0
+    log("primary %s standby %s record->%s fail=%d ok=%d" % ("OK" if p_ok else "DOWN", "OK" if s_ok else "DOWN", current, st["fail"], st["ok"]))
+
+    if current not in (PRIMARY, STANDBY):
+        if not st.get("warned_manual"):
+            notify("pool.pc.am failover: record edited by hand", "%s points at %s, which is neither pool. Leaving it alone until it points at one of them again." % (RECORD, current))
+            st["warned_manual"] = True
+        return
+    st["warned_manual"] = False
+
+    if current == PRIMARY and st["fail"] >= FAILS:
+        if not s_ok:
+            if st["fail"] == FAILS:
+                notify("BOTH POOLS DOWN", "pool.pc.am's primary %s has failed %d probes and the standby %s is not answering either. Not flipping onto a dead pool. Miners are stalled." % (PRIMARY, st["fail"], STANDBY))
+            return
+        point(st, STANDBY, dry)
+        notify("pool.pc.am FAILED OVER to pool2", "Primary %s failed %d consecutive stratum logins. %s now points at %s (TTL %ds). Miners move on their next reconnect. Shares already on the primary are paid by it when it returns. It flips back by itself after the primary answers for %d minutes." % (PRIMARY, st["fail"], RECORD, STANDBY, TTL, RECOVER * INTERVAL // 60))
+    elif current == STANDBY and st["ok"] >= RECOVER:
+        point(st, PRIMARY, dry)
+        notify("pool.pc.am back on the primary", "Primary %s answered %d consecutive probes (%d min). %s points at %s again." % (PRIMARY, st["ok"], RECOVER * INTERVAL // 60, RECORD, PRIMARY))
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dry-run", action="store_true", help="probe and decide, never write DNS")
+    ap.add_argument("--once", action="store_true", help="one cycle, then exit")
+    ap.add_argument("--set-ttl", action="store_true", help="one write: set the record's TTL to FAILOVER_TTL without changing where it points")
+    a = ap.parse_args()
+    st = load_state()
+    if a.set_ttl:
+        rec = record(st)
+        if rec["ttl"] == TTL:
+            log("ttl already %d" % TTL)
+        else:
+            cf("PATCH", "/zones/%s/dns_records/%s" % (st["zone"], st["rid"]), {"type": "A", "name": RECORD, "content": rec["content"], "ttl": TTL, "proxied": False})
+            log("ttl %s -> %d, content unchanged (%s)" % (rec["ttl"], TTL, rec["content"]))
+        save_state(st)
+        return 0
+    while True:
+        try:
+            cycle(st, a.dry_run)
+            save_state(st)
+        except Exception as e:
+            # Resolves nothing: counters do not advance, the record is not touched.
+            log("cycle error (state not advanced): %s" % e)
+            if not st.get("warned_api"):
+                notify("pool.pc.am failover: cannot read DNS", str(e)[:300])
+                st["warned_api"] = True
+        else:
+            st["warned_api"] = False
+        if a.once:
+            return 0
+        time.sleep(INTERVAL)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

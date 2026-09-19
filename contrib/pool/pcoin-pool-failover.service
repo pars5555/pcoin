@@ -1,0 +1,36 @@
+[Unit]
+Description=pool.pc.am DNS failover - moves the name to pool2 when the primary pool stops answering stratum logins
+Documentation=file:///usr/local/bin/pcoin-pool-failover
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/pcoin-pool-failover
+Restart=always
+RestartSec=15
+# Runs as root only for two files: the DNS token (root:600) and pcoin-notify's
+# own conf. Everything else is locked down below.
+Environment=FAILOVER_RECORD=pool.pc.am
+Environment=FAILOVER_PRIMARY=178.105.178.27
+Environment=FAILOVER_STANDBY=152.53.171.190
+Environment=FAILOVER_PORT=3333
+Environment=FAILOVER_INTERVAL=30
+Environment=FAILOVER_FAILS=3
+Environment=FAILOVER_RECOVER=20
+Environment=FAILOVER_TTL=60
+StateDirectory=pcoin-pool-failover
+ProtectSystem=strict
+ReadWritePaths=/var/lib/pcoin-pool-failover
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+NoNewPrivileges=true
+MemoryMax=128M
+CPUQuota=10%
+
+[Install]
+WantedBy=multi-user.target

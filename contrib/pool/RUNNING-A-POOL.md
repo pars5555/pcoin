@@ -114,9 +114,17 @@ its own share ledger and its own watchers. pool2 exists because one box held
 ~61% of the network's hashrate: a pool is stateful, so it is NOT put behind one
 round-robin name (that would scatter a miner's shares across two ledgers and
 PPLNS pays from whichever pool finds the block). The intended shape is
-FAILOVER: `pool.pc.am` points at the primary, a health-checked DNS record moves
-it to pool2 when the primary is unhealthy, and every shipped miner re-resolves
-the name on reconnect (`src/node/poolclient.cpp`), so nobody needs an update.
+FAILOVER: `pool.pc.am` points at the primary, and **`pcoin-pool-failover`** (in
+this directory, running on 167.233.113.189 -- a third box, deliberately neither
+pool's) probes both pools every 30 s with a real stratum `login` and rewrites the
+record through Cloudflare's free DNS API after three straight failures, only if
+pool2 is healthy at that moment. TTL is 60 s and every shipped miner re-resolves
+the name on reconnect (`src/node/poolclient.cpp`), so nobody needs an update. It
+flips back only after the primary answers for 10 minutes, alerts the ops channel
+on every write, and refuses to touch a record somebody has pointed elsewhere by
+hand. Proven 2026-09-19 on a scratch record in both directions before it was
+enabled. Cloudflare's paid Load Balancer would have done the same thing for
+$5/month; this is the same health-check-plus-DNS-write for nothing.
 Shares already on the failed pool are paid by it when it returns.
 
 pool2 runs on Node 22 installed privately under `/opt/node22` (store.mjs needs
