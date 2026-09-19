@@ -66,7 +66,7 @@ const availUnits = r =>
  *  price while charging a curve price is exactly how a quote and an invoice come
  *  to disagree, which is the one failure this file already guards against.
  */
-function ammWalk(rungs, { usd = null, pcn = null }, k, virt) {
+export function ammWalk(rungs, { usd = null, pcn = null }, k, virt, floor = 0) {
   let remUnits = 0;
   for (const r of rungs) { const a = availUnits(r); if (a > 0) remUnits += a; }
   const rem = fromUnits(remUnits);
@@ -85,6 +85,37 @@ function ammWalk(rungs, { usd = null, pcn = null }, k, virt) {
     cost = (k / (X - pcn)) - Y;
   }
   if (!(wantPcn > 0 && isFinite(wantPcn) && cost > 0 && isFinite(cost))) return null;
+
+  // THE FLOOR -- added 2026-09-19, and it was MISSING, not weak.
+  //
+  // The curve has no bottom of its own: price = k / X^2 goes wherever k goes.
+  // `ladderMinPriceUsd` was only ever applied by askCap(), which is on the RUNG
+  // FALLBACK path -- so from the day the curve was configured (077fa32) until
+  // this line existed, the market had NO floor on what it sold PCN for while
+  // the curve was live. The floor read like a floor and protected a code path
+  // that was no longer being taken.
+  //
+  // It matters now because the ask is about to start FOLLOWING the wPCN pool
+  // down, which means an automation will be writing k on a schedule. A floor
+  // that lives only in the automation is not a floor; it is one bug away from
+  // selling the remaining book for nothing.
+  //
+  // Two directions, because the buyer names one side or the other:
+  //   * named the MONEY  -> give no more coins than the floor allows, so the
+  //                         effective price is exactly the floor;
+  //   * named the COINS  -> charge no less than the coins are worth at it.
+  // Neither can ever hand out MORE than the curve would: both clamps move in
+  // the direction that favours the desk.
+  if (Number.isFinite(floor) && floor > 0) {
+    if (usd !== null) {
+      const maxPcn = usd / floor;
+      if (wantPcn > maxPcn) wantPcn = maxPcn;
+    } else {
+      const minCost = wantPcn * floor;
+      if (cost < minCost) cost = minCost;
+    }
+    if (!(wantPcn > 0 && isFinite(wantPcn) && cost > 0 && isFinite(cost))) return null;
+  }
 
   // Allocate the inventory. Cheapest rung first, exactly as before -- this is
   // bookkeeping now, not pricing.
@@ -105,7 +136,12 @@ function ammWalk(rungs, { usd = null, pcn = null }, k, virt) {
   const filledPcn = fromUnits(gotUnits);
   const paid = left > 0 ? cost * (gotUnits / (wantUnits || 1)) : cost;
   const X1 = X - filledPcn;
-  const priceAfter = X1 > 0 ? (k / X1) / X1 : null;
+  // Floored too: the price quoted for the next buyer must be a price the next
+  // buyer would actually be charged, or the published number and the invoice
+  // disagree the moment the curve dips under the floor.
+  const rawAfter = X1 > 0 ? (k / X1) / X1 : null;
+  const priceAfter = rawAfter === null ? null
+    : (Number.isFinite(floor) && floor > 0 ? Math.max(rawAfter, floor) : rawAfter);
 
   return {
     pcn: filledPcn,
@@ -224,6 +260,14 @@ export function makeLadder(pool, { notify = null, log = console, getSetting = nu
   // curve is not configured or cannot price this order -- an unconfigured
   // curve must never mean 'free', and a market that refuses every order is a
   // worse outcome than one priced the old way.
+  // The floor, on its own. askCap() above reads the same setting, but only to
+  // stop the CAP sinking below it -- and the cap is inert while the curve is
+  // configured. The curve needs the floor handed to it directly.
+  const askFloor = () => {
+    let f = NaN;
+    try { if (getSetting) f = Number(getSetting('ladderMinPriceUsd')); } catch { /* none */ }
+    return (Number.isFinite(f) && f > 0) ? f : 0;
+  };
   const ammParams = () => {
     let k = 0, v = 0;
     try {
@@ -235,12 +279,12 @@ export function makeLadder(pool, { notify = null, log = console, getSetting = nu
   };
   const walkUsdCapped = (rungs, usd) => {
     const p = ammParams();
-    if (p) { const r = ammWalk(rungs, { usd }, p.k, p.v); if (r) return r; }
+    if (p) { const r = ammWalk(rungs, { usd }, p.k, p.v, askFloor()); if (r) return r; }
     return walkUsd(rungs, usd, askCap());
   };
   const walkPcnCapped = (rungs, pcn) => {
     const p = ammParams();
-    if (p) { const r = ammWalk(rungs, { pcn }, p.k, p.v); if (r) return r; }
+    if (p) { const r = ammWalk(rungs, { pcn }, p.k, p.v, askFloor()); if (r) return r; }
     return walkPcn(rungs, pcn, askCap());
   };
 
@@ -317,14 +361,16 @@ export function makeLadder(pool, { notify = null, log = console, getSetting = nu
       // order must never be able to move the published price.
       marginalPrice: (() => {
         const p = ammParams();
-        if (p) { const X = (tot - sold - retd) + p.v; if (X > 0) return (p.k / X) / X; }
+        if (p) { const X = (tot - sold - retd) + p.v;
+                 if (X > 0) return Math.max((p.k / X) / X, askFloor()); }
         return marg ? Math.min(Number(marg.price), askCap()) : null;
       })(),
       // What the next REAL buyer would be charged, so this one does include
       // everyone else's outstanding holds.
       nextFillPrice: (() => {
         const p = ammParams();
-        if (p) { const X = (tot - sold - resv - retd) + p.v; if (X > 0) return (p.k / X) / X; }
+        if (p) { const X = (tot - sold - resv - retd) + p.v;
+                 if (X > 0) return Math.max((p.k / X) / X, askFloor()); }
         return next ? Math.min(Number(next.price), askCap()) : null;
       })(),
       rungMarginalPrice: marg ? Number(marg.price) : null,  // uncapped, for reference

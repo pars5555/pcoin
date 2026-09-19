@@ -1,0 +1,21 @@
+[Unit]
+Description=Check hourly whether the PCN ask should follow the wPCN pool down
+
+[Timer]
+# Hourly. The target is a 24-HOUR MEDIAN, so nothing is gained by looking more
+# often -- a median of 1,440 samples cannot move fast enough for it to matter --
+# and the per-run gate is 8% while the daily one is 12%, so the frequency is not
+# what bounds how far the price can walk. What hourly buys is that a real,
+# sustained fall is followed within the hour instead of whenever somebody
+# remembers, which is the failure this replaces: `ladderMaxPriceUsd` was
+# maintained by hand and sat untouched from 2026-09-14.
+OnCalendar=hourly
+# Spread off the top of the hour, where everything else on this box already is.
+RandomizedDelaySec=300
+# A run missed while the box was down is worth catching up: the pool may have
+# moved a long way, and the gates bound the catch-up to one run's worth anyway.
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

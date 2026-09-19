@@ -1,0 +1,47 @@
+[Unit]
+# Walk the PCN ask down after the wPCN pool -- the ask half of the 2026-09-19
+# decision. The other half is `buy_floor_usd` in pcoin-wpcn-keeper on
+# 178.105.3.51: the keeper stopped defending parity with USDT, so the pool is
+# allowed to fall on real selling, and this is what makes PCN follow it.
+#
+# It only ever moves the price DOWN, it is rate-limited per run and per day, and
+# it can never go below ladderMinPriceUsd -- which since 2026-09-19 is enforced
+# inside ladder.mjs on the curve path as well, so the floor does not depend on
+# this unit running correctly. Read the header of cap-policy.mjs.
+#
+# NOTHING IS CONFIGURED HERE ON PURPOSE. Every input -- the median window, the
+# premium, the drop gates, the floor -- is a constant in the script or a row in
+# the settings table, so `node cap-policy.mjs --curve --apply` by hand is the
+# SAME program this unit runs. pcoin-wrapdesk-watch was the opposite (CLAUDE.md
+# 7.14): all its settings lived in Environment= lines, a bare run silently lost
+# every one of them, and a false 50,000 PCN alert reached the ops channel.
+# Do not move anything into this file.
+Description=PCN ask follows the wPCN pool down (cap-policy.mjs --curve)
+After=network-online.target pcoin-market.service
+Wants=network-online.target
+# NOT BindsTo= or PartOf=. Propagation is one-way, so a `systemctl restart
+# pcoin-market` would stop this timer's service and never restart it -- the same
+# trap the Linux miner supervisor documents. It reads the market over loopback
+# and refuses cleanly when the market is down, which is the correct behaviour.
+OnFailure=pcoin-alert@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/pcoin-market
+ExecStart=/usr/bin/node /opt/pcoin-market/cap-policy.mjs --curve --apply
+# It sleeps 35s waiting for the server to reload before reading the price back,
+# so it is never quick. Generous, but bounded: a run that hangs must not sit on
+# the next one.
+TimeoutStartSec=300
+Nice=5
+
+# It writes one settings row and two files under /opt/pcoin-market, reads
+# /etc/pcoin/alert.conf, and must never touch anything else.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/pcoin-market
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes

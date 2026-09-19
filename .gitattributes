@@ -38,6 +38,13 @@ contrib/seed-monitoring/pcoin-bootstrap-watch     text eol=lf
 contrib/seed-monitoring/pcoin-fork-day            text eol=lf
 contrib/seed-monitoring/pcoin-concentration-watch text eol=lf
 contrib/seed-monitoring/pcoin-chain-heartbeat     text eol=lf
+# contrib/wpcn's two extensionless scripts had NO rule at all -- an omission,
+# not a decision. Both carry a shebang and run on a Linux box, and git was
+# reporting "LF will be replaced by CRLF the next time Git touches it" on the
+# keeper, so a fresh clone would have produced a file the kernel refuses to
+# exec. Same gap as the four above, found the same way.
+contrib/wpcn/pcoin-wpcn-keeper   text eol=lf
+contrib/wpcn/pcoin-redeem-watch  text eol=lf
 # systemd tolerates CRLF, but there is no reason to ship it to a Linux box.
 *.service  text eol=lf
 *.timer    text eol=lf

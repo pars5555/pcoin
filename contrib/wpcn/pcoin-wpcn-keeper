@@ -134,6 +134,14 @@ TUNABLES = {
     "buy": ("bool", None, None, "KEEPER_BUY", True,
             "May it spend USDT buying wPCN when the pool is below target? Off makes it "
             "one-directional and lets the pool fall on real selling."),
+    "buy_floor_usd": ("num", 0.0, 10.0, "KEEPER_BUY_FLOOR_USD", 0.0,
+                      "FLOOR MODE. 0 = off: buying aims at parity with the ladder, which "
+                      "is what the keeper always did. Above 0 it stops defending parity "
+                      "and defends only this price -- it buys nothing while the pool is "
+                      "above it, and below it buys just enough to lift the pool back to "
+                      "it. Everything between the floor and the ladder is left alone, so "
+                      "real selling moves the price instead of the keeper paying to stop "
+                      "it. Set to 0.015 on 2026-09-19 on the owner's instruction."),
     "sell": ("bool", None, None, "KEEPER_SELL", True,
              "May it sell wPCN when the pool is above target? Off means nothing pulls a "
              "premium back down, so parity is enforced only from below."),
@@ -216,6 +224,7 @@ MIN_USDT_FLOOR = _TUNE["min_usdt"]
 MIN_WPCN_FLOOR = _TUNE["min_wpcn"]
 BUY_ON = _TUNE["buy"]
 SELL_ON = _TUNE["sell"]
+BUY_FLOOR_USD = _TUNE["buy_floor_usd"]
 
 SLIPPAGE = _TUNE["slippage"]
 # A persistent condition is not new information every 10 minutes. Only its
@@ -349,6 +358,41 @@ def posted_rate():
         return None
 
 
+def decide(pool, ladder, buy_floor, dead_band):
+    """What should the keeper do at this pair of prices? Pure, no I/O.
+
+    It lives out here, and not inline in main(), for one reason: main() cannot
+    be run against a pool that is sitting on the floor, so an inline decision
+    could only ever be tested by re-typing it into a test -- which tests the
+    copy and not the code. See test_decide.py, which drives THIS function.
+
+    TWO TARGETS, NOT ONE. sell_target is the ladder, always: wPCN must never
+    trade ABOVE PCN, or buying PCN from us, wrapping it and selling the wPCN is
+    free money. buy_target is the only price the keeper will DEFEND with USDT.
+
+    At buy_floor = 0 the two are equal and this is exactly the behaviour the
+    keeper always had -- parity, held from both sides. Above 0 the buy target is
+    the floor, and the whole band between the floor and the ladder is left
+    alone: ordinary selling is allowed to move the price, and the ask follows it
+    down separately through cap-policy.mjs. Before this, every dump was answered
+    with the keeper's own money, so the desk paid to keep PCN expensive while
+    wPCN was being sold.
+
+    min(), not the floor alone: the keeper must never buy the pool up past the
+    ask. If the ladder is ever below the floor, the ladder wins.
+
+    Returns (action, target, buy_target, sell_target); action is "buy", "sell"
+    or None, and target is the one the action aims at.
+    """
+    sell_target = ladder
+    buy_target = ladder if buy_floor <= 0 else min(ladder, buy_floor)
+    if pool > sell_target * (1.0 + dead_band):
+        return "sell", sell_target, buy_target, sell_target
+    if pool < buy_target * (1.0 - dead_band):
+        return "buy", buy_target, buy_target, sell_target
+    return None, None, buy_target, sell_target
+
+
 def amount_out(amount_in, reserve_in, reserve_out):
     """Constant product with PancakeSwap's fee. The exact router formula."""
     ain = amount_in * FEE_NUM
@@ -403,7 +447,7 @@ def main() -> int:
     # settings is the failure this line exists to make impossible.
     print("tuning               : " + ", ".join(
         f"{k}={_TUNE[k]}[{_TUNE_SRC[k]}]" for k in
-        ("dead_band", "target_discount_pct", "buy", "sell",
+        ("dead_band", "target_discount_pct", "buy", "buy_floor_usd", "sell",
          "daily_usdt_cap", "daily_wpcn_cap")))
     write_effective()
     sys.path.insert(0, os.environ.get("WPCN_DIR", "/opt/wpcn"))
@@ -458,13 +502,26 @@ def main() -> int:
 
     pool = u_res / w_res
     gap = pool / posted - 1.0
+
+    # The decision itself is `decide()` above -- pure, and tested there.
+    action, target, buy_target, sell_target = decide(
+        pool, posted, BUY_FLOOR_USD, DEAD_BAND)
+    floor_mode = BUY_FLOOR_USD > 0
+    buy_gap = pool / buy_target - 1.0
+
     # Publish the live pair alongside the settings, so the admin panel can answer
     # "is it about to trade?" from what the keeper itself last saw, rather than
     # from its own second read of a moving price.
-    write_effective({"pool_price": pool, "target_price": posted})
+    write_effective({"pool_price": pool, "target_price": posted,
+                     "buy_target": buy_target, "sell_target": sell_target,
+                     "floor_mode": floor_mode})
     print(f"posted (price.pc.am) : ${posted:.8f}")
     print(f"pool   (pancakeswap) : ${pool:.8f}   ({gap*100:+.2f}%)")
     print(f"reserves             : {w_res:,.2f} wPCN / {u_res:,.2f} USDT")
+    if floor_mode:
+        print(f"FLOOR MODE           : buys below ${buy_target:.8f} "
+              f"({buy_gap*100:+.2f}%), sells above ${sell_target:.8f}. "
+              f"Between the two it does nothing.")
 
     # ---- refuse implausible gaps ------------------------------------------
     ratio = max(pool, posted) / min(pool, posted)
@@ -477,8 +534,25 @@ def main() -> int:
         print(f"HOLD: gap {ratio:.1f}x exceeds sanity ratio {SANITY_RATIO}")
         return 1
 
-    if abs(gap) < DEAD_BAND:
-        print(f"within dead band (+/-{DEAD_BAND*100:.1f}%) -- nothing to do")
+    # decide() judged each side against ITS OWN target. The single `abs(gap) <
+    # DEAD_BAND` test this replaced could not express floor mode at all: it made
+    # a pool 55% below the ladder and a pool 1% below the floor the same number.
+    if action is not None:
+        buying = action == "buy"
+    else:
+        if floor_mode and pool < posted * (1.0 - DEAD_BAND):
+            print(f"pool ${pool:.8f} is {abs(gap)*100:.2f}% below the ladder "
+                  f"${posted:.8f} -- and that is ALLOWED. Floor mode defends "
+                  f"${buy_target:.8f}, not parity, and the pool is "
+                  f"{buy_gap*100:+.2f}% against it. Nothing to do.")
+        else:
+            # Report BOTH gaps. Choosing one by `pool > posted` named the floor
+            # whenever the pool sat exactly on the ladder, and then said the
+            # pool was inside a +/-3% band of a price it was 124% above.
+            print(f"HOLD: pool is {buy_gap*100:+.2f}% against the buy target "
+                  f"${buy_target:.8f} and {gap*100:+.2f}% against the ladder "
+                  f"${sell_target:.8f}. Neither side is outside its "
+                  f"+/-{DEAD_BAND*100:.1f}% dead band -- nothing to do.")
         return 0
 
     # ---- daily budget ------------------------------------------------------
@@ -509,34 +583,47 @@ def main() -> int:
     print(f"keeper wallet        : {acct.address}")
     print(f"float                : {have_usdt:,.4f} USDT / {have_wpcn:,.2f} wPCN")
 
-    buying = gap < 0                    # pool cheap -> buy wPCN -> price rises
+    # `buying` and `target` were decided by the dead-band test above.
     if buying and not BUY_ON:
         print("BUYING IS OFF (KEEPER_BUY=off) -- the pool is allowed to fall.")
-        print(f"pool ${pool:.8f} is {abs(gap) * 100:.2f}% below posted ${posted:.8f}. "
-              "Nothing bought."
+        print(f"pool ${pool:.8f} is {abs(pool/target - 1.0) * 100:.2f}% below its buy "
+              f"target ${target:.8f}. Nothing bought."
               + (" Selling into strength is still enabled." if SELL_ON
                  else " Selling is off too: the keeper is neutral."))
         return 0
     if (not buying) and not SELL_ON:
         print("SELLING IS OFF (KEEPER_SELL=off) -- the pool is allowed to RISE.")
-        print(f"pool ${pool:.8f} is {abs(gap) * 100:.2f}% above posted ${posted:.8f}. "
+        print(f"pool ${pool:.8f} is {abs(gap) * 100:.2f}% above the ladder ${posted:.8f}. "
               "Nothing sold. A buyer moving the price up is the point, not a fault "
               "to correct -- and min(ladder, pool) already caps what the rails credit.")
         return 0
+    if buying and floor_mode:
+        # The pool has reached the floor. That is the event this mode exists for
+        # and it is worth saying once, not every ten minutes -- notify_throttled
+        # reports the onset and the clearing, never the persistence.
+        notify_throttled("floor_defence",
+               "keeper: DEFENDING THE $%.4f FLOOR" % buy_target,
+               f"pool ${pool:.8f} has fallen to {buy_gap*100:+.2f}% of the "
+               f"${buy_target:.8f} floor, so the keeper is buying wPCN back up to "
+               f"it.\nThe ladder is ${posted:.8f}; everything above the floor was "
+               f"left alone deliberately.\nThis spends the USDT float. Watch it: "
+               f"when it is gone nothing holds the floor IN THE POOL, and only "
+               f"the code floors (rateFloorUsd, ladderMinPriceUsd) still hold "
+               f"what PCN itself is credited and sold at.")
     if buying:
-        want = solve_trade(u_res, w_res, posted, True)
+        want = solve_trade(u_res, w_res, target, True)
         budget = min(want,
                      DAILY_USDT_CAP - st["usdt_spent"],
                      max(0.0, have_usdt - MIN_USDT_FLOOR))
         unit, need_label = "USDT", "USDT"
     else:
-        want = solve_trade(w_res, u_res, posted, False)
+        want = solve_trade(w_res, u_res, target, False)
         budget = min(want,
                      DAILY_WPCN_CAP - st["wpcn_spent"],
                      max(0.0, have_wpcn - MIN_WPCN_FLOOR))
         unit, need_label = "wPCN", "wPCN"
 
-    print(f"to reach parity      : trade {want:,.6f} {unit}")
+    print(f"to reach ${target:.8f} : trade {want:,.6f} {unit}")
     print(f"allowed this run     : {budget:,.6f} {unit}")
 
     if budget <= 0:
@@ -625,7 +712,8 @@ def main() -> int:
         st["wpcn_spent"] += budget
     st["trades"].append({"at": int(time.time()), "dir": "buy" if buying else "sell",
                          "amount": budget, "unit": unit,
-                         "pool_before": pool, "posted": posted,
+                         "pool_before": pool, "posted": posted, "target": target,
+                         "floor_mode": floor_mode,
                          "block": r.blockNumber})
     save_state(st)
 
@@ -635,11 +723,12 @@ def main() -> int:
     else:
         w2, u2 = r1 / 1e8, r0 / 10 ** USDT_DECIMALS
     after = u2 / w2
-    print(f"\npool ${pool:.8f} -> ${after:.8f}  (target ${posted:.8f})")
+    print(f"\npool ${pool:.8f} -> ${after:.8f}  (target ${target:.8f})")
     notify("keeper: traded",
            (f"Spent {budget:,.6f} USDT buying wPCN." if buying
             else f"Sold {budget:,.6f} wPCN for USDT.") + "\n"
-           f"pool ${pool:.8f} -> ${after:.8f}, posted ${posted:.8f}\n"
+           f"pool ${pool:.8f} -> ${after:.8f}, target ${target:.8f}, "
+           f"ladder ${posted:.8f}\n"
            f"float before this trade {have_usdt:,.4f} USDT / {have_wpcn:,.2f} wPCN.")
     return 0
 

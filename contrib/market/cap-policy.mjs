@@ -5,6 +5,33 @@
 //   node cap-policy.mjs --apply                  write it, then PROVE it took effect
 //   node cap-policy.mjs --apply --force-drop     allow a drop past the per-run limit
 //
+//   node cap-policy.mjs --curve                  the same decision, applied to the
+//   node cap-policy.mjs --curve --apply          PRICE ITSELF (ammK) instead of the
+//   node cap-policy.mjs --curve --apply --force-drop   inert cap. See below.
+//
+// --- --curve: why a second mode ---------------------------------------------
+// `ladderMaxPriceUsd` has been INERT for pricing since 077fa32. What a customer
+// is charged is the constant-product curve, price = ammK / X^2, and nothing
+// maintained ammK -- so the ask could not follow the pool anywhere. Maintaining
+// a cap that nothing reads is the shape of a check that only prints.
+//
+// On 2026-09-19 the owner asked for the other half of the trade: the keeper
+// stops spending USDT defending the wPCN pool, and instead PCN follows wPCN
+// down. The keeper side is `buy_floor_usd` in pcoin-wpcn-keeper. This is the
+// ask side. Re-anchoring is one line of arithmetic -- ammK = price * X^2 --
+// and everything around it is the part that has to be right.
+//
+// THREE THINGS MAKE IT SAFE TO RUN UNATTENDED, and they are the same three that
+// make the cap mode safe, because it is the same attack:
+//   * it only ever moves the price DOWN, never up. A pumped pool must not be
+//     able to make PCN dearer; only real buying and retire-on-spend do that,
+//     and both already work through X.
+//   * every drop is rate-limited, per run and per day, against the tool's own
+//     record -- so a patient push on the pool cannot walk the ask down quietly.
+//   * `ladderMinPriceUsd` is a hard bottom, and since 2026-09-19 it is enforced
+//     INSIDE ladder.mjs on the curve path as well, not only here. A floor that
+//     lives only in the automation is not a floor.
+//
 // --- why this exists -------------------------------------------------------
 // The owner's rule is "PCN sits 5% above wPCN". The cap was maintained by hand
 // every six hours, and the hand kept HOLDING it -- four times -- because
@@ -60,10 +87,48 @@ const RATE_SAMPLES       = 3;      // judge the ceiling on the WORST public rate
 const PUBLIC_RATE_URL    = 'https://price.pc.am/price';
 const STATE              = '/opt/pcoin-price/state.json';
 const HISTORY            = '/opt/pcoin-market/cap-history.json';
+const CURVE_HISTORY      = '/opt/pcoin-market/curve-history.json';
+// Loopback, and that is REQUIRED rather than preferred: the public subset of
+// /api/ladder/state omits askCapUsd and is not guaranteed to carry the curve
+// fields either, so reading the public URL would compare against undefined and
+// report a mismatch on a write that was perfectly fine.
+const LIVE_STATE         = 'http://127.0.0.1:8789/api/ladder/state';
+const ALERT_CONF         = '/etc/pcoin/alert.conf';
 
 const apply     = process.argv.includes('--apply');
 const forceDrop = process.argv.includes('--force-drop');
+const curveMode = process.argv.includes('--curve');
 const f = (x, n = 8) => Number(x).toFixed(n);
+
+/** Tell the ops channel. An automated price change that nobody is told about
+ *  is indistinguishable from one nobody decided, so this runs on every APPLIED
+ *  move. It swallows every failure: a telegram outage must never stop, or
+ *  un-do, a write that has already landed. */
+async function tg(text) {
+  let token = '', chat = '';
+  try {
+    for (const line of readFileSync(ALERT_CONF, 'utf8').split('\n')) {
+      if (line.trim().startsWith('#')) continue;
+      const m = line.match(/^\s*([A-Z_]+)\s*=\s*(.*?)\s*$/);
+      if (!m) continue;
+      if (m[1] === 'TELEGRAM_TOKEN') token = m[2].replace(/^["']|["']$/g, '');
+      if (m[1] === 'ALERT_CHAT' && !chat) chat = m[2].replace(/^["']|["']$/g, '');
+    }
+  } catch (e) {
+    console.log('  (no alert.conf: ' + e.message + ') ' + text.replace(/<[^>]+>/g, ''));
+    return;
+  }
+  if (!token || !chat) { console.log('  (no telegram configured) ' + text); return; }
+  try {
+    const r = await fetch('https://api.telegram.org/bot' + token + '/sendMessage', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: chat, text, parse_mode: 'HTML',
+                             disable_web_page_preview: true }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!r.ok) console.log('  telegram refused it: ' + r.status + ' ' + (await r.text()).slice(0, 200));
+  } catch (e) { console.log('  telegram failed: ' + e.message); }
+}
 
 let pool = null;
 async function refuse(why) {
@@ -131,6 +196,217 @@ const hitFloor = cap < floor;
 cap = Math.max(cap, floor);              // askCap() in ladder.mjs clamps the same way
 
 const divOf = p => (p - rate) / rate * 100;
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  --curve : move the PRICE, by re-anchoring ammK. See the header.
+// ═══════════════════════════════════════════════════════════════════════════
+if (curveMode) {
+  // --- 1. what the curve is actually doing -----------------------------------
+  // Read from the LIVE service rather than reconstructed here. The whole risk in
+  // this mode is writing k against a model of the curve that is not the model
+  // the server is using, so the model is CHECKED against the live number below
+  // instead of being assumed.
+  let live;
+  try {
+    const res = await fetch(LIVE_STATE, { signal: AbortSignal.timeout(20000) });
+    live = await res.json();
+  } catch (e) {
+    await refuse('cannot read the live ladder state at ' + LIVE_STATE + ' (' + e.message +
+      ').\n           Without it the inventory and the price in force are both UNKNOWN, ' +
+      'and\n           k must never be written against a guess.');
+  }
+
+  const k    = Number(S.get('ammK'));
+  const virt = Number(S.get('ammVirtualPcn'));
+  const rem  = Number(live && live.ladderRemainingPcn);
+  const nowP = Number(live && live.marginalPrice);
+  if (!(Number.isFinite(k) && k > 0)) {
+    await refuse('ammK is ' + S.get('ammK') + ', so the curve is OFF and the ladder is pricing ' +
+      'by rungs.\n           Re-anchoring k would switch the curve on as a side effect of a ' +
+      'price\n           adjustment, which is not this tool\'s decision to make. Use --apply ' +
+      '(cap mode)\n           to maintain the rung cap instead, or turn the curve on ' +
+      'deliberately.');
+  }
+  if (!(Number.isFinite(virt) && virt >= 0)) await refuse('ammVirtualPcn is not a usable number');
+  if (!(Number.isFinite(rem) && rem > 0)) {
+    await refuse('the live service reports ladderRemainingPcn = ' + live.ladderRemainingPcn +
+      '.\n           No inventory means no X, and no X means no curve to re-anchor.');
+  }
+  if (!(Number.isFinite(nowP) && nowP > 0)) {
+    await refuse('the live service reports marginalPrice = ' + live.marginalPrice +
+      ', which is not a price.');
+  }
+
+  const X = rem + virt;
+  const modelled = (k / X) / X;
+
+  // --- 2. THE MODEL CHECK, and it is the load-bearing one --------------------
+  // If price != k/X^2 then this tool's arithmetic is not the server's, and the
+  // difference is not academic: ammParams() falls back to RUNG pricing silently
+  // whenever the settings fail to coerce, so a curve that looks configured here
+  // can be one the server is not using. Writing k in that state changes nothing
+  // visible and hides the fact.
+  //
+  // The one benign mismatch is the floor: ladder.mjs publishes
+  // max(k/X^2, ladderMinPriceUsd), so a curve already UNDER the floor reports
+  // the floor. That is a real state with a correct answer -- there is nothing
+  // left to lower -- and it is handled as such rather than as an error.
+  if (Math.abs(modelled - nowP) / nowP > 1e-6) {
+    if (floor > 0 && Math.abs(nowP - floor) / floor < 1e-9 && modelled <= floor) {
+      console.log('\n  ladder ask CURVE  --  ' + new Date(now).toISOString());
+      console.log('  ' + '-'.repeat(68));
+      console.log('  the curve is already AT THE FLOOR: k/X^2 = $' + f(modelled) +
+                  ', floor $' + f(floor) + ', charged $' + f(nowP) + '.');
+      console.log('  Nothing to lower. The floor is doing its job and is enforced inside');
+      console.log('  ladder.mjs, so this is the price in force whatever k says.');
+      await pool.end();
+      process.exit(0);
+    }
+    await refuse('MODEL MISMATCH. k/X^2 = $' + f(modelled) + ' but the live service is ' +
+      'charging $' + f(nowP) + '.\n           k=' + k + ' virt=' + virt + ' rem=' + rem +
+      ' X=' + X + '\n           Either the server is not using the curve at all -- ammParams() ' +
+      'falls back to\n           rung pricing SILENTLY when a setting fails to coerce -- or this ' +
+      'tool\'s\n           arithmetic is not the server\'s. Writing k against either would be ' +
+      'a\n           change nobody could see. Check /pricing on the admin panel.');
+  }
+
+  // --- 3. the target, same rule as the cap mode ------------------------------
+  const cTarget  = median * (1 + PREMIUM_PCT / 100);
+  const cCeiling = rate * (1 + MAX_DIVERGENCE_PCT / 100);
+  let   want     = Math.min(cTarget, cCeiling);
+  const cHitFloor = want < floor;
+  want = Math.max(want, floor);
+
+  console.log('\n  ladder ask CURVE  --  ' + new Date(now).toISOString());
+  console.log('  ' + '-'.repeat(68));
+  console.log('  pool spot              $' + f(st.poolPrice));
+  console.log('  pool median ' + WINDOW_H + 'h         $' + f(median) + '   (' + win.length + ' samples)');
+  console.log('  public serviceRate     $' + f(rate) + '   (worst of ' + rates.length +
+              (disagree ? ', ORIGINS DISAGREE' : '') + ')');
+  console.log('  code floor             $' + f(floor) + '   (enforced in ladder.mjs too)');
+  console.log('');
+  console.log('  inventory X            ' + rem.toFixed(8) + ' PCN + ' + virt.toFixed(8) +
+              ' virtual = ' + X.toFixed(8));
+  console.log('  charged now            $' + f(nowP) + '   -> divergence ' + divOf(nowP).toFixed(2) +
+              '%   (k = ' + k + ')');
+  console.log('  target  = median x ' + (1 + PREMIUM_PCT / 100).toFixed(2) + '   $' + f(cTarget));
+  console.log('  ceiling = rate   x ' + (1 + MAX_DIVERGENCE_PCT / 100).toFixed(2) + '   $' + f(cCeiling));
+  console.log('  binding : ' + (cHitFloor ? 'THE FLOOR'
+              : cTarget <= cCeiling ? 'the median target' : 'the divergence ceiling'));
+  console.log('  proposed               $' + f(want) + '   -> divergence ' + divOf(want).toFixed(2) + '%');
+
+  // --- 4. DOWN ONLY ----------------------------------------------------------
+  // A pumped pool must never be able to make PCN dearer. The price rises only
+  // through X -- real buying, and retire-on-spend -- both of which are demand
+  // that was paid for. Raising k here would hand that lever to anyone with a
+  // few hundred dollars and the thinnest pool in the estate.
+  const cMovePct = (want - nowP) / nowP * 100;
+  console.log('  move                   ' + (cMovePct >= 0 ? '+' : '') + cMovePct.toFixed(2) + '%');
+  if (cMovePct > -0.05) {
+    console.log('\n  No drop needed. This mode only ever moves the price DOWN -- the curve ' +
+                'rises\n  on its own through buying and retire-on-spend, and letting a pool ' +
+                'read raise\n  it would make pumping the pool profitable. Nothing written.');
+    await pool.end();
+    process.exit(0);
+  }
+
+  // --- 5. the same two drop gates --------------------------------------------
+  if (cMovePct < -MAX_DROP_PCT && !forceDrop) {
+    await refuse('this is a ' + Math.abs(cMovePct).toFixed(2) + '% DROP IN THE PRICE ITSELF, past ' +
+      'the ' + MAX_DROP_PCT + '% per-run limit.\n' +
+      '           LOOK at the pool\'s recent trades first, then re-run with --force-drop.');
+  }
+  let cHist = [];
+  try { cHist = JSON.parse(readFileSync(CURVE_HISTORY, 'utf8')); } catch { cHist = []; }
+  cHist = cHist.filter(h => Number.isFinite(h && h.t) && Number.isFinite(h && h.price));
+  const cRecent = cHist.filter(h => h.t >= Date.now() - 24 * 3600e3).map(h => h.price);
+  if (cRecent.length) {
+    const cRef = Math.max(...cRecent);
+    const cDay = (want - cRef) / cRef * 100;
+    console.log('  24h ratchet            highest price applied in 24h $' + f(cRef) +
+                '   this would be ' + (cDay >= 0 ? '+' : '') + cDay.toFixed(2) + '%');
+    if (cDay < -MAX_DROP_24H_PCT && !forceDrop) {
+      await refuse('this would put the price ' + Math.abs(cDay).toFixed(2) + '% below the highest ' +
+        'applied\n           in the last 24h ($' + f(cRef) + '), past the ' + MAX_DROP_24H_PCT +
+        '% daily limit.\n           A slow, sustained push on the pool looks exactly like this.');
+    }
+  }
+
+  const newK = want * X * X;
+  const KD = S.defs.ammK;
+  if (!(newK > 0) || newK < KD.min || newK > KD.max) {
+    await refuse('computed ammK ' + newK + ' falls outside the setting\'s own bounds (' +
+                 KD.min + ' .. ' + KD.max + ')');
+  }
+  console.log('  ammK                   ' + k + '  ->  ' + newK);
+
+  if (!apply) {
+    console.log('\n  Proposal only -- nothing written. Re-run with --curve --apply to set it.');
+    await pool.end();
+    process.exit(0);
+  }
+
+  await S.set('ammK', newK);
+  console.log('\n  WROTE ammK = ' + newK);
+
+  // Recorded BEFORE verifying, for the same reason the cap mode does it: the
+  // ratchet must count a price that was WRITTEN. A run whose read-back fails
+  // would otherwise leave no trace and the next run would measure its drop
+  // against a stale, higher reference -- the direction that loses the guard.
+  try {
+    cHist.push({ t: Date.now(), price: want, k: newK, X, forced: forceDrop });
+    writeFileSync(CURVE_HISTORY, JSON.stringify(
+      cHist.filter(h => h.t >= Date.now() - 7 * 24 * 3600e3), null, 1));
+  } catch (e) {
+    console.log('  WARNING: could not record curve history (' + e.message + '). ' +
+                'The 24h ratchet is blind until this is fixed.');
+  }
+
+  // --- 6. prove it took effect ----------------------------------------------
+  // Not "did the row change" -- did the SERVICE change what it charges. A value
+  // that fails coerce() on reload is ignored silently and ammParams() falls back
+  // to rung pricing, which looks like a successful write and sells at a price
+  // nobody chose.
+  //
+  // X is re-read rather than reused: somebody may have bought, or retire-on-spend
+  // may have run, between the write and now. Comparing against a stale X would
+  // report a mismatch on a correct write -- and, worse, could be tuned into a
+  // tolerance so loose that a real rung fallback slipped through it.
+  await new Promise(r => setTimeout(r, 35000));
+  try {
+    const res = await fetch(LIVE_STATE, { signal: AbortSignal.timeout(20000) });
+    const after = await res.json();
+    const remNow = Number(after.ladderRemainingPcn);
+    const gotP   = Number(after.marginalPrice);
+    const expect = Math.max(newK / (remNow + virt) / (remNow + virt), floor);
+    const ok = Number.isFinite(gotP) && Number.isFinite(expect) &&
+               Math.abs(gotP - expect) / expect < 1e-6;
+    console.log('  live marginalPrice     $' + f(gotP) + '   expected $' + f(expect) +
+                '  ' + (ok ? 'MATCHES' : '*** DOES NOT MATCH ***'));
+    if (remNow !== rem) {
+      console.log('  (inventory moved during the run: ' + rem + ' -> ' + remNow +
+                  ' PCN, which is why the expectation is recomputed)');
+    }
+    await tg('<b>market.pc.am</b>\nPCN ask followed the wPCN pool <b>down</b>.\n' +
+             'charged $' + f(nowP, 6) + ' \u2192 $' + f(gotP, 6) +
+             '  (' + cMovePct.toFixed(2) + '%)\n' +
+             'pool median 24h $' + f(median, 6) + ', floor $' + f(floor, 6) +
+             (cHitFloor ? ' <b>(the floor is binding)</b>' : '') + '\n' +
+             'ammK ' + k.toFixed(0) + ' \u2192 ' + newK.toFixed(0) +
+             (forceDrop ? '\n<b>--force-drop was used</b>' : '') +
+             (ok ? '' : '\n<b>THE READ-BACK DID NOT MATCH \u2014 check /pricing now</b>'));
+    await pool.end();
+    process.exit(ok ? 0 : 3);
+  } catch (e) {
+    console.log('  COULD NOT VERIFY against the live service (' + e.message +
+                ') -- check /pricing by hand.');
+    await tg('<b>market.pc.am</b>\nWrote ammK = ' + newK + ' but COULD NOT VERIFY it took ' +
+             'effect (' + e.message + ').\nCheck what the market is charging, by hand.');
+    await pool.end();
+    process.exit(4);
+  }
+}
+
 
 /** How much further can the pool fall before the sale gate shuts on everybody?
  *

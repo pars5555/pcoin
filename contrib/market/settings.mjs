@@ -99,8 +99,12 @@ export const DEFS = {
   ammK:                { type: 'num', def: 0, min: 0, max: 1e15, step: 0.00000001,
     label: 'Constant-product k \u2014 0 = off, fall back to rung pricing',
     help: 'The invariant of the pricing curve: price = k / X^2 where X is the PCN still for ' +
-          'sale plus ammVirtualPcn. Set ONCE, from the inventory and price at the moment it is ' +
-          'switched on, so the price does not jump. Selling lowers X and raises the price; so ' +
+          'sale plus ammVirtualPcn. It was set ONCE by hand when the curve was switched on, ' +
+          'from the inventory and price at that moment so the price did not jump; since ' +
+          '2026-09-19 `cap-policy.mjs --curve --apply` also re-anchors it, DOWNWARD ONLY, to ' +
+          'follow the wPCN pool — rate-limited per run and per day, and never below ' +
+          'ladderMinPriceUsd. Editing it here sets the price directly: price = k / X^2, so ' +
+          'k = price * X^2. Selling lowers X and raises the price; so ' +
           'does retire-on-spend, which is how spending PCN at a service moves the price with no ' +
           'separate mechanism. 0 disables the curve and the ladder prices by rungs again.' },
   ammVirtualPcn:       { type: 'num', def: 0, min: 0, max: 1e9, step: 0.00000001,
@@ -118,13 +122,15 @@ export const DEFS = {
           'read from the pool: the pool holds ~$1,300 and a dump into it is reversible, so ' +
           'letting it drive this would sell the book at a 98% discount for under a dollar.' },
   ladderMinPriceUsd:   { type: 'num', def: 0.025, min: 0, max: 10, step: 0.0000000001,
-    label: 'Ladder price FLOOR (USD) — the cap can never go below this',
-    help: 'A hard clamp under ladderMaxPriceUsd. The cap is maintained against the wPCN pool, ' +
-          'which holds about $1,300 — pushing it down is cheap and reversible, so without a ' +
-          'floor a manufactured collapse would sell the whole remaining book at a fraction of ' +
-          'its value. This is the bound on that loss. Raise it to be more conservative; only ' +
-          'lower it deliberately, knowing it is the last line between the ladder and a dumped ' +
-          'pool. 0 disables the clamp entirely — do not.' },
+    label: 'Ladder price FLOOR (USD) — the lowest PCN is ever sold for',
+    help: 'THE hard bottom on the ask, and since 2026-09-19 it is enforced on BOTH pricing ' +
+          'paths — it clamps ladderMaxPriceUsd on the rung path, and it clamps the ' +
+          'constant-product curve inside ladder.mjs. Until that date it only did the former, ' +
+          'and because the curve had been in force since 077fa32 the market had no floor at ' +
+          'all while it was. It matters more now: cap-policy.mjs --curve walks the ask DOWN ' +
+          'after the wPCN pool on a schedule, that pool holds about $650, pushing it down is ' +
+          'cheap and reversible, and this number is the bound on what that can cost. Raise it ' +
+          'to be more conservative; only lower it deliberately. 0 disables it — do not.' },
   retireSystems:       { type: 'list', def: '', max: 20, kind: 'names',
     label: 'Systems whose spending counts',
     help: 'Which address pools count as customers SPENDING. The market’s own pool must never ' +
