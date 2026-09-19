@@ -1,5 +1,5 @@
 [Unit]
-Description=Check the wPCN/USDT pool against price.pc.am every 10 minutes
+Description=Check the wPCN/USDT pool against the floor and the ladder every 10 minutes
 
 [Timer]
 OnBootSec=8min

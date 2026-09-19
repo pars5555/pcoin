@@ -1,5 +1,5 @@
 [Unit]
-Description=wPCN keeper — hold the pool price in step with price.pc.am
+Description=wPCN keeper — defend the wPCN price floor, and sell into a premium
 Documentation=https://github.com/pars5555/pcoin/blob/main/contrib/wpcn/WRAP-DESK.md
 
 [Service]
