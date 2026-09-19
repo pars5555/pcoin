@@ -1103,11 +1103,16 @@ Linux    pcoin-cli startmining &quot;&lt;your pc1q&hellip; address&gt;&quot; 4</
         difference from wrapped Bitcoin, whose supply is minted on deposit, and it is why the desk now
         asks for returns rather than burns; it is also why the price you pay for wPCN on PancakeSwap can
         be higher than PCN costs at market.pc.am &mdash; check both;
-        <b>we trade this pool ourselves</b>, though less than we used to: until 9 September a bot
-        bought wPCN whenever the pool fell below the rate we post, which held the two level. That is
-        switched off &mdash; defending a price out of a small float is a countdown, not a defence &mdash;
-        so the pool now falls on real selling and the rate our services credit PCN at follows it down to
-        a published floor. The bot may still sell into a pool trading above the posted rate. So the price
+        <b>we trade this pool ourselves</b>, though less than we used to, and what it defends changed on
+        19 September. Until 9 September a bot bought wPCN whenever the pool fell below the rate we post,
+        which held the two level; defending a price out of a small float is a countdown, not a defence, so
+        that stopped. It now defends one number only: <b>$0.015</b>. Above that the pool is left alone and
+        falls on real selling, and <b>both</b> our numbers follow it down &mdash; the rate our services
+        credit PCN at, and, since 19 September, the price we sell PCN for. Neither goes below $0.015.
+        The sale price is re-anchored at most once an hour, against a 24-hour median rather than the
+        spot price, and by at most 8% in one step or 12% in a day; nothing that happens in the pool can
+        ever push it <i>up</i> &mdash; it rises only when PCN is bought or spent. The bot may still sell
+        into a pool trading above the posted rate. So the price
         is less ours than it was, and still not one strangers set on their own; and buying wPCN gets you a claim, not coins you can spend on
         the services above.
         <br><br>

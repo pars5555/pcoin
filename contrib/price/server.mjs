@@ -1018,10 +1018,18 @@ createServer(async (req, res) => {
           stale: ladderAgeS === null || ladderAgeS > 600,
         } : null,
         // Stated so nobody mistakes a posted price for a market price.
+        // Taken from the same field the response publishes, never retyped: this
+        // sentence and rateFloorUsd disagreeing would be worse than either alone.
         note: 'Posted from a finite 100,000 PCN order-book ladder, not discovered on a market. ' +
               'PCN is not exchange traded; its wrapped form wPCN trades in a small PancakeSwap ' +
-              'pool. Until 2026-09-09 a keeper held that pool to THIS rate; it no ' +
-              'longer defends the downside, so the pool falls on real selling and this rate follows it down, bounded by a published floor. ' +
+              'pool. Until 2026-09-09 a keeper held that pool to THIS rate. It no longer ' +
+              'defends parity: the pool is allowed to fall on real selling, and since ' +
+              '2026-09-19 BOTH numbers here follow it down -- what services credit, and what ' +
+              'PCN is sold for. Both stop at a published floor of $' + Number(st.poolFloorUsd).toFixed(4) + ', which ' +
+              'is also where the keeper starts buying the pool back. The sale price is ' +
+              're-anchored at most hourly, against a 24-HOUR MEDIAN rather than the spot, and ' +
+              'by at most 8% in one step or 12% in a day; it is never RAISED by a pool read, ' +
+              'and rises only when PCN is bought or spent. ' +
               // Both directions, deliberately. This field used to end by telling
               // holders their way out was to sell the pool -- a public API field,
               // read by every integrator, advertising only the exit. The pool is
