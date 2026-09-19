@@ -1,4 +1,4 @@
-// Copyright (c) 2026 The PCoin developers
+﻿// Copyright (c) 2026 The PCoin developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 //
@@ -238,7 +238,10 @@ namespace PCoinTray
         // ---- mining mode (solo vs pool) ----
         readonly RadioButton _rbSolo = new RadioButton();
         readonly RadioButton _rbPool = new RadioButton();
-        readonly TextBox _poolBox = new TextBox();
+        //! Editable on purpose. The list is a SUGGESTION, not a whitelist: a
+        //! miner may point at any stratum server, including one we have never
+        //! heard of, and typing a host that is not below must always work.
+        readonly ComboBox _poolBox = new ComboBox();
         readonly TextBlock _modeAdvice = new TextBlock();
         readonly Button _applyMode = new Button();
         // Guards like _sliderEcho: true while the app pushes the current mode
@@ -246,6 +249,20 @@ namespace PCoinTray
         bool _modeEcho;
         string _lastShownPool;   // null so the first render echoes the mode in
         const string DEFAULT_POOL = "pool.pc.am:3333";
+
+        //! The pools offered in the drop-down, first one being the default.
+        //! Add a host here and it appears in the box; nothing else needs to
+        //! change. Anything the user types instead is used verbatim.
+        //!
+        //! ONLY LIST A POOL THAT IS ACTUALLY ACCEPTING CONNECTIONS. A name that
+        //! resolves is not enough -- a suggestion the miner cannot reach is
+        //! worse than no suggestion, because the person who picks it has no way
+        //! to tell "this pool is down" from "I typed it wrong".
+        static readonly string[] KNOWN_POOLS =
+        {
+            "pool.pc.am:3333",
+            "pool2.pc.am:3333",
+        };
 
         readonly TextBlock _syncLine = new TextBlock();
         readonly ProgressBar _syncBar = new ProgressBar();
@@ -721,8 +738,20 @@ namespace PCoinTray
             {
                 // Read intent from the last snapshot, never from the button's
                 // own caption: a stale caption would flip mining the wrong way.
-                if (_last.WantMining) _setPercent(0);
-                else _setPercent(Snap((int)Math.Round(_slider.Value)));
+                if (_last.WantMining) { _setPercent(0); return; }
+                // THE SLIDER IS IN THREADS, NOT PERCENT (see its Minimum/Maximum
+                // just above: 1..24, snapped to ticks). Snap() is the OLD
+                // percent snapper -- steps of 5, floor of 10 -- so feeding it a
+                // thread count turned "start at 4 threads" into _setPercent(10),
+                // which on a 12-core machine is ONE thread. Every start from the
+                // button under-provisioned the machine, quietly.
+                //
+                // Convert the way the drag path already does (ValueChanged
+                // above): PercentForThreads round-trips, so the count the label
+                // shows is the count the miner gets.
+                int coresNow = Math.Max(1, _last.Cores);
+                int wantThreads = Math.Max(1, Math.Min(coresNow, (int)Math.Round(_slider.Value)));
+                _setPercent(Cpu.PercentForThreads(wantThreads, coresNow));
             };
             StyleButton(_toggle, true);
             stack.Children.Add(_toggle);
@@ -795,6 +824,15 @@ namespace PCoinTray
             _poolBox.FontSize = 12;
             _poolBox.FontFamily = new FontFamily("Consolas, Courier New");
             _poolBox.Padding = new Thickness(6, 4, 6, 4);
+            // Editable: the drop-down offers the pools we run, and the text is
+            // still free. IsTextSearchEnabled is OFF deliberately -- with it on,
+            // WPF rewrites what you are typing to the nearest item, so typing a
+            // custom host whose first letters match one of ours would silently
+            // become ours. The suggestions are worth less than being able to
+            // trust what you typed.
+            _poolBox.IsEditable = true;
+            _poolBox.IsTextSearchEnabled = false;
+            foreach (var pool in KNOWN_POOLS) _poolBox.Items.Add(pool);
             stack.Children.Add(_poolBox);
 
             _modeAdvice.Foreground = Muted; _modeAdvice.FontSize = 11.5;

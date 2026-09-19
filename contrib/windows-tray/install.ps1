@@ -37,8 +37,8 @@ param(
     # half-applied bump is impossible. The hash is of pcoin-win64-miner.zip
     # and the install aborts on a mismatch, so a forgotten bump here breaks
     # every new install rather than failing quietly.
-    [string]$Version = '1.4.32',
-    [string]$Sha256 = 'fd7d376f3d9bc0c6f92206836ad1cced65e907ab0c153a52538ed196d5c248f4',
+    [string]$Version = '1.4.33',
+    [string]$Sha256 = '01eb4aa69a44dd5fc929bc9d71b9bc7558e5f87f64665a17a50464cf39b83766',
     # All three seeds, not just one. The node also carries them compiled in as
     # of v1.2.1, so this is belt and braces rather than the only route in.
     [string[]]$AddNode = @('35.239.156.16:9444', '178.105.3.51:9444', '152.53.171.190:9444'),
@@ -182,11 +182,19 @@ try {
 } catch { }
 foreach ($old in $oldDirs) {
     Write-Output "  previous install found at $old -- migrating and removing it"
-    $oldSeed = Join-Path $old 'pcoin-seed.dat'
-    $newSeed = Join-Path $InstallDir 'pcoin-seed.dat'
-    if ((Test-Path $oldSeed) -and -not (Test-Path $newSeed)) {
-        try { Copy-Item $oldSeed $newSeed -Force -ErrorAction Stop; Write-Output '    migrated your recovery seed' }
-        catch { Write-Output ('    WARNING could not migrate the seed: ' + $_.Exception.Message + ' -- keep ' + $oldSeed) }
+    # BOTH FILES, NOT JUST THE ENCRYPTED ONE. pcoin-seed.dat holds the phrase;
+    # pcoin-seed.info is its plain sidecar (address, derivation path, network)
+    # and is what SeedWallet.cs reads to know WHICH address the phrase backs.
+    # Migrating only the .dat left the new install with a phrase it could not
+    # place, so it behaved like a machine with no phrase at all and mining
+    # payouts went somewhere other than the phrase-backed wallet.
+    foreach ($seedFile in @('pcoin-seed.dat', 'pcoin-seed.info')) {
+        $oldSeed = Join-Path $old $seedFile
+        $newSeed = Join-Path $InstallDir $seedFile
+        if ((Test-Path $oldSeed) -and -not (Test-Path $newSeed)) {
+            try { Copy-Item $oldSeed $newSeed -Force -ErrorAction Stop; Write-Output ('    migrated ' + $seedFile) }
+            catch { Write-Output ('    WARNING could not migrate ' + $seedFile + ': ' + $_.Exception.Message + ' -- keep ' + $oldSeed) }
+        }
     }
     $oldData = Join-Path $old 'data'
     if ((Test-Path $oldData) -and -not (Test-Path $DataDir)) {
@@ -805,9 +813,21 @@ function Grant-LockPagesRight([string]$account) {
         $lines = $o
     }
     Set-Content -Path $inf -Value $lines -Encoding Unicode
+    # CHECK WHAT secedit ACTUALLY DID. Both calls used to be piped to Out-Null
+    # with no look at the exit code, so an import or configure that refused --
+    # policy locked by Group Policy, a corrupt database, no privilege -- was
+    # reported upstream as "granted Lock pages in memory". The machine then
+    # silently ran without large pages, which on this workload is worth roughly
+    # a third of its hash rate, with nothing anywhere saying why.
     cmd /c "secedit /import /db `"$sdb`" /cfg `"$inf`" /areas USER_RIGHTS >nul 2>nul" | Out-Null
+    $rcImport = $LASTEXITCODE
     cmd /c "secedit /configure /db `"$sdb`" /areas USER_RIGHTS >nul 2>nul" | Out-Null
+    $rcConfig = $LASTEXITCODE
     Remove-Item $inf, $sdb -ErrorAction SilentlyContinue
+    if ($rcImport -ne 0 -or $rcConfig -ne 0) {
+        throw ("secedit refused to apply the policy (import=$rcImport configure=$rcConfig). " +
+               "Lock pages in memory was NOT granted, so fast mode will run without large pages.")
+    }
 }
 
 try {

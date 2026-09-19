@@ -151,6 +151,13 @@ def verify(version, sha, quiet=False):
             bad.append("the REPO install.ps1 disagrees with the release")
         else:
             say("  repo install.ps1      : %s + matching hash (bytes differ from live: line endings)" % version)
+    elif not live:
+        # live == "" means the fetch FAILED. Falling into the equality branch
+        # announced the two files identical on the strength of never having
+        # read one of them -- an unreadable source resolves nothing
+        # (CLAUDE.md 7.1). The pc.am check above already recorded the failure;
+        # this must not quietly contradict it.
+        say("  repo install.ps1      : not compared -- pc.am could not be read")
     else:
         say("  repo install.ps1      : identical to the live one")
 
@@ -242,8 +249,17 @@ def main():
         print("dry run: would pack with %s" % " ".join(cmd[1:]))
     else:
         run(cmd)
-    sha = hashlib.sha256(open(out, "rb").read()).hexdigest() if os.path.isfile(out) else "0" * 64
-    print("packed %s  sha256 %s" % (ASSET, sha))
+    if a.dry_run:
+        # DO NOT hash whatever zip happens to be sitting here. Nothing was
+        # packed, so that file is the PREVIOUS release's artefact, and printing
+        # its hash under "packed ... sha256" is a dry run reassuring you about
+        # a build it did not do. Seen for real: a --dry-run for 1.4.33 printed
+        # 1.4.32's hash, which is exactly the digits an operator copies.
+        sha = None
+        print("dry run: nothing packed, so there is no hash to show")
+    else:
+        sha = hashlib.sha256(open(out, "rb").read()).hexdigest() if os.path.isfile(out) else "0" * 64
+        print("packed %s  sha256 %s" % (ASSET, sha))
 
     # ---- 2. the GitHub release ------------------------------------------------
     notes = io.open(a.notes, encoding="utf-8").read() if a.notes else ("PCoin Windows miner v%s" % v)
@@ -266,7 +282,7 @@ def main():
     if "$Version = '%s'" % v not in ps1_new or "$Sha256 = '%s'" % sha not in ps1_new:
         die("could not rewrite $Version/$Sha256 in install.ps1 -- has its shape changed?")
     if a.dry_run:
-        print("dry run: would set install.ps1 to %s / %s" % (v, sha[:16]))
+        print("dry run: would set install.ps1 to %s / %s" % (v, (sha[:16] if sha else "the hash of the zip it would pack")))
     else:
         io.open(ps1_path, "w", encoding="utf-8", newline="\r\n").write(ps1_new)
         run(["scp", "-o", "StrictHostKeyChecking=no", ps1_path, "%s:/tmp/install.ps1" % PCAM_HOST])
