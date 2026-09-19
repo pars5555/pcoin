@@ -35,6 +35,7 @@ import { aiPage } from './ai.mjs';
 import { exchangesPage } from './exchanges.mjs';
 import { approvalsPage } from './approvals.mjs';
 import { wrapdeskPage, wrapdeskState, CLOSED_FILE } from './wrapdesk.mjs';
+import { keeperPage, keeperData, validate as keeperValidate, writeTuning } from './keeper.mjs';
 import { minersPage, minersData } from './miners.mjs';
 import { pricingPage, pricingData } from './pricing.mjs';
 import { vaultPage } from './vault.mjs';
@@ -184,6 +185,7 @@ const NAV = [
                   ['exchanges', '\u{1F4B1} Exchange listings'],
                   ['approvals', '\u{2705} Approvals'],
                   ['wrapdesk', '\u{1F512} Wrap desk'],
+                  ['keeper', '\u{2696}\u{FE0F} wPCN keeper'],
                   ['telegram', '\u{1F4AC} Telegram']]],
   ['Work',     [['programs', '\u{1F381} Programs'],
                 ['tasks', '\u{1F4CB} Tasks'],
@@ -730,6 +732,42 @@ const server = createServer(async (req, res) => {
   if (sub === '/exchange') {
     const section = exchangeSection({ base: BASE, creds: upstreamCreds(), actor: 'owner' });
     return send(res, 200, shell2('exchange', 'exchange.pc.am', await section.page(url)));
+  }
+
+  if (sub === '/keeper' && req.method === 'POST') {
+    const form = await readBody(req);
+    const d = keeperData();
+    let flash = '', bad = false;
+    if (d.eff.state !== 'ok') {
+      flash = 'The keeper has not published its settings yet, so there is nothing to '
+            + 'validate against and nothing was written. Run it once first.';
+      bad = true;
+    } else {
+      // Validate against the KEEPER's bounds, never a copy of them here, and
+      // write nothing at all unless every field passes. A partial write would
+      // leave the bot running half of what was intended.
+      const { values, errors } = keeperValidate(form, d.eff.data);
+      if (errors.length) {
+        flash = 'Nothing was changed. ' + errors.join('; ');
+        bad = true;
+      } else {
+        try {
+          writeTuning(values, 'the admin panel');
+          flash = 'Saved. The keeper picks these up on its next run, within ten minutes, '
+                + 'with no restart. Reload after it runs to confirm every value reads '
+                + '"this page".';
+        } catch (e) {
+          flash = 'Could not write the settings file: ' + e.message + ' -- nothing changed.';
+          bad = true;
+        }
+      }
+    }
+    return send(res, 200, shell2('keeper', 'wPCN keeper',
+      keeperPage(keeperData(), flash, bad)));
+  }
+
+  if (sub === '/keeper') {
+    return send(res, 200, shell2('keeper', 'wPCN keeper', keeperPage(keeperData())));
   }
 
   if (sub === '/wrapdesk' && req.method === 'POST') {

@@ -71,36 +71,153 @@ CONF = os.environ.get("KEEPER_CONF", "/etc/pcoin/keeper.conf")
 STATE = os.environ.get("KEEPER_STATE", "/var/lib/pcoin-wrapdesk/keeper.json")
 NOTIFY = os.environ.get("PCOIN_NOTIFY", "/usr/local/bin/pcoin-notify")
 
-# Do not trade inside this band. PancakeSwap takes 0.25% per swap and gas is a
-# few cents, so chasing a 1% gap loses money on the round trip.
-DEAD_BAND = float(os.environ.get("KEEPER_DEAD_BAND", 0.02))     # 2%
-
-# Refuse to act beyond this ratio. A gap this large is far more likely to be a
-# broken price feed than a real market, and acting on a bad read is exactly how
-# a float gets emptied into a manipulated pool.
-SANITY_RATIO = float(os.environ.get("KEEPER_SANITY_RATIO", 5.0))
-
-DAILY_USDT_CAP = float(os.environ.get("KEEPER_DAILY_USDT_CAP", 25.0))
-
-# Whether the keeper may spend USDT buying wPCN back when the pool trades
-# BELOW the posted rate. Default on, for compatibility with how this ran
-# until 2026-09-09.
+# ── TUNING: the knobs, and where they come from ─────────────────────────────
 #
-# Turning it OFF makes the keeper one-directional: it still sells wPCN into
-# a pool trading ABOVE the posted rate -- that earns USDT and needs no float
-# -- but it stops defending the downside. Buying back an unlimited supply
-# out of a small float is a countdown, not a defence, and a pool pinned
-# exactly level by our own money is not price discovery: it is a peg that
-# hides the absence of one. Selling pressure is allowed to move the price.
-BUY_ON = os.environ.get("KEEPER_BUY", "on").strip().lower() not in ("0", "off", "false", "no")
-DAILY_WPCN_CAP = float(os.environ.get("KEEPER_DAILY_WPCN_CAP", 2000.0))
+# These used to live ONLY in the unit's Environment= lines, which meant two bad
+# things. Changing one needed an SSH session and a daemon-reload, so the owner
+# could not; and running the script by hand gave a DIFFERENT PROGRAM, because a
+# bare run inherits none of them. That second failure has cost this project a
+# day already (CLAUDE.md 7.14, the wrap-desk floor that defaulted to 0 and paged
+# the owner with a false 50,000 PCN alert).
+#
+# So the order of precedence is now, highest first:
+#
+#   1. TUNING_FILE   -- JSON, written by the admin panel. The owner's control.
+#   2. Environment=  -- the unit file. Still honoured, as the fallback.
+#   3. the defaults below.
+#
+# and EVERY run prints which source each value came from. A bot that spends
+# money must say what it is running with; inferring it from a config file
+# somebody believes they deployed is how this goes wrong.
+#
+# A tuning file that is PRESENT but unreadable, unparsable, or carries a value
+# outside its bounds is FATAL: the keeper refuses to trade and alerts. It does
+# not fall back. An unknown setting is unknown, never a default -- that is the
+# project's oldest rule (CLAUDE.md 7.1) and it matters most on the one process
+# here that can move money on its own.
+#
+# The bounds are enforced HERE as well as in the panel. A check only the writer
+# performs is not a check (CLAUDE.md 7.12).
+TUNING_FILE = os.environ.get("KEEPER_TUNING", "/etc/pcoin/control/keeper-tuning.json")
+# Written after every run so the panel can show what was ACTUALLY used, rather
+# than what somebody believes is set. Read-only for the panel.
+EFFECTIVE_FILE = os.environ.get("KEEPER_EFFECTIVE",
+                                "/var/lib/pcoin-wrapdesk/keeper-effective.json")
 
-# Never spend the float to zero -- leave enough to keep operating and to make
-# the "running low" alert actionable rather than a post-mortem.
-MIN_USDT_FLOOR = float(os.environ.get("KEEPER_MIN_USDT", 5.0))
-MIN_WPCN_FLOOR = float(os.environ.get("KEEPER_MIN_WPCN", 200.0))
+# key -> (kind, low, high, env var, default, one-line meaning for the panel)
+TUNABLES = {
+    "dead_band": ("frac", 0.001, 0.50, "KEEPER_DEAD_BAND", 0.03,
+                  "Ignore gaps smaller than this. PancakeSwap takes 0.25% a swap and gas "
+                  "is a few cents, so a small gap is not worth a transaction. Raising it "
+                  "means fewer, larger, more profitable trades and a looser peg."),
+    "sanity_ratio": ("num", 1.1, 100.0, "KEEPER_SANITY_RATIO", 5.0,
+                     "Refuse to act when the two prices differ by more than this many "
+                     "times. A gap that big is far more likely to be a broken feed than a "
+                     "real market."),
+    "daily_usdt_cap": ("num", 0.0, 10000.0, "KEEPER_DAILY_USDT_CAP", 25.0,
+                       "Most USDT it may spend buying wPCN in one UTC day. This is the "
+                       "backstop against a bad ladder read draining the float."),
+    "daily_wpcn_cap": ("num", 0.0, 50000.0, "KEEPER_DAILY_WPCN_CAP", 2000.0,
+                       "Most wPCN it may sell in one UTC day."),
+    "min_usdt": ("num", 0.0, 10000.0, "KEEPER_MIN_USDT", 5.0,
+                 "Never spend the USDT float below this."),
+    "min_wpcn": ("num", 0.0, 50000.0, "KEEPER_MIN_WPCN", 200.0,
+                 "Never sell the wPCN float below this."),
+    "slippage": ("frac", 0.001, 0.20, "KEEPER_SLIPPAGE", 0.01,
+                 "Worst execution accepted on a swap before it reverts."),
+    "target_discount_pct": ("num", 0.0, 50.0, "KEEPER_TARGET_DISCOUNT_PCT", 5.0,
+                            "How far BELOW the ladder ask the pool is held. 0 = parity, "
+                            "which is what the owner chose on 2026-09-19."),
+    "max_target_usd": ("num", 0.0001, 10.0, "KEEPER_MAX_TARGET_USD", 0.10,
+                       "Hard ceiling on the computed target. One corrupted ladder read "
+                       "would otherwise have the keeper chase it and spend everything."),
+    "buy": ("bool", None, None, "KEEPER_BUY", True,
+            "May it spend USDT buying wPCN when the pool is below target? Off makes it "
+            "one-directional and lets the pool fall on real selling."),
+    "sell": ("bool", None, None, "KEEPER_SELL", True,
+             "May it sell wPCN when the pool is above target? Off means nothing pulls a "
+             "premium back down, so parity is enforced only from below."),
+}
 
-SLIPPAGE = float(os.environ.get("KEEPER_SLIPPAGE", 0.01))       # 1%
+_TRUE = ("1", "on", "true", "yes")
+_FALSE = ("0", "off", "false", "no")
+
+
+def _coerce(key, raw, where):
+    """Value or ValueError. Bounds apply to EVERY source, including the default."""
+    kind, lo, hi, _env, _dflt, _doc = TUNABLES[key]
+    if kind == "bool":
+        if isinstance(raw, bool):
+            return raw
+        s = str(raw).strip().lower()
+        if s in _TRUE:
+            return True
+        if s in _FALSE:
+            return False
+        raise ValueError(f"{key} from {where}: {raw!r} is not on/off")
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{key} from {where}: {raw!r} is not a number")
+    if v != v or v in (float("inf"), float("-inf")):
+        raise ValueError(f"{key} from {where}: {raw!r} is not finite")
+    if not (lo <= v <= hi):
+        raise ValueError(f"{key} from {where}: {v} is outside {lo}..{hi}")
+    return v
+
+
+def load_tuning():
+    """(values, sources, error). error is a string and means DO NOT TRADE."""
+    vals, srcs = {}, {}
+    filedata, fileerr = None, None
+    if os.path.exists(TUNING_FILE):
+        try:
+            with open(TUNING_FILE) as f:
+                filedata = json.load(f)
+            if not isinstance(filedata, dict):
+                raise ValueError("top level is not an object")
+            # A file that only holds junk keys is a typo, not a config. Say so
+            # rather than silently running on defaults the owner did not choose.
+            unknown = [k for k in filedata if k not in TUNABLES and k != "_note"]
+            if unknown:
+                raise ValueError("unknown setting(s): " + ", ".join(sorted(unknown)))
+        except Exception as e:
+            fileerr = f"{TUNING_FILE} exists but could not be used: {e}"
+    if fileerr:
+        return {}, {}, fileerr
+    for key, (_k, _lo, _hi, env, dflt, _doc) in TUNABLES.items():
+        try:
+            if filedata is not None and key in filedata:
+                vals[key] = _coerce(key, filedata[key], "the tuning file")
+                srcs[key] = "panel"
+            elif os.environ.get(env) is not None:
+                vals[key] = _coerce(key, os.environ[env], f"${env}")
+                srcs[key] = "unit"
+            else:
+                vals[key] = _coerce(key, dflt, "the built-in default")
+                srcs[key] = "default"
+        except ValueError as e:
+            return {}, {}, str(e)
+    return vals, srcs, None
+
+
+_TUNE, _TUNE_SRC, TUNING_ERROR = load_tuning()
+if TUNING_ERROR:
+    # Bind the names so nothing downstream raises NameError before main() can
+    # report the real reason. They are never used: main() returns first.
+    _TUNE = {k: (v[4] if v[0] != "bool" else v[4]) for k, v in TUNABLES.items()}
+    _TUNE_SRC = {k: "UNUSED -- tuning is broken" for k in TUNABLES}
+
+DEAD_BAND = _TUNE["dead_band"]
+SANITY_RATIO = _TUNE["sanity_ratio"]
+DAILY_USDT_CAP = _TUNE["daily_usdt_cap"]
+DAILY_WPCN_CAP = _TUNE["daily_wpcn_cap"]
+MIN_USDT_FLOOR = _TUNE["min_usdt"]
+MIN_WPCN_FLOOR = _TUNE["min_wpcn"]
+BUY_ON = _TUNE["buy"]
+SELL_ON = _TUNE["sell"]
+
+SLIPPAGE = _TUNE["slippage"]
 # A persistent condition is not new information every 10 minutes. Only its
 # onset and its clearing are, so repeat alerts are throttled to this.
 NAG_SECONDS = int(os.environ.get("KEEPER_NAG_SECONDS", 21600))  # 6 hours
@@ -161,13 +278,73 @@ def load_conf():
     return cfg
 
 
+# How far BELOW the ladder ask the pool is held, and a hard ceiling on the
+# result. Both are tunables now; see TUNABLES above for what each one is for.
+# The ceiling exists because sellPriceUsd is raw where serviceRate arrived
+# pre-braked, and the oracle's own serviceCeiling is 10.00 -- without it one
+# corrupted ladder read would have the keeper chase $9.50 and spend the float.
+TARGET_DISCOUNT_PCT = _TUNE["target_discount_pct"]
+MAX_TARGET_USD = _TUNE["max_target_usd"]
+
+
+def write_effective(extra=None):
+    """Publish what this run ACTUALLY used, for the admin panel to display.
+
+    The panel showing the tuning file would only show what somebody INTENDED.
+    This is what the process read, including anything still coming from the unit
+    or a default, so drift between the two is visible instead of assumed.
+    """
+    try:
+        out = {"at": int(time.time()),
+               "tuning_file": TUNING_FILE,
+               "error": TUNING_ERROR,
+               "values": {k: _TUNE.get(k) for k in TUNABLES},
+               "sources": {k: _TUNE_SRC.get(k) for k in TUNABLES},
+               "docs": {k: v[5] for k, v in TUNABLES.items()},
+               "bounds": {k: [v[1], v[2]] for k, v in TUNABLES.items()},
+               "env_var": {k: v[3] for k, v in TUNABLES.items()}}
+        if extra:
+            out.update(extra)
+        os.makedirs(os.path.dirname(EFFECTIVE_FILE), exist_ok=True)
+        tmp = EFFECTIVE_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(out, f, indent=1)
+        os.replace(tmp, EFFECTIVE_FILE)
+    except Exception as e:
+        print(f"[warn] could not write {EFFECTIVE_FILE}: {e}", file=sys.stderr)
+
+
 def posted_rate():
-    """price.pc.am serviceRate, or None for UNKNOWN. None must never trade."""
+    """The target pool price: the LADDER ask, less TARGET_DISCOUNT_PCT.
+
+    NOT serviceRate. serviceRate = min(ladder, pool) while the oracle follows the
+    pool down, so it equals the pool whenever the pool is under the ladder --
+    and a keeper aimed at that is aimed at its own reflection. Every run printed
+    `+0.00% -- within dead band` because of it.
+
+    `sellPriceUsd` is the oracle's `postedPrice()`: the ladder's marginal price,
+    set by our order book and never by the pool. It is the only field here that
+    the pool cannot move, which is exactly what an anchor has to be.
+
+    Returns None for UNKNOWN, and None must never trade.
+    """
     try:
         with urllib.request.urlopen("https://price.pc.am", timeout=25) as r:
             d = json.load(r)
-        v = d.get("serviceRate")
-        return None if v is None else float(v)
+        v = d.get("sellPriceUsd")
+        if v is None:
+            return None
+        ladder = float(v)
+        if not (ladder > 0):
+            return None
+        target = ladder * (1.0 - TARGET_DISCOUNT_PCT / 100.0)
+        if not (0 < target <= MAX_TARGET_USD):
+            # Loud, because silence here looks identical to "nothing to do".
+            print("REFUSING: ladder $%.8f gives target $%.8f, above the "
+                  "KEEPER_MAX_TARGET_USD sanity bound of $%.8f. Not trading."
+                  % (ladder, target, MAX_TARGET_USD), file=sys.stderr)
+            return None
+        return target
     except Exception:
         return None
 
@@ -208,6 +385,27 @@ def solve_trade(reserve_in, reserve_out, target_price, buying_out):
 
 def main() -> int:
     live = "--live" in sys.argv
+
+    # A broken tuning file stops everything, BEFORE a key is loaded or a price
+    # is read. Falling back to defaults here would mean trading on settings
+    # nobody chose, which is worse than not trading at all.
+    if TUNING_ERROR:
+        write_effective()
+        notify_throttled("tuning_broken", "keeper: TUNING FILE IS BROKEN -- not trading",
+                         f"{TUNING_ERROR}\n\nThe keeper will not trade until this is "
+                         f"fixed. It has NOT fallen back to defaults: running a bot that "
+                         f"spends money on settings nobody chose is worse than it standing "
+                         f"still. Fix or delete {TUNING_FILE}.")
+        print(f"REFUSING: {TUNING_ERROR}", file=sys.stderr)
+        return 2
+
+    # Say what is in force, every run. Two identical-looking runs with different
+    # settings is the failure this line exists to make impossible.
+    print("tuning               : " + ", ".join(
+        f"{k}={_TUNE[k]}[{_TUNE_SRC[k]}]" for k in
+        ("dead_band", "target_discount_pct", "buy", "sell",
+         "daily_usdt_cap", "daily_wpcn_cap")))
+    write_effective()
     sys.path.insert(0, os.environ.get("WPCN_DIR", "/opt/wpcn"))
     sys.path.insert(1, os.path.dirname(os.path.abspath(__file__)))
 
@@ -260,6 +458,10 @@ def main() -> int:
 
     pool = u_res / w_res
     gap = pool / posted - 1.0
+    # Publish the live pair alongside the settings, so the admin panel can answer
+    # "is it about to trade?" from what the keeper itself last saw, rather than
+    # from its own second read of a moving price.
+    write_effective({"pool_price": pool, "target_price": posted})
     print(f"posted (price.pc.am) : ${posted:.8f}")
     print(f"pool   (pancakeswap) : ${pool:.8f}   ({gap*100:+.2f}%)")
     print(f"reserves             : {w_res:,.2f} wPCN / {u_res:,.2f} USDT")
@@ -311,7 +513,15 @@ def main() -> int:
     if buying and not BUY_ON:
         print("BUYING IS OFF (KEEPER_BUY=off) -- the pool is allowed to fall.")
         print(f"pool ${pool:.8f} is {abs(gap) * 100:.2f}% below posted ${posted:.8f}. "
-              "Nothing bought. Selling into strength is still enabled.")
+              "Nothing bought."
+              + (" Selling into strength is still enabled." if SELL_ON
+                 else " Selling is off too: the keeper is neutral."))
+        return 0
+    if (not buying) and not SELL_ON:
+        print("SELLING IS OFF (KEEPER_SELL=off) -- the pool is allowed to RISE.")
+        print(f"pool ${pool:.8f} is {abs(gap) * 100:.2f}% above posted ${posted:.8f}. "
+              "Nothing sold. A buyer moving the price up is the point, not a fault "
+              "to correct -- and min(ladder, pool) already caps what the rails credit.")
         return 0
     if buying:
         want = solve_trade(u_res, w_res, posted, True)
@@ -463,7 +673,25 @@ def cmd_init():
     return 0
 
 
+def print_tuning():
+    print(f"tuning file : {TUNING_FILE}"
+          f"{'' if os.path.exists(TUNING_FILE) else '   (absent -- unit and defaults apply)'}")
+    if TUNING_ERROR:
+        print(f"ERROR       : {TUNING_ERROR}")
+        print("The keeper will REFUSE to trade until this is fixed.")
+        return 2
+    w = max(len(k) for k in TUNABLES)
+    for k, (kind, lo, hi, env, dflt, doc) in TUNABLES.items():
+        bounds = "on/off" if kind == "bool" else f"{lo} .. {hi}"
+        print(f"  {k:<{w}}  {str(_TUNE[k]):>10}  [{_TUNE_SRC[k]:<7}]  {bounds:<16} {env}")
+    print("\nsource: panel = the tuning file, unit = the service's Environment=, "
+          "default = built in.")
+    return 0
+
+
 if __name__ == "__main__":
     if "--init" in sys.argv:
         sys.exit(cmd_init())
+    if "--tuning" in sys.argv:
+        sys.exit(print_tuning())
     sys.exit(main())
