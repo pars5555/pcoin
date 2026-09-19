@@ -19,7 +19,6 @@ import android.widget.Button
 import android.widget.CheckBox
 import android.widget.SeekBar
 import android.widget.TextView
-import android.app.AlertDialog
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -239,48 +238,6 @@ class MainActivity : AppCompatActivity() {
         notificationsAllowed = notificationsGranted()
         ui.removeCallbacks(refresh)
         ui.post(refresh)
-        maybeOfferFastMode()
-    }
-
-    /**
-     * Offer fast mode, once, on a phone that can actually hold it.
-     *
-     * Fast mode is worth about TEN TIMES the hash rate -- it is the same proof
-     * of work either way, fast and light produce identical hashes, so this is
-     * only how the phone computes them. What it costs is a 2 GiB dataset held
-     * by a background service, and on a device that cannot spare that, Android
-     * kills the service and the miner restarts in a loop, earning less than
-     * light mode would have.
-     *
-     * So the app measures before it offers, and offers rather than decides:
-     * the memory is the owner's, and a phone they use for other things is
-     * theirs to keep responsive. Asked ONCE -- [Prefs.fastModeOffered] means
-     * somebody who said no is not pestered at every start.
-     *
-     * The measurement is deliberately re-taken at the moment of the offer, and
-     * again at every node start (NodeController), because available memory is
-     * not a property of the phone, it is a property of the phone right now.
-     */
-    private fun maybeOfferFastMode() {
-        val prefs = Prefs(this)
-        if (prefs.fastMode || prefs.fastModeOffered) return
-        if (!NodeController.fastModeFits(this)) return
-
-        val availMib = NodeController.availableMib(this)
-        prefs.fastModeOffered = true
-        AlertDialog.Builder(this)
-            .setTitle(R.string.fast_mode_title)
-            .setMessage(getString(R.string.fast_mode_body, availMib))
-            .setPositiveButton(R.string.fast_mode_enable) { _, _ ->
-                prefs.fastMode = true
-                // The node reads -randomxfastmode once, at spawn, so the
-                // setting means nothing until it restarts. Say so plainly
-                // rather than leave someone watching an unchanged number.
-                Toast.makeText(this, R.string.fast_mode_on, Toast.LENGTH_LONG).show()
-                MinerService.restartNode(this)
-            }
-            .setNegativeButton(R.string.fast_mode_not_now, null)
-            .show()
     }
 
     override fun onPause() {

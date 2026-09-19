@@ -226,11 +226,4 @@
 
     <string name="notifications_denied">Without notification permission the mining notification cannot be shown, but mining still works.</string>
     <string name="notifications_denied_banner">Notifications are turned off, so there is no ongoing mining notification. While this app is closed, nothing on the phone will show that it is mining. Turn notifications on in Settings.</string>
-    <string name="fast_mode_title">Mine about 10x faster?</string>
-    <string name="fast_mode_body">This phone has %1$d MB free — enough for fast mode, which uses a 2 GB table to compute the same work about ten times faster.
-
-It uses more memory while mining. You can turn it off at any time, and PCoin falls back on its own if the phone needs the memory back.</string>
-    <string name="fast_mode_enable">Turn on fast mode</string>
-    <string name="fast_mode_not_now">Not now</string>
-    <string name="fast_mode_on">Fast mode on — restarting the miner to build the table. The rate climbs once it is ready.</string>
 </resources>

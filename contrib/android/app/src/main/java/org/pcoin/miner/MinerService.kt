@@ -1251,25 +1251,6 @@ class MinerService : Service() {
         fun prepare(context: Context) =
             send(context, Intent(context, MinerService::class.java).setAction(ACTION_PREPARE))
 
-        /**
-         * Stop and start, so the node is spawned afresh.
-         *
-         * The ONLY reason this exists: -randomxfastmode is read once, when
-         * bitcoind is exec'd. Changing the fast-mode setting does nothing at all
-         * to a node that is already running, so switching it on has to be
-         * followed by a real restart or the person who switched it watches an
-         * unchanged hash rate and concludes the setting is broken.
-         *
-         * STOP then START rather than anything cleverer: both already exist,
-         * both are idempotent, and the service's own supervision handles the
-         * gap. The node's data directory is untouched, so this costs a restart,
-         * not a resync.
-         */
-        fun restartNode(context: Context) {
-            stop(context)
-            start(context)
-        }
-
         fun setPercent(context: Context, percent: Int) = send(
             context,
             Intent(context, MinerService::class.java)
