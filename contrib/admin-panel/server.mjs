@@ -324,7 +324,31 @@ const send = (res, code, body, extra = {}) => {
   res.end(body);
 };
 
-const server = createServer(async (req, res) => {
+// A THROWING PAGE MUST COST ONE PAGE, NOT THE PANEL.
+//
+// This handler used to be the createServer callback itself, async and with no
+// catch. Any exception in any page therefore became an unhandled rejection,
+// Node exited, systemd restarted it, and the next load of that page did it
+// again: on 2026-09-19 one malformed row in tasks.json put the whole admin in a
+// crash loop that the owner saw as "bad gateway when i login". The wrapper
+// below answers 500 for the one request and keeps serving everything else;
+// the error still goes to the journal with its stack, so it is not hidden.
+const server = createServer((req, res) => {
+  handle(req, res).catch((e) => {
+    console.error('[pcoin-admin] page failed:', req.method, (req.url || '').split('?')[0],
+                  (e && e.stack) || e);
+    try {
+      if (!res.headersSent) {
+        res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+        res.end('This page failed to render. The error is in the pcoin-admin journal; every other page still works.');
+      } else {
+        res.end();
+      }
+    } catch { /* the socket is already gone */ }
+  });
+});
+
+async function handle(req, res) {
   const url = new URL(req.url, 'http://x');
   const path = url.pathname.replace(/\/+$/, '') || '/';
 
@@ -573,7 +597,7 @@ const server = createServer(async (req, res) => {
     const open = tasks.filter(t => !t.done), done = tasks.filter(t => t.done);
     const row = t => `<tr class="${t.done ? 'done' : ''}">
       <td>${esc(t.text)}</td>
-      <td class="muted" style="white-space:nowrap">${esc((t.at || '').slice(0, 10))}</td>
+      <td class="muted" style="white-space:nowrap">${esc(String(t.at || '').slice(0, 10))}</td>
       <td style="white-space:nowrap">
         <form method="POST" style="display:inline"><input type="hidden" name="action" value="toggle">
           <input type="hidden" name="id" value="${esc(t.id)}">
@@ -1051,7 +1075,7 @@ const server = createServer(async (req, res) => {
       keeper (systemd environment) and the Telegram bot. PancakeSwap is deliberately absent
       &mdash; it needs a private key, which belongs in a wallet and not in a web service.</p>
     </div>`));
-});
+}
 
 server.listen(PORT, '127.0.0.1', () =>
   console.log(`pcoin-admin on 127.0.0.1:${PORT} at ${BASE}/  (credential ` +

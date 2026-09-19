@@ -184,7 +184,11 @@ export function needsYou({ svcs = [], tasks = [], exOver = null, wrap = null,
 
   // ── the hand-written list ────────────────────────────────────────────────
   for (const t of (tasks || []).filter(t => !t.done)) {
-    add('info', t.text, `Added ${(t.at || '').slice(0, 10)}`, `${base}/tasks`);
+    // String(): tasks.json is written by hand and by scripts, and on 2026-09-19
+    // four rows arrived with `at` as a Unix NUMBER. `.slice` on a number threw,
+    // and because nothing above caught it, the whole panel crash-looped with
+    // 502 Bad Gateway. A malformed row must degrade one line, not the service.
+    add('info', t.text, `Added ${String(t.at || '').slice(0, 10)}`, `${base}/tasks`);
   }
 
   items.sort((a, b) => SEV[a.sev] - SEV[b.sev]);
