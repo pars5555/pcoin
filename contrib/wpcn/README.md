@@ -85,11 +85,23 @@ Komodo PR for a reason.
    few percent of the pool moves the price ~10%. Anyone told to
    expect a stable price will feel misled by something we knew in advance.
 
-4. **Redemption is manual.** https://wrapdesk.pc.am/redeem calls `redeem()` from
-   your own wallet; a person then sends the PCN by hand — allow hours, not
-   minutes. PCN → wPCN goes through the same desk (5% fee, 100 confirmations).
-   Design and procedures: `WRAP-DESK.md`. Say so; do not let "wrapped" imply an
-   automatic bridge.
+4. **Redemption is manual.** https://wrapdesk.pc.am/redeem offers two routes,
+   both paid 1:1 by a person, hours not minutes: **return** (transfer the wPCN to
+   the desk's inventory address and sign a message naming the PCoin address —
+   the route the desk asks for, since 2026-09-19) or **burn** (`redeem()` from
+   your own wallet). PCN → wPCN goes through the same desk (5% fee, 100
+   confirmations). Design and procedures: `WRAP-DESK.md` §10.11. Say so; do not
+   let "wrapped" imply an automatic bridge.
+
+5. **wPCN can trade ABOVE PCN, and nothing can pull it back down.** The peg is
+   asymmetric because the supply is fixed. Below PCN, anyone buys wPCN, redeems
+   1:1 and corrects it — unbounded. Above PCN, the only correction is wrapping
+   more PCN and selling the wPCN, which needs wPCN in the desk's inventory; when
+   the inventory is empty or wrapping is closed, a premium persists. WBTC does
+   not have this limit because its supply is minted on deposit; ours cannot be,
+   by design (no mint). Returns instead of burns keep the inventory from
+   shrinking; they do not remove the limit. Disclosed on pc.am, the site FAQ and
+   the desk's own FAQ, /proof and /redeem pages.
 
 ---
 

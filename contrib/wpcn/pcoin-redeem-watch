@@ -57,6 +57,27 @@ This matters because log access here is genuinely unreliable: the deploy RPC
 serve it only index recent history. Logs tell us WHO to pay; the invariant tells
 us WHETHER we have seen everyone.
 
+RETURNS: THE SECOND KIND OF REDEMPTION, AND WHY IT EXISTS (2026-09-19)
+
+The contract has no mint, so every burn shrinks the 50,000 supply for ever and
+the desk's inventory -- the only wPCN that can ever be wrapped again -- never
+comes back. Once it is gone wPCN can trade ABOVE PCN with no arbitrage able to
+pull it down. So the desk now asks customers to RETURN wPCN instead: transfer it
+to the INVENTORY address, then sign an EIP-191 message naming the tx hash and
+the PCoin address with the wallet that sent it. wrapdesk.pc.am records that as
+a claim in RETURNS_FILE. totalSupply does not move; the reserve does not move;
+the PCN is paid from a non-reserve wallet exactly as burns already are.
+
+THIS SCRIPT NEVER TRUSTS THE DESK'S LEDGER. For every unpaid claim it re-reads
+the receipt on the deploy RPC, checks the Transfer log (token, to=INVENTORY,
+from=claimant, amount), recovers the signer itself and requires it to be the
+sender, and requires the block to be finalized. Only then is it an ACTION. A
+claim failing any of those is reported as REJECTED or HELD, never paid.
+
+A transfer INTO inventory with no claim is reported too: it is either a customer
+who has not finished claiming (their money, sitting with us) or one of our own
+moves. `--ignore <key>` records the second; nothing else silences it.
+
 Alerts go to the PRIVATE ops channel. Never the public one.
 """
 import json
@@ -86,12 +107,62 @@ LOGS_RPCS = [u for u in os.environ.get(
     "https://bsc.drpc.org,https://bsc-rpc.publicnode.com").split(",") if u]
 PACE = float(os.environ.get("REDEEM_PACE", 1.2))    # seconds between chunks
 
+# Return claims, written by wrapdesk.pc.am (user wrapdesk, mode 0644).
+RETURNS_FILE = os.environ.get("RETURNS_FILE", "/var/lib/wrapdesk/returns.json")
+INVENTORY = os.environ.get(
+    "WPCN_INVENTORY", "0x37cefF465A3a2f72979062aD781DDa7293477b8a").lower()
+# Inbound transfers from these are OUR OWN moves, never a customer return: the
+# keeper, the PancakeSwap pair (LP removal), the burned deployer.
+RETURN_IGNORE_FROM = {a.strip().lower() for a in os.environ.get(
+    "RETURN_IGNORE_FROM",
+    "0x477C9793C0d69283d703010500C86f7335B27521,"
+    "0xB2c6C80cb31DE366Fb556Fff7C433660BAF60204,"
+    "0xd3529De11BF234FEe5928017Ecb92Cb0d7605241").split(",") if a.strip()}
+TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+
+
+def return_message(txhash, pcoin):
+    """MUST be byte-identical to returnMessage() in contrib/wrapdesk/server.mjs."""
+    return (f"PCoin wrap desk: return wPCN for PCN\n"
+            f"BSC transaction: {txhash}\n"
+            f"Send the PCN to: {pcoin}\n"
+            f"I sent the wPCN in that transaction to {INVENTORY} from the wallet signing this.")
+
+
+def recover_signer(message, signature):
+    """Lower-case signer address, or None if the signature does not parse."""
+    try:
+        from eth_account import Account
+        from eth_account.messages import encode_defunct
+        return Account.recover_message(encode_defunct(text=message),
+                                       signature=signature).lower()
+    except Exception:
+        return None
+
+
+def load_returns():
+    try:
+        with open(RETURNS_FILE) as f:
+            d = json.load(f)
+        return d.get("claims") or {} if isinstance(d, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return None            # unreadable is UNKNOWN, not "no claims"
+
 REDEEM_ABI = [{
     "anonymous": False,
     "inputs": [{"indexed": True, "name": "from", "type": "address"},
                {"indexed": False, "name": "value", "type": "uint256"},
                {"indexed": False, "name": "pcoinAddress", "type": "string"}],
     "name": "Redeem", "type": "event"}]
+
+TRANSFER_ABI = [{
+    "anonymous": False,
+    "inputs": [{"indexed": True, "name": "from", "type": "address"},
+               {"indexed": True, "name": "to", "type": "address"},
+               {"indexed": False, "name": "value", "type": "uint256"}],
+    "name": "Transfer", "type": "event"}]
 
 SUPPLY_ABI = [
     {"constant": True, "inputs": [], "name": "totalSupply",
@@ -110,9 +181,19 @@ BASE58 = re.compile(r"^[PQ][1-9A-HJ-NP-Za-km-z]{25,39}$")
 def load_state():
     try:
         with open(STATE) as f:
-            return json.load(f)
+            s = json.load(f)
     except Exception:
-        return {"paid": {}, "nagged": {}, "scanned_to": 0}
+        s = {}
+    if not isinstance(s, dict):
+        s = {}
+    # NORMALISE. A state file that parses but lacks a key must not crash the
+    # first run (CLAUDE.md 7.14) -- and `paid`/`ignored` are what stop us
+    # paying or nagging twice, so they must exist before anything reads them.
+    for k, v in (("paid", {}), ("nagged", {}), ("seen", {}), ("ignored", {}),
+                 ("scanned_to", 0)):
+        if not isinstance(s.get(k), type(v)):
+            s[k] = v
+    return s
 
 
 def save_state(s):
@@ -237,6 +318,7 @@ def main() -> int:
     # finalized tag we HOLD rather than inventing a depth.
     try:
         final = w3.eth.get_block("finalized")["number"]
+        final_head = final
     except Exception as e:
         notify("redeem watch: no finality from BSC endpoint",
                f"eth_getBlockByNumber(finalized) failed: {e}\n"
@@ -246,6 +328,7 @@ def main() -> int:
 
     start = max(FROM_BLOCK, st.get("scanned_to", 0))
     events = []
+    inbound = []
     if not logs_conns:
         tasks.append(("no_logs_rpc", "warn",
                       "No BSC endpoint would serve eth_getLogs, so WHO redeemed "
@@ -253,7 +336,7 @@ def main() -> int:
                       "says whether anyone is owed."))
         final = start - 1
     else:
-        scanners = [(u, c.eth.contract(address=tok_addr, abi=REDEEM_ABI))
+        scanners = [(u, c.eth.contract(address=tok_addr, abi=REDEEM_ABI + TRANSFER_ABI))
                     for u, c in logs_conns]
         lo, turn = start, 0
         while lo <= final:
@@ -267,6 +350,12 @@ def main() -> int:
                 turn += 1
                 try:
                     got = sc.events.Redeem().get_logs(from_block=lo, to_block=hi)
+                    # Same chunk, same endpoint: wPCN arriving at inventory.
+                    # Filtered server-side on the indexed `to`, so it is one
+                    # small call, not a scan of every transfer.
+                    inbound += sc.events.Transfer().get_logs(
+                        from_block=lo, to_block=hi,
+                        argument_filters={"to": Web3.to_checksum_address(INVENTORY)})
                     break
                 except Exception as e:
                     err = f"{url}: {e}"
@@ -343,6 +432,136 @@ def main() -> int:
     if final >= start:
         st["scanned_to"] = final + 1
 
+    # ---- RETURN CLAIMS ---------------------------------------------------
+    claims = load_returns()
+    if claims is None:
+        tasks.append(("returns_unreadable", "warn",
+                      f"{RETURNS_FILE} exists but could not be parsed. Return "
+                      f"claims are UNKNOWN right now -- somebody may be owed "
+                      f"PCN for wPCN already sitting in inventory."))
+        claims = {}
+    st.setdefault("returns_seen", {})
+    returns_owed, n_returns = 0.0, 0
+    for key, c in sorted(claims.items(), key=lambda kv: (kv[1] or {}).get("at", 0)):
+        if not isinstance(c, dict):
+            continue
+        if st["paid"].get(key):
+            continue
+        txhash = str(c.get("txhash", "")).lower()
+        pcoin = str(c.get("pcoin", ""))
+        who = str(c.get("from", "")).lower()
+        amt = float(c.get("wpcn") or 0)
+        try:
+            log_index = int(c.get("logIndex"))
+        except Exception:
+            log_index = None
+        head = (f"RETURN {amt:.8f} wPCN -> {pcoin}\n"
+                f"  return tx: {key}\n"
+                f"  from     : {who}\n")
+
+        # 1. The signature, recovered HERE. The desk's `verified` flag is not
+        #    evidence; the desk could be wrong, stale, or compromised.
+        signer = recover_signer(return_message(txhash, pcoin), str(c.get("signature", "")))
+        if signer is None or signer != who:
+            tasks.append((key, "action", head +
+                          f"  CLAIM REJECTED: signature recovers to {signer or 'nothing'}, "
+                          f"not the sender. Somebody is claiming a transfer they did not "
+                          f"make, or the message format drifted between desk and watcher. "
+                          f"Do NOT pay. If the sender is real, ask them to claim again."))
+            continue
+
+        # 2. The receipt, read on the deploy RPC, not taken from the ledger.
+        try:
+            rc = w3.eth.get_transaction_receipt(txhash)
+        except Exception as e:
+            tasks.append((key, "warn", head +
+                          f"  receipt UNREADABLE ({type(e).__name__}) -- HOLD, retry next run."))
+            continue
+        if rc is None or int(rc.get("status", 0)) != 1:
+            tasks.append((key, "action", head +
+                          f"  CLAIM REJECTED: the transaction is missing or reverted. Nothing arrived. Do NOT pay."))
+            continue
+        match = None
+        for lg in rc.get("logs", []):
+            if int(lg.get("logIndex", -1)) != log_index:
+                continue
+            topics = [t.hex() if hasattr(t, "hex") else str(t) for t in lg.get("topics", [])]
+            topics = [("0x" + t) if not t.startswith("0x") else t for t in topics]
+            if str(lg.get("address", "")).lower() != tok_addr.lower():
+                break
+            if len(topics) != 3 or topics[0].lower() != TRANSFER_TOPIC:
+                break
+            t_from = "0x" + topics[1][-40:].lower()
+            t_to = "0x" + topics[2][-40:].lower()
+            data = lg.get("data")
+            data = data.hex() if hasattr(data, "hex") else str(data)
+            value = int(data, 16) / 1e8 if data not in ("", "0x") else 0.0
+            match = (t_from, t_to, value)
+            break
+        if match is None:
+            tasks.append((key, "action", head +
+                          f"  CLAIM REJECTED: log {log_index} in that receipt is not a wPCN Transfer. Do NOT pay."))
+            continue
+        t_from, t_to, value = match
+        if t_to != INVENTORY or t_from != who or abs(value - amt) > 1e-8:
+            tasks.append((key, "action", head +
+                          f"  CLAIM REJECTED: the transfer is {value:.8f} wPCN {t_from} -> {t_to}; "
+                          f"the claim says {amt:.8f} from {who} to inventory. Do NOT pay."))
+            continue
+
+        # 3. Finality. The block must be at or below BSC's finalized tag.
+        blk = int(rc.get("blockNumber", 0))
+        if blk > final_head:
+            tasks.append((key, "warn", head +
+                          f"  seen in block {blk}, finalized is {final_head} -- HOLD until final."))
+            continue
+
+        st["returns_seen"][key] = amt
+        returns_owed += amt
+        n_returns += 1
+        verdict, detail = check_address(pcoin)
+        if verdict == "bad":
+            tasks.append((key, "action", head +
+                          f"  BAD DESTINATION: {detail}. The wPCN is in inventory and they are "
+                          f"owed {amt:.8f} PCN. Contact them for a correct address; do not send to that string."))
+            continue
+        warn = "" if verdict == "ok" else f"\n  ** {detail} -- run validateaddress before sending **"
+        changed = f"\n  (destination was changed by the sender from {c['previous_pcoin']})" if c.get("previous_pcoin") else ""
+        tasks.append((key, "action",
+                      f"ACTION: send {amt:.8f} PCN  (RETURN, verified)\n"
+                      f"  to       : {pcoin}\n"
+                      f"  return tx: {key}\n"
+                      f"  from     : {who}{warn}{changed}\n"
+                      f"Pay from market-hot or the treasury, NOT the reserve -- the wPCN is back "
+                      f"in inventory, totalSupply is unchanged, so the reserve must stay whole.\n"
+                      f"When sent: pcoin-redeem-watch --paid {key} <pcoin_txid>"))
+
+    # ---- UNCLAIMED INBOUND -------------------------------------------------
+    # wPCN arrived at inventory and nobody has claimed it. Either a customer who
+    # stopped before the signature step -- their money, with us -- or our own
+    # move. Neither may be silent.
+    for ev in inbound:
+        key = f"0x{ev['transactionHash'].hex()}:{ev['logIndex']}"
+        key = key.replace("0x0x", "0x")
+        frm = str(ev["args"]["from"]).lower()
+        if frm in RETURN_IGNORE_FROM or key in st["ignored"] or key in claims:
+            continue
+        if st["paid"].get(key):
+            continue
+        st.setdefault("unclaimed", {})[key] = {"from": frm, "wpcn": ev["args"]["value"] / 1e8,
+                                               "block": ev["blockNumber"]}
+    for key, u in list(st.get("unclaimed", {}).items()):
+        if key in claims or key in st["ignored"] or st["paid"].get(key):
+            st["unclaimed"].pop(key, None)
+            continue
+        tasks.append((key, "warn",
+                      f"UNCLAIMED: {u['wpcn']:.8f} wPCN arrived at inventory from {u['from']}\n"
+                      f"  tx: {key}\n"
+                      f"No return claim names it. If it is a customer, they must finish on "
+                      f"wrapdesk.pc.am/redeem ('Already sent? Claim it here'). If it was us: "
+                      f"pcoin-redeem-watch --ignore {key}"))
+    owed += returns_owed
+
     # ---- THE AUDIT -------------------------------------------------------
     # The contract knows exactly how much has ever been redeemed. Compare that
     # against what we have actually observed. A shortfall means a Redeem event
@@ -391,7 +610,7 @@ def main() -> int:
         return 1
     if warns:
         return 2
-    print(f"redeem desk: nothing outstanding | issued {issued:.8f} "
+    print(f"redeem desk: nothing outstanding (returns: {n_returns}) | issued {issued:.8f} "
           f"outstanding {outstanding:.8f} redeemed-ever {burned_ever:.8f} "
           f"| scanned to BSC block {st['scanned_to'] - 1}")
     return 0
@@ -403,6 +622,15 @@ if __name__ == "__main__":
     # BSC burn: unlike the wrap side there is no chain read that proves "this
     # particular redemption was settled". So a human records it -- with the
     # txid, so the claim is at least checkable afterwards.
+    if len(sys.argv) >= 3 and sys.argv[1] == "--ignore":
+        # An inbound transfer that was OUR move, not a customer return. Recorded
+        # with a timestamp so the decision is auditable later.
+        s = load_state()
+        s["ignored"][sys.argv[2]] = {"at": int(time.time()),
+                                     "note": " ".join(sys.argv[3:]) or None}
+        save_state(s)
+        print(f"ignored: {sys.argv[2]}")
+        sys.exit(0)
     if len(sys.argv) >= 3 and sys.argv[1] == "--paid":
         s = load_state()
         s["paid"][sys.argv[2]] = {

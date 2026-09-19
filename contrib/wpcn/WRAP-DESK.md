@@ -621,6 +621,73 @@ forgotten how to display them.
 They are what a six-day-old token with $1,333 of liquidity looks like. This work
 is about making the token *findable and safe to add*, not about volume.
 
+### 10.11 Return instead of burn — why, and how it is verified (2026-09-19)
+
+**The limit nobody had written down.** §2 says arbitrage holds the two prices
+together, and it does — in one direction. wPCN *below* PCN is corrected by
+buying wPCN and redeeming, and that has no ceiling. wPCN *above* PCN is only
+corrected by wrapping more PCN and selling the wPCN, and that needs wPCN to hand
+out. The contract has no mint, so the desk's inventory is the whole supply of
+wrappable wPCN, and **every burn shrinks it for ever**. Once it is gone, wPCN
+can sit at any premium to PCN and no arbitrage, keeper or contract can bring it
+down. Numbers on the day this was decided: the pool could follow PCN down by
+about 5× (to ~$0.007 from $0.037) using every wPCN in existence, and no further.
+WBTC does not have this asymmetry because its custodian mints on deposit; ours
+cannot, by design (§3 of `README.md`). Adding a mint under a multisig was
+considered and declined at this size.
+
+**So redemptions are now RETURNS by default.** The customer transfers wPCN to
+the inventory address (`WPCN_INVENTORY`, the owner's wallet that already holds
+the inventory and the LP), then signs an EIP-191 message with the same wallet:
+
+```
+PCoin wrap desk: return wPCN for PCN
+BSC transaction: <txhash, lower-case>
+Send the PCN to: <pcoin address>
+I sent the wPCN in that transaction to <inventory, lower-case> from the wallet signing this.
+```
+
+`POST /return {txhash, pcoin, from, signature}` on the desk. The desk recovers
+the signer (`recover.py`, eth_account, run under `/opt/wpcn/.venv`), requires
+it to equal `from`, reads the receipt on the deploy RPC, requires a wPCN
+`Transfer` log from `from` to the inventory, and records the claim keyed on
+**(txhash, logIndex)** in `/var/lib/wrapdesk/returns.json`. A receipt not yet
+visible answers `202 pending` and the page retries with the same signature —
+the signature covers only the hash and the address, so it stays valid. The
+"Already sent? Claim it here" form is the same endpoint for a transfer made by
+hand or a page closed before the signature step.
+
+**The watcher never trusts the desk.** `pcoin-redeem-watch` re-derives every
+unpaid claim itself: recovers the signer again and requires it to be the
+sender; re-reads the receipt and checks token, `to`, `from` and amount against
+the claim; requires the block at or below BSC's `finalized` tag; then validates
+the PCoin address exactly as for a burn. Only a claim passing all four is an
+`ACTION: send N PCN (RETURN, verified)`. Anything else is `CLAIM REJECTED` or
+`HOLD`, and a rejected claim is still reported, because it is either an attack
+or a drifted message format, and both need a person. Every branch was proven to
+fire against forged input before the code was trusted (garbage signature,
+genuine signature with the `from` field swapped, unmined hash, unparsable
+ledger). `--paid <key> <txid>` closes a return exactly as it closes a burn.
+
+**Money flow, and why `/proof` needs no change.** A return does not touch
+`totalSupply` and does not touch the reserve. The PCN is paid from market-hot
+or the treasury — the same wallet burn redemptions were always paid from — and
+the returned wPCN sits in inventory for the next wrap. Net effect: the treasury
+bought N wPCN for N PCN at par, which is exactly what burn-then-sweep-surplus
+produced, without the burn. The reserve stays 1:1 against `issuedSupply`.
+
+**Unclaimed transfers are reported, never ignored.** The watcher also scans
+`Transfer(to = inventory)` in the same chunks as `Redeem`. A transfer with no
+claim, not from the keeper, the pair or the burned deployer, is an `UNCLAIMED`
+warning: either a customer who stopped before signing (their money, with us)
+or our own move. `--ignore <key> <note>` records the second; nothing else
+silences it.
+
+**What it does not do.** It does not remove the premium limit; it stops the
+limit getting worse. The inventory can still run out through wraps. And `/proof`
+now prints *wPCN outside the desk* (issued minus inventory minus keeper) so the
+amount actually in circulation is a published number.
+
 ## 11. The keeper — connecting the two prices automatically
 
 `contrib/wpcn/pcoin-wpcn-keeper`, every 10 minutes.
