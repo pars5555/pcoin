@@ -22,6 +22,36 @@ export function loadReports(dataDir) {
   } catch { return []; }
 }
 
+/** Which reports have since been ANSWERED, derived from the approval log.
+ *
+ *  A report is filed once, by the group bot, and never updated -- so `answered`
+ *  is whatever it was at the moment the question arrived, which is always
+ *  false. 41 of the first 66 had been answered in the group and every one of
+ *  them still read "not answered", so the overview asked the owner to deal with
+ *  work that was finished.
+ *
+ *  The approval log already knows: every public answer goes through the gate
+ *  and records the message it replies to. So this is DERIVED at render time
+ *  rather than stored -- nothing to write, nothing to drift, and it is right
+ *  again the moment an answer is published.
+ */
+export function answeredReplies(approvals) {
+  const out = new Set();
+  for (const blob of Object.values(approvals || {})) {
+    for (const it of (blob && blob.items) || []) {
+      if (it && it.state === 'published' && it.reply_to) out.add(String(it.reply_to));
+    }
+  }
+  return out;
+}
+
+/** Report id "tg-347" refers to group message 347. */
+export const reportMessageId = (r) => String((r && r.id) || '').replace(/^tg-/, '');
+
+export const reportAnswered = (r, answered) =>
+  Boolean(r && (r.answered === true || r.answered === 'True'
+    || (answered && answered.has(reportMessageId(r)))));
+
 export function saveReports(dataDir, rows) {
   writeFileSync(reportsFile(dataDir), JSON.stringify(rows, null, 2));
 }
@@ -33,15 +63,17 @@ const KIND = {
   feature:  '<span class="ok">feature</span>',
 };
 
-export function reportsPage(dataDir, BASE, showDone) {
+export function reportsPage(dataDir, BASE, showDone, answered = new Set()) {
   const all = loadReports(dataDir);
   const open = all.filter(r => r.status !== 'done');
   const rows = showDone ? all : open;
 
   const count = k => open.filter(r => r.kind === k).length;
+  const waiting = open.filter(r => !reportAnswered(r, answered)).length;
 
   return tiles([
-    ['Open', String(open.length), open.length ? 'yellow' : 'green'],
+    ['Needs an answer', String(waiting), waiting ? 'yellow' : 'green'],
+    ['Open', String(open.length)],
     ['Bugs', String(count('bug')), count('bug') ? 'red' : 'green'],
     ['Todos', String(count('todo'))],
     ['Questions', String(count('question'))],
@@ -56,8 +88,9 @@ export function reportsPage(dataDir, BASE, showDone) {
           `<div${r.status === 'done' ? ' style="opacity:.5;text-decoration:line-through"' : ''}>` +
           `<b>${esc(r.summary || '(no summary)')}</b>` +
           (r.detail ? `<div class="muted" style="margin-top:4px;white-space:pre-wrap">${esc(r.detail)}</div>` : '') +
-          (r.answered ? `<div class="ok" style="margin-top:4px;font-size:12px">answered in the group</div>`
-                      : `<div class="warn" style="margin-top:4px;font-size:12px">not answered</div>`) +
+          (reportAnswered(r, answered)
+            ? `<div class="ok" style="margin-top:4px;font-size:12px">answered in the group</div>`
+            : `<div class="warn" style="margin-top:4px;font-size:12px">not answered</div>`) +
           '</div>',
           `<span class="muted">${esc(r.from || 'unknown')}</span>` +
           (r.link ? `<br><a href="${esc(r.link)}" target="_blank" rel="noopener"

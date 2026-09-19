@@ -1,3 +1,4 @@
+import { reportAnswered } from './reports.mjs';
 // "Needs you" — everything across the estate that is waiting on the owner,
 // gathered into one list and rendered at the top of the dashboard.
 //
@@ -46,7 +47,7 @@ const hours = (s) => (typeof s === 'number' && isFinite(s))
  *  @param reports user-submitted reports, if the panel has them.
  */
 export function needsYou({ svcs = [], tasks = [], exOver = null, wrap = null,
-                           reports = [], base = '' } = {}) {
+                           reports = [], answeredIds = new Set(), base = '' } = {}) {
   const items = [];
   const add = (sev, title, detail, href) => items.push({ sev, title, detail, href });
 
@@ -176,7 +177,15 @@ export function needsYou({ svcs = [], tasks = [], exOver = null, wrap = null,
   }
 
   // ── user reports ─────────────────────────────────────────────────────────
-  const openReports = (reports || []).filter(r => r && !r.done && !r.resolved).length;
+  // TWO BUGS LIVED IN THIS LINE. It counted `done`/`resolved`, which this data
+  // has never carried -- the file stores `status: 'open' | 'done'` -- so
+  // pressing "done" on a report did not reduce the count, and nothing ever
+  // could. And it counted reports that had already been ANSWERED in the group,
+  // which was 41 of the first 66. What needs a person is a report that is still
+  // open AND has no published answer.
+  const openReports = (reports || [])
+    .filter(r => r && r.status !== 'done' && !r.done && !r.resolved && !reportAnswered(r, answeredIds))
+    .length;
   if (openReports > 0) {
     add('info', `${openReports} user report${openReports === 1 ? '' : 's'} unresolved`,
       'Somebody wrote in and has not been answered.', `${base}/user-reports`);

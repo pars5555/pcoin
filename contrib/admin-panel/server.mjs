@@ -42,7 +42,7 @@ import { vaultPage } from './vault.mjs';
 import { exchangeSection, exchangeCall } from './exchange.mjs';
 import { needsYou, needsYouCard } from './needs-you.mjs';
 import { programsPage, programsData, programsAction } from './programs.mjs';
-import { reportsPage, loadReports, saveReports } from './reports.mjs';
+import { reportsPage, loadReports, saveReports, answeredReplies } from './reports.mjs';
 import { cachedVerdicts, verdictCell, vtKey } from './virustotal.mjs';
 
 const PORT   = Number(process.env.ADMIN_PORT || 8795);
@@ -936,7 +936,7 @@ async function handle(req, res) {
 
   if (sub === '/user-reports') {
     return send(res, 200, shell2('user-reports', 'User reports',
-      reportsPage(DATA, BASE, url.searchParams.get('all') === '1')));
+      reportsPage(DATA, BASE, url.searchParams.get('all') === '1', answeredReplies(loadApprovals()))));
   }
 
   if (sub.startsWith('/services/')) {
@@ -1062,7 +1062,8 @@ async function handle(req, res) {
   try { reports = loadReports(DATA); } catch { reports = []; }
 
   const needs = needsYou({
-    svcs, tasks, exOver, wrap: wrapdeskState(), reports, base: BASE,
+    svcs, tasks, exOver, wrap: wrapdeskState(), reports,
+    answeredIds: answeredReplies(loadApprovals()), base: BASE,
   });
   const needsAction = needs.filter(i => i.sev === 'action').length;
   const openTasks = needs.length;
