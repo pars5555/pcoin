@@ -585,6 +585,19 @@ button:hover{background:#2ea043}
 button.ghost{background:#21262d;border:1px solid var(--line);color:var(--fg);font-weight:500;margin-top:0}
 button.ghost:hover{background:#30363d}
 button.ghost[disabled]{opacity:.55;cursor:default}
+/* A LINK that looks like a button. The open direction on a page whose headline
+   says "closed" needs to be the most clickable thing on it, or a visitor who
+   came to redeem reads the red banner and leaves. */
+.golink{display:inline-block;background:#238636;color:#fff;text-decoration:none;
+ padding:.7rem 1.4rem;border-radius:8px;font-weight:700;font-size:1rem;margin-top:.2rem}
+.golink:hover{background:#2ea043}
+.dir{display:flex;gap:.9rem;align-items:flex-start;padding:.85rem 0;border-bottom:1px solid #21262d}
+.dir:last-child{border-bottom:none}
+.dir .tag{flex:0 0 5.4rem;font-size:.72rem;font-weight:700;letter-spacing:.06em;
+ text-transform:uppercase;padding:.28rem 0;text-align:center;border-radius:999px}
+.tag.open{background:rgba(63,185,80,.16);color:var(--green)}
+.tag.shut{background:rgba(248,81,73,.16);color:var(--red)}
+@media (max-width:420px){.dir{flex-direction:column;gap:.35rem}.dir .tag{flex:none;width:5.4rem;text-align:left;padding-left:.6rem}}
 .good{color:var(--green)}
 .warn{border-left:3px solid var(--amber);padding-left:.9rem;color:#e3b341}
 .err{border-left:3px solid var(--red);padding-left:.9rem;color:#ff7b72}
@@ -717,12 +730,26 @@ inventory in existence; it does not remove the limit.</p></div>`;
 
 // ── pages ───────────────────────────────────────────────────────────────────
 const home = (msg = '', acct = null, leftPcn = null) => page('PCoin wrap desk — wPCN and PCN, both directions', '/', `
-${intakeClosed() !== null ? `<div class="card" style="border-left:4px solid #e5484d">
-<h1 style="margin-top:0">Wrapping is closed &mdash; redeeming still works</h1>
-<p class="lead"><b>PCN &rarr; wPCN is closed.</b> New wrap requests are not being
-accepted. This is temporary.<br>
-<b>wPCN &rarr; PCN is open as normal</b> &mdash;
-<a href="/redeem">redeem your wPCN here</a> and the PCN is sent to you.</p>
+${intakeClosed() !== null ? `<div class="card">
+<h1 style="margin-top:0">One direction is open</h1>
+<p class="lead">Only one way round the desk is working at the moment. Which one
+you need decides everything on this page, so it is the first thing here.</p>
+
+<div class="dir">
+ <span class="tag open">open</span>
+ <div><b>wPCN &rarr; PCN.</b> Hand your wPCN back and the PCN is sent to you,
+ 1 for 1, no fee on this side. A person pays it, so allow hours rather than
+ minutes.<br><a class="golink" href="/redeem">Redeem wPCN &rarr; PCN</a></div>
+</div>
+
+<div class="dir">
+ <span class="tag shut">closed</span>
+ <div><b>PCN &rarr; wPCN.</b> New wrap requests are not being accepted. This is
+ temporary, and there is no reopening date.</div>
+</div>
+</div>
+
+<div class="card" style="border-left:4px solid #e5484d">
 <p><b>Nothing you are already owed is affected.</b> Every wrap that reached 100
 confirmations has been paid, and anything still confirming will be paid the same
 way.</p>
