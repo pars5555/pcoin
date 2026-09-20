@@ -158,7 +158,7 @@
 
         <h2>The terminal miner — any distribution</h2>
         <figure class="shot">
-          <img src="/img/miner-linux-terminal.png" alt="pcoin-miner running in a terminal at 1.48 kH/s" width="900" height="497" loading="lazy">
+          <img src="/img/miner-linux-terminal.png" alt="pcoin-miner running in a terminal in fast mode" width="900" height="497" loading="lazy">
           <figcaption><code>pcoin-miner</code> — live in a terminal. Works over SSH on a headless server.</figcaption>
         </figure>
         <p class="muted">A single Python file, standard library only, so it runs anywhere Python 3
@@ -179,7 +179,7 @@ pcoin-miner --address pc1YOURADDRESS --pool pool2.pc.am:3333 --cores auto</code>
 
         <h2>The desktop app</h2>
         <figure class="shot">
-          <img src="/img/miner-linux-gui.png" alt="PCoin Miner desktop app on Linux showing 1,505 H/s" width="560" height="880" loading="lazy">
+          <img src="/img/miner-linux-gui.png" alt="PCoin Miner desktop app on Linux showing 2,044 H/s" width="560" height="880" loading="lazy">
           <figcaption>The desktop app on KDE — tray icon, live graph, cores slider and pool picker.</figcaption>
         </figure>
         <p class="muted">GTK4 through PyGObject, which every mainstream desktop already ships. It
@@ -242,16 +242,29 @@ rm -f ~/.local/bin/pcoin-miner ~/.local/share/pcoin/bin/pcoin-miner-gui</code></
     <p class="muted">Measured on real machines, in fast mode, at the settings shown:</p>
     <div class="grid">
       <div class="stat"><b>6.24 kH/s</b><span>i9-10900X · 10 of 20 cores · Windows</span></div>
-      <div class="stat"><b>1.43 kH/s</b><span>i5-9600K · 2 of 6 cores · Linux</span></div>
+      <div class="stat"><b>2.04 kH/s</b><span>i5-9600K · 3 of 6 cores · Linux</span></div>
       <div class="stat"><b>26 H/s</b><span>Galaxy Note 9 · Android</span></div>
     </div>
 
     <h2>More cores is not always faster</h2>
     <p class="muted">RandomX works out of a large table in memory, and past a point extra threads
-    spend more time waiting for memory than hashing. On the Linux machine above, two cores beat
-    six by <strong>45%</strong> — the whole machine mining flat out produced <em>less</em> than a
-    third of it. So do not assume: the terminal miner's <code>--cores auto</code> measures every
-    setting and picks the winner, and the desktop and Windows apps let you try by hand.</p>
+    spend more time waiting for memory than hashing. On the Linux machine above, <strong>three</strong>
+    cores beat all six by <strong>92%</strong> — half the machine produced nearly twice what the
+    whole machine did. So do not assume: the terminal miner's <code>--cores auto</code> measures
+    every setting and picks the winner, and the desktop and Windows apps let you try by hand.</p>
+
+    <h2>Large pages are worth a third again</h2>
+    <p class="muted">Fast mode keeps a 2080&nbsp;MiB table in memory, and on ordinary 4&nbsp;KiB
+    pages the processor spends much of its time translating addresses for it. Reserving
+    <em>huge</em> pages for that table is what lets extra cores keep adding hash rate instead of
+    evicting each other. Measured on the machine above, it moved the best setting from two cores
+    to three and the peak from <strong>1,433 to 1,969&nbsp;H/s</strong>:</p>
+<pre><code>echo 'vm.nr_hugepages = 1060' | sudo tee /etc/sysctl.d/99-pcoin-hugepages.conf
+sudo sysctl --system
+sudo systemctl restart pcoind      # or: systemctl --user restart pcoind</code></pre>
+    <p class="muted">1060 pages is 2120&nbsp;MiB: 1040 for the table plus one per mining thread.
+    That memory is reserved away from everything else, so size it deliberately. The node reports
+    <code>largepages</code> and, when it cannot get them, exactly what it wanted.</p>
 
     <h2>Solo or pool</h2>
     <p class="muted"><strong>Solo</strong> means you build your own blocks and keep the entire
