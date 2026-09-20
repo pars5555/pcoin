@@ -321,6 +321,43 @@ function init() {
 
   var timer = 0, ctl = null, seq = 0;
 
+  /* CLOUDFLARE EMAIL OBFUSCATION. The panel is served through Cloudflare, which
+     rewrites every address in the HTML into a placeholder reading
+     "[email protected]" and relies on its OWN script to put the real one back at
+     page load. Rows fetched afterwards are never seen by that script, so a
+     sorted or searched list showed the placeholder for every email -- which is
+     what the owner hit the moment he changed the sort.
+
+     Decoding it here is the fix that does not depend on a Cloudflare setting:
+     the cipher is a byte-wise XOR with the first byte, and the data is in the
+     element. If the attribute is missing or malformed the element is left
+     exactly as it is -- a wrong address is far worse than an obvious one. */
+  function cfDecode(hex) {
+    var key = parseInt(hex.substr(0, 2), 16);
+    if (!(key >= 0)) return null;
+    var bytes = [];
+    for (var i = 2; i < hex.length; i += 2) {
+      var b = parseInt(hex.substr(i, 2), 16);
+      if (!(b >= 0)) return null;
+      bytes.push(b ^ key);
+    }
+    try {
+      return new TextDecoder('utf-8').decode(new Uint8Array(bytes));
+    } catch (e) {
+      return bytes.map(function (c) { return String.fromCharCode(c); }).join('');
+    }
+  }
+  function decodeEmails(root) {
+    root.querySelectorAll('[data-cfemail]').forEach(function (el) {
+      var out = cfDecode(el.getAttribute('data-cfemail') || '');
+      if (out) el.parentNode.replaceChild(document.createTextNode(out), el);
+    });
+    root.querySelectorAll('a[href*="/cdn-cgi/l/email-protection"]').forEach(function (a) {
+      var out = cfDecode((a.getAttribute('href') || '').split('#')[1] || '');
+      if (out) { a.setAttribute('href', 'mailto:' + out); if (/\[email/.test(a.textContent)) a.textContent = out; }
+    });
+  }
+
   function urlFor() {
     var p = new URLSearchParams(new FormData(f));
     var out = new URLSearchParams();
@@ -345,6 +382,7 @@ function init() {
         var nu = new DOMParser().parseFromString(html, 'text/html').querySelector('#xres');
         if (!nu) { location.href = url; return; }    /* logged out, or an error page */
         res.innerHTML = nu.innerHTML;
+        decodeEmails(res);
         res.style.opacity = '1';
         try { history[push ? 'pushState' : 'replaceState']({}, '', url); } catch (e) {}
       })

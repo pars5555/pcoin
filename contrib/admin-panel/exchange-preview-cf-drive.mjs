@@ -1,0 +1,33 @@
+import { readFileSync, writeFileSync } from 'node:fs';
+const BASE = readFileSync(process.argv[2], 'utf8').trim();
+const t = await (await fetch('http://127.0.0.1:9761/json/new?about:blank', { method: 'PUT' })).json();
+const ws = new WebSocket(t.webSocketDebuggerUrl);
+await new Promise((r) => ws.addEventListener('open', r));
+let seq = 0; const wait = new Map();
+ws.addEventListener('message', (m) => { const d = JSON.parse(m.data); if (d.id && wait.has(d.id)) { wait.get(d.id)(d); wait.delete(d.id); } });
+const send = (m, p = {}) => new Promise((r) => { const id = ++seq; wait.set(id, r); ws.send(JSON.stringify({ id, method: m, params: p })); });
+const ev = async (e) => (await send('Runtime.evaluate', { expression: e, returnByValue: true })).result?.result?.value;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let bad = 0; const check = (n, c, d='') => { console.log((c?'  PASS  ':'  FAIL  ')+n+(d?'   '+d:'')); if(!c) bad++; };
+await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+await send('Page.navigate', { url: BASE }); await sleep(1500);
+const placeholders = () => ev("document.querySelectorAll('#xres [data-cfemail]').length");
+const emailsShown = () => ev("(document.querySelector('#xres table')?.textContent.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+/g)||[]).length");
+check('the mock served Cloudflare placeholders (the bug is reproduced)', (await placeholders()) > 0, 'placeholders=' + await placeholders());
+// change the sort -- exactly what the owner did
+await ev(`(function(){const s=document.querySelector('form.xfilters select[name=sort]');s.value='email';s.dispatchEvent(new Event('change',{bubbles:true}));return 1})()`);
+await sleep(800);
+check('after changing the sort, NO placeholder is left', (await placeholders()) === 0, 'placeholders=' + await placeholders());
+check('real email addresses are shown instead', (await emailsShown()) >= 10, 'emails=' + await emailsShown());
+check('no page reload', (await ev('window.__loads')) === 1);
+const sample = await ev("document.querySelector('#xres table tr:nth-child(2)')?.textContent.replace(/\s+/g,' ').slice(0,48)");
+console.log('  first row now reads:', sample);
+// and typing keeps them decoded
+await ev(`(function(){const i=document.querySelector('form.xfilters input[type=search]');i.value='user2';i.dispatchEvent(new Event('input',{bubbles:true}));return 1})()`);
+await sleep(700);
+check('still decoded after a search', (await placeholders()) === 0 && (await emailsShown()) > 0);
+const shot = await send('Page.captureScreenshot', { format: 'png', clip: { x: 0, y: 0, width: 1440, height: 620, scale: .75 } });
+writeFileSync(process.argv[3], Buffer.from(shot.result.data, 'base64'));
+await fetch(`http://127.0.0.1:9761/json/close/${t.id}`); ws.close();
+console.log(bad ? `\n${bad} FAILED` : '\nemails survive every update');
+process.exit(bad ? 1 : 0);

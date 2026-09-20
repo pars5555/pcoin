@@ -53,6 +53,21 @@ const srv = http.createServer(async (req, res) => {
   if (url.pathname !== '/adm/exchange') { res.writeHead(404); return res.end('no'); }
   let body;
   try { body = await section.page(url); } catch (e) { res.writeHead(500); return res.end(String(e.stack)); }
+  // PREVIEW_CF=1 mimics Cloudflare's Email Address Obfuscation, which rewrites
+  // every address in the HTML and relies on its own script to restore them at
+  // page load. Rows fetched later are never seen by that script -- which is the
+  // bug the owner hit ("emails replace with [email protected]") -- so this is how
+  // that gets reproduced without waiting to see it in production.
+  if (process.env.PREVIEW_CF === '1') {
+    const enc = (addr) => {
+      const key = 0x7a;
+      let h = key.toString(16).padStart(2, '0');
+      for (const b of Buffer.from(addr, 'utf8')) h += (b ^ key).toString(16).padStart(2, '0');
+      return h;
+    };
+    body = body.replace(/([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})/g,
+      (m) => `<span class="__cf_email__" data-cfemail="${enc(m)}">[email&#160;protected]</span>`);
+  }
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
   res.end(`<!doctype html><html><head><meta charset="utf-8"><style>${css}</style><script>
     window.__loads = (window.__loads || 0) + 1;
