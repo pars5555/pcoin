@@ -1,0 +1,61 @@
+#!/bin/sh
+# Keep the public IPv4 on eth0. Nothing else.
+#
+# WHY THIS EXISTS. On 2026-09-20 this box lost its public IPv4 at 08:07:40 UTC
+# and did not get it back for about seven hours. eth0 takes IPv4 from DHCP while
+# IPv6 is static (/etc/network/interfaces.d/50-cloud-init). The dhclient holding
+# the lease stopped running some time on 19 September, between 08:07 and its
+# 18:09 renewal; the 24-hour lease then ran out and the kernel dropped the
+# address and the default route with it.
+#
+# What made it expensive is that everything LOOKED fine. Hetzner showed the
+# server green, because it was: 14 days uptime, no failed units, disk at 16%,
+# memory healthy. IPv6 is static so it kept answering, and the machine was
+# reachable and serving on v6 the whole time. But every IPv4 caller --
+# Cloudflare, Telegram, SSH, and the box's own outbound calls -- got silence, so
+# three payment rails (@MyWebsiteBuilderBot, aicontrol.pc.am, 3dmodels.pc.am)
+# were down and the only thing that noticed was a user asking in the group why
+# the bot had stopped.
+#
+# TWO CHECKS, NOT ONE, and the first is the one that matters.
+#
+#   1. Is dhclient running? For a whole day the address was still there and
+#      perfectly valid while NOTHING was renewing it. That is the actual fault,
+#      and it is visible 24 hours before it does any damage. Checking only for a
+#      missing address would have waited for the outage to start.
+#   2. Is the address there at all? The backstop, for a lease that lapses
+#      anyway -- it turns a seven-hour outage into a blip of a minute or two.
+#
+# Deliberately narrow: it never touches IPv6, never restarts networking, never
+# rewrites config. It runs the same dhclient ifupdown would have run.
+set -u
+IFACE="${IFACE:-eth0}"
+
+have_addr() { ip -4 addr show "$IFACE" 2>/dev/null | grep -q 'inet '; }
+# -x matches the process NAME exactly, so this can never match the shell that is
+# running this script. A `pkill -f dhclient` once matched its own caller's
+# command line and killed the session issuing it.
+have_client() { pgrep -x dhclient >/dev/null 2>&1; }
+
+if have_addr && have_client; then
+    exit 0
+fi
+
+if have_addr; then
+    logger -t ipv4-watchdog "IPv4 is present but no dhclient is running -- starting one before the lease lapses"
+else
+    logger -t ipv4-watchdog "no IPv4 on $IFACE -- renewing the lease"
+fi
+
+dhclient -v "$IFACE" >/tmp/ipv4-watchdog.out 2>&1
+sleep 3
+
+if have_addr && have_client; then
+    logger -t ipv4-watchdog "ok: $(ip -4 -o addr show "$IFACE" | awk '{print $4}'), dhclient running"
+    exit 0
+fi
+
+# Say so loudly rather than exiting quietly: a watchdog that fails in silence is
+# the same shape as the outage it is here to prevent.
+logger -t ipv4-watchdog "FAILED to restore IPv4/dhclient on $IFACE -- a person needs to look"
+exit 1

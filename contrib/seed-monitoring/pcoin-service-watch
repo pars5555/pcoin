@@ -61,6 +61,23 @@ SERVICES = [
     ("pcnearner",      "https://pcnearner.pc.am/",              {}),
     ("webai",          "https://webai.pc.am/",                  {}),
     ("checker",        "https://checker.pc.am/",                {}),
+    # THE THREE RAILS ON ai-bots (116.203.221.42), ADDED 2026-09-20 AFTER THE
+    # HOST WAS DOWN FOR HOURS AND NOTHING SAID SO.
+    #
+    # They were watched only by a pcoin-deposit-watch cron ON THAT SAME HOST, so
+    # the watcher died with the thing it was watching and its silence was
+    # indistinguishable from health. The outage was found by a USER in the
+    # group, who was told twice by the answer bot that "a person will look at
+    # it" -- and no person had been told anything.
+    #
+    # aicontrol also drives the three Windows miners, so when this box is down
+    # the fleet is unreachable too, which is worth an alert on its own.
+    # webcrafterai.com is @MyWebsiteBuilderBot's own surface: the bot is on
+    # Telegram and has no URL of its own, and asking Telegram about it would
+    # test Telegram rather than us.
+    ("aicontrol",      "https://aicontrol.pc.am/",              {}),
+    ("webbuilderbot",  "https://webcrafterai.com/",             {}),
+    ("3dmodels",       "https://3dmodels.pc.am/",               {}),
 ]
 
 TIMEOUT = float(os.environ.get("SERVICE_TIMEOUT", "20"))
