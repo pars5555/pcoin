@@ -354,7 +354,11 @@ function init() {
     });
     root.querySelectorAll('a[href*="/cdn-cgi/l/email-protection"]').forEach(function (a) {
       var out = cfDecode((a.getAttribute('href') || '').split('#')[1] || '');
-      if (out) { a.setAttribute('href', 'mailto:' + out); if (/\[email/.test(a.textContent)) a.textContent = out; }
+      /* indexOf, not a regex: this script lives inside a TEMPLATE LITERAL, which
+         eats backslashes -- /\[email/ was served as an unterminated character
+         class and killed the whole script, so the filters stopped applying and
+         the Filter button reappeared. No backslash may appear in here. */
+      if (out) { a.setAttribute('href', 'mailto:' + out); if (a.textContent.indexOf('[email') !== -1) a.textContent = out; }
     });
   }
 
@@ -399,7 +403,7 @@ function init() {
   f.addEventListener('input', function (e) {
     if (!e.target.matches('input[type=search], input[type=text]')) return;
     clearTimeout(timer);
-    timer = setTimeout(function () { load(urlFor(), false); }, 120);
+    timer = setTimeout(function () { load(urlFor(), false); }, 100);   /* owner asked for 100ms */
   });
   /* Enter in the search box should not reload the whole page. */
   f.addEventListener('submit', function (e) { e.preventDefault(); clearTimeout(timer); load(urlFor(), false); });
