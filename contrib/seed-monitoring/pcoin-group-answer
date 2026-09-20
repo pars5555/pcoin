@@ -24,6 +24,7 @@ mechanism -- so every draft is also checked here, and one that mentions a host,
 a path, a credential-shaped string or a PCN rate is held back for a human no
 matter how confident the model was.
 """
+import base64
 import json
 import os
 import re
@@ -115,6 +116,94 @@ def discord_channel_ids(path="/etc/pcoin/discord.conf"):
     return out
 
 
+# ── LOOKING AT WHAT PEOPLE SEND ───────────────────────────────────────────────
+#
+# Owner, 2026-09-20: "fix the agent capability to see the users images ... but
+# never run any file on the server, only view images."
+#
+# So this FETCHES BYTES AND LOOKS AT THEM, and does nothing else with them:
+#   * only two hosts are allowed -- Telegram's file API and Discord's CDN. A URL
+#     from anywhere else is refused, so nothing here can be pointed at an
+#     internal address;
+#   * the type is decided by the file's OWN FIRST BYTES, never by its name, its
+#     extension or the content_type the sender supplied;
+#   * anything that is not a PNG, JPEG, GIF or WebP is dropped;
+#   * there is a hard size cap and a short timeout;
+#   * the bytes stay in memory and are base64'd straight into the model request.
+#     Nothing is written to disk, so there is nothing to execute, and no code
+#     path here runs a file under any circumstances.
+IMAGE_MAX_BYTES = 5 * 1024 * 1024
+IMAGE_HOSTS = ("api.telegram.org", "cdn.discordapp.com", "media.discordapp.net")
+
+
+def sniff_image(b):
+    """The media type from the bytes themselves, or None. A .png that is really
+    something else is not an image, whatever it is called."""
+    if b[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if b[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if b[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if b[:4] == b"RIFF" and b[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _get_bytes(url, limit=IMAGE_MAX_BYTES, timeout=20):
+    host = ""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = parts.hostname or ""
+    except ValueError:
+        return None
+    if parts.scheme != "https" or host not in IMAGE_HOSTS:
+        return None
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            # read one byte past the cap: a file AT the cap is fine, one over it
+            # is refused rather than silently truncated into a corrupt image.
+            b = r.read(limit + 1)
+    except Exception:
+        return None
+    return None if len(b) > limit else b
+
+
+def fetch_image(row, cfg):
+    """(media_type, base64) for the picture on this message, or None.
+
+    None every time anything is not right -- unknown host, wrong bytes, too
+    big, no answer. A missing image means the model is told it cannot see one,
+    which is the behaviour this replaces and remains the safe fallback."""
+    url = None
+    if row.get("image_url"):
+        url = str(row["image_url"])
+    elif row.get("file_id"):
+        # The bot token lives in alert.conf, not in this agent's own config --
+        # the same place every other Telegram call here reads it from.
+        token = cfg.get("TELEGRAM_TOKEN") or conf(ALERT_CONF).get("TELEGRAM_TOKEN", "")
+        if not token:
+            return None
+        meta = _get_bytes("https://api.telegram.org/bot%s/getFile?file_id=%s"
+                          % (token, urllib.parse.quote(str(row["file_id"]))), limit=64 * 1024)
+        if not meta:
+            return None
+        try:
+            path = json.loads(meta.decode())["result"]["file_path"]
+        except Exception:
+            return None
+        url = "https://api.telegram.org/file/bot%s/%s" % (token, path)
+    if not url:
+        return None
+    b = _get_bytes(url)
+    if not b:
+        return None
+    mt = sniff_image(b)
+    if not mt:
+        return None
+    return mt, base64.b64encode(b).decode()
+
+
 # Telegram carries a photo's words in `caption`, which the watcher renders into
 # `described` as "a photo: <caption>". These are the labels it uses when there is
 # no caption at all -- those really are nothing to answer.
@@ -128,13 +217,20 @@ def askable_text(r):
     Returns "" only when there is genuinely nothing to answer: a bare image with
     no caption, a join/leave line, or something the watcher could not render.
 
-    The "a photo: " prefix is kept on purpose. The model cannot see the image,
-    and being told one is attached is what stops it answering as if it had.
+    The "a photo: " prefix is kept on purpose: the model is now shown the image
+    when one can be fetched, and the caption is still what the person WROTE.
+
+    A bare photo with no caption used to be unanswerable and is not any more --
+    somebody posting a screenshot of an error is asking about it. Stickers,
+    voice notes, videos and GIFs stay unanswerable whatever is attached: those
+    are not questions, and answering them is noise.
     """
     t = (r.get("text") or "").strip()
     if t:
         return t
     d = (r.get("described") or "").strip()
+    if d == "a photo" and r.get("has_image"):
+        return "(a screenshot with no caption)"
     if not d or d.startswith("[") or d in MEDIA_ONLY:
         return ""
     return d
@@ -362,6 +458,49 @@ def models_for(cfg):
     return out or ["deepseek-v4-flash"]
 
 
+# HOW MUCH OF THE CONVERSATION THE MODEL GETS TO SEE.
+#
+# It used to be one message, plus the one it formally replied to. That is not
+# how a group works, and on 2026-09-20 it published the proof: somebody wrote
+# "The hashrate is not displaying", then "windows11 1.4.34", then posted a
+# screenshot -- and the bot answered the screenshot by asking which program and
+# which version, both of which were already on the screen two messages earlier.
+# It reads as not listening, because it was not.
+#
+# Six messages is enough for a support exchange and short enough that the
+# question stays the thing being answered rather than one line in a transcript.
+THREAD_CONTEXT = 6
+THREAD_CONTEXT_CHARS = 220
+THREAD_CONTEXT_MAX_AGE = 6 * 3600     # older than this is a different conversation
+
+
+def recent_thread(row, spool=None, limit=THREAD_CONTEXT):
+    """The few messages posted just before this one, in the SAME chat.
+
+    Same chat only, and only what came before: the rule that keeps this from
+    carrying one group's conversation into another, or a later message into an
+    answer that could not have seen it. A gap in time ends the thread, because
+    yesterday's exchange is background nobody was thinking about.
+    """
+    rows = spool if spool is not None else read_spool()
+    chat, mid = row.get("chat"), row.get("message_id")
+    date = int(row.get("date") or 0)
+    out = []
+    for r in rows[-400:]:
+        if r.get("chat") != chat or r.get("message_id") == mid:
+            continue
+        rd = int(r.get("date") or 0)
+        if rd > date or (date and rd and date - rd > THREAD_CONTEXT_MAX_AGE):
+            continue
+        body = (r.get("text") or r.get("described") or "").strip()
+        if not body:
+            continue
+        if len(body) > THREAD_CONTEXT_CHARS:
+            body = body[:THREAD_CONTEXT_CHARS].rstrip() + "..."
+        out.append("%s: %s" % ((r.get("from") or "someone"), body))
+    return out[-limit:]
+
+
 def with_context(row, text):
     """The question, plus whatever it leans on and does not contain.
 
@@ -372,15 +511,23 @@ def with_context(row, text):
     never quietly omitted, because a gap the model cannot see is a gap it fills.
     """
     out = []
+    thread = recent_thread(row)
+    if thread:
+        out.append("WHAT WAS SAID IN THIS CHAT JUST BEFORE, oldest first. This is "
+                   "background, not the question -- the question is the message at the "
+                   "top. Read it before you ask for anything: if the program, the "
+                   "version, the platform or the address is already here, you have it "
+                   "and asking again reads as not listening." + NL + NL + NL.join(thread))
     if row.get("reply_to_text"):
         out.append("This is a REPLY to an earlier message, from %s:\n%s"
                    % (row.get("reply_to_from") or "someone", row["reply_to_text"]))
     if row.get("has_image"):
-        out.append("The message carries an IMAGE, and you CANNOT SEE IT. Do not guess "
-                   "what it shows, what software it proves they are running, or what "
-                   "the numbers on it are. Ask them what it says, or say a person will "
-                   "look at it -- those are both good answers. Inventing the contents "
-                   "is not.")
+        out.append("The message carries an IMAGE." if row.get("_image") else
+                   "The message carries an IMAGE, and you COULD NOT BE SHOWN IT (it did "
+                   "not download, or it is not a picture). Do not guess what it shows, "
+                   "what software it proves they are running, or what the numbers on it "
+                   "are. Ask them what it says, or say a person will look at it -- those "
+                   "are both good answers. Inventing the contents is not.")
     # A TRANSACTION ID IS A QUESTION WITH AN ANSWER, so look it up rather than
     # letting the model reason about it. "Did my withdrawal fail" is the one
     # support question where guessing does the most damage: telling somebody
@@ -408,7 +555,7 @@ def with_context(row, text):
     return text + "\n\n--- context you did not ask for but need ---\n" + "\n\n".join(out)
 
 
-def ask_model_with_fallback(cfg, system, message, author):
+def ask_model_with_fallback(cfg, system, message, author, image=None):
     """Try each model in turn. Returns (parsed, model_used).
 
     A model that answers with something unparseable is a FAILURE, not an answer:
@@ -419,7 +566,7 @@ def ask_model_with_fallback(cfg, system, message, author):
     last = None
     for i, model in enumerate(models_for(cfg)):
         try:
-            return ask_model(cfg, system, message, author, model), model
+            return ask_model(cfg, system, message, author, model, image=image), model
         except Exception as e:
             last = e
             detail = str(e) if isinstance(e, (RuntimeError, ValueError)) else type(e).__name__
@@ -428,7 +575,7 @@ def ask_model_with_fallback(cfg, system, message, author):
     raise last if last else RuntimeError("no model configured")
 
 
-def ask_model(cfg, system, message, author, model=None):
+def ask_model(cfg, system, message, author, model=None, image=None):
     url = cfg.get("OONA_API_URL", "https://api.oonacode.oonak.ai/v1/messages")
     key = cfg.get("OONA_API_KEY", "")
     model = model or cfg.get("OONA_MODEL", "deepseek-v4-flash")
@@ -445,12 +592,20 @@ def ask_model(cfg, system, message, author, model=None):
         "system": system,
         "messages": [{
             "role": "user",
-            "content": (
-                "A message was just posted in the PCoin Telegram group.\n\n"
-                f"From: {author}\n"
-                f"Message: {message}\n\n"
-                "Decide whether to answer it. Reply with the JSON object described "
-                "in your instructions and nothing else."),
+            # The picture goes FIRST, then the words about it: the image is part
+            # of the question, not an afterthought bolted on behind the ask.
+            "content": ([{"type": "image", "source": {"type": "base64",
+                                                      "media_type": image[0], "data": image[1]}}] if image else []) + [
+                {"type": "text", "text": (
+                    "A message was just posted in the PCoin Telegram group.\n\n"
+                    f"From: {author}\n"
+                    f"Message: {message}\n\n"
+                    + ("The image above is what they attached. Read it carefully and answer "
+                       "from what is ACTUALLY visible in it; say so plainly if it is too "
+                       "small, cropped or blurry to read.\n\n" if image else "")
+                    + "Decide whether to answer it. Reply with the JSON object described "
+                      "in your instructions and nothing else.")},
+            ],
         }],
     }
     req = urllib.request.Request(
@@ -881,8 +1036,21 @@ def main():
                       % (PER_USER_HOUR, mid))
             continue
 
+        # Fetched ONCE per message: the fallback model must be shown the same
+        # picture as the first, and re-downloading per attempt would also mean a
+        # flaky link changing the answer between models.
+        image = None
+        if r.get("has_image"):
+            try:
+                image = fetch_image(r, cfg)
+            except Exception as e:                       # never let a picture stop a reply
+                print("  image not fetched (%s)" % type(e).__name__, file=sys.stderr)
+            print("  image: %s" % ("%s, %d KB" % (image[0], len(image[1]) * 3 // 4096)
+                                   if image else "could not be shown"))
+        r["_image"] = bool(image)
+
         try:
-            out, used_model = ask_model_with_fallback(cfg, system, with_context(r, text), author)
+            out, used_model = ask_model_with_fallback(cfg, system, with_context(r, text), author, image=image)
         except Exception as e:
             # A RuntimeError we raised says something useful and carries no URL. A
             # transport error can carry the request URL, and the URL carries the

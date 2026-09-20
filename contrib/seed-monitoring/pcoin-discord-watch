@@ -178,6 +178,30 @@ def describe(m):
     return (text + (" " if text and extra else "") + " ".join(extra)).strip()
 
 
+IMAGE_HOSTS = ("cdn.discordapp.com", "media.discordapp.net")
+
+
+def image_url(m):
+    """The first attachment that claims to be an image, if it is on Discord's
+    own CDN. Claims are not trusted -- the answer bot sniffs the real bytes --
+    but an off-CDN URL is refused outright so nothing can point this at an
+    arbitrary host."""
+    for att in m.get("attachments") or []:
+        url = str(att.get("url") or "")
+        ct = str(att.get("content_type") or "")
+        name = str(att.get("filename") or "").lower()
+        looks_image = ct.startswith("image/") or name.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp"))
+        if not looks_image:
+            continue
+        try:
+            host = urllib.parse.urlsplit(url).hostname or ""
+        except ValueError:
+            continue
+        if url.startswith("https://") and host in IMAGE_HOSTS:
+            return url
+    return None
+
+
 def relay(tg_token, alert_chat, guild, channel, m, urgent):
     """Tell the private ops channel, exactly as the Telegram watcher does."""
     if DRY:
@@ -601,6 +625,14 @@ def main():
                     "from_id": "dc:%s" % a.get("id", "?"),
                     "text": text,
                     "described": describe(m),
+                    # THE PICTURE ITSELF, so the answer bot can look at it.
+                    # Only the URL is carried; nothing is downloaded here and
+                    # nothing is ever written to disk. Discord's own CDN is the
+                    # only host it may come from, and the answer bot re-checks
+                    # that plus the file's real bytes before showing it to a
+                    # model -- a content_type is what the SENDER claims.
+                    "image_url": image_url(m),
+                    "has_image": bool(image_url(m)),
                     "urgent": urgent,
                 })
             except OSError as e:
