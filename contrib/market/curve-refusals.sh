@@ -1,5 +1,5 @@
 #!/bin/bash
-# Prove every refusal branch of `cap-policy.mjs --curve` FIRES.
+# Prove every refusal and CLAMP branch of `cap-policy.mjs --curve` FIRES.
 #
 # A check that has only ever been seen passing has not been tested, and this one
 # decides the price the whole remaining book sells for. So each branch is driven
@@ -19,6 +19,13 @@
 # -- which made the 24h-ratchet window arithmetically unreachable. The branch
 # looked dead when it was simply never being asked.
 set -u
+# Which cap-policy.mjs is under test. Defaults to the DEPLOYED copy, because
+# "does the thing that is running still hold" is the question this answers most
+# often. Point it at a candidate to prove a change before it goes anywhere:
+#   SRC=/tmp/cap-policy.candidate.mjs ./curve-refusals.sh
+SRC=${SRC:-/opt/pcoin-market/cap-policy.mjs}
+[ -r "$SRC" ] || { echo "cannot read \$SRC: $SRC"; exit 1; }
+echo "  under test: $SRC"
 D=/tmp/curve-sandbox
 rm -rf $D; mkdir -p $D
 LPORT=18789      # stub /api/ladder/state
@@ -63,7 +70,7 @@ sed -e "s#'/opt/pcoin-price/state.json'#'$D/oracle.json'#" \
     -e "s#'/opt/pcoin-market/curve-history.json'#'$D/curve-history.json'#" \
     -e "s#http://127.0.0.1:8789/api/ladder/state#http://127.0.0.1:$LPORT/api/ladder/state#g" \
     -e "s#https://price.pc.am/price#http://127.0.0.1:$RPORT/price#g" \
-    /opt/pcoin-market/cap-policy.mjs > $D/cap.mjs
+    "$SRC" > $D/cap.mjs
 # ESM resolves bare specifiers by walking up from the IMPORTING file, so a copy
 # in /tmp cannot find mysql2 however we cd into /opt/pcoin-market.
 ln -sfn /opt/pcoin-market/node_modules $D/node_modules
@@ -128,7 +135,7 @@ expect () {  # label, expected exit, substring
 FAILED=0
 
 echo
-echo "  === refusal branches of cap-policy.mjs --curve ==="
+echo "  === refusal and clamp branches of cap-policy.mjs --curve ==="
 echo "  live curve: k=$K virt=$VIRT floor=\$$FLOOR  (ammK bounds $KMIN .. $KMAX)"
 echo
 
@@ -168,18 +175,60 @@ mklive "$FLOOR" "$(remFor "$UNDER")"
 mkoracle 0.005 1441; mkrate 0.005
 run; expect "at the floor, exits clean rather than refusing" 0 "already AT THE FLOOR"
 
-echo "  [7] a drop bigger than the per-run limit"
+echo "  [7] a drop bigger than the per-run limit is CLAMPED, not refused"
+# This used to refuse, and the refusal froze the ask permanently -- the next run
+# measured the same too-large drop and refused again, for ever. It must now fall
+# exactly MAX_DROP_PCT and leave the rest for later runs.
 reset; charge 0.060; mkoracle 0.030 1441; mkrate 0.030
-run; expect "a >8% single-run drop refuses" 2 "per-run limit"
+run; expect "a >8% single-run drop clamps" 0 "CLAMPED per-run"
+expect "...and proposes rather than refusing" 0 "Proposal only"
+# The clamped DESTINATION is what matters, not merely that it said CLAMPED:
+# 0.060 less 8% is 0.0552. Assert the arrow's right-hand side and the applied
+# move, NOT the "proposed" line -- that one is printed in §3, before any clamp
+# exists, and still shows the full unclamped target ($0.0315 here). Asserting on
+# it failed against perfectly correct behaviour on the first run of this case.
+expect "...to exactly 8% below what is charged" 0 "> \$0.05520000"
+expect "...and reports the applied move, not the wanted one" 0 "applied move           -8.00%"
 
-echo "  [8] the 24h ratchet -- each single step looks reasonable, the day does not"
+echo "  [8] the 24h ratchet -- each step looks reasonable, the day does not"
 # Within 8% of what is charged now, but more than 12% below the highest price
 # applied in the last 24h. The rate is set high so the ceiling stays out of it.
 reset; charge 0.0555; mkoracle 0.050190 1441; mkrate 0.050
 cat > $D/curve-history.json <<JSON
 [{"t": $(($(date +%s)*1000 - 3600000)), "price": 0.060, "k": 1, "X": 1, "forced": false}]
 JSON
-run; expect "the 24h ratchet refuses" 2 "daily limit"
+run; expect "the 24h ratchet clamps" 0 "CLAMPED 24h ratchet"
+# 0.060 less 12% = 0.0528, and that is above the 8%/run floor of 0.051060, so
+# the DAY is what binds here and the run limit is not reached.
+expect "...to 12% below the 24h high" 0 "0.052800"
+
+echo "  [8b] the day's drop budget is already spent -- nothing left to write"
+# Charging the 24h floor already. The clamps leave no room, so it must exit
+# CLEAN and write nothing, rather than proposing a zero move or refusing.
+reset; charge 0.0528; mkoracle 0.030 1441; mkrate 0.030
+cat > $D/curve-history.json <<JSON
+[{"t": $(($(date +%s)*1000 - 3600000)), "price": 0.060, "k": 1, "X": 1, "forced": false}]
+JSON
+run; expect "an exhausted daily budget exits clean" 0 "budget is already spent"
+
+echo "  [8c] a clamp may never RAISE the ask"
+# The 24h clamp lifts toward a price applied up to 24 h ago, and the curve can
+# fall on its own in between (inventory top-up grows X, so ammK/X^2 drops). Here
+# the 24h high is $0.060 but only $0.030 is charged now, so the 24h floor of
+# $0.0528 sits ABOVE the live price: clamping to it would be a +76% RAISE, which
+# is the one thing this mode must never do. It must take the no-move instead.
+reset; charge 0.030; mkoracle 0.0267 1441; mkrate 0.0267
+cat > $D/curve-history.json <<JSON
+[{"t": $(($(date +%s)*1000 - 3600000)), "price": 0.060, "k": 1, "X": 1, "forced": false}]
+JSON
+run; expect "a clamp above the live price writes nothing" 0 "budget is already spent"
+if echo "$LAST_OUT" | grep -qE '^  ammK '; then
+  echo "  FAIL  ...and proposes no ammK at all"
+  echo "$LAST_OUT" | grep -E '^  ammK ' | sed 's/^/          | /'
+  FAILED=$((FAILED+1))
+else
+  echo "  PASS  ...and proposes no ammK at all"
+fi
 
 echo "  [9] --force-drop is what gets past them, and it still writes nothing"
 reset; charge 0.060; mkoracle 0.030 1441; mkrate 0.030
@@ -203,7 +252,7 @@ run; expect "a higher pool does NOT raise the ask" 0 "only ever moves the price 
 
 echo
 if [ $FAILED -gt 0 ]; then echo "  $FAILED BRANCH(ES) DID NOT FIRE"; exit 1; fi
-echo "  every refusal branch fired"
+echo "  every refusal and clamp branch fired"
 echo
 echo "  and the real settings were never written:"
 cd /opt/pcoin-market && node -e "

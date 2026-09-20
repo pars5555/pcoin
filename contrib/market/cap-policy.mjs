@@ -9,6 +9,11 @@
 //   node cap-policy.mjs --curve --apply          PRICE ITSELF (ammK) instead of the
 //   node cap-policy.mjs --curve --apply --force-drop   inert cap. See below.
 //
+// --force-drop means "go all the way to the target in ONE run". In curve mode it
+// is an accelerator, not a permission slip: without it the drop limits CLAMP and
+// the ask still falls, just no faster than 8%/run and 12%/24h. In cap mode they
+// still refuse outright. §5 has the incident that made the difference matter.
+//
 // --- --curve: why a second mode ---------------------------------------------
 // `ladderMaxPriceUsd` has been INERT for pricing since 077fa32. What a customer
 // is charged is the constant-product curve, price = ammK / X^2, and nothing
@@ -81,8 +86,11 @@ const PREMIUM_PCT        = 5;      // owner's rule: PCN sits this far above wPCN
 const MAX_DIVERGENCE_PCT = 10;     // ceiling. The sale gate closes at 20.
 const WINDOW_H           = 24;     // the median window
 const MIN_SAMPLES        = 1000;   // of a possible ~1440. Below this: refuse.
-const MAX_DROP_PCT       = 8;      // a bigger fall IN ONE RUN needs --force-drop
+const MAX_DROP_PCT       = 8;      // most the price may fall IN ONE RUN
 const MAX_DROP_24H_PCT   = 12;     // ...and this much in a DAY, however many runs it takes
+// In CURVE mode both are CLAMPS: the ask falls this far and the rest follows on
+// later runs (see §5 -- refusing froze the ask and broke the credit rate with it).
+// In CAP mode they are still refusals, because nothing runs cap mode on a timer.
 const RATE_SAMPLES       = 3;      // judge the ceiling on the WORST public rate
 const PUBLIC_RATE_URL    = 'https://price.pc.am/price';
 const STATE              = '/opt/pcoin-price/state.json';
@@ -276,6 +284,10 @@ if (curveMode) {
   let   want     = Math.min(cTarget, cCeiling);
   const cHitFloor = want < floor;
   want = Math.max(want, floor);
+  // The target before any clamp bites. `want` is walked upward by the drop
+  // clamps below, so this is the only place the full intended move survives,
+  // and the alert has to be able to say how far behind the pool the ask still is.
+  const cWanted = want;
 
   console.log('\n  ladder ask CURVE  --  ' + new Date(now).toISOString());
   console.log('  ' + '-'.repeat(68));
@@ -310,11 +322,40 @@ if (curveMode) {
     process.exit(0);
   }
 
-  // --- 5. the same two drop gates --------------------------------------------
-  if (cMovePct < -MAX_DROP_PCT && !forceDrop) {
-    await refuse('this is a ' + Math.abs(cMovePct).toFixed(2) + '% DROP IN THE PRICE ITSELF, past ' +
-      'the ' + MAX_DROP_PCT + '% per-run limit.\n' +
-      '           LOOK at the pool\'s recent trades first, then re-run with --force-drop.');
+  // --- 5. the same two drop gates -- as CLAMPS, not refusals ------------------
+  // These used to REFUSE, and that was the worst failure mode in the whole
+  // parity machine. A dump big enough to move the pool past MAX_DROP_PCT in one
+  // run left the ask UNCHANGED; the next run measured the same too-large drop
+  // and refused again. Simulated forward 48 h after a 2,000 wPCN dump it refused
+  // at hours 1, 3, 6, 11, 12, 13, 18, 24, 36 and 48 -- and got WORSE after the
+  // 12 h median flip, because once the median falls the target binds below the
+  // ceiling. The ask never came down at all without somebody typing --force-drop.
+  //
+  // A frozen ask is not a safe ask. serviceRate is interlocked at ladder x 0.85
+  // (retuneTarget in server.mjs), so freezing the ladder holds the CREDIT rate up
+  // too: with the pool at $0.0091 and the ladder stuck at $0.0336 the six rails
+  // credit 214% of the real market price. That is exactly the arbitrage
+  // server.mjs:150 exists to warn about -- buy wPCN cheap, return it 1:1 for PCN,
+  // spend it at a rail. The refusal created the hole it was meant to guard.
+  //
+  // So: clamp and carry on. The ask falls at most MAX_DROP_PCT per run and never
+  // more than MAX_DROP_24H_PCT below the highest price applied in 24 h, and it
+  // still cannot pass the code floor. A bounded, visible descent beats a silent
+  // freeze -- and a clamped run still ALERTS, which is the only thing the refusal
+  // ever really bought. --force-drop still goes straight to the target in one run.
+  //
+  // Cap mode still refuses, deliberately: nothing runs it on a timer, so there is
+  // always a person at the keyboard to read the refusal and decide.
+  const clamps = [];
+  if (!forceDrop) {
+    const perRunFloor = nowP * (1 - MAX_DROP_PCT / 100);
+    if (want < perRunFloor) {
+      clamps.push(MAX_DROP_PCT + '%/run');
+      console.log('  CLAMPED per-run        $' + f(want) + ' -> $' + f(perRunFloor) +
+                  '   (target is a ' + Math.abs(cMovePct).toFixed(2) + '% drop, limit ' +
+                  MAX_DROP_PCT + '%)');
+      want = perRunFloor;
+    }
   }
   let cHist = [];
   try { cHist = JSON.parse(readFileSync(CURVE_HISTORY, 'utf8')); } catch { cHist = []; }
@@ -325,11 +366,46 @@ if (curveMode) {
     const cDay = (want - cRef) / cRef * 100;
     console.log('  24h ratchet            highest price applied in 24h $' + f(cRef) +
                 '   this would be ' + (cDay >= 0 ? '+' : '') + cDay.toFixed(2) + '%');
-    if (cDay < -MAX_DROP_24H_PCT && !forceDrop) {
-      await refuse('this would put the price ' + Math.abs(cDay).toFixed(2) + '% below the highest ' +
-        'applied\n           in the last 24h ($' + f(cRef) + '), past the ' + MAX_DROP_24H_PCT +
-        '% daily limit.\n           A slow, sustained push on the pool looks exactly like this.');
+    if (!forceDrop) {
+      const dayFloor = cRef * (1 - MAX_DROP_24H_PCT / 100);
+      if (want < dayFloor) {
+        clamps.push(MAX_DROP_24H_PCT + '%/24h');
+        console.log('  CLAMPED 24h ratchet    $' + f(want) + ' -> $' + f(dayFloor) +
+                    '   (a slow, sustained push on the pool looks exactly like this)');
+        want = dayFloor;
+      }
     }
+  }
+  // Both clamps only ever raise `want`, and `want` was floored above, so neither
+  // can push the price below the code floor. But raising is exactly the danger:
+  // the 24h clamp lifts toward a price applied UP TO 24 H AGO, and the curve can
+  // fall on its own in between -- price = ammK / X^2, so topping the ladder's
+  // inventory back up grows X and drops the price without this tool acting. A
+  // clamp toward a stale, higher reference would then RAISE the ask, which is
+  // the one thing §4 exists to make impossible. Cap the whole thing at what is
+  // charged now: if the day's budget is spent, the right move is no move.
+  //
+  // This is the SECOND of two defences, not the only one -- the `cAppliedPct >
+  // -0.05` exit below independently refuses to write a non-downward move, and
+  // case [8c] of curve-refusals.sh still passes with this line deleted. Keep
+  // both: this one states the invariant where the clamps are, that one enforces
+  // it where the write happens, and [8c] fails the moment neither holds.
+  if (want > nowP) want = nowP;
+
+  // The move that will actually be written. `cMovePct` stays as the move that
+  // was ASKED for -- the two differ whenever a clamp bit, and the Telegram
+  // message must report what happened, not what was wanted.
+  const cAppliedPct = (want - nowP) / nowP * 100;
+  if (clamps.length) {
+    console.log('  applied move           ' + cAppliedPct.toFixed(2) + '%   (limited by ' +
+                clamps.join(' and ') + '; the rest follows on later runs)');
+  }
+  if (cAppliedPct > -0.05) {
+    console.log('\n  This window\'s drop budget is already spent -- the clamps leave nothing ' +
+                'to\n  write this run. The ask resumes falling as the 24h ratchet rolls ' +
+                'forward.\n  Nothing written.');
+    await pool.end();
+    process.exit(0);
   }
 
   const newK = want * X * X;
@@ -389,10 +465,19 @@ if (curveMode) {
     }
     await tg('<b>market.pc.am</b>\nPCN ask followed the wPCN pool <b>down</b>.\n' +
              'charged $' + f(nowP, 6) + ' \u2192 $' + f(gotP, 6) +
-             '  (' + cMovePct.toFixed(2) + '%)\n' +
+             '  (' + cAppliedPct.toFixed(2) + '%)\n' +
              'pool median 24h $' + f(median, 6) + ', floor $' + f(floor, 6) +
              (cHitFloor ? ' <b>(the floor is binding)</b>' : '') + '\n' +
              'ammK ' + k.toFixed(0) + ' \u2192 ' + newK.toFixed(0) +
+             // A clamped run is the signal the old refusal used to send. It means
+             // the pool moved further than one run may follow, so say how much is
+             // still owed and what limited it -- a sustained push looks like a
+             // clamp repeating hour after hour, and that is worth a human looking.
+             (clamps.length
+               ? '\n<b>CLAMPED</b> by ' + clamps.join(' and ') + ' \u2014 the pool wants $' +
+                 f(cWanted, 6) + ' (' + cMovePct.toFixed(2) + '%). The rest follows on ' +
+                 'later runs; check the pool\'s recent trades.'
+               : '') +
              (forceDrop ? '\n<b>--force-drop was used</b>' : '') +
              (ok ? '' : '\n<b>THE READ-BACK DID NOT MATCH \u2014 check /pricing now</b>'));
     await pool.end();
