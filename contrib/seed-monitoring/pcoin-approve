@@ -221,7 +221,16 @@ DESTS = {
 # Sources whose messages publish WITHOUT being asked. See the note at the top of
 # this file: only fixed templates built in code belong here, never anything that
 # can carry model-generated or user-supplied text.
-AUTO_SOURCES = {"market-purchase"}
+#
+# "wrapdesk" qualifies because of where its text comes from, not because of who
+# asked for it. The owner approved the two templates on 2026-09-20 and asked for
+# them to go out by themselves ("that should be automatically send on every wrap
+# … without approval gate"), and _wrapdesk_render below is the only thing that
+# can produce one: the panel hands this process a transaction id, an address and
+# an amount, every figure published is read back off explorer.pc.am here, and
+# every other character is a literal in this file. There is no field an upstream
+# can put a sentence in.
+AUTO_SOURCES = {"market-purchase", "wrapdesk"}
 
 AGENT_FLAGS = os.environ.get("AGENT_FLAG_DIR", "/etc/pcoin/agents")
 
@@ -1044,6 +1053,268 @@ def _ingest(path, body):
         return {"raw": raw}
 
 
+# ── THE WRAP DESK ANNOUNCER ──────────────────────────────────────────────────
+#
+# Every wrap, both directions, posts to @PCoinPCN by itself. The owner asked for
+# exactly that on 2026-09-20 after approving both templates in his DM, and the
+# two halves of what he asked for are enforced in different places: the fixed
+# template is HERE, in code, and the no-approval part is the "wrapdesk" entry in
+# AUTO_SOURCES above.
+#
+# THE PICTURE IS THE SAME EVERY TIME AND THE TEXT IS NOT (his words: "picture is
+# static but the text shows the transation and amount"). That is why the card is
+# a file on disk rather than something built per post — and why, if that file is
+# missing, this REFUSES rather than posting text-only. An announcement without a
+# picture is not a finished announcement (CLAUDE.md 8b), and a wrap that is not
+# announced this minute is announced next minute.
+#
+# WHAT IS TRUSTED AND WHAT IS CHECKED. The panel names a transaction; it does
+# not get to say what that transaction did. Every PCN figure below is read off
+# explorer.pc.am at post time and the wPCN figure is bounded against it. An
+# unreadable explorer resolves NOTHING (CLAUDE.md 7.1): the item is neither
+# announced nor acknowledged, and it is retried on the next tick for ever.
+WRAPDESK_CARD = os.environ.get("WRAPDESK_CARD", "/usr/local/share/pcoin/wrapdesk-card.png")
+# `channel` is @PCoinPCN. Overridable only so the whole loop can be proven
+# end-to-end into the private test channel before it is aimed at subscribers; a
+# gate only ever observed refusing has not been tested.
+WRAPDESK_DEST = os.environ.get("WRAPDESK_ANNOUNCE_DEST", "channel")
+WRAPDESK_EXPLORER = os.environ.get("WRAPDESK_EXPLORER_API",
+                                   "https://explorer.pc.am/api/tx/%s")
+# The house rule for believing a PCoin payment (CLAUDE.md 8c). Nothing here is
+# urgent enough to publish a link that a reorg can still take away.
+WRAPDESK_CONFS = int(os.environ.get("WRAPDESK_ANNOUNCE_CONFS", "3"))
+# ONE PUBLISHED PER TICK, out of the handful the panel offers. The desk closes
+# about one wrap a day and this runs every minute, so the cap is not throughput
+# -- it is the blast radius if the announce floor is ever wrong. The panel sends
+# a few candidates rather than one so that an item this cannot verify is skipped
+# past instead of blocking every wrap behind it.
+WRAPDESK_PER_TICK = int(os.environ.get("WRAPDESK_ANNOUNCE_PER_TICK", "1"))
+
+_HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_BSCTX = re.compile(r"^0x[0-9a-f]{64}$")
+_PCADDR = re.compile(r"^pc1[02-9ac-hj-np-z]{20,70}$")
+
+
+def _amt(x):
+    """A PCN/wPCN amount as a person reads it: exact, never fewer than 2 places.
+
+    Fixed 2dp would round a real 0.0095 wPCN wrap to "0.01" on a public channel,
+    and %g would print 250 PCN as "250". Both are wrong in the one direction
+    that matters -- the number is the announcement.
+    """
+    whole, frac = ("%.8f" % float(x)).split(".")
+    frac = frac.rstrip("0")
+    while len(frac) < 2:
+        frac += "0"
+    neg, whole = (whole[0] == "-"), whole.lstrip("-")
+    groups = []
+    while len(whole) > 3:
+        groups.insert(0, whole[-3:])
+        whole = whole[:-3]
+    groups.insert(0, whole)
+    return ("-" if neg else "") + ",".join(groups) + "." + frac
+
+
+def _short_pcoin(txid):
+    return "%s…%s" % (txid[:8], txid[-8:])
+
+
+def _short_bsc(txhash):
+    return "0x%s…%s" % (txhash[2:10], txhash[-8:])
+
+
+def _explorer_tx(txid):
+    """The PCoin transaction, or None. None is UNKNOWN, never "it did not happen"."""
+    try:
+        req = urllib.request.Request(WRAPDESK_EXPLORER % txid,
+                                     headers={"user-agent": "pcoin-approve"})
+        with urllib.request.urlopen(req, timeout=25) as r:
+            d = json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return None
+    tx = d.get("tx")
+    return tx if isinstance(tx, dict) else None
+
+
+def _paid_to(tx, addr):
+    """Satoshis this transaction pays `addr`, or None if the shape is unfamiliar.
+
+    Summed over every output rather than taking the first: a transaction may pay
+    one address twice, and the field is `outputs` -- NOT `vout`, which is what a
+    previous pass read, found empty, and reported as a confident zero.
+    """
+    outs = tx.get("outputs")
+    if not isinstance(outs, list):
+        return None
+    total = 0
+    for o in outs:
+        if not isinstance(o, dict):
+            return None
+        if str(o.get("address", "")).lower() != addr:
+            continue
+        v = o.get("value_sat")
+        if not isinstance(v, int):
+            return None
+        total += v
+    return total
+
+
+def _wrapdesk_verify(it):
+    """(text, None) if this may be published, (None, reason) if not.
+
+    A reason starting "HOLD" is transient -- do not acknowledge, try again. Any
+    other reason is permanent for this item: acknowledge it so it stops being
+    offered, and say so out loud, because a wrap that can never be announced is
+    a promise quietly broken.
+    """
+    direction = str(it.get("dir", ""))
+    key = str(it.get("key", ""))
+    txid = str(it.get("pcoin_txid", "")).lower()
+    bsc = str(it.get("bsc_txhash", "")).lower()
+    wpcn = it.get("wpcn")
+    if direction not in ("wrap", "return"):
+        return None, "unknown direction %r" % direction
+    if not _HEX64.match(txid) or not _BSCTX.match(bsc):
+        return None, "malformed transaction id"
+    if not isinstance(wpcn, (int, float)) or not (wpcn > 0):
+        return None, "no usable wPCN amount"
+    addr = str(it.get("deposit_addr" if direction == "wrap" else "pcoin_addr") or "").lower()
+    if not _PCADDR.match(addr):
+        return None, "malformed PCoin address"
+
+    tx = _explorer_tx(txid)
+    if tx is None:
+        return None, "HOLD: explorer could not be read for %s" % _short_pcoin(txid)
+    confs = tx.get("confirmations")
+    if not isinstance(confs, int) or confs < WRAPDESK_CONFS:
+        return None, ("HOLD: %s has %s confirmation(s), waiting for %d"
+                      % (_short_pcoin(txid), confs, WRAPDESK_CONFS))
+    sat = _paid_to(tx, addr)
+    if sat is None:
+        return None, "HOLD: could not read the outputs of %s" % _short_pcoin(txid)
+    if sat <= 0:
+        # The panel named a transaction that does not pay the address it said.
+        # That is not a delay, it is a disagreement, and it must never be
+        # papered over by publishing the amount the panel asserted instead.
+        return None, ("%s pays nothing to %s -- refusing to announce a wrap the "
+                      "chain does not show" % (_short_pcoin(txid), addr))
+    pcn = sat / 100000000.0
+
+    if direction == "wrap":
+        # The fee is taken in wPCN withheld, so out is always less than in.
+        if wpcn > pcn + 1e-8:
+            return None, ("claims %s wPCN out of a %s PCN deposit -- more out than in"
+                          % (_amt(wpcn), _amt(pcn)))
+        fee_pct = (pcn - wpcn) / pcn * 100.0
+        return (
+            "\U0001F501 *Wrap desk — PCN → wPCN*\n"
+            "\n"
+            "*%s PCN* in  →  *%s wPCN* out\n"
+            "%s%% wrap fee, taken in wPCN.\n"
+            "\n"
+            "PCN deposit: [%s](https://explorer.pc.am/tx/%s)\n"
+            "wPCN sent: [%s](https://bscscan.com/tx/%s)\n"
+            "\n"
+            "Every wPCN in circulation is backed 1:1 by PCN in the public reserve "
+            "— and that deposit is what put this one there.\n"
+            "\n"
+            "wrapdesk.pc.am"
+            % (_amt(pcn), _amt(wpcn), ("%g" % round(fee_pct, 2)),
+               _short_pcoin(txid), txid, _short_bsc(bsc), bsc)), None
+
+    # A return is 1:1 with no fee, and saying so on a public channel means the
+    # two numbers have to actually match. A satoshi of tolerance, no more.
+    if abs(pcn - wpcn) > 1e-8:
+        return None, ("claims %s wPCN returned but %s paid %s PCN -- a return is 1:1"
+                      % (_amt(wpcn), _short_pcoin(txid), _amt(pcn)))
+    return (
+        "\U0001F501 *Wrap desk — wPCN → PCN*\n"
+        "\n"
+        "*%s wPCN* returned  →  *%s PCN* paid\n"
+        "No fee this way. Returns are 1:1.\n"
+        "\n"
+        "wPCN returned: [%s](https://bscscan.com/tx/%s)\n"
+        "PCN paid: [%s](https://explorer.pc.am/tx/%s)\n"
+        "\n"
+        "The door works both ways: wPCN comes back for PCN at 1:1, any time.\n"
+        "\n"
+        "wrapdesk.pc.am/redeem"
+        % (_amt(wpcn), _amt(pcn), _short_bsc(bsc), bsc,
+           _short_pcoin(txid), txid)), None
+
+
+def _wrapdesk_announce(ctl):
+    """Publish the wraps the panel is offering. Returns the keys to acknowledge."""
+    items = ctl.get("announce") or []
+    if ctl.get("announce_error"):
+        # The panel could not evaluate its own feed. It already sent an empty
+        # list; this only makes the reason visible instead of looking like a
+        # quiet day at the desk.
+        print("  wrap desk announcements held: %s" % ctl["announce_error"])
+        return []
+    if not items:
+        return []
+    backlog, loud = ctl.get("announce_backlog", 0), ctl.get("announce_loud_at", 6)
+    if isinstance(backlog, int) and isinstance(loud, int) and backlog >= loud:
+        notify_ops("wrap desk announcements are behind",
+                   "%d completed wrap(s) have not been announced yet. They publish one "
+                   "per tick, so this is about %d minutes of catching up -- but a "
+                   "backlog this size usually means the announcer was broken and "
+                   "nobody noticed." % (backlog, backlog))
+
+    if not os.path.exists(WRAPDESK_CARD):
+        notify_ops("wrap desk card is missing",
+                   "%s is not on this host, so %d wrap announcement(s) are HELD. "
+                   "Nothing was published: an announcement without its picture is not "
+                   "an announcement, and the text is still correct next tick."
+                   % (WRAPDESK_CARD, len(items)))
+        return []
+
+    done, sent = [], 0
+    for it in items:
+        if sent >= WRAPDESK_PER_TICK:
+            break
+        key = str(it.get("key", ""))
+        if not key:
+            continue
+        text, why = _wrapdesk_verify(it)
+        if text is None:
+            if why.startswith("HOLD"):
+                print("  wrap %s: %s" % (key, why))
+                continue
+            notify_ops("wrap desk announcement REFUSED",
+                       "The panel offered a wrap announcement this gate will not "
+                       "publish:\n\n  %s\n  %s\n\nNothing was posted and it will not be "
+                       "offered again. If the wrap is real, the ledger and this "
+                       "disagree and one of them is wrong." % (key, why))
+            done.append(key)      # permanent: stop asking
+            continue
+
+        class A:
+            pass
+        A.dest, A.text, A.caption = WRAPDESK_DEST, text, ""
+        A.photo, A.reply_to = WRAPDESK_CARD, ""
+        A.source, A.markdown = "wrapdesk", True
+        # `--key` is the second guard against a double post: the panel already
+        # records what it acknowledged, and this refuses the same key twice even
+        # if that record is lost.
+        A.key = "wrapdesk-" + key
+        try:
+            cmd_submit(A)
+            done.append(key)
+            sent += 1
+            print("  wrap desk announcement queued for %s: %s" % (WRAPDESK_DEST, key))
+        except SystemExit as e:
+            # Everything cmd_submit refuses on has been checked above except a
+            # full queue, which clears itself. Left UNACKNOWLEDGED on purpose so
+            # it retries -- and loudly, because the alternative is a wrap that
+            # silently never gets announced.
+            notify_ops("wrap desk announcement could not be queued",
+                       "%s was refused by the approval queue: %s\nIt will be retried."
+                       % (key, e))
+    return done
+
+
 def cmd_controls(a):
     """Pull what the owner decided in the panel, apply it, acknowledge it.
 
@@ -1149,13 +1420,26 @@ def cmd_controls(a):
             except Exception as e:
                 print("  could not notify about the panel decision (%s)" % type(e).__name__)
 
-    if applied:
+    # ---- wrap desk announcements ----------------------------------------
+    # Deliberately after the decisions: if this throws, the owner's approvals
+    # have already been applied and acknowledged above.
+    try:
+        announced = _wrapdesk_announce(ctl)
+    except Exception as e:
+        print("  wrap desk announcer failed (%s: %s)" % (type(e).__name__, e))
+        announced = []
+
+    if applied or announced:
         try:
-            _ingest("/ingest/controls", {"ack": applied})
-            print("  applied %d panel decision(s)" % len(applied))
+            _ingest("/ingest/controls", {"ack": applied, "announced": announced})
+            if applied:
+                print("  applied %d panel decision(s)" % len(applied))
+            if announced:
+                print("  announced %d wrap(s)" % len(announced))
         except Exception as e:
-            # NOT acknowledged means it will be retried, and cmd_decide is
-            # idempotent -- an item already decided is left alone. Safe to retry.
+            # NOT acknowledged means it will be retried, and both paths are
+            # idempotent -- cmd_decide leaves an already-decided item alone, and
+            # `--key` refuses a second submission of the same wrap. Safe to retry.
             print("  applied but could not acknowledge (%s)" % type(e).__name__)
     return 0
 

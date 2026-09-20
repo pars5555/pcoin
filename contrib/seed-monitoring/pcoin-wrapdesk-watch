@@ -10,19 +10,27 @@ Whether that last pair applies is READ from the keeper's unit, never assumed:
 see keeper_buys(). It was hardcoded once and went stale two days after the
 owner switched buying off.
 
-WHAT "DONE" MEANS HERE, AND WHY THERE IS NO BUTTON.
+WHAT "DONE" MEANS HERE.
 
 Nothing is marked complete by a human saying so. Each step is derived from what
 is observable on a chain:
 
     PCN arrived at the reserve        -> explorer.pc.am / the node
     it has 100 confirmations          -> same
-    wPCN was sent to the requester    -> their BSC balance rose
+    wPCN was sent to the requester    -> the BSC receipt for the send
     wPCN was bought back              -> the pool's wPCN reserve fell
 
-A button would let the operator mark a step done that did not happen. Reading
-the chain cannot. This is the same doctrine the rest of the project uses: an
-unreadable answer is UNKNOWN, and unknown never becomes done.
+This paragraph used to end "and that is why there is no button", on the grounds
+that a button lets an operator mark a step done that did not happen. The premise
+was right and the conclusion did not follow: what makes a claim safe is that it
+is CHECKED, not that it is typed on a server. So --released now reads the BSC
+receipt for the hash it is given and refuses every hash that does not show the
+right amount of wPCN reaching the right address. That is a stronger guarantee
+than the SSH-only version ever had -- it accepted any string, including none.
+
+An unreadable answer is still UNKNOWN, and unknown still never becomes done: if
+the BSC RPC cannot be reached, --released refuses and says so rather than taking
+the operator's word for it.
 
 That cuts both ways, deliberately. If a read FAILS, the task stays open and gets
 nagged again. Better to be told twice about something finished than to have a
@@ -237,7 +245,57 @@ def load_state():
     return st
 
 
+_LOCK_FH = None
+
+
+def take_state_lock():
+    """Serialise everyone who intends to WRITE the ledger.
+
+    load -> modify -> save is a read-modify-write, and there are now two
+    writers: this timer every ~16 minutes, and the admin panel's "Mark as
+    sent" button whenever an operator presses it. Without a lock the two can
+    interleave and the later save silently discards the earlier one -- and the
+    update most likely to be lost is the button's, because the timer's run is
+    the long one. The operator would be told "recorded as sent" and then watch
+    the same wrap reappear an hour later, which is precisely the kind of
+    confident-but-wrong that costs a second payment.
+
+    Readers do NOT take this: a --dry-run holds no lock, so rendering the
+    admin page can never block the timer or be blocked by it.
+
+    The handle is parked in a module global on purpose -- closing it drops the
+    lock, so it must outlive this function and die with the process.
+    """
+    global _LOCK_FH
+    if DRY_RUN or _LOCK_FH is not None:
+        return
+    try:
+        import fcntl
+        os.makedirs(os.path.dirname(STATE), exist_ok=True)
+        _LOCK_FH = open(STATE + ".lock", "w")
+        fcntl.flock(_LOCK_FH, fcntl.LOCK_EX)
+    except Exception as e:
+        # Not fatal. A missing lock is the behaviour we had until 2026-09-20,
+        # and refusing to run would turn a small race into a dead watcher.
+        _LOCK_FH = None
+        sys.stderr.write(f"[warn] could not lock the ledger ({e}); "
+                         f"continuing without it\n")
+
+
 def save_state(s):
+    # A DRY RUN IS A READ. It must not write, and until 2026-09-20 it did.
+    #
+    # Two things fell out of that, both found the same afternoon. The admin
+    # panel runs this to render /wrapdesk, and its sandbox makes /var/lib
+    # read-only, so every page load ended in an OSError traceback in the
+    # journal -- harmless only because the output was already complete by then.
+    # Worse, had the write SUCCEEDED it would have stamped `nagged` for every
+    # item it reported, and the next real Telegram alert would have been
+    # silenced for an hour by somebody merely LOOKING at the page.
+    #
+    # "Show me what you would do" must never change what happens next.
+    if DRY_RUN:
+        return
     os.makedirs(os.path.dirname(STATE), exist_ok=True)
     tmp = STATE + ".tmp"
     with open(tmp, "w") as f:
@@ -283,7 +341,99 @@ def pool_price():
         return None
 
 
+# keccak256("Transfer(address,address,uint256)"), the BEP-20 event every token
+# emits. Hardcoded because it is a constant of the standard, not of our token.
+TRANSFER_TOPIC = ("ddf252ad1be2c89b69c2b068fc378daa"
+                  "952ba7f163c4a11628f55a4df523b3ef")
+WPCN_DECIMALS = 8       # matches pool_price()'s r/1e8 on the wPCN side
+
+
+def verify_wpcn_sent(txhash, to_addr, expect_wpcn):
+    """Did this BSC transaction really put expect_wpcn of wPCN into to_addr?
+
+        (True,  detail)   the receipt says so
+        (False, why)      the receipt says something else -- a real NO
+        (None,  why)      UNKNOWN: nothing could be read. Not a no, and
+                          emphatically not a yes (CLAUDE.md 7.1 / 7.2)
+
+    ONE RECEIPT IS THE ONE BSC READ THAT IS FREE EVERYWHERE. eth_getLogs is
+    refused at every range by the public endpoints -- measured 2026-09-08 at
+    spans of 1, 50, 500 and 5000 blocks -- which is why this asks about a hash
+    the operator hands it instead of scanning for the payment itself. It is also
+    why the whole wPCN payment path is keyed on hashes.
+
+    It checks the three things that could be wrong independently: the right
+    token (not some other BEP-20 of the same name), the right recipient (not the
+    previous customer, whose address is one line up in the alert), and at least
+    the right amount. A transaction that reverted emits no Transfer at all, and
+    status is checked first anyway.
+    """
+    try:
+        sys.path.insert(0, os.environ.get("WPCN_DIR", "/opt/wpcn"))
+        sys.path.insert(1, os.path.dirname(os.path.abspath(__file__)))
+        from web3 import Web3
+        from web3.exceptions import TransactionNotFound
+        from deploy import load, connect
+        cfg = load()
+        w3, _ = connect(cfg)
+        token = str(cfg["TOKEN"]).lower()
+    except Exception as e:
+        return None, f"the BSC connection could not be set up: {e}"
+
+    try:
+        rcpt = w3.eth.get_transaction_receipt(txhash)
+    except TransactionNotFound:
+        # Deliberately a NO rather than an UNKNOWN. A payment we cannot find on
+        # the chain is a payment we must not write down as made; if it is merely
+        # unmined, the answer becomes yes in a few seconds and the operator can
+        # press it again.
+        return False, ("BNB Smart Chain has no receipt for that hash -- it is not "
+                       "mined, or it is not a hash on this chain")
+    except Exception as e:
+        return None, f"the BSC RPC could not be read: {e}"
+
+    if getattr(rcpt, "status", 1) != 1:
+        return False, "that transaction REVERTED on chain, so nothing was sent"
+
+    want = str(to_addr).lower()
+    got = 0
+    for log in (rcpt.get("logs") or []):
+        try:
+            if str(log["address"]).lower() != token:
+                continue
+            topics = log["topics"]
+            if len(topics) < 3:
+                continue
+            t0 = topics[0]
+            t0 = t0.hex() if hasattr(t0, "hex") else str(t0)
+            if t0.lower().removeprefix("0x") != TRANSFER_TOPIC:
+                continue
+            t2 = topics[2]
+            t2 = t2.hex() if hasattr(t2, "hex") else str(t2)
+            if "0x" + t2.lower().removeprefix("0x")[-40:] != want:
+                continue
+            data = log["data"]
+            got += (int.from_bytes(data, "big") if isinstance(data, (bytes, bytearray))
+                    else int(str(data), 16))
+        except Exception:
+            continue                    # a log we cannot parse is not a payment
+
+    sent = got / (10 ** WPCN_DECIMALS)
+    # Half a hundredth: the instruction is printed to 2dp, so an operator who
+    # types what they were told is not an underpayment.
+    if sent + 0.005 < expect_wpcn:
+        if got == 0:
+            return False, (f"that transaction moved no wPCN to {to_addr} at all "
+                           f"(expected {expect_wpcn:.2f})")
+        return False, (f"that transaction moved only {sent:.8f} wPCN to {to_addr}, "
+                       f"less than the {expect_wpcn:.2f} owed")
+    more = "" if sent <= expect_wpcn + 0.005 else "  MORE THAN OWED -- check this was deliberate."
+    return True, (f"{sent:.8f} wPCN reached {to_addr} in {txhash} "
+                  f"(block {rcpt.get('blockNumber')}).{more}")
+
+
 def main() -> int:
+    take_state_lock()               # a real run WRITES; hold it from load to save
     st = load_state()
     now = int(time.time())
     tasks = []          # (key, urgency, text)
@@ -517,7 +667,10 @@ def main() -> int:
                               f"  TO       : {pay_to}\n"
                               f"Send from the inventory wallet.{over}\n"
                               f"{cycle_advice(amt)}"
-                              f"WHEN SENT, close it out or this repeats hourly forever:\n"
+                              f"WHEN SENT, close it out or this repeats hourly forever.\n"
+                              f"Easiest: the wrap desk page in the admin panel has a "
+                              f"'Mark as sent' box -- paste the BSC hash, it checks the "
+                              f"chain and closes this. Or on the host:\n"
                               f"  pcoin-wrapdesk-watch --released {txid}:{watch_addr} <bsc_txhash>"))
 
         # accumulate this address's share of the allocation; reported once,
@@ -712,6 +865,7 @@ if __name__ == "__main__":
     # Deliberately not --released. That marks wPCN as issued, which would then count
     # against the allocation ceiling for tokens that were never minted.
     if len(sys.argv) >= 3 and sys.argv[1] == "--refunded":
+        take_state_lock()
         s = load_state()
         txid = sys.argv[2]
         if txid.startswith("wrap:"):
@@ -749,6 +903,7 @@ if __name__ == "__main__":
     # only account of what happened here; a wrong reason in it is worse than a
     # missing flag, because the next person reads it as fact.
     if len(sys.argv) >= 3 and sys.argv[1] == "--not-a-deposit":
+        take_state_lock()
         s_ = load_state()
         txid = sys.argv[2]
         if txid.startswith("wrap:"):
@@ -774,6 +929,7 @@ if __name__ == "__main__":
 
 
     if len(sys.argv) >= 3 and sys.argv[1] == "--released":
+        take_state_lock()
         s = load_state()
         txid = sys.argv[2]
         if txid.startswith("wrap:"):
@@ -813,11 +969,65 @@ if __name__ == "__main__":
                   f"as <txid>:<deposit-address>; copy the key from the ACTION alert, "
                   f"or give a txid prefix that resolves against an outstanding wrap.")
             sys.exit(2)
+        # ---- CHECK THE CHAIN BEFORE WRITING ANYTHING DOWN -------------------
+        #
+        # This used to accept whatever it was handed: any string as a txhash, or
+        # no txhash at all (it printed a NOTE and carried on). So the only thing
+        # standing between a customer and being marked paid while unpaid was the
+        # operator's attention at the end of a long manual job.
+        #
+        # Now the hash is checked against BNB Smart Chain: right token, right
+        # recipient, at least the right amount, and the transaction did not
+        # revert. A wrong hash, a reverted send, a send to the PREVIOUS
+        # customer -- each is refused with the reason, and nothing is written.
+        #
+        # --force exists only for the case the doctrine demands: the RPC is
+        # UNREACHABLE. Unknown must not silently become yes, but neither may it
+        # block a real payout for ever, so the operator can override an unknown
+        # -- in writing, recorded in the state file, never by accident.
+        _positional = [a for a in sys.argv[2:] if not a.startswith("--")]
+        _force = "--force" in sys.argv
+        _txhash = _positional[1] if len(_positional) > 1 else None
+        _out = (s.get("outstanding") or {}).get(txid) or {}
+        _to = _out.get("to")
+        try:
+            _expect = float(_out.get("send_wpcn") or 0)
+        except (TypeError, ValueError):
+            _expect = 0.0
+
+        _verdict = "not checked (--force)"
+        if not _force:
+            if not _txhash:
+                print("REFUSED: give the BSC transaction hash of the send.\n"
+                      "  pcoin-wrapdesk-watch --released <txid>:<address> <bsc_txhash>\n"
+                      "It is checked against the chain before anything is recorded.")
+                sys.exit(2)
+            if not _to or _expect <= 0:
+                print(f"REFUSED: there is no recipient and amount on file for {txid!r}, "
+                      f"so the payment cannot be checked. This wrap went straight to the "
+                      f"reserve with no request behind it -- find out who is owed it, then "
+                      f"re-run with --force to record it anyway.")
+                sys.exit(2)
+            _ok, _why = verify_wpcn_sent(_txhash, _to, _expect)
+            if _ok is None:
+                print(f"COULD NOT CHECK: {_why}\n"
+                      f"Nothing was changed. Unknown is not done. Try again, or "
+                      f"--force if you are certain and the RPC is the problem.")
+                sys.exit(3)
+            if _ok is False:
+                print(f"REFUSED: {_why}\nNothing was changed.")
+                sys.exit(2)
+            print(f"verified on BSC: {_why}")
+            _verdict = _why
+
         key = f"wrap:{txid}"
         s.setdefault("seen", {}).setdefault(key, {})
         s["seen"][key]["released"] = True
         s["seen"][key]["at"] = int(time.time())
-        s["seen"][key]["bsc_txhash"] = sys.argv[3] if len(sys.argv) > 3 else None
+        s["seen"][key]["bsc_txhash"] = _txhash
+        # Keep the EVIDENCE beside the claim, not just the claim. A state file
+        # that says "released: true" and nothing else cannot be audited later.
+        s["seen"][key]["verified"] = _verdict
         # Also record the AMOUNT that went out. Without it the allocation ceiling has
         # no idea what the desk has already committed, and a missing figure is read as
         # the maximum rather than as zero -- correct, but needlessly pessimistic once
@@ -833,8 +1043,8 @@ if __name__ == "__main__":
             s["seen"][key]["send_wpcn"] = _sent
         save_state(s)
         print(f"marked released: {key}")
-        if len(sys.argv) <= 3:
-            print("NOTE: no BSC txhash recorded. Re-run with it so the payment "
-                  "can be verified later.")
+        if not _txhash:
+            print("NOTE: forced, with no BSC txhash recorded. This is the one "
+                  "state here that cannot be checked against the chain later.")
         sys.exit(0)
     sys.exit(main())

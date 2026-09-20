@@ -34,7 +34,8 @@ import { jobsPage } from './jobs.mjs';
 import { aiPage } from './ai.mjs';
 import { exchangesPage } from './exchanges.mjs';
 import { approvalsPage } from './approvals.mjs';
-import { wrapdeskPage, wrapdeskState, wrapdeskWork, CLOSED_FILE } from './wrapdesk.mjs';
+import { wrapdeskPage, wrapdeskState, wrapdeskWork, markReleased, CLOSED_FILE } from './wrapdesk.mjs';
+import { announceFeed, markAnnounced, BACKLOG_LOUD_AT } from './wrapdesk-announce.mjs';
 import { keeperPage, keeperData, validate as keeperValidate, writeTuning } from './keeper.mjs';
 import { minersPage, minersData } from './miners.mjs';
 import { pricingPage, pricingData } from './pricing.mjs';
@@ -576,15 +577,41 @@ async function handle(req, res) {
       // applied. Read-then-ack rather than a push, so the panel never needs to
       // reach the gate host and the gate never accepts an inbound connection.
       const c = loadControls();
-      if (payload.ack && Array.isArray(payload.ack)) {
-        for (const d of (c.decisions || [])) if (payload.ack.includes(d.id)) d.applied = true;
+      if ((payload.ack && Array.isArray(payload.ack))
+          || (payload.announced && Array.isArray(payload.announced))) {
+        for (const d of (c.decisions || [])) {
+          if (Array.isArray(payload.ack) && payload.ack.includes(d.id)) d.applied = true;
+        }
+        // A wrap the gate has published. Recorded so the next pull does not
+        // offer it again -- see markAnnounced() for why this is the second
+        // guard rather than the only one.
+        const n = Array.isArray(payload.announced) ? markAnnounced(c, payload.announced) : 0;
         saveControls(c);
-        return ok(`acknowledged ${payload.ack.length}`);
+        return ok(`acknowledged ${(payload.ack || []).length}, announced ${n}`);
       }
+      // THE WRAP DESK'S ANNOUNCEMENTS RIDE ON THIS EXISTING PULL. There is no
+      // SSH between this host and the gate in either direction, so a response
+      // the gate already asks for every tick is the only transport available --
+      // and it keeps the property that matters: this panel hands over FACTS (a
+      // transaction id, an address, an amount) and the gate renders the fixed
+      // template in its own code. Nothing here can put a sentence on @PCoinPCN.
+      //
+      // announceFeed() fails CLOSED. If the floor file, the wrap ledger or the
+      // redeem ledger cannot be read it returns an empty list and an error
+      // string, never a guess -- the accident this guards against is publishing
+      // thirty-six historical wraps, one a minute, to a public channel.
+      let announce = { items: [], backlog: 0, held: true, error: 'not evaluated' };
+      try { announce = announceFeed(c); }
+      catch (e) { announce = { items: [], backlog: 0, held: true, error: `announce feed: ${e.message}` }; }
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({
         decisions: (c.decisions || []).filter(d => !d.applied),
         agents: c.agents || {},
+        announce: announce.items,
+        announce_backlog: announce.backlog,
+        announce_loud_at: BACKLOG_LOUD_AT,
+        announce_excluded: announce.excluded || {},
+        announce_error: announce.error || '',
       }));
     }
 
@@ -983,6 +1010,18 @@ async function handle(req, res) {
       } else if (action === 'open') {
         try { unlinkSync(CLOSED_FILE); } catch { /* already open */ }
         flash = 'The wrap desk is now OPEN and accepting new requests.';
+      } else if (action === 'released') {
+        // THE PANEL DECIDES NOTHING HERE. It hands the hash to the watcher, which
+        // reads the receipt off BNB Smart Chain and refuses anything that does not
+        // show the right amount of wPCN reaching the right address. So a mistyped
+        // hash, a reverted send, or the hash of the PREVIOUS customer's payment all
+        // come back as a refusal with the reason, and the state file is untouched.
+        // An RPC that could not be read comes back as "could not check", which is
+        // its own answer and is not a no (CLAUDE.md 7.1).
+        const r = markReleased(String(form.get('key') || ''), String(form.get('txhash') || ''));
+        flash = r.ok
+          ? 'Recorded as sent. ' + r.out.split(CH10).filter(Boolean).join(' ')
+          : 'NOT recorded, nothing was changed: ' + r.out.split(CH10).filter(Boolean).join(' ');
       }
     } catch (e) {
       flash = 'Could not change it: ' + e.message + ' -- nothing was altered.';

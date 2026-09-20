@@ -86,8 +86,36 @@ export function wrapdeskState() {
 //    PCOIN_NOTIFY is pinned to /bin/true as well -- the variable the code reads
 //    is PCOIN_NOTIFY, and a session once set NOTIFY= instead and disabled
 //    nothing at all while believing it had.
-const WATCH = '/usr/local/bin/pcoin-wrapdesk-watch';
 const UNIT = 'pcoin-wrapdesk-watch.service';
+
+// RUN WHAT THE UNIT RUNS -- including the INTERPRETER.
+//
+// /usr/local/bin/pcoin-wrapdesk-watch opens `#!/usr/bin/env python3`, but the
+// unit runs it as `/opt/wpcn/.venv/bin/python /usr/local/bin/...`, and only that
+// venv has web3. Exec'ing the script by path therefore ran a DIFFERENT program:
+// every BSC read inside it raised ModuleNotFoundError, was swallowed by a broad
+// `except Exception: return None`, and this page reported the PancakeSwap
+// reserves unreadable while the timer -- sixteen minutes either side of it --
+// read them perfectly. It degraded quietly, in the direction of "unknown",
+// which is the safe direction and is still the wrong answer.
+//
+// That is CLAUDE.md 7.14 one level lower down: not the environment this time
+// but the binary. So the argv is READ OFF THE UNIT rather than written here,
+// and if it cannot be read the page says so instead of guessing.
+function watchArgv() {
+  const out = execFileSync('systemctl', ['show', UNIT, '-p', 'ExecStart', '--no-pager'],
+    { encoding: 'utf8', timeout: 15000 });
+  // systemctl prints: ExecStart={ path=... ; argv[]=/a/python /b/script ; ... }
+  // A unit with a drop-in that resets ExecStart prints BOTH the cleared entry
+  // and the live one, so take the LAST argv[] -- the first is the empty reset.
+  const all = [...String(out).matchAll(/argv\[\]=([^;]*);/g)]
+    .map((m) => m[1].trim().split(/\s+/).filter(Boolean))
+    .filter((a) => a.length);
+  if (!all.length) throw new Error(`could not read ExecStart from ${UNIT}`);
+  const argv = all[all.length - 1];
+  if (argv.length < 2) throw new Error(`${UNIT}'s ExecStart has no script argument`);
+  return argv;
+}
 
 function unitEnvironment() {
   // systemctl prints: Environment=A=1 B=2 ... on one line.
@@ -103,7 +131,15 @@ function unitEnvironment() {
   return env;
 }
 
-export function wrapdeskWork() {
+// Everything both entry points need before they may run the watcher at all.
+// Returned rather than thrown so a caller can render the reason.
+function watchContext() {
+  let argv;
+  try {
+    argv = watchArgv();
+  } catch (e) {
+    return { ok: false, why: e.message };
+  }
   let env;
   try {
     env = unitEnvironment();
@@ -117,13 +153,58 @@ export function wrapdeskWork() {
       + 'WRAP_TOTAL_ALLOC, so any figures here would be computed from defaults '
       + 'and would be wrong in the direction of inventing a debt' };
   }
+  return {
+    ok: true,
+    argv,
+    env: { ...process.env, ...env, PCOIN_NOTIFY: '/bin/true', NOTIFY: '/bin/true' },
+  };
+}
+
+// CLOSE OUT A WRAP THAT HAS BEEN PAID.
+//
+// The panel does not decide anything here and does not touch the state file
+// itself: it hands the BSC transaction hash to the watcher, which reads the
+// receipt off BNB Smart Chain and refuses every hash that does not show the
+// right amount of wPCN reaching the right address. So this button cannot mark
+// a customer paid who was not paid -- which is the only reason it is a button.
+//
+// No --dry-run here, obviously: that is the flag that makes it do nothing.
+export function markReleased(key, txhash) {
+  const ctx = watchContext();
+  if (!ctx.ok) return { ok: false, out: ctx.why };
+  // Shape-check before spending an RPC call on it. The watcher checks too; this
+  // just turns a typo into an instant answer.
+  if (!/^0x[0-9a-fA-F]{64}$/.test(String(txhash || ''))) {
+    return { ok: false, out: 'That is not a BSC transaction hash. It is 0x followed '
+      + 'by 64 hex characters -- copy it from MetaMask or BscScan. Nothing was changed.' };
+  }
+  if (!/^[0-9a-f]{64}:[0-9a-z]+$/i.test(String(key || ''))) {
+    return { ok: false, out: 'That wrap key does not look right, so nothing was sent '
+      + 'to the watcher. Reload the page and try again.' };
+  }
+  try {
+    const out = execFileSync(ctx.argv[0], [...ctx.argv.slice(1), '--released', key, txhash],
+      { encoding: 'utf8', timeout: 120000, env: ctx.env });
+    return { ok: true, out: String(out).trim() };
+  } catch (e) {
+    // Exit 2 is "refused", 3 is "could not check" -- both print their reason on
+    // stdout and both mean nothing was written. Show the reason, not the code.
+    const said = [e && e.stdout, e && e.stderr].map((x) => String(x || '').trim())
+      .filter(Boolean).join(String.fromCharCode(10));
+    return { ok: false, out: said || `the watcher did not run: ${e.message}` };
+  }
+}
+
+export function wrapdeskWork() {
+  const ctx = watchContext();
+  if (!ctx.ok) return { ok: false, why: ctx.why };
 
   let raw;
   try {
-    raw = execFileSync(WATCH, ['--dry-run'], {
+    raw = execFileSync(ctx.argv[0], [...ctx.argv.slice(1), '--dry-run'], {
       encoding: 'utf8',
       timeout: 120000,
-      env: { ...process.env, ...env, PCOIN_NOTIFY: '/bin/true', NOTIFY: '/bin/true' },
+      env: ctx.env,
     });
   } catch (e) {
     // It exits non-zero when work is outstanding, which is not an error.
@@ -145,17 +226,17 @@ export function wrapdeskWork() {
 
     if (t.startsWith('[action] ACTION: send')) {
       push();
-      cur = { kind: 'send', title: t.replace('[action] ', ''), detail: [], close: null, to: null };
+      cur = { kind: 'send', title: t.replace('[action] ', ''), detail: [], close: null, to: null, key: null };
       continue;
     }
     if (t.startsWith('[action] WITHHELD')) {
       push();
-      cur = { kind: 'withheld', title: 'Withheld - do not send yet', detail: [], close: null, to: null };
+      cur = { kind: 'withheld', title: 'Withheld - do not send yet', detail: [], close: null, to: null, key: null };
       continue;
     }
     if (/^\[info\] WRAP /.test(t)) {
       push();
-      cur = { kind: 'waiting', title: t.replace('[info] ', ''), detail: [], close: null, to: null };
+      cur = { kind: 'waiting', title: t.replace('[info] ', ''), detail: [], close: null, to: null, key: null };
       continue;
     }
     const alloc = t.match(/Allocation: ([\d.]+) of ([\d.]+) wPCN used, ([\d.]+) left/);
@@ -174,8 +255,19 @@ export function wrapdeskWork() {
     if (cur) {
       const to = t.match(/^TO\s*:\s*(0x[0-9a-fA-F]{40})/);
       if (to) cur.to = to[1];
-      if (/^pcoin-wrapdesk-watch --(released|refunded)/.test(t)) cur.close = t;
-      else cur.detail.push(t);
+      if (/^pcoin-wrapdesk-watch --(released|refunded)/.test(t)) {
+        cur.close = t;
+        // The wrap's identity, <pcoin-txid>:<deposit-address>. Taken from the
+        // line the watcher itself printed rather than reassembled here, so the
+        // button can only ever close a wrap the watcher just described.
+        const k = t.match(/--(?:released|refunded)\s+(\S+)/);
+        if (k) cur.key = k[1];
+      } else if (!/^(WHEN (SENT|REFUNDED)|Easiest: the wrap desk page)/.test(t)) {
+        // Those two lines exist for the TELEGRAM alert, where the only way to
+        // close a wrap is a command line. On this page they would be the page
+        // describing the box printed immediately below them.
+        cur.detail.push(t);
+      }
     }
   }
   push();
@@ -193,15 +285,47 @@ function workCard(w) {
   const held = w.items.filter((i) => i.kind === 'withheld');
   const waiting = w.items.filter((i) => i.kind === 'waiting');
 
+  // THE CLOSE-OUT, AS A BOX YOU CAN TYPE IN.
+  //
+  // Sending the wPCN does not close the wrap: the desk has no view of the
+  // inventory wallet, so somebody has to tell it the payment happened. That used
+  // to mean SSH and a copied command line, which is why the owner asked "there
+  // is no action button to click after send".
+  //
+  // It is NOT a button that takes your word for it. The hash goes to the
+  // watcher, which fetches the receipt from BNB Smart Chain and refuses unless
+  // the right amount of wPCN reached the right address. A wrong hash, a
+  // reverted send, or a send to the previous customer is refused with the
+  // reason and nothing is written -- so pressing this can only ever record
+  // something the chain already agrees happened.
+  const closeForm = (i) => (i.kind !== 'send' || !i.key ? '' :
+    `<form method="post" style="margin-top:10px">`
+    + `<input type="hidden" name="action" value="released">`
+    + `<input type="hidden" name="key" value="${esc(i.key)}">`
+    + `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">`
+    + `<input name="txhash" required spellcheck="false" autocomplete="off"`
+    + ` pattern="0x[0-9a-fA-F]{64}" placeholder="BSC transaction hash of the send (0x...)"`
+    + ` style="flex:1 1 380px;min-width:260px;padding:7px 10px;border-radius:4px;`
+    + `border:1px solid var(--line);background:var(--panel);color:inherit;`
+    + `font-family:ui-monospace,monospace;font-size:12px">`
+    + `<button style="background:var(--green);color:#0b1020;border:0;border-radius:999px;`
+    + `padding:8px 18px;cursor:pointer;font-weight:700">Mark as sent</button></div>`
+    + `<p class="muted" style="margin:6px 0 0;font-size:12px">Checked against BNB Smart `
+    + `Chain before anything is recorded: right token, right recipient, at least the right `
+    + `amount, and the transaction did not revert. If it does not match, nothing changes `
+    + `and you are told why.</p></form>`);
+
   const block = (i, colour) =>
     `<div style="border-left:3px solid var(--${colour});padding:8px 12px;margin:10px 0;`
     + `background:var(--panel-2);border-radius:4px">`
     + `<div style="font-weight:700">${esc(i.title)}</div>`
     + (i.to ? `<div style="margin-top:4px">to <code>${esc(i.to)}</code></div>` : '')
     + `<pre style="white-space:pre-wrap;margin:6px 0 0;font-size:12px">${esc(i.detail.join(String.fromCharCode(10)))}</pre>`
+    + closeForm(i)
     + (i.close
-        ? `<div style="margin-top:8px"><span class="muted">When done, close it out or it repeats hourly:</span>`
-          + `<pre style="white-space:pre-wrap;margin:4px 0 0;font-size:12px">${esc(i.close)}</pre></div>`
+        ? `<details style="margin-top:8px"><summary class="muted" style="cursor:pointer;font-size:12px">`
+          + `or close it out on the host</summary>`
+          + `<pre style="white-space:pre-wrap;margin:4px 0 0;font-size:12px">${esc(i.close)}</pre></details>`
         : '')
     + `</div>`;
 
@@ -212,7 +336,9 @@ function workCard(w) {
   if (actions.length) {
     body += `<h3>Send these (${actions.length})</h3>`
       + '<p class="muted">Confirmed past 100 blocks and within the allocation. '
-      + 'Send from the inventory wallet, then run the close-out line.</p>'
+      + 'Send from the inventory wallet, then paste the BSC transaction hash below &mdash; '
+      + 'sending does not close anything on its own, and an unclosed wrap is re-alerted '
+      + 'every hour for ever.</p>'
       + actions.map((i) => block(i, 'green')).join('');
   }
   if (held.length) {

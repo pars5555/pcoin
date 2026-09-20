@@ -137,9 +137,15 @@ def main():
     ap.add_argument("--rate-from", default="https://price.pc.am")
     ap.add_argument("--no-rate", action="store_true",
                     help="omit the rate footnote (still stamps the build time)")
+    ap.add_argument("--footnote", default="",
+                    help="fixed footnote text instead of the stamp. For a card that is "
+                         "REUSED: a build date printed on a picture posted for months "
+                         "reads as the date of the thing being announced, and a rate "
+                         "printed on one is the promise this file exists to refuse. "
+                         "Implies --no-rate, so nothing time-sensitive is read at all.")
     a = ap.parse_args()
 
-    rate = None if a.no_rate else live_rate(a.rate_from)
+    rate = None if (a.no_rate or a.footnote) else live_rate(a.rate_from)
 
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img)
@@ -295,7 +301,8 @@ def main():
 
     f_f = font(REG, 19)
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%d %b %Y %H:%M UTC")
-    note = ("Rate read %s: $%.6f per PCN" % (stamp, rate)) if rate else ("Built %s" % stamp)
+    note = (a.footnote or (("Rate read %s: $%.6f per PCN" % (stamp, rate)) if rate
+                           else ("Built %s" % stamp)))
     d.text((m, H - 52), note, font=f_f, fill=MUTED)
 
     img.save(a.out, "PNG", optimize=True)
