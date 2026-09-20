@@ -34,7 +34,7 @@ import { jobsPage } from './jobs.mjs';
 import { aiPage } from './ai.mjs';
 import { exchangesPage } from './exchanges.mjs';
 import { approvalsPage } from './approvals.mjs';
-import { wrapdeskPage, wrapdeskState, CLOSED_FILE } from './wrapdesk.mjs';
+import { wrapdeskPage, wrapdeskState, wrapdeskWork, CLOSED_FILE } from './wrapdesk.mjs';
 import { keeperPage, keeperData, validate as keeperValidate, writeTuning } from './keeper.mjs';
 import { minersPage, minersData } from './miners.mjs';
 import { pricingPage, pricingData } from './pricing.mjs';
@@ -193,6 +193,14 @@ const NAV = [
   ['Config',   [['security', '\u{1F512} Security (2FA)'],
                 ['vault', '\u{1F511} Vault commands']]],
 ];
+
+// The watcher is an external process. If it hangs or throws, the page must
+// still render and must say it could not look -- a wrap desk page that 500s is
+// a wrap desk page nobody checks.
+const safeWrapdeskWork = () => {
+  try { return wrapdeskWork(); }
+  catch (e) { return { ok: false, why: String((e && e.message) || e) }; }
+};
 
 const shell2 = (page, title, body) => shell(title, body, page);
 const shell = (title, body, page = null) => `<!doctype html><html lang="en"><head>
@@ -980,12 +988,12 @@ async function handle(req, res) {
       flash = 'Could not change it: ' + e.message + ' -- nothing was altered.';
     }
     return send(res, 200, shell2('wrapdesk', 'Wrap desk',
-      wrapdeskPage(wrapdeskState(), flash)));
+      wrapdeskPage(wrapdeskState(), flash, safeWrapdeskWork())));
   }
 
   if (sub === '/wrapdesk') {
     return send(res, 200, shell2('wrapdesk', 'Wrap desk',
-      wrapdeskPage(wrapdeskState())));
+      wrapdeskPage(wrapdeskState(), null, safeWrapdeskWork())));
   }
 
   if (sub === '/programs' && req.method === 'POST') {
