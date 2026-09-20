@@ -146,6 +146,11 @@ namespace PCoinTray
         public long SharesRejected;
         public int LastShareAgeSec = -1;// seconds since the accepted count last rose; -1 = none yet
         public string Address = "";
+        // What the auto-tune is doing, empty when it is not running. A sweep
+        // takes minutes and restarts the miner at each thread count, so without
+        // this the window said "Starting the miner" the whole way through and
+        // looked indistinguishable from a hang.
+        public string Tuning = "";
         public bool HasPhrase;
         public string PhraseBalance;    // null when there is no phrase wallet
         public string OldBalance;       // null when it cannot be read
@@ -1164,7 +1169,9 @@ namespace PCoinTray
             else if (starting)
             {
                 _statePip.Fill = Warn;
-                _state.Text = "Starting the miner";
+                _state.Text = string.IsNullOrEmpty(s.Tuning)
+                    ? "Starting the miner"
+                    : s.Tuning;          // "Auto-tuning: testing 8 cores..."
             }
             else
             {

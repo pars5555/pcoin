@@ -1208,6 +1208,14 @@ namespace PCoinTray
         //! One attempt per session to get an ADOPTED node into fast mode. See
         //! MaybeRestartAdoptedLightNode.
         bool _adoptedLightFixTried;
+        //! THE RECOVERY THAT RESTARTS A STALLED MINER RAN ONCE A SECOND.
+        //! These three make it one attempt at a time, spaced out. See the
+        //! comment at the branch itself -- that is where the damage was.
+        bool _startInFlight;
+        bool _noAddressLogged;
+        bool _cliMissingLogged;
+        DateTime _lastStartAttempt = DateTime.MinValue;
+        const int START_RETRY_SECONDS = 15;
         double _hashrate;
         long _blocksFound;
         bool _poolMining;              // observed from the node, not from _poolUrl
@@ -2133,6 +2141,45 @@ namespace PCoinTray
             string b = Path.Combine(Path.Combine(_dir, "bin"), "bitcoind.exe");
             if (File.Exists(b)) return b;
             return a;        // report the expected place when it is nowhere
+        }
+
+        /**
+         * THE SAME FALLBACK, FOR THE OTHER BINARY. THIS ONE WAS MISSED, AND IT
+         * COST A USER THEIR WHOLE INSTALL.
+         *
+         * The comment above was written for bitcoind.exe and says "every lookup
+         * in this file used to be Path.Combine(_dir, ...)". NodeExe() was given
+         * the bin\ fallback; Cli() was not, and kept
+         * Path.Combine(_dir, "bitcoin-cli.exe").
+         *
+         * That split the app in half without breaking it visibly, because the
+         * two halves use different transports. Every READ goes over HTTP
+         * (_rpc.Call) and kept working perfectly: height, difficulty, peers,
+         * "mining: false" -- all correct, all on screen. Every WRITE goes
+         * through this process -- startmining, startpoolmining, stopmining,
+         * loadwallet -- and Process.Start threw FileNotFound, which Cli()
+         * catches and reports as null, which every caller treats as "the call
+         * failed" and nothing reports to anybody.
+         *
+         * So the tray sat on "Starting the miner" and "- - H/s" for ever, next
+         * to a healthy synced node, issuing a start it could not deliver.
+         * Reported 2026-09-20 with two screenshots and the exact words "I have
+         * to run the command manually via the command line before the app
+         * displays the hash rate" -- which is precisely right: the user's own
+         * bin\bitcoin-cli.exe works, because they ran the one that exists.
+         *
+         * Reproduced from the published v1.4.34 zip on 2026-09-20: unzip, set a
+         * payout address, mining on -- 100 seconds of mining=false, threads=0,
+         * then one hand-run startpoolmining and 75 of 75 samples hashing at
+         * ~2,000 H/s with the tray happily displaying it.
+         */
+        string CliExe()
+        {
+            string a = Path.Combine(_dir, "bitcoin-cli.exe");
+            if (File.Exists(a)) return a;
+            string b = Path.Combine(Path.Combine(_dir, "bin"), "bitcoin-cli.exe");
+            if (File.Exists(b)) return b;
+            return a;
         }
 
         bool NodeOwnsOurDatadir()
@@ -3582,8 +3629,8 @@ namespace PCoinTray
                 // up, or the miner was stopped underneath us. Say so, and get
                 // it going again rather than quietly giving up.
                 _icon.Icon = _iconIdle;
-                _miStatus.Text = "Starting miner...";
-                _icon.Text = "PCoin Miner - starting";
+                _miStatus.Text = _calibrating ? "Auto-tuning..." : "Starting miner...";
+                _icon.Text = _calibrating ? "PCoin Miner - auto-tuning" : "PCoin Miner - starting";
                 if (_nodeUp && !string.IsNullOrEmpty(_address))
                 {
                     // The deferred tune, once solo is actually possible. Checked
@@ -3595,12 +3642,65 @@ namespace PCoinTray
                         Program.Note("auto-tune resuming: the chain is current");
                         BeginCalibrationOrMine();
                     }
-                    else
+                    /*
+                     * THIS RAN ONCE A SECOND, AND THAT IS A LIVELOCK, NOT A RETRY.
+                     *
+                     * The tick is 1 s. Any second in which the node is not hashing
+                     * ended here, and this spawned ANOTHER thread issuing
+                     * startmining/startpoolmining -- which stops every worker and,
+                     * in fast mode, throws away the 2 GiB dataset and starts
+                     * building it again. A build takes longer than a second, so
+                     * the node was never hashing when the next tick arrived, so it
+                     * was restarted again. It can never finish. The window sits on
+                     * "Starting the miner" and "- - H/s" for ever, on a node that
+                     * is perfectly healthy and a chain that is fully synced.
+                     *
+                     * It also destroyed the auto-tune, which is how it was found.
+                     * Calibrate() restarts the miner at each candidate thread
+                     * count and samples the rate; between candidates the node
+                     * correctly reports "not hashing", so this branch fired and
+                     * restarted mining at _percent threads UNDER the measurement.
+                     * Every sample then reads near zero and, because candidates
+                     * ascend and each need only beat the last by 2%, a rising line
+                     * of noise always elects the largest thread count -- the worst
+                     * one. That is the JTIIJES sweep v1.4.34 went looking for:
+                     * "4:2 6:7 7:11 8:11 9:12 10:14 12:17 16:19 -> best 16".
+                     * v1.4.34 stopped such a sweep being SAVED, which was right and
+                     * did not touch the cause.
+                     *
+                     * Reported from the field on 2026-09-20 with two screenshots: a
+                     * healthy node at height 8,747, "Stop mining" showing, no hash
+                     * rate, and "I have to run the command manually via the command
+                     * line before the app displays the hash rate" -- which works
+                     * precisely because once the node IS hashing this branch stops
+                     * firing and the hammering stops.
+                     *
+                     * So: never while the sweep is running, never two at once, and
+                     * not more than once every START_RETRY_SECONDS. A restart that
+                     * needs longer than 15 s to take hold is now allowed to.
+                     */
+                    else if (!_calibrating && !_startInFlight
+                             && (DateTime.UtcNow - _lastStartAttempt).TotalSeconds >= START_RETRY_SECONDS)
                     {
+                        _lastStartAttempt = DateTime.UtcNow;
+                        _startInFlight = true;
                         int want = ThreadsFor(_percent);
-                        var t = new Thread(() => StartMining(want)) { IsBackground = true };
+                        var t = new Thread(() =>
+                        {
+                            try { StartMining(want); }
+                            finally { _startInFlight = false; }
+                        })
+                        { IsBackground = true };
                         t.Start();
                     }
+                }
+                else if (_nodeUp && string.IsNullOrEmpty(_address) && !_noAddressLogged)
+                {
+                    // Silence here was its own bug: with no payout address there
+                    // is nothing to start, and the window said "Starting the
+                    // miner" indefinitely without ever saying why.
+                    _noAddressLogged = true;
+                    Program.Note("mining is switched on but no payout address is set, so nothing can be started");
                 }
             }
             else
@@ -3690,6 +3790,25 @@ namespace PCoinTray
             if (_adoptedLightFixTried) return;
             if (!FastModeActive || !_nodeUp || r == null) return;
             if (_startedNode) return;              // we passed the flag ourselves
+            // A NODE THAT IS NOT MINING HAS NO MODE, AND SAYS "light" ANYWAY.
+            //
+            // getcpuminerinfo documents `mode` as the mode the workers are
+            // ACTUALLY HASHING IN. With no workers there is nothing to describe,
+            // so it falls back to "light" with an empty modereason and
+            // datasetprogress 0 -- which is byte-for-byte what an adopted
+            // light-mode node looks like. Without this line the check cannot
+            // tell "started without the flag" from "not mining yet", and it
+            // restarts the second case: a perfectly good node, in fast mode,
+            // killed for a mode reading that described nothing.
+            //
+            // Reproduced 2026-09-20 on a node started WITH -randomxfastmode and
+            // simply idle: the tray logged "fast mode wanted but the node we
+            // adopted is running in light mode; restarting it once" and bounced
+            // it. On a machine where mining is also trying to start, that
+            // restart lands underneath it.
+            //
+            // So judge the mode only when there is a worker whose mode it is.
+            if (!r.Hashing || r.Threads <= 0) return;
             if (r.Mode != "light" || r.DatasetProgress != 0) return;
             if (SoloBlockedBySync()) return;       // not while the chain is still catching up
 
@@ -3930,6 +4049,7 @@ namespace PCoinTray
             {
                 var s = new MinerSnapshot
                 {
+                    Tuning = _calibrating ? (_calibStatus ?? "Auto-tuning...") : "",
                     NodeUp = nodeUp,
                     Hashing = nodeUp && _hashing,
                     WantMining = _mining,
@@ -4180,7 +4300,22 @@ namespace PCoinTray
                 // CommonArgs(), never NodeArgs(): see the comment on both.
                 string full = CommonArgs();
                 full = (full.Length == 0 ? "" : full + " ") + args;
-                var psi = new ProcessStartInfo(Path.Combine(_dir, "bitcoin-cli.exe"), full)
+                string exe = CliExe();
+                // SAY IT ONCE. A missing bitcoin-cli.exe made every command a
+                // silent no-op: nothing on screen, nothing in the log, and a
+                // tray that looked like it was working. Once per session is
+                // enough to make the cause findable without filling the log.
+                if (!File.Exists(exe))
+                {
+                    if (!_cliMissingLogged)
+                    {
+                        _cliMissingLogged = true;
+                        Program.Note("cannot find bitcoin-cli.exe next to the app or in bin\\ (" + exe
+                                     + ") -- no command can be sent to the node, so mining cannot be started");
+                    }
+                    return null;
+                }
+                var psi = new ProcessStartInfo(exe, full)
                 {
                     UseShellExecute = false,
                     CreateNoWindow = true,
