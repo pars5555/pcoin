@@ -45,6 +45,10 @@
   pre code{background:none;padding:0;font-size:1em}
   ul{padding-left:20px;color:var(--muted)}
   li+li{margin-top:5px}
+  .shot{margin:18px 0;text-align:center}
+  .shot img{max-width:100%;height:auto;border-radius:12px;border:1px solid var(--line);
+    box-shadow:0 18px 50px rgba(0,0,0,.5)}
+  .shot figcaption{color:var(--dim);font-size:.85rem;margin-top:10px}
   .note{border-left:3px solid var(--teal);background:rgba(45,212,191,.05);border-radius:0 12px 12px 0;
     padding:13px 18px;margin:16px 0;color:var(--muted);font-size:.95rem}
   .warn{border-left:3px solid #fbbf24;background:rgba(251,191,36,.05);border-radius:0 12px 12px 0;
@@ -113,8 +117,16 @@
 
       <!-- ================= ANDROID ================= -->
       <section class="panel" id="q-and">
+        <figure class="shot">
+          <img src="/img/wallet-android.png" alt="PCoin wallet on Android, synced and showing a balance"
+               width="560" height="1182" loading="lazy">
+          <figcaption>The wallet on Android, caught up with the chain. The receive address and its
+          QR are blurred here on purpose — this is a throwaway wallet made for the screenshot.</figcaption>
+        </figure>
+
         <p class="muted">The easiest way to hold PCN. It runs a real PCoin node on the phone, so
-        it checks the chain itself rather than trusting a server.</p>
+        it checks the chain itself rather than trusting a server. First sync took about seven
+        minutes on a moto g play.</p>
         <p>
           <a class="btn" href="https://play.google.com/store/apps/details?id=am.pc.pcoinwallet">Get it on Google Play</a>
           <a class="btn ghost" href="https://github.com/pars5555/pcoin/releases/download/v1.2.8/pcoin-android-wallet.apk">Download the APK</a>

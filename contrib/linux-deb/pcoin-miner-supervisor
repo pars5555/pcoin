@@ -13,9 +13,13 @@
 #   * never mine to an address the node has not confirmed is valid.
 set -eu
 
-DATADIR=/var/lib/pcoin
-CLI="/opt/pcoin/bin/bitcoin-cli -datadir=$DATADIR"
-CONF=/etc/pcoin/miner.conf
+# Overridable so one supervisor drives both installs: the package's system-wide
+# one, and a rootless per-user one under $HOME with systemctl --user. Unset,
+# every default is exactly what the .deb has always used, so nothing changes
+# for an existing install.
+DATADIR=${PCOIN_DATADIR:-/var/lib/pcoin}
+CLI="${PCOIN_BIN:-/opt/pcoin/bin}/bitcoin-cli -datadir=$DATADIR"
+CONF=${PCOIN_CONF:-/etc/pcoin/miner.conf}
 
 TTL=120       # mining stops this long after the last keep-alive
 POLL=30       # keep-alive interval, comfortably inside TTL
