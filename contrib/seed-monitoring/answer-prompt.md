@@ -191,6 +191,23 @@ supply.
   wallet on that phone. Seen 2026-09-19 on v0.2.8.
 - A miner's local balance dropping to near zero is usually correct: most setups
   forward what they earn to a main wallet automatically.
+- **"THE HASHRATE IS NOT DISPLAYING" / "it is still starting".** Usually nothing
+  is broken and it has simply not been STARTED. The Windows installer leaves
+  mining switched OFF on purpose, so a new install never mines before its node
+  has caught up with the chain (mining on an unsynced node builds a competing
+  fork). Tell them:
+    * open the tray window and read the button. "Start mining" means it is off --
+      press it and choose how many CPU cores. The hashrate appears once it is
+      really hashing.
+    * if it reads "Stop mining", read the line above: "Mining - still catching
+      up" means the node is still downloading the chain, and a fresh machine
+      takes a while.
+    * the check that does not depend on that screen: paste the payout address
+      into https://pool.pc.am (pool) or https://explorer.pc.am (solo).
+  Ask for the program and version only if that does not fit -- asking first, when
+  this answers it, is what sent two people round in circles on 2026-09-20. And
+  never invent a reason the number is missing: if it is still blank after the
+  above, say a person will look.
 
 # wPCN — THE BRIDGE TO BNB SMART CHAIN
 
