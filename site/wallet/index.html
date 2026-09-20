@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PCoin — Wallet</title>
+<meta name="description" content="Get a PCoin (PCN) wallet: the Android app on Google Play, the Windows wallet, or a full node. How to receive, send, back up and restore your twelve words.">
+<meta name="theme-color" content="#0a0b10">
+<link rel="icon" href="/brand/pcoin-64.png">
+<style>
+  :root{
+    --bg:#0a0b10; --panel:#11131d; --line:rgba(255,255,255,.09); --line-soft:rgba(255,255,255,.06);
+    --text:#e9ebf4; --muted:#9aa2b8; --dim:#6b7288; --violet:#8b5cf6; --teal:#2dd4bf;
+    --radius:16px; --mono:ui-monospace,"Cascadia Code",Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    font-size:16.5px;line-height:1.65;-webkit-font-smoothing:antialiased}
+  a{color:var(--teal);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:900px;margin:0 auto;padding:0 24px}
+  header.nav{position:sticky;top:0;z-index:50;background:rgba(10,11,16,.82);
+    backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid var(--line-soft)}
+  .nav-inner{display:flex;align-items:center;gap:28px;padding:14px 24px;max-width:1080px;margin:0 auto;flex-wrap:wrap}
+  .brand{display:flex;align-items:center;gap:11px;font-weight:700;font-size:1.15rem;color:var(--text)}
+  .brand:hover{text-decoration:none}
+  .brand img{width:28px;height:28px;border-radius:7px}
+  nav.links{display:flex;gap:22px;margin-left:auto;flex-wrap:wrap;align-items:center}
+  nav.links a{color:var(--muted);font-size:.93rem;font-weight:500}
+  nav.links a:hover{color:var(--text);text-decoration:none}
+  nav.links a.here{color:var(--text)}
+  .hero{padding-block:58px 26px;border-bottom:1px solid var(--line-soft)}
+  h1{font-size:2.4rem;line-height:1.15;letter-spacing:-.02em;font-weight:800}
+  .lede{color:var(--muted);margin-top:14px;font-size:1.05rem;max-width:64ch}
+  main{padding:30px 0 90px}
+  h2{font-size:.8rem;letter-spacing:.09em;text-transform:uppercase;color:var(--violet);margin:38px 0 12px}
+  h3{font-size:1.06rem;margin:26px 0 8px;font-weight:700}
+  p+p{margin-top:10px}
+  .muted{color:var(--muted)}
+  code{font-family:var(--mono);font-size:.88em;background:rgba(255,255,255,.06);border-radius:6px;padding:1px 6px;color:var(--text)}
+  pre{font-family:var(--mono);font-size:.85rem;background:#0d0f17;border:1px solid var(--line-soft);
+    border-radius:12px;padding:14px 16px;overflow-x:auto;margin:12px 0;color:var(--text);line-height:1.6}
+  pre code{background:none;padding:0;font-size:1em}
+  ul{padding-left:20px;color:var(--muted)}
+  li+li{margin-top:5px}
+  .note{border-left:3px solid var(--teal);background:rgba(45,212,191,.05);border-radius:0 12px 12px 0;
+    padding:13px 18px;margin:16px 0;color:var(--muted);font-size:.95rem}
+  .warn{border-left:3px solid #fbbf24;background:rgba(251,191,36,.05);border-radius:0 12px 12px 0;
+    padding:13px 18px;margin:16px 0;color:var(--muted);font-size:.95rem}
+  .danger{border-left:3px solid #f87171;background:rgba(248,113,113,.06);border-radius:0 12px 12px 0;
+    padding:13px 18px;margin:16px 0;color:var(--muted);font-size:.95rem}
+  .btn{display:inline-block;background:var(--teal);color:#07120f;font-weight:700;padding:11px 20px;
+    border-radius:11px;margin:8px 8px 8px 0}
+  .btn:hover{text-decoration:none;opacity:.9}
+  .btn.ghost{background:transparent;color:var(--text);border:1px solid var(--line)}
+  .tabs{margin:26px 0 0}
+  .tabs>input{position:absolute;opacity:0;pointer-events:none}
+  .tabbar{display:flex;gap:8px;flex-wrap:wrap;border-bottom:1px solid var(--line-soft)}
+  .tabbar label{cursor:pointer;padding:10px 18px;border:1px solid transparent;border-bottom:none;
+    border-radius:12px 12px 0 0;color:var(--muted);font-weight:600;font-size:.95rem;user-select:none}
+  .tabbar label:hover{color:var(--text)}
+  .panel{display:none;padding-top:22px}
+  #w-and:checked~.tabbar label[for=w-and],
+  #w-win:checked~.tabbar label[for=w-win],
+  #w-node:checked~.tabbar label[for=w-node],
+  #w-rec:checked~.tabbar label[for=w-rec]{
+    color:var(--text);background:var(--panel);border-color:var(--line-soft);
+    box-shadow:inset 0 2px 0 var(--teal)}
+  #w-and:checked~#q-and,#w-win:checked~#q-win,#w-node:checked~#q-node,#w-rec:checked~#q-rec{display:block}
+  footer{border-top:1px solid var(--line-soft);padding:26px 0 40px;color:var(--dim);font-size:.9rem;text-align:center}
+  @media (max-width:560px){h1{font-size:1.9rem}.tabbar label{padding:9px 12px;font-size:.88rem}}
+</style>
+</head>
+<body>
+<header class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="/"><img src="/brand/pcoin-64.png" alt="">PCoin</a>
+    <nav class="links">
+      <a href="/">Home</a>
+      <a href="/mining/">Mining</a>
+      <a class="here" href="/wallet/">Wallet</a>
+      <a href="/faq/">FAQ</a>
+      <a href="https://explorer.pc.am">Explorer</a>
+      <a href="https://docs.pc.am">Docs</a>
+      <a href="https://github.com/pars5555/pcoin">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap">
+  <section class="hero">
+    <h1>Get a PCoin wallet</h1>
+    <p class="lede">Your coins live on the chain, not in the app. A wallet holds the key that
+    proves they are yours — which is why the twelve words it gives you matter more than the
+    software does. Any PCoin wallet can restore any other's words.</p>
+  </section>
+
+  <main>
+
+    <div class="tabs">
+      <input type="radio" name="wplat" id="w-and" checked>
+      <input type="radio" name="wplat" id="w-win">
+      <input type="radio" name="wplat" id="w-node">
+      <input type="radio" name="wplat" id="w-rec">
+      <div class="tabbar">
+        <label for="w-and">Android</label>
+        <label for="w-win">Windows</label>
+        <label for="w-node">Full node</label>
+        <label for="w-rec">Backup &amp; restore</label>
+      </div>
+
+      <!-- ================= ANDROID ================= -->
+      <section class="panel" id="q-and">
+        <p class="muted">The easiest way to hold PCN. It runs a real PCoin node on the phone, so
+        it checks the chain itself rather than trusting a server.</p>
+        <p>
+          <a class="btn" href="https://play.google.com/store/apps/details?id=am.pc.pcoinwallet">Get it on Google Play</a>
+          <a class="btn ghost" href="https://github.com/pars5555/pcoin/releases/download/v1.2.8/pcoin-android-wallet.apk">Download the APK</a>
+        </p>
+
+        <div class="danger"><strong>Pick one and stay with it.</strong> Google Play re-signs the
+        app with its own key, so the Play version and the APK from this site have different
+        signatures. Android refuses to install one over the other — moving in either direction
+        forces an <em>uninstall</em>, and uninstalling erases the app's private storage, taking
+        the wallet and the address book with it.
+        <br><br>
+        This has already cost somebody a ten-entry address book. Before switching: write your
+        twelve words on paper and export your address book. An ordinary in-place update is safe;
+        it is only the switch between sources that is not.</div>
+
+        <h3>First run</h3>
+        <ul>
+          <li>The app creates a wallet and shows you twelve words. Write them down, on paper,
+              before doing anything else.</li>
+          <li>It then syncs the chain. This takes a few minutes the first time.</li>
+          <li>Your receiving address starts <code>pc1</code>. Share it freely — it reveals nothing.</li>
+        </ul>
+      </section>
+
+      <!-- ================= WINDOWS ================= -->
+      <section class="panel" id="q-win">
+        <p class="muted">A desktop wallet with its own node. It is a separate program from the
+        Windows miner and the two run side by side without interfering — different folder,
+        different data directory, different RPC port. The wallet never mines.</p>
+
+        <h3>Install</h3>
+        <p class="muted">In <strong>PowerShell</strong>:</p>
+<pre><code>irm https://pc.am/dl/install-wallet.ps1 | iex</code></pre>
+        <p class="muted">It installs into <code>C:\PCoinWallet</code> and adds an entry under
+        Settings → Apps, so it uninstalls like any other program. Uninstalling rescues your wallet
+        files before removing anything.</p>
+
+        <div class="warn">Windows SmartScreen will warn about it, because the binaries are not
+        code-signed. Choose <em>More info → Run anyway</em>.</div>
+
+        <h3>What it does</h3>
+        <ul>
+          <li>Send and receive, with an address book and payment URIs.</li>
+          <li>Searchable history.</li>
+          <li>Twelve-word backup, held encrypted with Windows DPAPI so only your account can read it.</li>
+        </ul>
+      </section>
+
+      <!-- ================= FULL NODE ================= -->
+      <section class="panel" id="q-node">
+        <p class="muted">For people who would rather drive it themselves. The node ships a wallet;
+        <code>bitcoin-cli</code> is the interface. Binaries are in the
+        <a href="https://github.com/pars5555/pcoin/releases">releases</a>, or build from
+        <a href="https://github.com/pars5555/pcoin">source</a>.</p>
+
+        <div class="danger"><strong>Two settings every sending wallet needs.</strong> Without them
+        the wallet appears to work and then fails the first time you try to spend:
+<pre><code>fallbackfee=0.00001
+changetype=bech32</code></pre>
+        PCoin has no fee history, so without <code>fallbackfee</code> every send fails with
+        “Fee estimation failed”. And a phrase-backed wallet holds only <code>wpkh</code>
+        descriptors, so without <code>changetype=bech32</code> a send to a taproot
+        <code>pc1p…</code> address fails while working out the change.</div>
+
+        <h3>The usual commands</h3>
+<pre><code>bitcoin-cli -datadir=/var/lib/pcoin getnewaddress
+bitcoin-cli -datadir=/var/lib/pcoin getbalances
+bitcoin-cli -datadir=/var/lib/pcoin sendtoaddress pc1... 1.0</code></pre>
+        <p class="muted">Note the config file is <code>pcoin.conf</code>, not
+        <code>bitcoin.conf</code>. A node handed the wrong filename ignores every setting in it
+        without a word of complaint — it is the most common mistake on this chain.</p>
+      </section>
+
+      <!-- ================= BACKUP ================= -->
+      <section class="panel" id="q-rec">
+        <h3>Your twelve words are the wallet</h3>
+        <p class="muted">Every PCoin wallet is built from a twelve-word BIP39 recovery phrase.
+        Anyone with those words has your coins; anyone without them cannot help you, including us.
+        There is no reset, no support line and no back door.</p>
+        <ul>
+          <li>Write them on paper. Two copies, two places.</li>
+          <li>Never photograph them, never type them into anything that is not a PCoin wallet,
+              never put them in a note-taking app or a password manager you do not control.</li>
+          <li>Nobody legitimate will ever ask for them. Anyone who does is stealing from you.</li>
+        </ul>
+
+        <h3>Restoring somewhere else</h3>
+        <p class="muted">Enter the twelve words into any PCoin wallet and it rebuilds the same
+        addresses. If you are restoring into other software, the derivation path is:</p>
+<pre><code>m / 84' / 9444' / 0' / 0 / 0        native SegWit, addresses start pc1q</code></pre>
+        <p class="muted">The <code>9444'</code> matters. PCoin kept Bitcoin's extended-key version
+        bytes, so that number is the only thing keeping the two chains' keys apart — change it and
+        you will derive Bitcoin addresses from your PCoin phrase.</p>
+
+        <div class="warn"><strong>A backup is not a backup until you have restored it.</strong>
+        Before you rely on it, restore the words into a second wallet and check the first address
+        matches. Note that asking a restored wallet for a “new address” is not a valid check — a
+        restore correctly skips past every address that has already been used.</div>
+
+        <h3>What destroys a wallet</h3>
+        <ul>
+          <li>Uninstalling the Android app — it erases app-private storage.</li>
+          <li>Switching between the Play version and a sideloaded APK, which forces that uninstall.</li>
+          <li>Losing the phone or the disk without having written the words down.</li>
+        </ul>
+      </section>
+    </div>
+
+    <h2>Getting some PCN</h2>
+    <p class="muted">A wallet starts empty. Three ways to fill it:</p>
+    <ul>
+      <li><a href="/mining/">Mine it</a> — your own CPU, no purchase.</li>
+      <li><a href="https://market.pc.am">market.pc.am</a> — buy it.</li>
+      <li><a href="https://exchange.pc.am">exchange.pc.am</a> — trade it.</li>
+    </ul>
+
+    <div class="note">Check any address and its balance on
+    <a href="https://explorer.pc.am">explorer.pc.am</a>. You do not need a wallet open, and you do
+    not need to tell anyone anything to look.</div>
+
+  </main>
+</div>
+
+<footer>
+  <p>PCoin (PCN) &mdash; an independent Layer-1 blockchain.
+  <a href="/">pc.am</a> &middot;
+  <a href="https://github.com/pars5555/pcoin">source</a> &middot;
+  <a href="https://t.me/PCoinPCN">Telegram</a> &middot;
+  <a href="https://discord.gg/dGmdwJkb9f">Discord</a></p>
+</footer>
+</body>
+</html>

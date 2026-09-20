@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PCoin — Mining</title>
+<meta name="description" content="Mine PCoin (PCN) on Windows, Linux or Android. RandomX runs on an ordinary CPU — no GPU, no ASIC. Install commands, settings and real measured hash rates for each platform.">
+<meta name="theme-color" content="#0a0b10">
+<link rel="icon" href="/brand/pcoin-64.png">
+<style>
+  :root{
+    --bg:#0a0b10; --panel:#11131d; --line:rgba(255,255,255,.09); --line-soft:rgba(255,255,255,.06);
+    --text:#e9ebf4; --muted:#9aa2b8; --dim:#6b7288; --violet:#8b5cf6; --teal:#2dd4bf;
+    --radius:16px; --mono:ui-monospace,"Cascadia Code",Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    font-size:16.5px;line-height:1.65;-webkit-font-smoothing:antialiased}
+  a{color:var(--teal);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:900px;margin:0 auto;padding:0 24px}
+  header.nav{position:sticky;top:0;z-index:50;background:rgba(10,11,16,.82);
+    backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid var(--line-soft)}
+  .nav-inner{display:flex;align-items:center;gap:28px;padding:14px 24px;max-width:1080px;margin:0 auto;flex-wrap:wrap}
+  .brand{display:flex;align-items:center;gap:11px;font-weight:700;font-size:1.15rem;color:var(--text)}
+  .brand:hover{text-decoration:none}
+  .brand img{width:28px;height:28px;border-radius:7px}
+  nav.links{display:flex;gap:22px;margin-left:auto;flex-wrap:wrap;align-items:center}
+  nav.links a{color:var(--muted);font-size:.93rem;font-weight:500}
+  nav.links a:hover{color:var(--text);text-decoration:none}
+  nav.links a.here{color:var(--text)}
+  .hero{padding-block:58px 26px;border-bottom:1px solid var(--line-soft)}
+  h1{font-size:2.4rem;line-height:1.15;letter-spacing:-.02em;font-weight:800}
+  .lede{color:var(--muted);margin-top:14px;font-size:1.05rem;max-width:64ch}
+  main{padding:30px 0 90px}
+  h2{font-size:.8rem;letter-spacing:.09em;text-transform:uppercase;color:var(--violet);margin:38px 0 12px}
+  h3{font-size:1.06rem;margin:26px 0 8px;font-weight:700}
+  p+p{margin-top:10px}
+  .muted{color:var(--muted)}
+  code{font-family:var(--mono);font-size:.88em;background:rgba(255,255,255,.06);border-radius:6px;padding:1px 6px;color:var(--text)}
+  pre{font-family:var(--mono);font-size:.85rem;background:#0d0f17;border:1px solid var(--line-soft);
+    border-radius:12px;padding:14px 16px;overflow-x:auto;margin:12px 0;color:var(--text);line-height:1.6}
+  pre code{background:none;padding:0;font-size:1em}
+  ul{padding-left:20px;color:var(--muted)}
+  li+li{margin-top:5px}
+  .card{background:var(--panel);border:1px solid var(--line-soft);border-radius:var(--radius);padding:20px 22px;margin:16px 0}
+  .shot{margin:18px 0;text-align:center}
+  .shot img{max-width:100%;height:auto;border-radius:12px;border:1px solid var(--line);
+    box-shadow:0 18px 50px rgba(0,0,0,.5)}
+  .shot figcaption{color:var(--dim);font-size:.85rem;margin-top:10px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin:16px 0}
+  .stat{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:14px 16px}
+  .stat b{display:block;font-size:1.3rem;color:var(--teal);font-weight:800}
+  .stat span{color:var(--dim);font-size:.82rem}
+  .note{border-left:3px solid var(--teal);background:rgba(45,212,191,.05);border-radius:0 12px 12px 0;
+    padding:13px 18px;margin:16px 0;color:var(--muted);font-size:.95rem}
+  .warn{border-left:3px solid #fbbf24;background:rgba(251,191,36,.05);border-radius:0 12px 12px 0;
+    padding:13px 18px;margin:16px 0;color:var(--muted);font-size:.95rem}
+  /* --- platform tabs: radio inputs, so they work with JavaScript off --- */
+  .tabs{margin:26px 0 0}
+  .tabs>input{position:absolute;opacity:0;pointer-events:none}
+  .tabbar{display:flex;gap:8px;flex-wrap:wrap;border-bottom:1px solid var(--line-soft);padding-bottom:0}
+  .tabbar label{cursor:pointer;padding:10px 18px;border:1px solid transparent;border-bottom:none;
+    border-radius:12px 12px 0 0;color:var(--muted);font-weight:600;font-size:.95rem;user-select:none}
+  .tabbar label:hover{color:var(--text)}
+  .panel{display:none;padding-top:22px}
+  #t-win:checked~.tabbar label[for=t-win],
+  #t-lin:checked~.tabbar label[for=t-lin],
+  #t-and:checked~.tabbar label[for=t-and]{
+    color:var(--text);background:var(--panel);border-color:var(--line-soft);
+    box-shadow:inset 0 2px 0 var(--teal)}
+  #t-win:checked~#p-win,#t-lin:checked~#p-lin,#t-and:checked~#p-and{display:block}
+  footer{border-top:1px solid var(--line-soft);padding:26px 0 40px;color:var(--dim);font-size:.9rem;text-align:center}
+  @media (max-width:560px){h1{font-size:1.9rem}.tabbar label{padding:9px 13px;font-size:.9rem}}
+</style>
+</head>
+<body>
+<header class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="/"><img src="/brand/pcoin-64.png" alt="">PCoin</a>
+    <nav class="links">
+      <a href="/">Home</a>
+      <a class="here" href="/mining/">Mining</a>
+      <a href="/wallet/">Wallet</a>
+      <a href="/faq/">FAQ</a>
+      <a href="https://explorer.pc.am">Explorer</a>
+      <a href="https://docs.pc.am">Docs</a>
+      <a href="https://github.com/pars5555/pcoin">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap">
+  <section class="hero">
+    <h1>Mine PCoin</h1>
+    <p class="lede">PCoin uses <strong>RandomX</strong>, a proof-of-work built for ordinary
+    processors. There is no GPU advantage and no ASIC exists, so the laptop or desktop you
+    already own competes on the same terms as everyone else. Pick your platform below.</p>
+  </section>
+
+  <main>
+
+    <div class="tabs">
+      <input type="radio" name="plat" id="t-win" checked>
+      <input type="radio" name="plat" id="t-lin">
+      <input type="radio" name="plat" id="t-and">
+      <div class="tabbar">
+        <label for="t-win">Windows</label>
+        <label for="t-lin">Linux</label>
+        <label for="t-and">Android</label>
+      </div>
+
+      <!-- ================= WINDOWS ================= -->
+      <section class="panel" id="p-win">
+        <figure class="shot">
+          <img src="/img/miner-windows.png" alt="PCoin Miner on Windows showing 6.24 kH/s" width="470" height="760" loading="lazy">
+          <figcaption>PCoin Miner on Windows — an Intel i9-10900X at 10 of 20 cores.</figcaption>
+        </figure>
+
+        <h3>Install</h3>
+        <p class="muted">Open <strong>PowerShell</strong> and run one line:</p>
+<pre><code>irm https://pc.am/dl/install.ps1 | iex</code></pre>
+        <p class="muted">That downloads the release, checks it against a pinned SHA-256, installs
+        into <code>C:\PCoin</code>, and starts the miner app. It sets itself to run when you log in.</p>
+
+        <div class="warn"><strong>Windows will warn you.</strong> The binaries are not code-signed,
+        so SmartScreen shows “Windows protected your PC” on anything it has not seen downloaded
+        widely. Choose <em>More info → Run anyway</em>. Only a code-signing certificate removes
+        that, and it is about reputation, not about what the program does.</div>
+
+        <h3>Settings</h3>
+        <ul>
+          <li><strong>Cores</strong> — a slider. More is not always faster; see the note below.</li>
+          <li><strong>Fast mode</strong> — a checkbox. Uses about 2&nbsp;GB more memory and is
+              several times faster. Leave it on unless the machine is short of RAM.</li>
+          <li><strong>Solo or pool</strong> — solo keeps the whole block reward on the rare
+              occasions you find one; a pool pays you a steady share of what the pool finds.</li>
+        </ul>
+
+        <h3>Uninstall</h3>
+<pre><code>irm https://pc.am/dl/uninstall.ps1 | iex</code></pre>
+      </section>
+
+      <!-- ================= LINUX ================= -->
+      <section class="panel" id="p-lin">
+        <p class="muted">Two ways to run it. The <strong>desktop app</strong> if you have a
+        graphical session, or the <strong>terminal miner</strong> — which is the one to use on a
+        server, over SSH, or on any machine with no desktop at all.</p>
+
+        <h2>Debian and Ubuntu — one line</h2>
+<pre><code>curl -fsSL https://pc.am/dl/install.sh | sudo sh</code></pre>
+        <p class="muted">Downloads the <code>.deb</code>, verifies it against the published
+        <code>SHA256SUMS</code>, installs it, and hands over to a short setup wizard that asks for
+        your payout address and how many cores to use. It installs two systemd units: the node
+        (<code>pcoind</code>) and the miner (<code>pcoin-miner</code>).</p>
+
+        <h2>The terminal miner — any distribution</h2>
+        <figure class="shot">
+          <img src="/img/miner-linux-terminal.png" alt="pcoin-miner running in a terminal at 1.48 kH/s" width="900" height="497" loading="lazy">
+          <figcaption><code>pcoin-miner</code> — live in a terminal. Works over SSH on a headless server.</figcaption>
+        </figure>
+        <p class="muted">A single Python file, standard library only, so it runs anywhere Python 3
+        does. It drives a node you already have and shows the work live:</p>
+<pre><code>curl -fsSL https://pc.am/dl/pcoin-miner -o ~/.local/bin/pcoin-miner
+chmod +x ~/.local/bin/pcoin-miner
+
+pcoin-miner --address pc1YOURADDRESS --pool pool2.pc.am:3333 --cores auto</code></pre>
+        <p class="muted">Keys while it runs: <code>-</code>/<code>+</code> change cores,
+        <code>b</code> re-runs the benchmark, <code>p</code> switches pool, <code>a</code> changes
+        the payout address, <code>q</code> quits. <code>--cores auto</code> measures every core
+        count and picks the fastest — worth doing, because the fastest is often not the largest.</p>
+
+        <div class="note"><strong>Mining stops when you close the terminal</strong>, on purpose.
+        The node has a dead-man's switch so a session somebody closed cannot leave a server
+        hashing. For mining that survives logout and reboot, use the systemd units the
+        <code>.deb</code> installs, or the desktop app below.</div>
+
+        <h2>The desktop app</h2>
+        <figure class="shot">
+          <img src="/img/miner-linux-gui.png" alt="PCoin Miner desktop app on Linux showing 1,505 H/s" width="560" height="880" loading="lazy">
+          <figcaption>The desktop app on KDE — tray icon, live graph, cores slider and pool picker.</figcaption>
+        </figure>
+        <p class="muted">GTK4 through PyGObject, which every mainstream desktop already ships. It
+        adds a tray icon, an entry in your applications menu, and starts with your session.
+        Everything the Windows app can do is here: <strong>start and stop mining</strong>, a
+        <strong>cores slider</strong>, a <strong>fast-mode switch</strong>, solo or pool with the
+        pool picker, and the <strong>payout address</strong>, which it checks with the node before
+        accepting.</p>
+<pre><code>curl -fsSL https://pc.am/dl/pcoin-miner-gui -o ~/.local/share/pcoin/bin/pcoin-miner-gui
+chmod +x ~/.local/share/pcoin/bin/pcoin-miner-gui</code></pre>
+        <p class="muted">It reads <code>~/.config/pcoin/miner.conf</code> and drives the same
+        systemd user units, so the app and the terminal agree about what the machine is doing.</p>
+
+        <h2>Fast mode</h2>
+        <p class="muted">Off by default on Linux, because it keeps a 2080&nbsp;MiB table in memory.
+        It is worth roughly <strong>four times</strong> the hash rate. In the desktop app it is a
+        checkbox. Everywhere else, add one line to the node's config and restart it:</p>
+<pre><code>echo 'randomxfastmode=1' | sudo tee -a /var/lib/pcoin/pcoin.conf
+sudo systemctl restart pcoind</code></pre>
+        <p class="muted">It needs about 2.3&nbsp;GB free. The node refuses and stays in the slower
+        light mode rather than risk the machine, and <code>getcpuminerinfo</code> tells you why.</p>
+
+        <h2>Uninstall</h2>
+<pre><code>sudo apt remove pcoin          # Debian/Ubuntu; your chain and any wallet are kept
+rm -f ~/.local/bin/pcoin-miner ~/.local/share/pcoin/bin/pcoin-miner-gui</code></pre>
+      </section>
+
+      <!-- ================= ANDROID ================= -->
+      <section class="panel" id="p-and">
+        <figure class="shot">
+          <img src="/img/miner-android.png" alt="PCoin Miner on Android showing 25.9 H/s" width="720" height="372" loading="lazy">
+          <figcaption>PCoin Miner on Android — a Galaxy Note 9.</figcaption>
+        </figure>
+
+        <div class="warn"><strong>A phone is slow, and we would rather tell you first.</strong>
+        The phone above makes about <strong>26 H/s</strong>. A six-year-old desktop makes more than
+        a thousand times that. Phone mining is a way to see the chain work, not a way to earn.
+        If you have a PC, mine on the PC.</div>
+
+        <h3>Install</h3>
+        <p class="muted">The miner is not on Google Play — Play does not accept mining apps. Install
+        the APK directly:</p>
+        <p><a href="https://github.com/pars5555/pcoin/releases/download/v1.4.7/pcoin-android-miner.apk">Download pcoin-android-miner.apk</a></p>
+        <p class="muted">Android will ask you to allow installing from your browser. The
+        <a href="/wallet/">wallet app</a> <em>is</em> on Google Play and is a separate thing.</p>
+
+        <h3>After installing</h3>
+        <ul>
+          <li>Grant notifications, and turn <strong>battery optimisation off</strong> — without it
+              Android suspends mining shortly after the screen goes off.</li>
+          <li>Samsung, Xiaomi, Oppo and Huawei have their own battery settings on top of Android's.
+              The app cannot ask for those; set them by hand.</li>
+          <li>Expect the phone to get warm and the battery to drain. Keep it on a charger.</li>
+        </ul>
+      </section>
+    </div>
+
+    <!-- ================= SHARED ================= -->
+    <h2>What to expect</h2>
+    <p class="muted">Measured on real machines, in fast mode, at the settings shown:</p>
+    <div class="grid">
+      <div class="stat"><b>6.24 kH/s</b><span>i9-10900X · 10 of 20 cores · Windows</span></div>
+      <div class="stat"><b>1.43 kH/s</b><span>i5-9600K · 2 of 6 cores · Linux</span></div>
+      <div class="stat"><b>26 H/s</b><span>Galaxy Note 9 · Android</span></div>
+    </div>
+
+    <h2>More cores is not always faster</h2>
+    <p class="muted">RandomX works out of a large table in memory, and past a point extra threads
+    spend more time waiting for memory than hashing. On the Linux machine above, two cores beat
+    six by <strong>45%</strong> — the whole machine mining flat out produced <em>less</em> than a
+    third of it. So do not assume: the terminal miner's <code>--cores auto</code> measures every
+    setting and picks the winner, and the desktop and Windows apps let you try by hand.</p>
+
+    <h2>Solo or pool</h2>
+    <p class="muted"><strong>Solo</strong> means you build your own blocks and keep the entire
+    50&nbsp;PCN reward when you find one — but finding one is rare and irregular.
+    <strong>Pool</strong> means your work is combined with everyone else's and you are paid a
+    steady share of whatever the pool finds. Two pools are run by the project:</p>
+    <ul>
+      <li><code>pool.pc.am:3333</code></li>
+      <li><code>pool2.pc.am:3333</code></li>
+    </ul>
+    <p class="muted">Both take a 2% fee. There is also at least one pool run by somebody else,
+    which is healthier for the chain than everyone using ours.</p>
+
+    <h2>Where the coins go</h2>
+    <p class="muted">You give the miner a payout address and rewards are paid straight to it. The
+    mining machine holds <strong>no private key</strong> on Linux and on the pool path — there is
+    nothing on it worth stealing, and nothing to back up. If you do not have an address yet, get
+    one from the <a href="/wallet/">wallet</a> first.</p>
+
+    <div class="note">Watch your address and the network on
+    <a href="https://explorer.pc.am">explorer.pc.am</a>. Coinbase rewards mature after 100 blocks
+    before they can be spent — that is a consensus rule, not a delay we added.</div>
+
+  </main>
+</div>
+
+<footer>
+  <p>PCoin (PCN) &mdash; an independent Layer-1 blockchain.
+  <a href="/">pc.am</a> &middot;
+  <a href="https://github.com/pars5555/pcoin">source</a> &middot;
+  <a href="https://t.me/PCoinPCN">Telegram</a> &middot;
+  <a href="https://discord.gg/dGmdwJkb9f">Discord</a></p>
+</footer>
+</body>
+</html>

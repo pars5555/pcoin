@@ -400,8 +400,8 @@
     <input type="checkbox" id="nav-toggle" class="nav-toggle">
     <label class="burger" for="nav-toggle" aria-label="Menu"><span></span><span></span><span></span></label>
     <nav class="links" aria-label="Site">
-      <a href="/download/">Download</a>
-      <a href="#mining">Mining</a>
+      <a href="/mining/">Mining</a>
+      <a href="/wallet/">Wallet</a>
       <a href="https://market.pc.am" rel="noopener">Buy PCN</a>
       <a href="https://exchange.pc.am" rel="noopener">Exchange</a>
       <a href="https://explorer.pc.am" rel="noopener">Explorer</a>
@@ -1201,77 +1201,27 @@ Linux    pcoin-cli startmining &quot;&lt;your pc1q&hellip; address&gt;&quot; 4</
   <!-- 5a · DOWNLOADS -->
   <section id="download">
     <div class="wrap">
-      <span class="kicker">Download</span>
-      <h2>Get PCoin</h2>
+      <span class="kicker">Get started</span>
+      <h2>Mine it, or hold it</h2>
       <p class="lede">
-        Each download points at the <b>release that built it</b>, so a link never quietly turns into
-        a different file &mdash; and each part ships on its own schedule, so the wallet can update
-        without the miner moving. Mining is <b>off by default</b> everywhere: a node that mines before it has synced is
-        building on a chain it has not checked.
+        Two different things, so they now have two different pages. <b>Mining</b> turns spare CPU
+        time into PCN. A <b>wallet</b> holds PCN you already have. Each page carries the exact
+        commands for your platform, with screenshots of what you should end up looking at.
       </p>
 
       <div class="dl-grid">
         <div class="dl-card">
-          <h3>Windows</h3>
-          <p class="dl-sub">Node, CLI and tray app in one archive. Unzip and run, or use the one command below.</p>
-          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/download/v1.4.34/pcoin-win64-miner.zip" rel="noopener">Download (.zip)</a>
-          <a class="dl-alt" href="#get-started">or install with one command</a>
+          <h3>Mining</h3>
+          <p>Windows, Linux and Android. RandomX runs on an ordinary processor &mdash; no GPU,
+          no ASIC, nothing to buy. Mining is off by default everywhere until you turn it on.</p>
+          <p><a class="btn btn-primary" href="/mining/">How to mine &rarr;</a></p>
         </div>
-
         <div class="dl-card">
-          <h3>Linux</h3>
-          <p class="dl-sub">Debian and Ubuntu. Installs <span class="mono">pcoind</span> and <span class="mono">pcoin-cli</span> with a systemd unit.</p>
-          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/download/v1.4.34/pcoin-linux-amd64-miner.deb" rel="noopener">Package (.deb)</a>
-          <a class="dl-alt" href="https://github.com/pars5555/pcoin/releases/download/v1.4.34/pcoin-linux-x86_64-miner.tar.gz" rel="noopener">or portable .tar.gz</a>
+          <h3>Wallet</h3>
+          <p>Android on Google Play, a Windows desktop wallet, or a full node you drive yourself.
+          Twelve words, held by you and nobody else.</p>
+          <p><a class="btn" href="/wallet/">Get a wallet &rarr;</a></p>
         </div>
-
-        <div class="dl-card">
-          <h3>Android &mdash; miner</h3>
-          <p class="dl-sub">Full node, wallet and CPU mining on your phone. arm64.</p>
-          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/download/v1.4.7/pcoin-android-miner.apk" rel="noopener">Miner (.apk)</a>
-          <a class="dl-alt" href="#android-note">read this first</a>
-        </div>
-
-        <div class="dl-card">
-          <h3>Windows &mdash; wallet</h3>
-          <p class="dl-sub">Balance, send, receive by QR, history, address book. Carries its own full node; no mining. Runs beside the miner if you have both.</p>
-          <a class="btn btn-primary dl-btn" href="https://github.com/pars5555/pcoin/releases/download/v1.4.28/pcoin-win64-wallet.zip" rel="noopener">Wallet (.zip)</a>
-          <a class="dl-alt" href="/download/#wallet-win">or install with one command</a>
-        </div>
-
-        <div class="dl-card">
-          <h3>Android &mdash; wallet</h3>
-          <p class="dl-sub">Balance, send, receive by QR, history. Carries a full node; no mining. On Google Play since 4 September 2026.</p>
-          <a class="btn btn-primary dl-btn" href="https://play.google.com/store/apps/details?id=am.pc.pcoinwallet" rel="noopener">Get it on Google Play</a>
-          <a class="dl-alt" href="https://github.com/pars5555/pcoin/releases/download/v1.2.8/pcoin-android-wallet.apk" rel="noopener">or the .apk (13&nbsp;Aug, older)</a>
-          <a class="dl-alt" href="#android-note">read this first</a>
-        </div>
-      </div>
-
-      <div class="honest-box" id="android-note" style="max-width:100%">
-        <b>Before you install.</b>
-        The config file is <span class="mono">pcoin.conf</span>, not
-        <span class="mono">bitcoin.conf</span> &mdash; a node handed the wrong one ignores it silently.
-        The Linux package deliberately installs as <span class="mono">pcoind</span> so it can never
-        collide with Bitcoin Core. <b>Uninstalling never deletes your wallet</b> on Windows or Linux:
-        it is left in <span class="mono">C:\PCoin\data</span> or
-        <span class="mono">/var/lib/pcoin</span> for you to remove yourself.
-        <b>One exception, and it cost coins:</b> the Windows miner versions
-        <b>1.3.16&ndash;1.4.1</b>, pinned here for five hours on 3 September 2026, shipped an
-        uninstaller that said it had saved the wallet and then deleted it. <b>1.4.2 fixes it.</b>
-        If you installed that day, run <span class="mono">irm https://pc.am/dl/install.ps1 | iex</span>
-        before uninstalling &mdash; Settings &gt; Apps runs the copy on your machine, not the fixed one.
-        <br><br>
-        <b>Android is different, and this one can cost you coins.</b> The APK holds its wallet in
-        app-private storage, so <b>uninstalling the app destroys that wallet</b>. Write your twelve-word
-        recovery phrase down before you remove or replace it. Android also refuses to install over an
-        app signed with a different key, so if you are running an earlier build from source you must
-        uninstall first &mdash; with the same consequence. <b>That includes moving to the Google Play version</b>: Google signs store builds with its own key, so Play cannot upgrade an APK from here &mdash; Android makes you uninstall, and that erases the wallet and the saved addresses. Write your twelve words down and export your address book <i>before</i> you switch.
-        <br><br>
-        <b>Check what you downloaded.</b> Every file's SHA-256 is published at
-        <a href="https://pc.am/dl/SHA256SUMS.txt">pc.am/dl/SHA256SUMS.txt</a> and alongside the
-        release. They prove the download is intact; they are not signatures, and the builds are not
-        reproducible yet.
       </div>
     </div>
   </section>
@@ -1348,7 +1298,7 @@ curl -s https://price.pc.am      # -&gt; {"serviceRate":&lt;USD per PCN&gt;, &he
 
       <div class="steps">
         <div class="step"><span class="num">1</span><h4>Get an address</h4><p>On Windows and Android the miner makes a wallet for you &mdash; write down the twelve words it shows. On Linux the machine holds no key, so install the <a href="#download">wallet app</a> first and use an address from it. That address is where your mining pays, and those words are the only way back to it.</p></div>
-        <div class="step"><span class="num">2</span><h4>Install</h4><p>One command for Windows, one for Debian/Ubuntu, an APK for Android. Each verifies its own download before it runs &mdash; <a href="/download/">full instructions per platform</a>.</p></div>
+        <div class="step"><span class="num">2</span><h4>Install</h4><p>One command for Windows, one for Debian/Ubuntu, an APK for Android. Each verifies its own download before it runs &mdash; <a href="/mining/">full instructions per platform</a>.</p></div>
         <div class="step"><span class="num">3</span><h4>Paste the address in</h4><p>Setup checks it against the node, so a typo is caught before it costs you a block rather than after.</p></div>
         <div class="step"><span class="num">4</span><h4>Wait for sync, then mine</h4><p>Mining starts by itself once the node is caught up. Starting sooner would build on blocks it has not checked.</p></div>
       </div>

@@ -1,0 +1,570 @@
+#!/usr/bin/env python3
+"""pcoin-miner - mine PCoin from a terminal, on any Linux, over SSH.
+
+One command sets everything and starts mining, then shows it live, htop-style:
+
+    pcoin-miner --address pc1q... --pool pool2.pc.am:3333 --cores auto --fast
+
+Nothing is installed and nothing is left behind. It drives the node over RPC,
+so it works on a desktop, a headless server or an SSH session, with or without
+systemd. Python 3 and its standard library only -- curses ships with Python.
+
+MINING STOPS WHEN YOU QUIT, deliberately. The node's miner has a dead-man's
+switch: startmining takes a ttl and mining halts unless something keeps calling.
+This program is that something. A terminal you closed must not leave a server
+hashing. For mining that survives logout, install the systemd units instead.
+"""
+import argparse
+import curses
+import json
+import os
+import shutil
+import signal
+import statistics
+import subprocess
+import sys
+import time
+
+TTL = 45          # seconds of silence after which the node stops mining
+POLL = 1.0        # seconds between refreshes; the poll IS the keep-alive
+HIST = 240        # hashrate samples kept for the graph
+
+
+# --------------------------------------------------------------------------
+# talking to the node
+# --------------------------------------------------------------------------
+class Node:
+    def __init__(self, cli, datadir, conf):
+        self.base = [cli]
+        if conf:
+            self.base.append("-conf=" + conf)
+        elif datadir:
+            self.base.append("-datadir=" + datadir)
+        self.last_error = ""
+
+    def __call__(self, *args, timeout=10):
+        """Returns parsed JSON, a string, or None.
+
+        None means the call did not happen or failed -- UNKNOWN. It is never
+        rendered as a zero, because an unanswered question is not an answer.
+        """
+        try:
+            proc = subprocess.run(self.base + [str(a) for a in args],
+                                  capture_output=True, text=True,
+                                  timeout=timeout)
+        except Exception as exc:
+            self.last_error = str(exc)
+            return None
+        if proc.returncode != 0:
+            self.last_error = (proc.stderr or proc.stdout).strip()[:200]
+            return None
+        self.last_error = ""
+        out = proc.stdout.strip()
+        try:
+            return json.loads(out)
+        except json.JSONDecodeError:
+            return out
+
+
+def find_cli(explicit):
+    if explicit:
+        return explicit
+    here = os.path.dirname(os.path.abspath(__file__))
+    for path in (os.path.join(here, "bitcoin-cli"),
+                 os.path.expanduser("~/.local/share/pcoin/bin/bitcoin-cli"),
+                 "/opt/pcoin/bin/bitcoin-cli"):
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    found = shutil.which("pcoin-cli") or shutil.which("bitcoin-cli")
+    if found:
+        return found
+    return None
+
+
+def supervisor_scope():
+    """Return the systemctl scope driving pcoin-miner, or None.
+
+    THE SUPERVISOR MUST BE STOOD DOWN BEFORE THIS PROGRAM TOUCHES MINING. It
+    polls every 30 s and re-issues startmining with its OWN thread count and
+    its OWN pool, so leaving it up means every change made here silently
+    reverts within half a minute -- and on a pool/solo difference it would move
+    the payouts too. `stopmining` alone does not stop it; only the unit does.
+    """
+    for scope in (["--user"], []):
+        try:
+            res = subprocess.run(["systemctl"] + scope + ["is-active",
+                                                          "pcoin-miner"],
+                                 capture_output=True, text=True, timeout=6)
+        except Exception:
+            continue
+        if res.stdout.strip() == "active":
+            return scope
+    return None
+
+
+def find_datadir(explicit):
+    if explicit:
+        return explicit
+    for path in (os.path.expanduser("~/.pcoin"), "/var/lib/pcoin"):
+        if os.path.isdir(path):
+            return path
+    return os.path.expanduser("~/.pcoin")
+
+
+# --------------------------------------------------------------------------
+# formatting
+# --------------------------------------------------------------------------
+def hrate(value):
+    if value is None:
+        return "  --  "
+    if value >= 1e6:
+        return "%.2f MH/s" % (value / 1e6)
+    if value >= 1000:
+        return "%.2f kH/s" % (value / 1000)
+    return "%.1f H/s" % value
+
+
+def dur(seconds):
+    seconds = int(seconds)
+    return "%02d:%02d:%02d" % (seconds // 3600, seconds % 3600 // 60,
+                               seconds % 60)
+
+
+SPARK = " ▁▂▃▄▅▆▇█"
+
+
+def spark(values, width):
+    if len(values) < 2 or width < 4:
+        return ""
+    data = values[-width:]
+    low, high = min(data), max(data)
+    span = high - low
+    if span < high * 0.01:          # essentially flat: draw a mid line
+        return "▄" * len(data)
+    out = []
+    for value in data:
+        idx = int((value - low) / span * (len(SPARK) - 1))
+        out.append(SPARK[max(0, min(len(SPARK) - 1, idx))])
+    return "".join(out)
+
+
+# --------------------------------------------------------------------------
+# mining control
+# --------------------------------------------------------------------------
+class Miner:
+    def __init__(self, node, address, pool, cores):
+        self.node = node
+        self.address = address
+        self.pool = pool
+        self.cores = cores
+        self.note = ""
+
+    def start(self):
+        if self.pool:
+            res = self.node("startpoolmining", self.pool, self.address,
+                            self.cores, TTL)
+        else:
+            res = self.node("startmining", self.address, self.cores, TTL)
+        if res is None:
+            self.note = "start failed: " + (self.node.last_error or "?")
+            return False
+        self.note = ""
+        return True
+
+    def stop(self):
+        self.node("stopmining")
+
+    def set_cores(self, cores, total):
+        cores = max(1, min(int(cores), total))
+        if cores == self.cores:
+            return
+        self.cores = cores
+        self.stop()
+        self.start()
+
+    def set_pool(self, pool):
+        self.pool = pool or ""
+        self.stop()
+        self.start()
+
+
+def benchmark(node, miner, total, per_step, report):
+    """Measure every core count and return the best.
+
+    hashespersec is an instantaneous one-second sample, so each step is the
+    MEDIAN of many reads. Anything less is guessing: on a machine without large
+    pages the curve is not monotonic -- more cores can be slower -- which is
+    exactly why this exists instead of a default.
+    """
+    results = {}
+    for cores in range(1, total + 1):
+        miner.set_cores(cores, total)
+        time.sleep(4)                      # settle
+        samples = []
+        deadline = time.time() + per_step
+        while time.time() < deadline:
+            info = node("getcpuminerinfo") or {}
+            rate = info.get("hashespersec")
+            if isinstance(rate, (int, float)) and rate > 0:
+                samples.append(rate)
+            report(cores, samples)
+            time.sleep(1)
+        if samples:
+            results[cores] = statistics.median(samples)
+    if not results:
+        return None, {}
+    best = max(results, key=lambda c: results[c])
+    return best, results
+
+
+# --------------------------------------------------------------------------
+# the screen
+# --------------------------------------------------------------------------
+class Ui:
+    def __init__(self, scr):
+        self.scr = scr
+        curses.curs_set(0)
+        scr.nodelay(True)
+        scr.keypad(True)
+        self.colour = False
+        try:
+            curses.start_color()
+            curses.use_default_colors()
+            curses.init_pair(1, curses.COLOR_CYAN, -1)     # accent
+            curses.init_pair(2, curses.COLOR_GREEN, -1)    # good
+            curses.init_pair(3, curses.COLOR_RED, -1)      # bad
+            curses.init_pair(4, curses.COLOR_YELLOW, -1)   # waiting
+            curses.init_pair(5, curses.COLOR_WHITE, -1)    # dim-ish
+            self.colour = True
+        except curses.error:
+            pass
+
+    def attr(self, pair, bold=False):
+        out = curses.color_pair(pair) if self.colour else 0
+        return out | (curses.A_BOLD if bold else 0)
+
+    def put(self, y, x, text, pair=0, bold=False):
+        height, width = self.scr.getmaxyx()
+        if y < 0 or y >= height or x >= width:
+            return
+        try:
+            self.scr.addnstr(y, x, text, max(0, width - x - 1),
+                             self.attr(pair, bold))
+        except curses.error:
+            pass
+
+    def row(self, y, key, value, pair=0, bold=False):
+        self.put(y, 2, key, 5)
+        self.put(y, 13, value, pair, bold)
+
+
+def draw(ui, st):
+    ui.scr.erase()
+    height, width = ui.scr.getmaxyx()
+    inner = max(20, width - 4)
+
+    ui.put(0, 2, "PCoin Miner", 1, True)
+    ui.put(0, 14, st["host"], 5)
+    if st["mining"]:
+        badge, pair = " MINING ", 2
+    elif st["syncing"]:
+        badge, pair = " SYNCING ", 4
+    else:
+        badge, pair = " STOPPED ", 3
+    ui.put(0, max(15, width - len(badge) - 3), badge, pair, True)
+    ui.put(1, 2, "─" * inner, 5)
+
+    ui.put(3, 4, hrate(st["rate"]), 1, True)
+    if st["mode"]:
+        ui.put(3, 24, "%s mode%s" % (st["mode"],
+                                     "  large pages" if st["lp"] else ""), 5)
+    ui.put(4, 4, spark(st["hist"], min(inner - 6, 110)), 1)
+
+    line = 6
+    bar_w = 24
+    filled = int(round(bar_w * st["cores"] / max(st["total"], 1)))
+    ui.row(line, "Cores",
+           "[%s%s]  %d of %d" % ("#" * filled, "." * (bar_w - filled),
+                                 st["cores"], st["total"]), 1, True)
+    line += 1
+    ui.row(line, "Pool", st["pool"] or "solo")
+    ui.put(line, 13 + max(len(st["pool"] or "solo"), 22),
+           st["poolstate"] or "", 2 if st["poolstate"] == "mining" else 4)
+    line += 1
+    ui.row(line, "Shares", "%s accepted   %s rejected"
+           % (st["acc"], st["rej"]),
+           3 if (st["rej"] or 0) else 0)
+    line += 1
+    ui.row(line, "Blocks", str(st["blocks_found"]))
+    line += 1
+    ui.row(line, "Chain", "%s   %s peers" % (st["height"], st["peers"]))
+    line += 1
+    ui.row(line, "Paid to", st["address"])
+    line += 1
+    ui.row(line, "Session", "%s   avg %s   best %s"
+           % (dur(st["uptime"]), hrate(st["avg"]), hrate(st["best"])))
+
+    if st["note"]:
+        line += 2
+        ui.put(line, 2, st["note"][:inner], 4)
+
+    ui.put(height - 2, 2, "─" * inner, 5)
+    ui.put(height - 1, 2,
+           "-/+ cores   b benchmark   p pool   a address   q quit", 5)
+    ui.scr.refresh()
+
+
+# --------------------------------------------------------------------------
+def prompt(ui, question, current):
+    """A one-line editable prompt at the bottom of the screen."""
+    height, _ = ui.scr.getmaxyx()
+    curses.echo()
+    curses.curs_set(1)
+    ui.scr.nodelay(False)
+    ui.put(height - 1, 2, " " * 70)
+    ui.put(height - 1, 2, "%s [%s]: " % (question, current or "none"), 1, True)
+    ui.scr.refresh()
+    try:
+        raw = ui.scr.getstr(height - 1, len(question) + len(current or "none")
+                            + 7, 80)
+        text = raw.decode("utf-8", "replace").strip()
+    except Exception:
+        text = ""
+    curses.noecho()
+    curses.curs_set(0)
+    ui.scr.nodelay(True)
+    return text
+
+
+def run(scr, node, miner, args, total):
+    ui = Ui(scr)
+    started = time.time()
+    hist, best, note = [], 0.0, ""
+    host = "%s - %s cores" % (os.uname().nodename, total)
+    while True:
+        info = node("getcpuminerinfo") or {}
+        chain = node("getblockchaininfo") or {}
+        peers = node("getconnectioncount")
+        rate = info.get("hashespersec")
+        mining = bool(info.get("mining"))
+        if mining and isinstance(rate, (int, float)) and rate > 0:
+            hist.append(rate)
+            del hist[:-HIST]
+            best = max(best, rate)
+
+        st = {
+            "host": host,
+            "mining": mining,
+            "syncing": bool(chain.get("initialblockdownload")),
+            "rate": rate if mining else None,
+            "hist": hist,
+            "mode": info.get("mode") or "",
+            "lp": bool(info.get("largepages")),
+            "cores": info.get("threads") or miner.cores,
+            "total": total,
+            "pool": miner.pool,
+            "poolstate": info.get("poolstate") or "",
+            "acc": info.get("sharesaccepted", "-"),
+            "rej": info.get("sharesrejected", "-"),
+            "blocks_found": info.get("blocksfound", "-"),
+            "height": "{:,}".format(chain["blocks"]) if chain.get("blocks")
+                      is not None else "-",
+            "peers": "-" if peers is None else peers,
+            "address": miner.address,
+            "uptime": time.time() - started,
+            "avg": statistics.fmean(hist) if hist else None,
+            "best": best or None,
+            "note": note or miner.note,
+        }
+        draw(ui, st)
+
+        deadline = time.time() + POLL
+        while time.time() < deadline:
+            try:
+                key = scr.getch()
+            except curses.error:
+                key = -1
+            if key == -1:
+                time.sleep(0.05)
+                continue
+            if key in (ord("q"), ord("Q")):
+                return
+            if key in (ord("-"), ord("_"), curses.KEY_LEFT):
+                miner.set_cores(miner.cores - 1, total)
+                note = "cores -> %d" % miner.cores
+            elif key in (ord("+"), ord("="), curses.KEY_RIGHT):
+                miner.set_cores(miner.cores + 1, total)
+                note = "cores -> %d" % miner.cores
+            elif key in (ord("p"), ord("P")):
+                new = prompt(ui, "pool host:port (empty = solo)", miner.pool)
+                miner.set_pool(new)
+                note = "pool -> %s" % (miner.pool or "solo")
+            elif key in (ord("a"), ord("A")):
+                new = prompt(ui, "payout address", miner.address)
+                if new:
+                    check = node("validateaddress", new) or {}
+                    if check.get("isvalid"):
+                        miner.address = new
+                        miner.stop()
+                        miner.start()
+                        note = "paying %s" % new
+                    else:
+                        note = "the node says that address is not valid"
+            elif key in (ord("b"), ord("B")):
+                note = "benchmarking..."
+
+                def report(cores, samples):
+                    st["note"] = ("benchmarking %d of %d cores: %d samples"
+                                  % (cores, total, len(samples)))
+                    st["cores"] = cores
+                    draw(ui, st)
+
+                won, table = benchmark(node, miner, total, args.bench_secs,
+                                       report)
+                if won:
+                    miner.set_cores(won, total)
+                    note = "best: %d cores (%s)" % (
+                        won, "  ".join("%d:%s" % (c, hrate(v))
+                                       for c, v in sorted(table.items())))
+                else:
+                    note = "benchmark produced no readings"
+            break
+
+
+# --------------------------------------------------------------------------
+def main():
+    ap = argparse.ArgumentParser(
+        prog="pcoin-miner",
+        description="Mine PCoin in a terminal. One command, live display.",
+        epilog="example: pcoin-miner -a pc1q... -p pool2.pc.am:3333 -c auto")
+    ap.add_argument("-a", "--address", help="payout address (pc1...)")
+    ap.add_argument("-p", "--pool", default="pool2.pc.am:3333",
+                    help="pool host:port, or '' for solo (default: %(default)s)")
+    ap.add_argument("-c", "--cores", default="auto",
+                    help="number of cores, or 'auto' to benchmark (default: auto)")
+    ap.add_argument("--bench-secs", type=int, default=12,
+                    help="seconds per step when benchmarking (default: 12)")
+    ap.add_argument("--cli", help="path to bitcoin-cli")
+    ap.add_argument("--datadir", help="node datadir")
+    ap.add_argument("--conf", help="node config file")
+    ap.add_argument("--no-ui", action="store_true",
+                    help="start mining, print one status line, exit")
+    args = ap.parse_args()
+
+    cli = find_cli(args.cli)
+    if not cli:
+        sys.exit("pcoin-miner: no bitcoin-cli found. Pass --cli /path/to/bitcoin-cli")
+    node = Node(cli, find_datadir(args.datadir), args.conf)
+
+    if node("getblockcount") is None:
+        sys.exit("pcoin-miner: the node is not answering RPC (%s).\n"
+                 "Start it first, e.g.  systemctl --user start pcoind"
+                 % (node.last_error or "no reply"))
+
+    info = node("getcpuminerinfo") or {}
+    total = info.get("cores") or os.cpu_count() or 1
+
+    address = args.address
+    if not address:
+        for path in (os.path.expanduser("~/.config/pcoin/miner.conf"),
+                     "/etc/pcoin/miner.conf"):
+            try:
+                with open(path) as fh:
+                    for line in fh:
+                        if line.startswith("PAYOUT_ADDRESS="):
+                            address = line.strip().split("=", 1)[1]
+            except OSError:
+                pass
+    if not address:
+        sys.exit("pcoin-miner: --address is required (no miner.conf to read one from)")
+
+    # The NODE decides whether the address is usable. A failed check is not a
+    # pass: block rewards paid to a mistyped address go to a key nobody has.
+    check = node("validateaddress", address)
+    if check is None:
+        sys.exit("pcoin-miner: could not check the payout address; refusing to mine")
+    if not check.get("isvalid"):
+        sys.exit("pcoin-miner: the node says %s is not a valid PCoin address"
+                 % address)
+
+    if info.get("mode") != "fast":
+        why = info.get("modereason") or "not requested"
+        print("note: the node is in LIGHT mode (%s)." % why)
+        print("      Fast mode is ~4x faster and needs randomxfastmode=1 in the")
+        print("      node's config plus a restart. It is a node setting, not a")
+        print("      miner one, so this program cannot switch it on for you.")
+        time.sleep(2.5)
+
+    cores = 1
+    if str(args.cores).lower() not in ("auto", "a"):
+        try:
+            cores = max(1, min(int(args.cores), total))
+        except ValueError:
+            sys.exit("pcoin-miner: --cores wants a number or 'auto'")
+
+    # Take mining over from the systemd supervisor for the length of this
+    # session, and hand it back on the way out.
+    scope = supervisor_scope()
+    if scope is not None:
+        print("taking over from the systemd miner (%s); it is restarted when "
+              "you quit." % ("user" if scope else "system"))
+        subprocess.run(["systemctl"] + scope + ["stop", "pcoin-miner"],
+                       capture_output=True, timeout=30)
+        time.sleep(1.5)
+
+    def hand_back():
+        if scope is not None:
+            subprocess.run(["systemctl"] + scope + ["start", "pcoin-miner"],
+                           capture_output=True, timeout=30)
+
+    miner = Miner(node, address, args.pool or "", cores)
+    if not miner.start():
+        hand_back()
+        sys.exit("pcoin-miner: " + miner.note)
+
+    def bye(*_a):
+        miner.stop()
+        hand_back()
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, bye)
+
+    if str(args.cores).lower() in ("auto", "a"):
+        print("benchmarking %d core counts at %ds each (%ds total)..."
+              % (total, args.bench_secs, total * (args.bench_secs + 4)))
+
+        def report(c, samples):
+            print("\r  %d of %d cores: %d samples " % (c, total, len(samples)),
+                  end="", flush=True)
+
+        won, table = benchmark(node, miner, total, args.bench_secs, report)
+        print()
+        for c, v in sorted(table.items()):
+            print("  %d cores: %s" % (c, hrate(v)))
+        if won:
+            print("  best: %d cores" % won)
+            miner.set_cores(won, total)
+
+    if args.no_ui:
+        time.sleep(3)
+        info = node("getcpuminerinfo") or {}
+        print("mining: %s  threads=%s  %s  pool=%s  mode=%s"
+              % (info.get("mining"), info.get("threads"),
+                 hrate(info.get("hashespersec")), miner.pool or "solo",
+                 info.get("mode")))
+        print("NOTE: mining stops ~%ds after this process exits (dead-man's "
+              "switch). Use the systemd units for mining that persists." % TTL)
+        miner.stop()
+        hand_back()
+        return
+
+    try:
+        curses.wrapper(run, node, miner, args, total)
+    finally:
+        miner.stop()
+        hand_back()
+        print("stopped mining." + ("  systemd miner restarted."
+                                   if scope is not None else ""))
+
+
+if __name__ == "__main__":
+    main()

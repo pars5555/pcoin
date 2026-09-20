@@ -3,874 +3,95 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Download PCoin &mdash; installers and step-by-step instructions</title>
-<meta name="description" content="Download and install PCoin (PCN) on Windows, Linux or Android. One command per platform, plus the manual route, checksum verification, and what to do when Windows shows a warning.">
+<title>PCoin — Downloads</title>
+<meta name="description" content="Download PCoin (PCN): mining software for Windows, Linux and Android, or a wallet to hold PCN you already have.">
 <meta name="theme-color" content="#0a0b10">
-<link rel="canonical" href="https://pc.am/download/">
+<link rel="icon" href="/brand/pcoin-64.png">
+<link rel="canonical" href="https://pc.am/mining/">
 <style>
   :root{
-    --bg:#0a0b10;
-    --bg-alt:#0d0f17;
-    --panel:#11131d;
-    --panel-2:#151827;
-    --line:rgba(255,255,255,.09);
-    --line-soft:rgba(255,255,255,.06);
-    --text:#e9ebf4;
-    --muted:#9aa2b8;
-    --dim:#6b7288;
-    --violet:#8b5cf6;
-    --teal:#2dd4bf;
-    --grad:linear-gradient(135deg,#8b5cf6,#2dd4bf);
+    --bg:#0a0b10; --panel:#11131d; --line:rgba(255,255,255,.09); --line-soft:rgba(255,255,255,.06);
+    --text:#e9ebf4; --muted:#9aa2b8; --dim:#6b7288; --violet:#8b5cf6; --teal:#2dd4bf;
     --radius:16px;
-    --mono:ui-monospace,"Cascadia Code",Menlo,Consolas,"Liberation Mono",monospace;
   }
   *{margin:0;padding:0;box-sizing:border-box}
-  html{scroll-behavior:smooth}
-  body{
-    background:var(--bg);
-    color:var(--text);
+  body{background:var(--bg);color:var(--text);
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
-    font-size:16.5px;
-    line-height:1.65;
-    -webkit-font-smoothing:antialiased;
-  }
+    font-size:16.5px;line-height:1.65;-webkit-font-smoothing:antialiased}
   a{color:var(--teal);text-decoration:none}
   a:hover{text-decoration:underline}
-  .wrap{max-width:1080px;margin:0 auto;padding:0 24px}
-
-  /* ---------- nav ---------- */
-  header.nav{
-    position:sticky;top:0;z-index:50;
-    background:rgba(10,11,16,.82);
-    backdrop-filter:blur(12px);
-    -webkit-backdrop-filter:blur(12px);
-    border-bottom:1px solid var(--line-soft);
-  }
+  .wrap{max-width:820px;margin:0 auto;padding:0 24px}
+  header.nav{position:sticky;top:0;z-index:50;background:rgba(10,11,16,.82);
+    backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid var(--line-soft)}
   .nav-inner{display:flex;align-items:center;gap:28px;padding:14px 24px;max-width:1080px;margin:0 auto;flex-wrap:wrap}
-  .brand{display:flex;align-items:center;gap:11px;font-weight:700;font-size:1.15rem;color:var(--text);letter-spacing:.01em}
+  .brand{display:flex;align-items:center;gap:11px;font-weight:700;font-size:1.15rem;color:var(--text)}
   .brand:hover{text-decoration:none}
-  .brand small{font-weight:600;color:var(--dim);font-size:.78rem;border:1px solid var(--line);border-radius:99px;padding:1px 8px}
+  .brand img{width:28px;height:28px;border-radius:7px}
   nav.links{display:flex;gap:22px;margin-left:auto;flex-wrap:wrap;align-items:center}
   nav.links a{color:var(--muted);font-size:.93rem;font-weight:500}
   nav.links a:hover{color:var(--text);text-decoration:none}
-  .gh-pill{
-    display:inline-flex;align-items:center;gap:7px;
-    border:1px solid var(--line);border-radius:99px;padding:6px 14px;
-    color:var(--text) !important;font-weight:600;
-  }
-  .gh-pill:hover{border-color:var(--teal);text-decoration:none}
-
-  /* ---------- hero ---------- */
-  .hero{
-    position:relative;overflow:hidden;
-    border-bottom:1px solid var(--line-soft);
-    background:
-      radial-gradient(52rem 30rem at 12% -10%,rgba(139,92,246,.17),transparent 60%),
-      radial-gradient(46rem 28rem at 95% 10%,rgba(45,212,191,.12),transparent 60%),
-      var(--bg);
-  }
-  .hero::before{
-    content:"";position:absolute;inset:0;pointer-events:none;
-    background:
-      repeating-linear-gradient(0deg,rgba(255,255,255,.025) 0 1px,transparent 1px 56px),
-      repeating-linear-gradient(90deg,rgba(255,255,255,.025) 0 1px,transparent 1px 56px);
-    mask-image:radial-gradient(60rem 34rem at 50% 0%,#000 30%,transparent 75%);
-    -webkit-mask-image:radial-gradient(60rem 34rem at 50% 0%,#000 30%,transparent 75%);
-  }
-  .hero-inner{position:relative;display:flex;align-items:center;gap:48px;padding:92px 24px 100px;max-width:1080px;margin:0 auto}
-  .hero-copy{flex:1 1 34rem;min-width:0}
-  .eyebrow{
-    display:inline-flex;align-items:center;gap:8px;
-    font-size:.8rem;font-weight:600;letter-spacing:.04em;color:var(--muted);
-    border:1px solid var(--line);border-radius:99px;padding:6px 14px;margin-bottom:26px;
-    background:rgba(255,255,255,.03);
-  }
-  .eyebrow .dot{width:7px;height:7px;border-radius:99px;background:var(--grad);display:inline-block}
-  h1{font-size:clamp(2.5rem,6vw,4.1rem);line-height:1.06;letter-spacing:-.025em;font-weight:800;margin-bottom:22px}
-  h1 .grad{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
-  .hero-sub{color:var(--muted);font-size:1.16rem;max-width:36rem;margin-bottom:34px}
-  .hero-sub strong{color:var(--text);font-weight:600}
-  .cta-row{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:38px}
-  .btn{
-    display:inline-flex;align-items:center;gap:9px;
-    border-radius:12px;padding:13px 26px;font-weight:700;font-size:1rem;
-    transition:transform .12s ease,box-shadow .12s ease,border-color .12s ease;
-  }
-  .btn:hover{text-decoration:none;transform:translateY(-1px)}
-  .btn-primary{background:var(--grad);color:#0a0b10;box-shadow:0 8px 28px rgba(94,140,220,.28)}
-  .btn-primary:hover{box-shadow:0 10px 34px rgba(94,140,220,.4)}
-  .btn-ghost{border:1px solid var(--line);color:var(--text);background:rgba(255,255,255,.03)}
-  .btn-ghost:hover{border-color:var(--teal)}
-  .fact-chips{display:flex;gap:10px;flex-wrap:wrap}
-  .chip{
-    font-size:.83rem;font-weight:600;color:var(--muted);
-    border:1px solid var(--line);border-radius:99px;padding:5px 13px;
-    background:rgba(255,255,255,.02);
-  }
-  .chip b{color:var(--text);font-weight:700}
-  .hero-art{flex:0 1 300px;display:flex;justify-content:center}
-  .hero-art svg{
-    width:min(280px,60vw);height:auto;
-    filter:drop-shadow(0 18px 60px rgba(139,92,246,.35)) drop-shadow(0 6px 24px rgba(45,212,191,.22));
-  }
-
-  /* ---------- sections ---------- */
-  section{padding:88px 0}
-  section.alt{background:var(--bg-alt);border-top:1px solid var(--line-soft);border-bottom:1px solid var(--line-soft)}
-  .kicker{
-    display:inline-block;font-size:.8rem;font-weight:800;letter-spacing:.14em;text-transform:uppercase;
-    background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;margin-bottom:12px;
-  }
-  h2{font-size:clamp(1.7rem,3.6vw,2.4rem);letter-spacing:-.02em;font-weight:800;margin-bottom:16px}
-  .lede{color:var(--muted);max-width:44rem;font-size:1.07rem;margin-bottom:44px}
-  .lede strong{color:var(--text)}
-
-  /* pillars */
-  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px}
-  .card{
-    background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
-    padding:30px 28px;position:relative;overflow:hidden;
-    transition:border-color .15s ease,transform .15s ease;
-  }
-  .card:hover{border-color:rgba(139,92,246,.45);transform:translateY(-2px)}
-  .card .icon{
-    width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;
-    background:rgba(139,92,246,.13);border:1px solid rgba(139,92,246,.3);margin-bottom:18px;
-  }
-  .card h3{font-size:1.16rem;font-weight:700;margin-bottom:10px;letter-spacing:-.01em}
-  .card p{color:var(--muted);font-size:.97rem}
-  .card p b{color:var(--text)}
-
-  /* randomx section */
-  .split{display:flex;gap:44px;align-items:flex-start;flex-wrap:wrap}
-  .split .col{flex:1 1 22rem;min-width:0}
-  .mini-list{list-style:none;display:grid;gap:14px;margin-top:8px}
-  .mini-list li{
-    display:flex;gap:14px;align-items:flex-start;
-    background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 18px;
-  }
-  .mini-list .tick{
-    flex:0 0 auto;width:26px;height:26px;border-radius:8px;margin-top:2px;
-    background:rgba(45,212,191,.12);border:1px solid rgba(45,212,191,.35);
-    display:flex;align-items:center;justify-content:center;
-  }
-  .mini-list b{color:var(--text)}
-  .mini-list p{color:var(--muted);font-size:.95rem}
-  .honest-box{
-    border:1px dashed rgba(255,255,255,.22);border-radius:14px;padding:18px 20px;margin-top:22px;
-    color:var(--muted);font-size:.95rem;background:rgba(255,255,255,.02);
-  }
-  .honest-box b{color:var(--text)}
-
-  /* downloads */
-  .dl-grid{display:grid;gap:18px;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));margin-bottom:8px}
-  .dl-card{
-    background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
-    padding:24px 22px;display:flex;flex-direction:column;min-width:0;
-    transition:border-color .15s ease,transform .15s ease;
-  }
-  .dl-card:hover{border-color:rgba(45,212,191,.45);transform:translateY(-2px)}
-  .dl-card h3{font-size:1.1rem;font-weight:700;margin-bottom:8px}
-  .dl-sub{color:var(--muted);font-size:.92rem;flex:1 1 auto;margin-bottom:16px}
-  .dl-btn{width:100%;justify-content:center;padding:12px 16px;font-size:.97rem}
-  .dl-alt{display:block;margin-top:10px;font-size:.87rem;color:var(--dim);text-align:center}
-  .dl-alt:hover{color:var(--teal)}
-
-
-
-  /* parameters table */
-  .table-shell{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);overflow-x:auto}
-  table.params{width:100%;border-collapse:collapse;min-width:560px}
-  table.params th,table.params td{padding:14px 22px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line-soft)}
-  table.params tr:last-child th,table.params tr:last-child td{border-bottom:none}
-  table.params th{color:var(--muted);font-weight:600;font-size:.92rem;white-space:nowrap;width:34%}
-  table.params td{font-size:.96rem}
-  table.params tr:hover td,table.params tr:hover th{background:rgba(255,255,255,.02)}
-  .mono{font-family:var(--mono);font-size:.87em;color:#c9f2ea;word-break:break-all}
-  .note{color:var(--dim);font-size:.88em}
-
-  /* terminal */
-  .term{
-    background:#0b0e16;border:1px solid var(--line);border-radius:var(--radius);
-    overflow:hidden;box-shadow:0 14px 44px rgba(0,0,0,.45);
-  }
-  .term-bar{
-    display:flex;align-items:center;gap:8px;padding:11px 16px;
-    background:#121524;border-bottom:1px solid var(--line-soft);
-  }
-  .term-bar i{width:11px;height:11px;border-radius:99px;display:inline-block}
-  .term-bar i:nth-child(1){background:#ff5f57}.term-bar i:nth-child(2){background:#febc2e}.term-bar i:nth-child(3){background:#28c840}
-  .term-bar span{margin-left:10px;color:var(--dim);font-size:.8rem;font-family:var(--mono)}
-  .term pre{
-    overflow-x:auto;padding:22px 24px;font-family:var(--mono);
-    font-size:.88rem;line-height:1.85;color:#dbe2f4;
-  }
-  .term .c{color:#6d7690}          /* comment */
-  .term .o{color:#7fd8c8}          /* output   */
-  .term .s{color:#b7a6f7}          /* string   */
-  .steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin:30px 0 34px}
-  .step{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 20px}
-  .step .num{
-    font-family:var(--mono);font-weight:700;font-size:.8rem;color:#0a0b10;
-    background:var(--grad);border-radius:8px;padding:2px 9px;display:inline-block;margin-bottom:10px;
-  }
-  .step h4{font-size:.99rem;font-weight:700;margin-bottom:4px}
-  .step p{color:var(--muted);font-size:.9rem}
-
-  /* roadmap */
-  .timeline{list-style:none;position:relative;margin-top:8px;padding-left:34px}
-  .timeline::before{
-    content:"";position:absolute;left:10px;top:8px;bottom:8px;width:2px;
-    background:linear-gradient(180deg,#8b5cf6,#2dd4bf);border-radius:2px;opacity:.55;
-  }
-  .timeline li{position:relative;padding:0 0 34px}
-  .timeline li:last-child{padding-bottom:0}
-  .timeline li::before{
-    content:"";position:absolute;left:-30px;top:7px;width:14px;height:14px;border-radius:99px;
-    background:var(--grad);box-shadow:0 0 0 5px rgba(139,92,246,.14);
-  }
-  .timeline h3{font-size:1.12rem;font-weight:700;letter-spacing:-.01em;margin-bottom:5px}
-  .timeline p{color:var(--muted);max-width:38rem;font-size:.97rem}
-  .timeline .tag{
-    display:inline-block;font-size:.72rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase;
-    color:var(--teal);border:1px solid rgba(45,212,191,.35);border-radius:99px;padding:2px 10px;margin-left:10px;vertical-align:2px;
-  }
-
-  /* honest notes */
-  .honest-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px}
-  .honest-card{
-    background:var(--panel);border:1px solid var(--line);border-left:3px solid transparent;
-    border-image:none;border-radius:14px;padding:24px 24px;
-  }
-  .honest-card{border-left-color:rgba(139,92,246,.6)}
-  .honest-card:nth-child(even){border-left-color:rgba(45,212,191,.6)}
-  .honest-card h3{font-size:1.03rem;font-weight:700;margin-bottom:8px}
-  .honest-card p{color:var(--muted);font-size:.94rem}
-  .honest-card p b{color:var(--text)}
-
-  /* footer */
-  footer{border-top:1px solid var(--line-soft);background:var(--bg-alt)}
-  .foot-inner{
-    display:flex;gap:32px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;
-    max-width:1080px;margin:0 auto;padding:52px 24px 30px;
-  }
-  .foot-brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:1.05rem;color:var(--text)}
-  .foot-col p,.foot-col a{color:var(--muted);font-size:.93rem;display:block}
-  .foot-col a{margin-bottom:6px}
-  .foot-col h5{font-size:.78rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin-bottom:12px}
-  .foot-base{
-    border-top:1px solid var(--line-soft);color:var(--dim);font-size:.85rem;
-    max-width:1080px;margin:0 auto;padding:20px 24px 34px;
-    display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;
-  }
-
-  @media (max-width:760px){
-    .hero-inner{padding:64px 24px 72px;flex-direction:column;align-items:flex-start;gap:28px}
-    .hero-art{order:-1;flex-basis:auto;align-self:center}
-    .hero-art svg{width:150px}
-    section{padding:64px 0}
-    .nav-inner{gap:14px}
-    nav.links{gap:16px}
-    /* a 560px-wide table on a 390px phone is a table nobody reads: stack each row */
-    table.params{min-width:0}
-    table.params tbody,table.params tr{display:block}
-    table.params tr{padding:12px 16px;border-bottom:1px solid var(--line-soft)}
-    table.params tr:last-child{border-bottom:none}
-    table.params th,table.params td{display:block;padding:0;border-bottom:none;width:auto;white-space:normal}
-    table.params th{font-size:.76rem;letter-spacing:.08em;text-transform:uppercase;margin-bottom:4px}
-    table.params td{overflow-wrap:anywhere}
-  }
-</style>
-<style>
-  /* Page-specific: platform switcher, numbered steps, copyable commands. */
-  .dl-wrap{max-width:1080px;margin:0 auto;padding:0 22px}
-  .tabs{display:flex;gap:8px;flex-wrap:wrap;margin:26px 0 30px}
-  .tab{appearance:none;cursor:pointer;font:inherit;font-weight:600;font-size:14px;
-       padding:11px 20px;border-radius:999px;border:1px solid var(--line);
-       background:var(--panel);color:var(--muted);transition:.18s}
-  .tab:hover{color:var(--text);border-color:rgba(255,255,255,.2)}
-  .tab[aria-selected="true"]{background:var(--grad);color:#0a0b10;border-color:transparent}
-  .panelx[hidden]{display:none}
-  .step{display:grid;grid-template-columns:34px minmax(0,1fr);gap:16px;margin:0 0 26px}
-  .step-n{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;
-          font-weight:700;font-size:14px;background:var(--panel-2);border:1px solid var(--line);color:var(--teal)}
-  .step h3{margin:4px 0 8px;font-size:17px}
-  .step p{margin:0 0 10px;color:var(--muted);line-height:1.65}
-  pre.cmd{position:relative;background:#080a0f;border:1px solid var(--line);border-radius:12px;
-          padding:16px 72px 16px 16px;overflow-x:auto;font-family:var(--mono);font-size:13px;line-height:1.6}
-  pre.cmd .c{color:var(--dim)}
-  .copy{position:absolute;top:10px;right:10px;cursor:pointer;font:inherit;font-size:12px;
-        padding:8px 12px;min-height:32px;border-radius:7px;border:1px solid var(--line);background:var(--panel);color:var(--muted)}
-  .copy:hover{color:var(--text)}
-  .note{border-left:3px solid var(--teal);background:rgba(45,212,191,.06);
-        padding:14px 16px;border-radius:0 10px 10px 0;margin:16px 0;color:var(--muted);line-height:1.65;font-size:14px}
-  .note strong{color:var(--text)}
-  .warn{border-left-color:#f5a524;background:rgba(245,165,36,.07)}
-  .warn strong{color:#f5a524}
-  table.files{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
-  table.files th,table.files td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line-soft)}
-  table.files th{color:var(--dim);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.06em}
-  table.files td.mono{font-family:var(--mono);font-size:12.5px}
-  .req{display:flex;gap:26px;flex-wrap:wrap;margin:8px 0 22px;color:var(--muted);font-size:14px}
-  .req b{color:var(--text)}
-  details.faq{border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:10px 0;background:var(--panel)}
-  details.faq summary{cursor:pointer;font-weight:600;color:var(--text)}
-  details.faq > :not(summary){color:var(--muted);line-height:1.7;margin-top:10px}
-  @media (max-width:640px){.step{grid-template-columns:28px minmax(0,1fr);gap:12px}}
+  .hero{padding-block:64px 24px}
+  h1{font-size:2.3rem;line-height:1.15;letter-spacing:-.02em;font-weight:800}
+  .lede{color:var(--muted);margin-top:14px;font-size:1.05rem;max-width:62ch}
+  main{padding:20px 0 90px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-top:26px}
+  .card{background:var(--panel);border:1px solid var(--line-soft);border-radius:var(--radius);padding:24px}
+  .card h2{font-size:1.25rem;margin-bottom:8px}
+  .card p{color:var(--muted);font-size:.96rem}
+  .btn{display:inline-block;margin-top:14px;background:var(--teal);color:#07120f;font-weight:700;
+    padding:11px 20px;border-radius:11px}
+  .btn:hover{text-decoration:none;opacity:.9}
+  .btn.ghost{background:transparent;color:var(--text);border:1px solid var(--line)}
+  footer{border-top:1px solid var(--line-soft);padding:26px 0 40px;color:var(--dim);font-size:.9rem;text-align:center}
 </style>
 </head>
-<body id="top">
-
+<body>
 <header class="nav">
   <div class="nav-inner">
-    <a class="brand" href="/" aria-label="PCoin home">
-      <svg viewBox="18 18 72 72" width="34" height="34" aria-hidden="true"><circle cx="54" cy="54" r="36" fill="#262B33"/><path fill="#fff" d="M54,23.25A30.75,30.75 0 0 1 60,23.84L58.73,30.22A24.25,24.25 0 0 0 54,29.75ZM65.77,25.59A30.75,30.75 0 0 1 71.08,28.43L67.47,33.84A24.25,24.25 0 0 0 63.28,31.6ZM75.74,32.26A30.75,30.75 0 0 1 79.57,36.92L74.16,40.53A24.25,24.25 0 0 0 71.15,36.85ZM82.41,42.23A30.75,30.75 0 0 1 84.16,48L77.78,49.27A24.25,24.25 0 0 0 76.4,44.72ZM84.75,54A30.75,30.75 0 0 1 84.16,60L77.78,58.73A24.25,24.25 0 0 0 78.25,54ZM82.41,65.77A30.75,30.75 0 0 1 79.57,71.08L74.16,67.47A24.25,24.25 0 0 0 76.4,63.28ZM75.74,75.74A30.75,30.75 0 0 1 71.08,79.57L67.47,74.16A24.25,24.25 0 0 0 71.15,71.15ZM65.77,82.41A30.75,30.75 0 0 1 60,84.16L58.73,77.78A24.25,24.25 0 0 0 63.28,76.4ZM54,84.75A30.75,30.75 0 0 1 48,84.16L49.27,77.78A24.25,24.25 0 0 0 54,78.25ZM42.23,82.41A30.75,30.75 0 0 1 36.92,79.57L40.53,74.16A24.25,24.25 0 0 0 44.72,76.4ZM32.26,75.74A30.75,30.75 0 0 1 28.43,71.08L33.84,67.47A24.25,24.25 0 0 0 36.85,71.15ZM25.59,65.77A30.75,30.75 0 0 1 23.84,60L30.22,58.73A24.25,24.25 0 0 0 31.6,63.28ZM23.25,54A30.75,30.75 0 0 1 23.84,48L30.22,49.27A24.25,24.25 0 0 0 29.75,54ZM25.59,42.23A30.75,30.75 0 0 1 28.43,36.92L33.84,40.53A24.25,24.25 0 0 0 31.6,44.72ZM32.26,32.26A30.75,30.75 0 0 1 36.92,28.43L40.53,33.84A24.25,24.25 0 0 0 36.85,36.85ZM42.23,25.59A30.75,30.75 0 0 1 48,23.84L49.27,30.22A24.25,24.25 0 0 0 44.72,31.6Z"/><path fill="#fff" fill-rule="evenodd" d="M75,54A21,21 0 1 1 33,54A21,21 0 1 1 75,54ZM54,38.5L57.89,50.11L69.5,54L57.89,57.89L54,69.5L50.11,57.89L38.5,54L50.11,50.11Z"/></svg>
-      PCoin <small>PCN</small>
-    </a>
-    <nav class="links" aria-label="Site">
-      <a href="/#mission">Mission</a>
-      <a href="/download/" aria-current="page">Download</a>
-      <a href="/#mining">Mining</a>
-      <a href="/#hardware">Hardware</a>
-      <a href="https://docs.pc.am" rel="noopener">Integrate</a>
-      <a href="https://explorer.pc.am" rel="noopener">Explorer</a>
-      <a href="https://market.pc.am" rel="noopener">Buy PCN</a>
-      <a href="https://wrapdesk.pc.am" rel="noopener">Wrap desk</a>
-      <a href="/news/">News</a>
+    <a class="brand" href="/"><img src="/brand/pcoin-64.png" alt="">PCoin</a>
+    <nav class="links">
+      <a href="/">Home</a>
+      <a href="/mining/">Mining</a>
+      <a href="/wallet/">Wallet</a>
       <a href="/faq/">FAQ</a>
-      <a href="https://t.me/PCoinPCN" rel="noopener">Community</a>
-      <a class="gh-pill" href="https://github.com/pars5555/pcoin" rel="noopener">GitHub</a>
+      <a href="https://explorer.pc.am">Explorer</a>
+      <a href="https://github.com/pars5555/pcoin">GitHub</a>
     </nav>
   </div>
 </header>
 
-<main class="dl-wrap">
+<div class="wrap">
+  <section class="hero">
+    <h1>What would you like to do?</h1>
+    <p class="lede">&ldquo;Download&rdquo; used to mean two different things on this page, which
+    helped nobody. They are now separate, and each one carries the exact commands and screenshots
+    for your platform.</p>
+  </section>
 
-<section style="padding:56px 0 8px">
-  <h1 style="font-size:clamp(30px,5vw,44px);line-height:1.15;margin:0 0 14px">Download PCoin</h1>
-  <p style="color:var(--muted);font-size:17px;line-height:1.7;max-width:70ch;margin:0">
-    One command per platform. Every installer checks the download against a published
-    SHA-256 before it runs, and refuses rather than half-installing. PCoin mines on
-    ordinary CPUs &mdash; there is no GPU or ASIC to buy.
-  </p>
-  <div class="req">
-    <span><b>Network</b> mainnet</span>
-    <span><b>P2P</b> 9444</span>
-    <span><b>RPC</b> 9443</span>
-    <span><b>Addresses</b> pc1&hellip;</span>
-    <span><b>Disk</b> under 1&nbsp;GB</span>
-  </div>
-</section>
-
-<div class="tabs" role="tablist" aria-label="Platform">
-  <button class="tab" role="tab" id="t-win" aria-controls="p-win" aria-selected="true">Windows</button>
-  <button class="tab" role="tab" id="t-lin" aria-controls="p-lin" aria-selected="false">Linux</button>
-  <button class="tab" role="tab" id="t-and" aria-controls="p-and" aria-selected="false">Android</button>
-  <button class="tab" role="tab" id="t-src" aria-controls="p-src" aria-selected="false">Build from source</button>
+  <main>
+    <div class="cards">
+      <div class="card">
+        <h2>Mine PCoin</h2>
+        <p>Turn spare CPU time into PCN. Windows, Linux and Android &mdash; RandomX runs on an
+        ordinary processor, so there is no GPU advantage and nothing to buy.</p>
+        <a class="btn" href="/mining/">Mining &rarr;</a>
+      </div>
+      <div class="card">
+        <h2>Get a wallet</h2>
+        <p>Hold, send and receive PCN you already have. Android on Google Play, a Windows desktop
+        wallet, or a full node you drive yourself.</p>
+        <a class="btn ghost" href="/wallet/">Wallet &rarr;</a>
+      </div>
+    </div>
+  </main>
 </div>
 
-<!-- ================= WINDOWS ================= -->
-<section class="panelx" id="p-win" role="tabpanel" aria-labelledby="t-win">
-  <div class="req"><span><b>Needs</b> Windows 10 or 11, 64-bit</span><span><b>RAM</b> 4&nbsp;GB+ (works with less in light mode)</span><span><b>Download</b> ~10&nbsp;MB</span></div>
-
-  <div class="step">
-    <div class="step-n">1</div>
-    <div>
-      <h3>Paste one line into PowerShell</h3>
-      <p>Press <b>Win</b>, type <em>PowerShell</em>, press <b>Enter</b> to open it, then paste
-         this line and press <b>Enter</b> again:</p>
-      <pre class="cmd"><button class="copy" type="button">copy</button>irm https://pc.am/dl/install.ps1 | iex</pre>
-      <p>That single line does everything &mdash; it downloads the miner, checks the file is
-         genuine, installs the node and miner, and starts mining. When a blue
-         <b>User Account Control</b> box appears, click <b>Yes</b> so it can finish setting up.
-         (Click No if you prefer &mdash; it still installs and mines, just without a couple of
-         extras.)</p>
-      <div class="note">
-        <strong>You don&rsquo;t have to pick how many cores to use.</strong> The miner
-        benchmarks your CPU the first time and settles on the fastest core count by itself.
-        With this algorithm more cores is <em>not</em> always faster, so it measures instead
-        of guessing. You can still override it later from the tray window.
-      </div>
-    </div>
-  </div>
-
-  <div class="step">
-    <div class="step-n">2</div>
-    <div>
-      <h3>If Windows shows a blue &ldquo;protected your PC&rdquo; box</h3>
-      <p>Click <b>More info</b>, then <b>Run anyway</b>.</p>
-      <div class="note warn">
-        <strong>That is SmartScreen, not a virus warning.</strong>
-        It appears because the app is not signed with a paid certificate yet, and SmartScreen
-        warns about anything it has not seen downloaded widely &mdash; it says nothing about the
-        contents. Windows Defender, the actual antivirus, does not flag PCoin: every release is
-        scanned on a real machine, real-time protection on, before it ships. A signing
-        certificate is on the roadmap.
-      </div>
-    </div>
-  </div>
-
-  <div class="step">
-    <div class="step-n">3</div>
-    <div>
-      <h3>It is mining &mdash; open the tray to see it</h3>
-      <p>A small PCoin icon appears down by the clock (click the <b>&and;</b> arrow if you don&rsquo;t
-         see it). Click it and choose <b>Open</b> for your live hash rate, the block height, and
-         the address your rewards are paid to. Three things worth doing:</p>
-      <ul style="margin:10px 0 0 18px;line-height:1.65">
-        <li><b>Solo or pool?</b> The window has a <em>Mining mode</em> panel that tells you which
-            fits your machine: <b>Pool</b> pays a small, steady amount; <b>Solo</b> pays a whole
-            block when your PC finds one. Smaller miners usually want pool. Pick one and click
-            <b>Apply</b> &mdash; the app only suggests, it never switches on its own. Once you choose <b>Pool</b>, the window shows a live count of the shares the pool has accepted &mdash; that climbing number is your proof it&rsquo;s working, even while your balance here stays at zero.</li>
-        <li><b>Back up your recovery phrase.</b> Click <em>Recovery phrase</em> and write the
-            twelve words on paper. If Windows is ever reinstalled, those words are the only way
-            to recover your coins.</li>
-        <li><b>Let it sync first.</b> Mining before the chain has finished downloading is wasted
-            work, so the miner waits. The chain is small &mdash; it takes only a few minutes;
-            watch your height reach <a href="https://explorer.pc.am" rel="noopener">the
-            explorer&rsquo;s</a>.</li>
-      </ul>
-    </div>
-  </div>
-
-  <h2 style="font-size:20px;margin:38px 0 12px">Prefer to do it by hand?</h2>
-  <p style="color:var(--muted);line-height:1.7;max-width:72ch">
-    The archive is a plain zip &mdash; no installer, nothing written to the registry.
-    Unzip it anywhere and run <code>PCoinTray.exe</code>.
-  </p>
-  <div class="table-shell">
-  <table class="files">
-    <tr><th>File</th><th>What it contains</th></tr>
-    <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.4.34/pcoin-win64-miner.zip">pcoin-win64-miner.zip</a></td><td>Node, CLI and the tray miner</td></tr>
-    <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.4.28/pcoin-win64-wallet.zip">pcoin-win64-wallet.zip</a></td><td>The wallet: node, CLI and <code>PCoinWallet.exe</code> &mdash; no mining</td></tr>
-  </table>
-  </div>
-  <pre class="cmd"><button class="copy" type="button">copy</button><span class="c"># check it before you run it</span>
-Get-FileHash .\pcoin-win64-miner.zip -Algorithm SHA256</pre>
-  <p style="color:var(--muted);line-height:1.7;max-width:72ch">
-    Compare that against <a href="https://pc.am/dl/SHA256SUMS.txt">pc.am/dl/SHA256SUMS.txt</a>.
-    Inside are <code>bitcoind.exe</code>, <code>bitcoin-cli.exe</code> and
-    <code>PCoinTray.exe</code>. The tray app is the only one you need to launch.
-  </p>
-  <h2 style="font-size:20px;margin:38px 0 12px" id="wallet-win">Just a wallet, no mining</h2>
-  <p style="color:var(--muted);line-height:1.7;max-width:72ch">
-    <b>PCoin Wallet</b> is a separate program: create or restore your twelve words, receive to a
-    QR code, send with the real fee shown before anything goes out, scroll your history, keep an
-    address book. It runs its own node in its own folder (<code>C:\PCoinWallet</code>) and never
-    mines, so it can live on a PC that also runs the miner. The same twelve words open the wallet
-    in the Android app.
-  </p>
-  <pre class="cmd"><button class="copy" type="button">copy</button>irm https://pc.am/dl/install-wallet.ps1 | iex</pre>
-  <p style="color:var(--muted);line-height:1.7;max-width:72ch">
-    That downloads <code>pcoin-win64-wallet.zip</code>, checks its SHA-256, installs it, puts
-    <b>PCoin Wallet</b> on the desktop and in Settings &rarr; Apps, and opens it. Removing it
-    later is the ordinary Settings &rarr; Apps &rarr; Uninstall; the uninstaller copies your
-    wallet files to your user folder before it deletes anything. Prefer to unzip by hand?
-    Run <code>PCoinWallet.exe</code> from the archive above &mdash; it needs nothing else.
-  </p>
-
-  <h2 style="font-size:20px;margin:38px 0 12px">Removing PCoin</h2>
-  <div style="border:1px solid #a4442a;background:#2a1512;border-radius:8px;padding:14px 16px;margin:18px 0;color:#f0d8d2;line-height:1.7;max-width:72ch">
-    <b>If you installed the Windows miner on 3 September 2026, upgrade before you uninstall.</b><br>
-    Versions <b>1.3.16 to 1.4.1</b> &mdash; the pinned download between 03:33 and 08:49 UTC that day &mdash;
-    shipped an uninstaller that looked for the node wallet in two places it is not on a fresh
-    install. It rescued only the settings file, printed <span class="mono">WALLET SAVED TO &hellip;</span>
-    and then removed the wallet anyway. If you never wrote your twelve-word recovery phrase down,
-    that file was the only copy of your coins. <b>1.4.2 fixes it.</b>
-    <br><br>
-    <b>Settings &gt; Apps runs the copy on your own machine</b>, not this site&rsquo;s, so the fix
-    does not reach you by itself. Run either of these <em>first</em>:
-    <br><br>
-    <span class="mono">irm https://pc.am/dl/install.ps1 | iex</span> &mdash; upgrades you to 1.4.2, or<br>
-    <span class="mono">irm https://pc.am/dl/uninstall.ps1 | iex</span> &mdash; removes PCoin with the fixed uninstaller.
-  </div>
-  <p style="color:var(--muted);line-height:1.7;max-width:72ch">
-    Any of these three &mdash; they all run the same uninstaller:
-  </p>
-  <ul style="color:var(--muted);line-height:1.7;max-width:72ch;margin:0 0 12px 18px">
-    <li><b>Settings &gt; Apps &gt; Installed apps &gt; PCoin Miner &gt; Uninstall</b></li>
-    <li>the tray icon&rsquo;s right-click menu, <b>Uninstall PCoin&hellip;</b></li>
-    <li><code>uninstall.ps1</code>, which is in the install folder and in the zip</li>
-  </ul>
-  <p style="color:var(--muted);line-height:1.7;max-width:72ch">
-    <b>It does not delete your wallet</b> &mdash; true of 1.4.2 and later, and of
-    everything before 1.3.16 (see the warning above). Your recovery phrase and wallet file are
-    copied into a dated folder in your user profile <em>before</em> anything is
-    removed, and the uninstaller prints the path. If that copy fails it stops and
-    changes nothing, because an uninstall you can retry is better than coins
-    nobody can reach. The chain data goes (it re-downloads in minutes);
-    <code>-KeepData</code> keeps it.
-  </p>
-  <p style="color:var(--muted);line-height:1.7;max-width:72ch">
-    If the install folder is already damaged, the uninstaller is also served on
-    its own:
-  </p>
-  <pre class="cmd"><button class="copy" type="button">copy</button>irm https://pc.am/dl/uninstall.ps1 | iex</pre>
-
-  <div class="note">
-    <strong>Already running Bitcoin Core on this machine?</strong>
-    PCoin keeps the upstream binary names, so always pass an explicit datadir
-    (<code>-datadir=C:\PCoin\data</code>) to keep the two apart. The installer does
-    this for you.
-  </div>
-</section>
-
-<!-- ================= LINUX ================= -->
-<section class="panelx" id="p-lin" role="tabpanel" aria-labelledby="t-lin" hidden>
-  <div class="req"><span><b>Tested on</b> Debian 11+, Ubuntu 22.04+</span><span><b>Arch</b> x86-64</span><span><b>Needs</b> root</span></div>
-
-  <div class="step">
-    <div class="step-n">1</div>
-    <div>
-      <h3>One command</h3>
-      <p>Verifies the download against the published SHA-256, installs the node, then
-         runs a short setup wizard.</p>
-      <pre class="cmd"><button class="copy" type="button">copy</button>curl -fsSL https://pc.am/dl/install.sh | sudo sh</pre>
-    </div>
-  </div>
-
-  <div class="step">
-    <div class="step-n">2</div>
-    <div>
-      <h3>Answer three questions</h3>
-      <p>Where block rewards should be paid, how many threads to mine with, and a CPU
-         ceiling. The address is validated by a running node rather than a regex, so a
-         typo is caught before it can cost you a block reward.</p>
-      <div class="note">
-        <strong>Set the CPU ceiling on a rented server.</strong>
-        It becomes a systemd <code>CPUQuota</code>, which is a hard cap rather than a
-        priority hint. Left uncapped the miner sits at a flat 100% of a core on an idle
-        box &mdash; exactly the sustained load that earns a fair-use warning on a
-        shared-vCPU plan. Our own Linux miners run one thread each.
-      </div>
-    </div>
-  </div>
-
-  <div class="step">
-    <div class="step-n">3</div>
-    <div>
-      <h3>Watch it work</h3>
-      <pre class="cmd"><button class="copy" type="button">copy</button><span class="c"># live view: hashrate, share of network, block ETA</span>
-<span class="c"># press b to scan the chain for your payout address, q to quit</span>
-pcoin-mine</pre>
-      <p>Day to day:</p>
-      <pre class="cmd"><button class="copy" type="button">copy</button>sudo systemctl status pcoin-miner    <span class="c"># is it mining?</span>
-sudo systemctl stop pcoin-miner      <span class="c"># stop mining, node keeps running</span>
-sudo pcoin-setup                     <span class="c"># change address, threads or CPU cap</span>
-journalctl -u pcoin-miner -n 40      <span class="c"># why it is or is not mining</span></pre>
-    </div>
-  </div>
-
-  <h2 style="font-size:20px;margin:38px 0 12px">Packages, if you would rather not pipe to a shell</h2>
-  <div class="table-shell">
-  <table class="files">
-    <tr><th>File</th><th>What it is</th></tr>
-    <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.4.34/pcoin-linux-amd64-miner.deb">pcoin-linux-amd64-miner.deb</a></td><td>Debian/Ubuntu package &mdash; same contents the one-liner installs</td></tr>
-    <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.4.34/pcoin-linux-x86_64-miner.tar.gz">pcoin-linux-x86_64-miner.tar.gz</a></td><td>Plain binaries, any distribution</td></tr>
-  </table>
-  </div>
-  <pre class="cmd"><button class="copy" type="button">copy</button>curl -fsSLO https://github.com/pars5555/pcoin/releases/download/v1.4.34/pcoin-linux-amd64-miner.deb
-curl -fsSL https://pc.am/dl/SHA256SUMS.txt -o SHA256SUMS.txt
-sha256sum --ignore-missing -c SHA256SUMS.txt
-sudo apt install ./pcoin-linux-amd64-miner.deb</pre>
-  <div class="note">
-    <strong><code>--ignore-missing</code> is not optional.</strong>
-    The list covers every file in the release and you downloaded one of them. Without
-    that flag <code>sha256sum</code> reports failures for files you never asked for.
-  </div>
-</section>
-
-<!-- ================= ANDROID ================= -->
-<section class="panelx" id="p-and" role="tabpanel" aria-labelledby="t-and" hidden>
-  <div class="req"><span><b>Needs</b> Android 7.0+</span><span><b>Arch</b> arm64</span><span><b>Download</b> ~9&nbsp;MB</span></div>
-
-  <p style="color:var(--muted);line-height:1.7;max-width:72ch">
-    Two apps from one codebase. Both carry a full PCoin node and a wallet; the
-    difference is whether mining is compiled in at all. Neither app holds <b>wPCN</b>, the
-    wrapped form of PCN on BNB Smart Chain &mdash; that lives in a BSC wallet that can add a
-    custom BEP-20 token (MetaMask works) and trades on PancakeSwap.
-    <a href="https://wrapdesk.pc.am/redeem" rel="noopener">wrapdesk.pc.am/redeem</a> turns wPCN
-    back into PCN you can receive in these apps, and
-    <a href="https://wrapdesk.pc.am" rel="noopener">wrapdesk.pc.am</a> goes the other way. To get
-    PCN without mining, see <a href="https://market.pc.am" rel="noopener">market.pc.am</a>.
-  </p>
-  <div class="table-shell">
-  <table class="files">
-    <tr><th>File</th><th>What it is</th></tr>
-    <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.4.7/pcoin-android-miner.apk">pcoin-android-miner.apk</a></td><td>Node, wallet and mining</td></tr>
-    <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.3.15/pcoin-1.3.15-android-miner-legacy.apk">pcoin-1.3.15-android-miner-legacy.apk</a></td><td>The same miner for phones whose installed app shows package <code>org.pcoin.miner</code> (Settings &rarr; Apps &rarr; PCoin Miner &rarr; app details). It upgrades in place; the file above would install as a second app, and uninstalling the old one destroys its wallet</td></tr>
-    <tr><td class="mono"><a href="https://play.google.com/store/apps/details?id=am.pc.pcoinwallet">Google Play &mdash; PCoin Wallet</a></td><td>Node and wallet, no mining. The easiest route: Play keeps it updated &middot; <a href="/wallet-privacy.html">privacy policy</a></td></tr>
-    <tr><td class="mono"><a href="https://github.com/pars5555/pcoin/releases/download/v1.2.8/pcoin-android-wallet.apk">pcoin-android-wallet.apk</a></td><td>The wallet as a direct download &mdash; but this is the <b>13 August 2026</b> build, and Play carries a newer one. Signed with our key, not Google&rsquo;s, so the two cannot upgrade each other &mdash; pick one and stay on it. Play is the one that keeps up to date.</td></tr>
-  </table>
-  </div>
-
-  <div class="step">
-    <div class="step-n">1</div>
-    <div>
-      <h3>Install the APK</h3>
-      <p>The wallet is on Google Play &mdash; install it from there and this step does not apply. For the miner, or the wallet as a direct <span class="mono">.apk</span>, download it on the phone, tap it, and allow installation from your browser when prompted; Android asks once.</p>
-    </div>
-  </div>
-
-  <div class="step">
-    <div class="step-n">2</div>
-    <div>
-      <h3>Write the recovery phrase on paper</h3>
-      <p>On first run the app shows twelve words. They are the only way back to your
-         coins if the phone is lost or wiped.</p>
-      <div class="note warn">
-        <strong>Uninstalling the app destroys the wallet.</strong>
-        The key lives in app-private storage and Android wipes that on uninstall.
-        Android also refuses to install over an app signed with a different key, which
-        forces an uninstall &mdash; so write the phrase down <em>before</em> you ever
-        need to reinstall. Paper, not a screenshot.
-        <br><br>
-        <strong>Switching between the Play version and the .apk is exactly that case.</strong>
-        Google signs store builds with its own key, so neither can upgrade the other: Android
-        makes you uninstall first, and the wallet and your saved addresses go with it. Export
-        your address book too &mdash; it is wiped by the same uninstall.
-      </div>
-    </div>
-  </div>
-
-  <div class="step">
-    <div class="step-n">3</div>
-    <div>
-      <h3>Expect modest hashrate, and some heat</h3>
-      <p>A phone does real work but far less than a desktop, and sustained mining warms
-         the battery. The miner has a thermal limit and a dead-man&rsquo;s switch: if the
-         OS kills the app, mining stops rather than being left running unsupervised.</p>
-    </div>
-  </div>
-</section>
-
-<!-- ================= SOURCE ================= -->
-<section class="panelx" id="p-src" role="tabpanel" aria-labelledby="t-src" hidden>
-  <p style="color:var(--muted);line-height:1.7;max-width:72ch">
-    The published builds are not reproducible yet &mdash; each was produced once, on one
-    machine. If you want a guarantee stronger than a checksum served from the same place
-    as the download, build it yourself.
-  </p>
-  <pre class="cmd"><button class="copy" type="button">copy</button>sudo apt-get install build-essential cmake pkgconf python3 \
-     libevent-dev libboost-dev libsqlite3-dev
-git clone https://github.com/pars5555/pcoin.git
-cd pcoin
-cmake -B build -DBUILD_GUI=OFF -DENABLE_WALLET=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j "$(nproc)"
-./build/bin/bitcoind --version</pre>
-  <p style="color:var(--muted);line-height:1.7;max-width:72ch">
-    Binaries land in <code>build/bin/</code>. Run the consensus tests with
-    <code>./build/bin/test_bitcoin --run_test=pow_tests</code>.
-  </p>
-</section>
-
-<!-- ================= SHARED ================= -->
-<section style="padding:44px 0 10px;border-top:1px solid var(--line-soft);margin-top:44px">
-  <h2 style="font-size:22px;margin:0 0 8px">Verifying what you downloaded</h2>
-  <p style="color:var(--muted);line-height:1.7;max-width:72ch">
-    Checksums are published in two places that would have to be compromised together to
-    fool you: <a href="https://pc.am/dl/SHA256SUMS.txt">pc.am/dl/SHA256SUMS.txt</a> and the
-    <a href="https://github.com/pars5555/pcoin/releases" rel="noopener">GitHub release</a> each
-    file came from &mdash; the list names the release beside every entry, because the wallet and
-    the miner ship separately and no longer come from one release. The two must agree.
-  </p>
-  <div class="note">
-    <strong>What a checksum proves, and what it does not.</strong>
-    It proves your copy is the file that was published &mdash; it catches a corrupted
-    download, a truncated transfer, or a proxy that altered the bytes. It is
-    <em>not</em> a signature: anyone able to replace an archive could in principle
-    replace the list too. That is why comparing the two sources is worth the extra
-    minute, and why building from source is the stronger answer.
-  </div>
-
-  <h2 style="font-size:22px;margin:34px 0 8px">Common questions</h2>
-
-  <details class="faq">
-    <summary>Windows says the file is dangerous. Is it a virus?</summary>
-    <p>No, and two different Windows features get confused here.
-    <b>SmartScreen</b> warns about any executable it has not seen widely downloaded,
-    regardless of what is inside it &mdash; that is the blue &ldquo;Windows protected
-    your PC&rdquo; box, and a paid code-signing certificate is what removes it.
-    <b>Defender</b> is the antivirus, and it does not flag PCoin: every release is
-    checked on a real machine with real-time protection on, current signatures, and a
-    forced scan of the extracted binaries.
-    If your antivirus does quarantine something, please tell us &mdash; a mining program
-    is a common false-positive shape and we would rather chase it down than have you
-    guess.</p>
-  </details>
-
-  <details class="faq">
-    <summary>A multi-engine scanner flags the wallet. Is that different?</summary>
-    <p>Yes, and it is the question worth asking carefully. Upload any PCoin release to a
-    service that runs seventy engines at once and a handful will flag it while the large
-    majority report nothing at all. <b>Read the labels, not the count.</b></p>
-    <p>The flags are machine-learning verdicts, and they say so in their own names.
-    Measured on the current wallet build, 2026-09-12: eight engines flagged it and
-    sixty-seven reported it undetected. Microsoft's label is
-    <code>Trojan:Win32/Wacatac.C!ml</code> &mdash; the <code>!ml</code> suffix
-    <em>means</em> machine learning. Malwarebytes calls it
-    <code>MachineLearning/Anomalous.100%</code>. CrowdStrike reports
-    <code>malicious_confidence_60%</code>, which is a probability, not an
-    identification. VirusTotal's own summary label for the file is
-    <code>trojan.anomalous/machinelearning</code>.</p>
-    <p>Meanwhile the engines that rely on actual signatures &mdash; Kaspersky, ESET,
-    Bitdefender, Sophos, Symantec, Google, Fortinet, Avast and AVG among them &mdash;
-    all report it clean. No engine names a malware family, because there is not one to
-    name.</p>
-    <p>We have been here before with the same family: an earlier PCoin installer was
-    quarantined as <code>Trojan:Script/Wacatac.H!ml</code>, which turned out to be a
-    reputation guess about the Inno Setup installer stub and nothing to do with our
-    code. Wacatac<code>!ml</code> is a well-known false-positive magnet for unsigned
-    software.</p>
-    <p>A second tell: scanners sometimes flag the <code>.exe</code> while reporting the
-    <code>.zip</code> that contains that identical <code>.exe</code> as clean. Two
-    verdicts that contradict each other are a reputation heuristic talking, not a
-    signature match.</p>
-    <p><b>What to do instead of trusting a scan someone else ran.</b> Check that the file
-    you hold is the file we published: compare its SHA-256 against
-    <a href="https://pc.am/dl/SHA256SUMS.txt">pc.am/dl/SHA256SUMS.txt</a> <em>and</em> the
-    <code>SHA256SUMS</code> asset on the GitHub release it came from. A scan of some other
-    build tells you nothing about the bytes on your disk.</p>
-    <p>The honest root cause is that our binaries are <b>not code-signed</b> yet. An
-    unsigned installer carrying a miner reliably draws heuristic flags and a SmartScreen
-    warning no matter how clean the code is. A certificate removes the whole class of
-    warning, and it is on the list. Until then the source is public and reproducible:
-    <a href="https://github.com/pars5555/pcoin" rel="noopener">github.com/pars5555/pcoin</a>.</p>
-  </details>
-
-  <details class="faq">
-    <summary>How much can I earn?</summary>
-    <p>Each block pays 50 PCN and arrives roughly every ten minutes, shared among
-    everyone mining. Your share is your hashrate over the network&rsquo;s.
-    There is no calculator here and there deliberately is not one anywhere: a predicted
-    hash rate looks certain and is not. <a href="/#hardware">The front page lists three machines we
-    really measured</a>, and the honest way to learn your own is to run the miner for ten minutes and
-    read the figure off it. PCN itself is on no exchange. Its wrapped form, wPCN, trades in a small
-    PancakeSwap pool that is steered to the rate posted at
-    <a href="https://price.pc.am" rel="noopener">price.pc.am</a> &mdash; the same rate the services
-    that accept PCN use &mdash; so read that page, not the pool, for a price. Either way,
-    treat this as a young project, not an income.</p>
-  </details>
-
-  <details class="faq">
-    <summary>Do I need to forward a port?</summary>
-    <p>No. The node makes outbound connections and finds peers by itself. Forwarding
-    port 9444 lets others connect to you and helps the network, but nothing about mining
-    requires it.</p>
-  </details>
-
-  <details class="faq">
-    <summary>Can I mine with a GPU or an ASIC?</summary>
-    <p>No, and that is the point. PCoin uses RandomX, which runs well on ordinary CPUs
-    and badly on specialised hardware, so a laptop is a legitimate participant.
-    Every SHA-256 miner is useless against this chain, and so is stock <code>xmrig</code>. If you
-    already run a rig, <a href="https://github.com/doktor83/SRBMiner-Multi/releases" rel="noopener">SRBMiner-Multi</a>
-    3.5.6 or newer mines PCN natively (algorithm <code>randompcn</code>) against
-    <a href="https://pool.pc.am">the pool</a> &mdash; CPU only, and with its own 0.85% developer fee.</p>
-  </details>
-
-  <details class="faq">
-    <summary>Where do my coins actually go?</summary>
-    <p>To an address you control. On Windows and Android the app holds a wallet and can
-    forward to any address you set. On Linux the miner pays a bare address you supply,
-    so the machine holds no key at all &mdash; which is what you want on a rented
-    server.</p>
-  </details>
-
-  <details class="faq">
-    <summary>I run a shop or a service. Can I accept PCN?</summary>
-    <p>Yes &mdash; the integration guide is at
-    <a href="https://docs.pc.am" rel="noopener">docs.pc.am</a>. It covers deposit
-    addresses, confirmations, reorg handling and custody, with the mistakes that have
-    already cost this project money written down so nobody repeats them.</p>
-  </details>
-</section>
-
-</main>
-
 <footer>
-  <div class="foot-inner">
-    <div class="foot-col" style="max-width:22rem">
-      <div class="foot-brand" style="margin-bottom:12px">
-        <svg viewBox="18 18 72 72" width="28" height="28" aria-hidden="true"><circle cx="54" cy="54" r="36" fill="#262B33"/><path fill="#fff" d="M54,23.25A30.75,30.75 0 0 1 60,23.84L58.73,30.22A24.25,24.25 0 0 0 54,29.75ZM65.77,25.59A30.75,30.75 0 0 1 71.08,28.43L67.47,33.84A24.25,24.25 0 0 0 63.28,31.6ZM75.74,32.26A30.75,30.75 0 0 1 79.57,36.92L74.16,40.53A24.25,24.25 0 0 0 71.15,36.85ZM82.41,42.23A30.75,30.75 0 0 1 84.16,48L77.78,49.27A24.25,24.25 0 0 0 76.4,44.72ZM84.75,54A30.75,30.75 0 0 1 84.16,60L77.78,58.73A24.25,24.25 0 0 0 78.25,54ZM82.41,65.77A30.75,30.75 0 0 1 79.57,71.08L74.16,67.47A24.25,24.25 0 0 0 76.4,63.28ZM75.74,75.74A30.75,30.75 0 0 1 71.08,79.57L67.47,74.16A24.25,24.25 0 0 0 71.15,71.15ZM65.77,82.41A30.75,30.75 0 0 1 60,84.16L58.73,77.78A24.25,24.25 0 0 0 63.28,76.4ZM54,84.75A30.75,30.75 0 0 1 48,84.16L49.27,77.78A24.25,24.25 0 0 0 54,78.25ZM42.23,82.41A30.75,30.75 0 0 1 36.92,79.57L40.53,74.16A24.25,24.25 0 0 0 44.72,76.4ZM32.26,75.74A30.75,30.75 0 0 1 28.43,71.08L33.84,67.47A24.25,24.25 0 0 0 36.85,71.15ZM25.59,65.77A30.75,30.75 0 0 1 23.84,60L30.22,58.73A24.25,24.25 0 0 0 31.6,63.28ZM23.25,54A30.75,30.75 0 0 1 23.84,48L30.22,49.27A24.25,24.25 0 0 0 29.75,54ZM25.59,42.23A30.75,30.75 0 0 1 28.43,36.92L33.84,40.53A24.25,24.25 0 0 0 31.6,44.72ZM32.26,32.26A30.75,30.75 0 0 1 36.92,28.43L40.53,33.84A24.25,24.25 0 0 0 36.85,36.85ZM42.23,25.59A30.75,30.75 0 0 1 48,23.84L49.27,30.22A24.25,24.25 0 0 0 44.72,31.6Z"/><path fill="#fff" fill-rule="evenodd" d="M75,54A21,21 0 1 1 33,54A21,21 0 1 1 75,54ZM54,38.5L57.89,50.11L69.5,54L57.89,57.89L54,69.5L50.11,57.89L38.5,54L50.11,50.11Z"/></svg>
-        PCoin
-      </div>
-      <p>The coin anyone can mine. An independent Layer-1 blockchain with Bitcoin's economics and
-      RandomX CPU proof-of-work.</p>
-    </div>
-    <div class="foot-col">
-      <h5>Project</h5>
-      <a href="https://pc.am">pc.am</a>
-      <a href="https://explorer.pc.am" rel="noopener">Block explorer</a>
-      <a href="https://github.com/pars5555/pcoin" rel="noopener">GitHub — source code</a>
-      <a href="https://github.com/pars5555/pcoin/releases" rel="noopener">Releases</a>
-      <a href="https://pc.am/dl/SHA256SUMS.txt">Checksums (SHA-256)</a>
-      <a href="https://docs.pc.am" rel="noopener">Integration guide</a>
-    </div>
-        <div class="foot-col">
-      <h5>Community</h5>
-      <a href="https://t.me/PCoinPCN" rel="noopener">Telegram &mdash; @PCoinPCN</a>
-      <a href="https://x.com/PCoinPCN" rel="noopener">X &mdash; @PCoinPCN</a>
-      <a href="https://github.com/pars5555/pcoin/issues" rel="noopener">Report a problem</a>
-      <p style="margin-top:10px;opacity:.7">Upgrade notices and chain news are announced on Telegram first.</p>
-    </div>
-<div class="foot-col">
-      <h5>Network</h5>
-      <p>Seed node: <span class="mono">seed.pc.am</span></p>
-      <p>P2P <span class="mono">9444</span> · RPC <span class="mono">9443</span></p>
-      <p>Addresses: <span class="mono">P...</span> / <span class="mono">pc1...</span></p>
-    </div>
-  </div>
-  <div class="foot-base">
-    <span>Based on Bitcoin Core v29.4 · PoW by RandomX · MIT licensed</span>
-    <span>© 2026 PCoin Project</span>
-  </div>
+  <p>PCoin (PCN) &mdash; an independent Layer-1 blockchain.
+  <a href="/">pc.am</a> &middot;
+  <a href="https://github.com/pars5555/pcoin">source</a> &middot;
+  <a href="https://t.me/PCoinPCN">Telegram</a> &middot;
+  <a href="https://discord.gg/dGmdwJkb9f">Discord</a></p>
 </footer>
-
-<script>
-(function () {
-  var tabs = Array.prototype.slice.call(document.querySelectorAll('.tab'));
-
-  function show(id) {
-    tabs.forEach(function (t) {
-      var sel = t.id === id;
-      t.setAttribute('aria-selected', sel ? 'true' : 'false');
-      document.getElementById(t.getAttribute('aria-controls')).hidden = !sel;
-    });
-    // Keep the choice in the URL so a link can point straight at one platform.
-    try { history.replaceState(null, '', '#' + id.slice(2)); } catch (e) {}
-  }
-
-  tabs.forEach(function (t) { t.addEventListener('click', function () { show(t.id); }); });
-
-  // Fragment wins; otherwise guess from the user agent. A wrong guess costs one
-  // click, while no guess at all costs every Linux and Android visitor one.
-  var frag = (location.hash || '').replace('#', '');
-  var known = { win: 1, lin: 1, and: 1, src: 1 };
-  if (known[frag]) {
-    show('t-' + frag);
-  } else if (/Android/i.test(navigator.userAgent)) {
-    show('t-and');
-  } else if (/Linux/i.test(navigator.userAgent)) {
-    show('t-lin');
-  } else {
-    show('t-win');
-  }
-
-  Array.prototype.forEach.call(document.querySelectorAll('.copy'), function (b) {
-    b.addEventListener('click', function () {
-      // Copy the command without the button's own label.
-      var pre = b.parentNode.cloneNode(true);
-      var btn = pre.querySelector('.copy');
-      if (btn) { btn.parentNode.removeChild(btn); }
-      navigator.clipboard.writeText(pre.textContent.trim()).then(function () {
-        var old = b.textContent;
-        b.textContent = 'copied';
-        setTimeout(function () { b.textContent = old; }, 1400);
-      });
-    });
-  });
-})();
-</script>
 </body>
 </html>

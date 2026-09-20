@@ -139,3 +139,6 @@ contrib/pcnaibot/*.db
 contrib/pcnaibot/*.db-wal
 contrib/pcnaibot/*.db-shm
 contrib/pcnaibot/node_modules/
+
+# local agent tool config, not project code
+.claude/

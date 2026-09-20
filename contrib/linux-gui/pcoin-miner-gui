@@ -1,0 +1,911 @@
+#!/usr/bin/env python3
+"""PCoin Miner - a tray app and window for the Linux miner.
+
+The Linux counterpart of the Windows tray. It does not mine anything itself and
+holds no key: it reads the node over RPC and drives the two systemd --user
+units, so closing this window -- or killing this process -- never stops mining.
+
+No dependency beyond what a KDE or GNOME desktop already has. GTK4 through
+PyGObject draws the window, and GLib's own GDBus speaks to the tray. There is no
+AppIndicator typelib on this machine, so the StatusNotifierItem interface that
+KDE's systray actually speaks is implemented directly below -- one D-Bus object
+and one registration call.
+"""
+import json
+import os
+import subprocess
+import threading
+import time
+
+import gi
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
+from gi.repository import Gtk, Gdk, GLib, Gio
+
+HOME = os.path.expanduser("~")
+BIN = os.path.join(HOME, ".local/share/pcoin/bin")
+CLI = os.path.join(BIN, "bitcoin-cli")
+DATADIR = os.path.join(HOME, ".pcoin")
+MINCONF = os.path.join(HOME, ".config/pcoin/miner.conf")
+PCONF = os.path.join(HOME, ".pcoin/pcoin.conf")
+DROPIN = os.path.join(HOME, ".config/systemd/user/pcoind.service.d/nice.conf")
+ICON = os.path.join(HOME, ".local/share/icons/hicolor/256x256/apps/pcoin-miner.png")
+ICONDIR = os.path.join(HOME, ".local/share/icons")
+APP_ID = "am.pc.pcoin.miner"
+CORES = os.cpu_count() or 1
+
+# Headroom, in percent of one core, added to the node's CPU ceiling on top of
+# whatever the mining threads want. Without it the miners eat the entire quota
+# and bitcoind's own net and message-handling threads live on the remainder --
+# which took this machine to ZERO peers while it still reported mining fine.
+NODE_HEADROOM = 20
+
+# pc.am's own palette, so this looks like the project it belongs to.
+CSS = """
+window              { background:#0a0b10; }
+.card               { background:#11131d; border:1px solid #1b1f2e; border-radius:14px; }
+.title              { color:#e9ebf4; font-size:15px; font-weight:800; }
+.sub                { color:#6b7288; font-size:11px; }
+.key                { color:#6b7288; font-size:12px; }
+.val                { color:#e9ebf4; font-size:12px; font-weight:600; }
+.mono               { font-family:monospace; font-size:11px; color:#9aa2b8; }
+.hero               { color:#2dd4bf; font-size:52px; font-weight:800; }
+.herounit           { color:#6b7288; font-size:11px; font-weight:800; letter-spacing:2px; }
+.power              { color:#e9ebf4; font-size:14px; font-weight:700; }
+.pill               { border-radius:999px; padding:4px 11px; font-size:11px; font-weight:800; }
+.pill.on            { background:#0c2e29; color:#2dd4bf; }
+.pill.off           { background:#2b1a1a; color:#f87171; }
+.pill.sync          { background:#2b2410; color:#fbbf24; }
+scale trough        { background:#161a26; border:1px solid #232838; min-height:7px; }
+scale highlight     { background:#2dd4bf; }
+scale slider        { background:#e9ebf4; min-width:17px; min-height:17px;
+                      border-radius:999px; margin:-7px; }
+scale value, scale marks label { color:#6b7288; font-size:10px; }
+entry               { background:#161a26; color:#e9ebf4; border:1px solid #232838;
+                      min-height:26px; font-size:11px; }
+.primary            { background:#2dd4bf; color:#07120f; font-weight:800;
+                      font-size:13px; padding:11px 0; border:none; border-radius:11px; }
+.primary:hover      { background:#5fe3d2; }
+checkbutton         { color:#9aa2b8; font-size:12px; }
+checkbutton check   { background:#161a26; border:1px solid #232838; min-width:15px; min-height:15px; }
+checkbutton check:checked { background:#2dd4bf; border-color:#2dd4bf; }
+.ghost              { background:transparent; border:1px solid #232838; color:#9aa2b8;
+                      font-size:11px; padding:3px 9px; }
+.ghost:hover        { color:#e9ebf4; border-color:#2dd4bf; }
+"""
+
+
+def cli(*args, timeout=8):
+    """One bitcoin-cli call.
+
+    Any failure returns None, which means UNKNOWN and is rendered as a dash --
+    never as a zero. A read that did not happen resolves nothing.
+    """
+    try:
+        proc = subprocess.run([CLI, "-datadir=" + DATADIR, *args],
+                              capture_output=True, text=True, timeout=timeout)
+        if proc.returncode != 0:
+            return None
+        try:
+            return json.loads(proc.stdout.strip())
+        except json.JSONDecodeError:
+            return proc.stdout.strip()
+    except Exception:
+        return None
+
+
+def sysctl(*args, timeout=25):
+    try:
+        return subprocess.run(["systemctl", "--user", *args],
+                              capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return None
+
+
+def unit_active(unit):
+    res = sysctl("is-active", unit, timeout=6)
+    return bool(res and res.stdout.strip() == "active")
+
+
+def read_conf():
+    vals = {}
+    try:
+        with open(MINCONF) as fh:
+            for line in fh:
+                if "=" in line and not line.lstrip().startswith("#"):
+                    key, _, val = line.strip().partition("=")
+                    vals[key] = val
+    except OSError:
+        pass
+    return vals
+
+
+def write_conf(conf):
+    """The one writer for miner.conf, so no caller drops a key another set."""
+    with open(MINCONF, "w") as fh:
+        fh.write("# PCoin miner. Written by the PCoin Miner app.\n")
+        for key in ("PAYOUT_ADDRESS", "THREADS", "POOL_URL"):
+            fh.write("%s=%s\n" % (key, conf.get(key, "")))
+
+
+def start_mining():
+    sysctl("start", "pcoin-miner")
+    return "Mining."
+
+
+def stop_mining():
+    # systemctl stop, NOT just stopmining: the supervisor polls every 30 s and
+    # would restart mining within half a minute.
+    sysctl("stop", "pcoin-miner")
+    cli("stopmining")
+    return "Stopped. The node stays up and connected."
+
+
+def apply_address(addr):
+    """Change where rewards are paid.
+
+    THE NODE decides whether the address is usable, and a failed check is not a
+    pass: rewards paid to a mistyped address go to a key nobody has, and nothing
+    anywhere says so.
+    """
+    addr = (addr or "").strip()
+    if not addr:
+        return "An address is required."
+    check = cli("validateaddress", addr)
+    if check is None:
+        return "Could not reach the node to check that address - not changing it."
+    if not check.get("isvalid"):
+        return "The node says that is not a valid PCoin address."
+    conf = read_conf()
+    conf["PAYOUT_ADDRESS"] = addr
+    write_conf(conf)
+    sysctl("restart", "pcoin-miner")
+    return "Rewards now go to %s" % addr
+
+
+def fast_requested():
+    """Is fast mode ASKED FOR in the node's config? Intent, not observation."""
+    try:
+        with open(PCONF) as fh:
+            for line in fh:
+                s = line.strip()
+                if s.startswith("randomxfastmode"):
+                    return s.partition("=")[2].strip() not in ("0", "false", "no")
+    except OSError:
+        pass
+    return False
+
+
+def set_fast(on):
+    """Fast mode is a NODE setting, so it costs a node restart.
+
+    It goes in pcoin.conf and not in the systemd drop-in, because this app
+    rewrites that drop-in on every core change and would silently lose it.
+    """
+    try:
+        lines = open(PCONF).read().splitlines()
+    except OSError:
+        lines = []
+    lines = [l for l in lines if not l.strip().startswith("randomxfastmode")]
+    if on:
+        lines += ["# Mining only: keeps a 2080 MiB table in memory, 2.3 GiB with",
+                  "# the verification cache. Block VERIFICATION stays in light",
+                  "# mode, so this changes nothing about what the node accepts.",
+                  "randomxfastmode=1"]
+    with open(PCONF, "w") as fh:
+        fh.write("\n".join(lines) + "\n")
+    sysctl("restart", "pcoind")
+    for _ in range(60):
+        if cli("getblockcount") is not None:
+            break
+        time.sleep(2)
+    sysctl("restart", "pcoin-miner")
+    return ("Fast mode on. The table takes a few seconds to build."
+            if on else "Fast mode off - back to the slower light mode.")
+
+
+def apply_pool(url):
+    """Point the miner at a pool, or at nothing for solo. Returns a message."""
+    url = (url or "").strip()
+    conf = read_conf()
+    conf["POOL_URL"] = url
+    write_conf(conf)
+    sysctl("restart", "pcoin-miner")
+    if not url:
+        return ("Solo. This machine mines its own blocks and keeps the whole "
+                "reward on the rare occasions it finds one.")
+    return "Pool set to %s." % url
+
+
+def quota_cores():
+    """How many cores the node's ceiling currently allows, or None if unknown.
+
+    None means UNKNOWN and must never be rendered as a number or acted upon.
+    """
+    res = sysctl("show", "pcoind.service", "-p", "CPUQuotaPerSecUSec",
+                 "--value", timeout=6)
+    raw = (res.stdout or "").strip() if res else ""
+    if not raw or raw == "infinity":
+        return None
+    try:
+        if raw.endswith("ms"):
+            secs = float(raw[:-2]) / 1000.0
+        elif raw.endswith("us"):
+            secs = float(raw[:-2]) / 1e6
+        elif raw.endswith("s"):
+            secs = float(raw[:-1])
+        else:
+            return None
+    except ValueError:
+        return None
+    return max(0, int(round((secs * 100 - NODE_HEADROOM) / 100.0)))
+
+
+def share_pct(cores):
+    """What a given core count costs this machine, ceiling included."""
+    return (cores * 100 + NODE_HEADROOM) / float(CORES)
+
+
+def apply_cores(cores):
+    """Mine on `cores` cores, or stop when 0. Returns what happened.
+
+    Module level rather than a method so the exact path the slider takes can be
+    exercised without a display.
+    """
+    if cores <= 0:
+        # systemctl stop, NOT just stopmining: the supervisor polls every 30 s
+        # and would restart mining within half a minute.
+        sysctl("stop", "pcoin-miner")
+        cli("stopmining")
+        return "Stopped. The node stays up and connected."
+
+    cores = min(cores, CORES)
+    quota = cores * 100 + NODE_HEADROOM
+    conf = read_conf()
+    conf["THREADS"] = str(cores)
+    write_conf(conf)
+    os.makedirs(os.path.dirname(DROPIN), exist_ok=True)
+    with open(DROPIN, "w") as fh:
+        fh.write("# Written by the PCoin Miner app.\n[Service]\n")
+        fh.write("# %d mining core%s plus %d%% of a core of headroom for the\n"
+                 "# node itself; systemd counts one whole core as 100%%.\n"
+                 % (cores, "" if cores == 1 else "s", NODE_HEADROOM))
+        fh.write("CPUQuota=%d%%\nCPUWeight=20\nNice=15\n"
+                 "IOSchedulingClass=idle\nMemoryHigh=4G\n" % quota)
+    sysctl("daemon-reload")
+    # Applies the new ceiling live, so the node is never restarted and never
+    # drops the peers it has.
+    sysctl("set-property", "pcoind.service", "CPUQuota=%d%%" % quota)
+    sysctl("restart", "pcoin-miner")
+    return "%d of %d cores  -  %.0f%% of this machine." % (
+        cores, CORES, share_pct(cores))
+
+
+class Tray:
+    """StatusNotifierItem, spoken directly to KDE's systray over GDBus."""
+
+    XML = """
+    <node><interface name='org.kde.StatusNotifierItem'>
+      <property name='Category' type='s' access='read'/>
+      <property name='Id' type='s' access='read'/>
+      <property name='Title' type='s' access='read'/>
+      <property name='Status' type='s' access='read'/>
+      <property name='WindowId' type='i' access='read'/>
+      <property name='IconName' type='s' access='read'/>
+      <property name='IconThemePath' type='s' access='read'/>
+      <property name='OverlayIconName' type='s' access='read'/>
+      <property name='AttentionIconName' type='s' access='read'/>
+      <property name='ToolTip' type='(sa(iiay)ss)' access='read'/>
+      <property name='ItemIsMenu' type='b' access='read'/>
+      <method name='Activate'>
+        <arg type='i' name='x' direction='in'/>
+        <arg type='i' name='y' direction='in'/></method>
+      <method name='SecondaryActivate'>
+        <arg type='i' name='x' direction='in'/>
+        <arg type='i' name='y' direction='in'/></method>
+      <method name='ContextMenu'>
+        <arg type='i' name='x' direction='in'/>
+        <arg type='i' name='y' direction='in'/></method>
+      <method name='Scroll'>
+        <arg type='i' name='delta' direction='in'/>
+        <arg type='s' name='orientation' direction='in'/></method>
+      <signal name='NewIcon'/>
+      <signal name='NewStatus'><arg type='s' name='status'/></signal>
+      <signal name='NewToolTip'/>
+    </interface></node>"""
+
+    def __init__(self, on_activate):
+        self.on_activate = on_activate
+        self.tip = "PCoin Miner"
+        self.registered = False
+        self.conn = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        node = Gio.DBusNodeInfo.new_for_xml(self.XML)
+        self.conn.register_object("/StatusNotifierItem", node.interfaces[0],
+                                  self._call, self._get, None)
+        self.name = "org.kde.StatusNotifierItem-%d-1" % os.getpid()
+        Gio.bus_own_name_on_connection(self.conn, self.name,
+                                       Gio.BusNameOwnerFlags.NONE,
+                                       self._acquired, None)
+
+    def _acquired(self, conn, name):
+        try:
+            conn.call_sync("org.kde.StatusNotifierWatcher",
+                           "/StatusNotifierWatcher",
+                           "org.kde.StatusNotifierWatcher",
+                           "RegisterStatusNotifierItem",
+                           GLib.Variant("(s)", (name,)), None,
+                           Gio.DBusCallFlags.NONE, 5000, None)
+            self.registered = True
+            print("tray registered as", name, flush=True)
+        except Exception as exc:
+            print("tray registration failed:", exc, flush=True)
+
+    def _call(self, conn, sender, path, iface, method, params, invocation):
+        if method in ("Activate", "SecondaryActivate", "ContextMenu"):
+            GLib.idle_add(self.on_activate)
+        invocation.return_value(None)
+
+    def _get(self, conn, sender, path, iface, prop):
+        simple = {
+            "Category": ("s", "ApplicationStatus"),
+            "Id": ("s", "pcoin-miner"),
+            "Title": ("s", "PCoin Miner"),
+            "Status": ("s", "Active"),
+            "WindowId": ("i", 0),
+            "IconName": ("s", "pcoin-miner"),
+            "IconThemePath": ("s", ICONDIR),
+            "OverlayIconName": ("s", ""),
+            "AttentionIconName": ("s", ""),
+            "ItemIsMenu": ("b", False),
+        }.get(prop)
+        if simple:
+            return GLib.Variant(simple[0], simple[1])
+        if prop == "ToolTip":
+            return GLib.Variant("(sa(iiay)ss)",
+                                ("pcoin-miner", [], "PCoin Miner", self.tip))
+        return None
+
+    def set_tip(self, text):
+        if text == self.tip:
+            return
+        self.tip = text
+        try:
+            self.conn.emit_signal(None, "/StatusNotifierItem",
+                                  "org.kde.StatusNotifierItem",
+                                  "NewToolTip", None)
+        except Exception:
+            pass
+
+
+class Win(Gtk.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="PCoin Miner")
+        self.set_default_size(430, 660)
+        self.history = []
+        self.busy = False
+        self.debounce = None
+        self.addr_text = ""
+
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        for edge in ("top", "bottom", "start", "end"):
+            getattr(root, "set_margin_" + edge)(14)
+        self.set_child(root)
+
+        head = Gtk.Box(spacing=10)
+        if os.path.exists(ICON):
+            img = Gtk.Image.new_from_file(ICON)
+            img.set_pixel_size(34)
+            head.append(img)
+        tbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        title = Gtk.Label(label="PCoin Miner", xalign=0)
+        title.add_css_class("title")
+        sub = Gtk.Label(label="%s  -  %d cores" % (os.uname().nodename, CORES),
+                        xalign=0)
+        sub.add_css_class("sub")
+        tbox.append(title)
+        tbox.append(sub)
+        head.append(tbox)
+        head.append(Gtk.Box(hexpand=True))
+        self.pill = Gtk.Label(label="...")
+        self.pill.add_css_class("pill")
+        self.pill.set_valign(Gtk.Align.CENTER)
+        head.append(self.pill)
+        root.append(head)
+
+        card = self._card()
+        self.hero = Gtk.Label(label="-")
+        self.hero.add_css_class("hero")
+        unit = Gtk.Label(label="HASHES / SECOND")
+        unit.add_css_class("herounit")
+        card.append(self.hero)
+        card.append(unit)
+        self.chart = Gtk.DrawingArea()
+        self.chart.set_content_height(56)
+        self.chart.set_draw_func(self._draw)
+        self.chart.set_margin_top(10)
+        card.append(self.chart)
+        root.append(card)
+
+        # ---- cores ---------------------------------------------------------
+        pcard = self._card(pad=13)
+
+        # The one control most people want, where they can see it.
+        self.onoff = Gtk.Button(label="Stop mining")
+        self.onoff.add_css_class("primary")
+        self.onoff.set_margin_bottom(16)
+        self.onoff.connect("clicked", self._onoff)
+        pcard.append(self.onoff)
+
+        prow = Gtk.Box(spacing=8)
+        plab = Gtk.Label(label="MINING CORES", xalign=0)
+        plab.add_css_class("herounit")
+        plab.set_valign(Gtk.Align.CENTER)
+        prow.append(plab)
+        prow.append(Gtk.Box(hexpand=True))
+        self.cores_lab = Gtk.Label(label="-", xalign=1)
+        self.cores_lab.add_css_class("power")
+        prow.append(self.cores_lab)
+        pcard.append(prow)
+
+        self.scale = Gtk.Scale.new_with_range(
+            Gtk.Orientation.HORIZONTAL, 0, CORES, 1)
+        self.scale.set_draw_value(False)
+        self.scale.set_round_digits(0)
+        self.scale.set_margin_top(10)
+        self.scale.set_margin_bottom(2)
+        for i in range(CORES + 1):
+            self.scale.add_mark(i, Gtk.PositionType.BOTTOM,
+                                "Off" if i == 0 else str(i))
+        self.scale_handler = self.scale.connect("value-changed", self._slid)
+        pcard.append(self.scale)
+
+        self.phint = Gtk.Label(label="", xalign=0)
+        self.phint.add_css_class("sub")
+        self.phint.set_wrap(True)
+        self.phint.set_margin_top(8)
+        pcard.append(self.phint)
+
+        # ---- pool ----------------------------------------------------------
+        prow2 = Gtk.Box(spacing=8)
+        prow2.set_margin_top(12)
+        plab2 = Gtk.Label(label="POOL", xalign=0)
+        plab2.add_css_class("herounit")
+        plab2.set_valign(Gtk.Align.CENTER)
+        prow2.append(plab2)
+        self.pool_entry = Gtk.Entry()
+        self.pool_entry.set_hexpand(True)
+        self.pool_entry.set_placeholder_text("host:port, or empty for solo")
+        prow2.append(self.pool_entry)
+        # The action is on an explicit button, never on the entry's "changed"
+        # signal -- so the refresh below can keep the box in step without ever
+        # being able to trigger a pool switch by displaying one.
+        setb = Gtk.Button(label="Set")
+        setb.add_css_class("ghost")
+        setb.set_valign(Gtk.Align.CENTER)
+        setb.connect("clicked", self._pool)
+        prow2.append(setb)
+        pcard.append(prow2)
+
+        prow3 = Gtk.Box(spacing=6)
+        prow3.set_margin_top(7)
+        for name, url in (("pool.pc.am", "pool.pc.am:3333"),
+                          ("pool2.pc.am", "pool2.pc.am:3333"),
+                          ("solo", "")):
+            preset = Gtk.Button(label=name)
+            preset.add_css_class("ghost")
+            preset.connect("clicked", self._pool_preset, url)
+            prow3.append(preset)
+        pcard.append(prow3)
+
+        # ---- fast mode -----------------------------------------------------
+        self.fast = Gtk.CheckButton(label="Fast mode (about 2 GB more memory, "
+                                          "several times faster)")
+        self.fast.set_margin_top(14)
+        self.fast_handler = self.fast.connect("toggled", self._fast)
+        pcard.append(self.fast)
+        self.fhint = Gtk.Label(label="", xalign=0)
+        self.fhint.add_css_class("sub")
+        self.fhint.set_wrap(True)
+        self.fhint.set_margin_top(4)
+        pcard.append(self.fhint)
+        root.append(pcard)
+
+        grid = Gtk.Grid(row_spacing=9, column_spacing=14)
+        self.rows = {}
+        labels = ("Threads", "CPU ceiling", "Mode", "Pool", "Pool state",
+                  "Shares", "Blocks found", "Chain", "Peers", "Difficulty")
+        for i, key in enumerate(labels):
+            klab = Gtk.Label(label=key, xalign=0)
+            klab.add_css_class("key")
+            vlab = Gtk.Label(label="-", xalign=1)
+            vlab.add_css_class("val")
+            vlab.set_hexpand(True)
+            grid.attach(klab, 0, i, 1, 1)
+            grid.attach(vlab, 1, i, 1, 1)
+            self.rows[key] = vlab
+        scard = self._card(pad=15)
+        scard.append(grid)
+        root.append(scard)
+
+        fcard = self._card(pad=13)
+        flab = Gtk.Label(label="PAID TO", xalign=0)
+        flab.add_css_class("herounit")
+        flab.set_margin_bottom(6)
+        fcard.append(flab)
+        arow = Gtk.Box(spacing=8)
+        self.addr = Gtk.Entry()
+        self.addr.add_css_class("mono")
+        self.addr.set_hexpand(True)
+        self.addr.set_placeholder_text("pc1...")
+        arow.append(self.addr)
+        seta = Gtk.Button(label="Set")
+        seta.add_css_class("ghost")
+        seta.set_valign(Gtk.Align.CENTER)
+        seta.connect("clicked", self._addr)
+        arow.append(seta)
+        copy = Gtk.Button(label="Copy")
+        copy.add_css_class("ghost")
+        copy.set_valign(Gtk.Align.CENTER)
+        copy.connect("clicked", self._copy)
+        arow.append(copy)
+        fcard.append(arow)
+        self.ahint = Gtk.Label(label="", xalign=0)
+        self.ahint.add_css_class("sub")
+        self.ahint.set_wrap(True)
+        self.ahint.set_margin_top(6)
+        fcard.append(self.ahint)
+        note = Gtk.Label(
+            label="This machine holds no key. Rewards go straight to that "
+                  "address.", xalign=0)
+        note.add_css_class("sub")
+        note.set_wrap(True)
+        note.set_margin_top(6)
+        fcard.append(note)
+        root.append(fcard)
+
+        # Closing hides to the tray. Mining belongs to the systemd units, so
+        # neither closing nor killing this process stops any work.
+        self.connect("close-request", self._hide)
+
+    def _card(self, pad=16):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        box.add_css_class("card")
+        box.set_margin_top(pad)
+        box.set_margin_bottom(pad)
+        box.set_margin_start(pad)
+        box.set_margin_end(pad)
+        return box
+
+    def _hide(self, *_args):
+        self.set_visible(False)
+        return True
+
+    def _copy(self, _btn):
+        if not self.addr_text:
+            return
+        clip = Gdk.Display.get_default().get_clipboard()
+        try:
+            clip.set(self.addr_text)
+        except Exception:
+            clip.set_content(Gdk.ContentProvider.new_for_value(self.addr_text))
+
+    def _draw(self, _area, cr, width, height):
+        cr.set_source_rgb(0.043, 0.047, 0.067)
+        cr.paint()
+        hist = self.history
+        if len(hist) < 2:
+            return
+        low, high = min(hist), max(hist)
+        span = high - low
+        # A steady hashrate is the normal case, and a chart pinned to zero would
+        # draw it as a featureless block. Zoom to the range actually seen, with
+        # a floor so tiny jitter is not magnified into drama.
+        pad = max(span * 0.15, high * 0.02, 0.5)
+        low, high = low - pad, high + pad
+        rng = max(high - low, 1e-6)
+        step = width / float(max(len(hist) - 1, 1))
+
+        def ypos(value):
+            return height - 2 - ((value - low) / rng) * (height - 6)
+
+        cr.move_to(0, height)
+        for i, value in enumerate(hist):
+            cr.line_to(i * step, ypos(value))
+        cr.line_to((len(hist) - 1) * step, height)
+        cr.close_path()
+        cr.set_source_rgba(0.176, 0.831, 0.749, 0.16)
+        cr.fill()
+
+        cr.set_line_width(1.8)
+        cr.set_source_rgb(0.176, 0.831, 0.749)
+        for i, value in enumerate(hist):
+            (cr.move_to if i == 0 else cr.line_to)(i * step, ypos(value))
+        cr.stroke()
+
+    # ---- the slider -------------------------------------------------------
+    def show_cores(self, cores):
+        """Reflect the machine's real core count into the slider WITHOUT acting.
+
+        The handler is blocked for the duration. A busy flag is not enough: this
+        control both displays state and changes it, and any flag guarding that
+        is one reordering away from the display path silently RE-APPLYING a
+        setting. It did exactly that once, taking this box to every core on its
+        own. Blocking the handler makes it structurally impossible.
+        """
+        self.scale.handler_block(self.scale_handler)
+        self.scale.set_value(cores)
+        self.scale.handler_unblock(self.scale_handler)
+        self._label(cores)
+
+    def _label(self, cores):
+        if cores <= 0:
+            self.cores_lab.set_text("Off")
+        else:
+            self.cores_lab.set_text(
+                "%d of %d  -  %.0f%%" % (cores, CORES, share_pct(cores)))
+
+    def _slid(self, scale):
+        """Dragging fires continuously, so settle first and act once."""
+        cores = int(round(scale.get_value()))
+        self._label(cores)
+        self.phint.set_text("release to apply")
+        if self.debounce:
+            GLib.source_remove(self.debounce)
+        self.debounce = GLib.timeout_add(700, self._settled, cores)
+
+    def _settled(self, cores):
+        self.debounce = None
+        if self.busy:
+            return False
+        self.busy = True
+        print("cores: slider set to %d" % cores, flush=True)
+        self.phint.set_text("applying...")
+        threading.Thread(target=self._apply, args=(cores,), daemon=True).start()
+        return False
+
+    def _pool_preset(self, _btn, url):
+        self.pool_entry.set_text(url)
+        self._pool(None)
+
+    def _pool(self, _btn):
+        if self.busy:
+            return
+        self.busy = True
+        url = self.pool_entry.get_text().strip()
+        self.phint.set_text("applying...")
+        threading.Thread(target=self._apply_pool, args=(url,),
+                         daemon=True).start()
+
+    def _apply_pool(self, url):
+        try:
+            msg = apply_pool(url)
+        except Exception as exc:
+            msg = "failed: %s" % exc
+        GLib.idle_add(self._applied, msg)
+
+    def _onoff(self, _btn):
+        if self.busy:
+            return
+        self.busy = True
+        going_on = self.onoff.get_label().startswith("Start")
+        self.phint.set_text("applying...")
+        threading.Thread(target=self._run,
+                         args=(start_mining if going_on else stop_mining,),
+                         daemon=True).start()
+
+    def _addr(self, _btn):
+        if self.busy:
+            return
+        self.busy = True
+        wanted = self.addr.get_text().strip()
+        self.ahint.set_text("checking the address with the node...")
+        threading.Thread(target=self._run_addr, args=(wanted,),
+                         daemon=True).start()
+
+    def _run_addr(self, wanted):
+        try:
+            msg = apply_address(wanted)
+        except Exception as exc:
+            msg = "failed: %s" % exc
+        GLib.idle_add(self._addr_done, msg)
+
+    def _addr_done(self, msg):
+        self.ahint.set_text(msg)
+        self.busy = False
+        return False
+
+    def show_fast(self, on):
+        """Reflect the node's setting WITHOUT acting on it -- see show_cores."""
+        self.fast.handler_block(self.fast_handler)
+        self.fast.set_active(on)
+        self.fast.handler_unblock(self.fast_handler)
+
+    def _fast(self, chk):
+        if self.busy:
+            return
+        self.busy = True
+        want = chk.get_active()
+        self.fhint.set_text("restarting the node to %s fast mode..."
+                            % ("turn on" if want else "turn off"))
+        threading.Thread(target=self._run_fast, args=(want,),
+                         daemon=True).start()
+
+    def _run_fast(self, want):
+        try:
+            msg = set_fast(want)
+        except Exception as exc:
+            msg = "failed: %s" % exc
+        GLib.idle_add(self._fast_done, msg)
+
+    def _fast_done(self, msg):
+        self.fhint.set_text(msg)
+        self.busy = False
+        return False
+
+    def _run(self, fn):
+        try:
+            msg = fn()
+        except Exception as exc:
+            msg = "failed: %s" % exc
+        GLib.idle_add(self._applied, msg)
+
+    def _apply(self, cores):
+        try:
+            msg = apply_cores(cores)
+        except Exception as exc:
+            msg = "failed: %s" % exc
+        GLib.idle_add(self._applied, msg)
+
+    def _applied(self, msg):
+        self.phint.set_text(msg)
+        self.busy = False
+        return False
+
+
+class App(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id=APP_ID,
+                         flags=Gio.ApplicationFlags.FLAGS_NONE)
+        self.win = None
+        self.tray = None
+
+    def do_activate(self):
+        if self.win is None:
+            prov = Gtk.CssProvider()
+            try:
+                prov.load_from_string(CSS)
+            except AttributeError:
+                prov.load_from_data(CSS.encode())
+            Gtk.StyleContext.add_provider_for_display(
+                Gdk.Display.get_default(), prov,
+                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+            Gtk.Window.set_default_icon_name("pcoin-miner")
+            self.win = Win(self)
+            self.hold()          # stay alive with the window hidden
+            try:
+                self.tray = Tray(self.toggle)
+            except Exception as exc:
+                print("no tray:", exc, flush=True)
+            GLib.timeout_add_seconds(2, self.tick)
+            self.tick()
+        self.win.set_visible(True)
+        self.win.present()
+
+    def toggle(self):
+        if self.win.get_visible():
+            self.win.set_visible(False)
+        else:
+            self.win.set_visible(True)
+            self.win.present()
+        return False
+
+    def tick(self):
+        threading.Thread(target=self._read, daemon=True).start()
+        return True
+
+    def _read(self):
+        # NOTE: getcpuminerinfo refreshes the node's dead-man's switch. Harmless
+        # here, because the supervisor is the real keep-alive -- but it means
+        # this app is never EVIDENCE that mining is running. The unit state is
+        # what decides Mining versus Paused below.
+        miner = cli("getcpuminerinfo") or {}
+        chain = cli("getblockchaininfo") or {}
+        peers = cli("getconnectioncount")
+        GLib.idle_add(self._paint, miner, chain, peers, read_conf(),
+                      unit_active("pcoin-miner"), quota_cores())
+
+    def _paint(self, miner, chain, peers, conf, unit_on, qcores):
+        win = self.win
+        if win is None:
+            return False
+        rate = miner.get("hashespersec")
+        mining = bool(miner.get("mining")) and unit_on
+        ibd = chain.get("initialblockdownload")
+        win.addr_text = conf.get("PAYOUT_ADDRESS", "")
+
+        if mining and isinstance(rate, (int, float)):
+            win.hero.set_text("{:,.1f}".format(rate))
+            win.history.append(rate)
+            del win.history[:-90]
+        else:
+            win.hero.set_text("-")
+        win.chart.queue_draw()
+
+        for cls in ("on", "off", "sync"):
+            win.pill.remove_css_class(cls)
+        if mining:
+            win.pill.add_css_class("on")
+            win.pill.set_text("MINING")
+        elif ibd:
+            win.pill.add_css_class("sync")
+            win.pill.set_text("SYNCING")
+        else:
+            win.pill.add_css_class("off")
+            win.pill.set_text("PAUSED")
+
+        threads = miner.get("threads") or 0
+        win.rows["Threads"].set_text("%d of %d" % (threads, CORES))
+        win.rows["CPU ceiling"].set_text(
+            "-" if qcores is None
+            else "%.0f%% of this PC" % share_pct(qcores))
+        win.rows["Pool"].set_text(conf.get("POOL_URL") or "solo")
+        # Never overwrite what someone is typing.
+        if not win.busy and not win.pool_entry.has_focus():
+            current = conf.get("POOL_URL") or ""
+            if win.pool_entry.get_text() != current:
+                win.pool_entry.set_text(current)
+        win.rows["Pool state"].set_text(str(miner.get("poolstate") or "-"))
+        acc, rej = miner.get("sharesaccepted"), miner.get("sharesrejected")
+        win.rows["Shares"].set_text(
+            "-" if acc is None else "%d accepted, %d rejected" % (acc, rej))
+        win.rows["Blocks found"].set_text(str(miner.get("blocksfound", "-")))
+        blocks, headers = chain.get("blocks"), chain.get("headers")
+        if blocks is None:
+            win.rows["Chain"].set_text("-")
+        elif ibd and headers:
+            win.rows["Chain"].set_text("{:,} of {:,}".format(blocks, headers))
+        else:
+            win.rows["Chain"].set_text("{:,}".format(blocks))
+        win.rows["Peers"].set_text("-" if peers is None else str(peers))
+        diff = chain.get("difficulty")
+        win.rows["Difficulty"].set_text(
+            "-" if diff is None else ("%.4f" % diff))
+        mode = miner.get("mode") or "-"
+        win.rows["Mode"].set_text(
+            mode + ("  (large pages)" if miner.get("largepages") else ""))
+
+        # Never overwrite an address somebody is part way through typing.
+        if not win.busy and not win.addr.has_focus():
+            current = conf.get("PAYOUT_ADDRESS") or ""
+            if win.addr.get_text() != current:
+                win.addr.set_text(current)
+
+        # The button says what pressing it will DO, and the unit decides which.
+        if not win.busy:
+            want = "Stop mining" if unit_on else "Start mining"
+            if win.onoff.get_label() != want:
+                win.onoff.set_label(want)
+            win.show_fast(fast_requested())
+            if mode == "light" and miner.get("modereason"):
+                win.fhint.set_text(miner.get("modereason"))
+            elif mode == "fast" and not miner.get("largepages") \
+                    and miner.get("largepagesreason"):
+                win.fhint.set_text(miner.get("largepagesreason"))
+
+        # Only ever mirror a value we actually know. An UNKNOWN ceiling leaves
+        # the slider alone rather than guessing a position.
+        if not win.busy and win.debounce is None:
+            if not mining:
+                win.show_cores(0)
+            elif qcores is not None:
+                win.show_cores(qcores)
+
+        if self.tray:
+            self.tray.set_tip(
+                "{:,.0f} H/s".format(rate)
+                if mining and isinstance(rate, (int, float)) else "not mining")
+        return False
+
+
+if __name__ == "__main__":
+    App().run(None)
