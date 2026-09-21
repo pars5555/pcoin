@@ -28,6 +28,10 @@ import { esc, card, note, tiles } from './ui.mjs';
 // secret and must never be writable from a web page.
 export const CLOSED_FILE = '/etc/pcoin/control/wrapdesk-closed';
 
+// Where a deposit transaction can be read. Only ever used to build a link for a
+// person to click -- nothing on this page is decided from the explorer.
+const EXPLORER = process.env.WRAPDESK_EXPLORER || 'https://explorer.pc.am';
+
 // Every path the DESK treats as closing it, in the desk's own order. The panel
 // can only remove the first; the rest are shown so that a flag it cannot clear
 // is never mistaken for one it has.
@@ -272,6 +276,34 @@ export function wrapdeskWork() {
   }
   push();
 
+  // WHY a deposit was withheld decides what you do about it, and the three
+  // reasons want three different answers. Two of them are judgement calls --
+  // one depositor over their own limit, or a single instruction over the
+  // per-send ceiling -- and you might legitimately raise a limit and pay.
+  //
+  // The allocation being full is NOT a judgement call. No wPCN exists to issue,
+  // so the PCN goes back, and that case is separated here so it stops reading
+  // as one more thing to think about.
+  //
+  // Classified off the watcher's own REASON line rather than recomputed from
+  // the numbers, so this page can only ever describe a refusal the watcher
+  // actually made. An unrecognised reason falls to 'other' and is shown as a
+  // decision, never silently as a refund.
+  for (const i of items) {
+    if (i.kind !== 'withheld') continue;
+    const reason = i.detail.find((d) => d.startsWith('REASON:')) || '';
+    i.why = /against a .* allocation/.test(reason) ? 'cap'
+      : /a single person may receive/.test(reason) ? 'person'
+        : /ceiling on any single instruction/.test(reason) ? 'single'
+          : 'other';
+    // How much PCN to send back, and which transaction it arrived in. Both are
+    // read out of lines the watcher printed; the txid comes from the close-out
+    // key for the same reason the key itself does.
+    const m = i.detail.map((d) => d.match(/^([\d.]+) PCN, tx /)).find(Boolean);
+    i.pcn = m ? m[1] : null;
+    i.txid = i.key ? i.key.split(':')[0] : null;
+  }
+
   return { ok: true, items, allocation, warnings, ranAt: new Date().toISOString() };
 }
 
@@ -283,6 +315,8 @@ function workCard(w) {
   }
   const actions = w.items.filter((i) => i.kind === 'send');
   const held = w.items.filter((i) => i.kind === 'withheld');
+  const refund = held.filter((i) => i.why === 'cap');
+  const decide = held.filter((i) => i.why !== 'cap');
   const waiting = w.items.filter((i) => i.kind === 'waiting');
 
   // THE CLOSE-OUT, AS A BOX YOU CAN TYPE IN.
@@ -315,12 +349,39 @@ function workCard(w) {
     + `amount, and the transaction did not revert. If it does not match, nothing changes `
     + `and you are told why.</p></form>`);
 
+  // THE DEPOSIT THAT ARRIVED TOO LATE, SAID PLAINLY.
+  //
+  // A deposit address is permanent and the public page promises it is reusable
+  // "any number of times", so the obligation is created by the DEPOSIT, which
+  // lands after the request gate has already let the request through. When the
+  // allocation is full there is nothing to issue and the only honest answer is
+  // to give the PCN back.
+  //
+  // WHO to give it back to is NOT recorded anywhere. The desk knows the deposit
+  // address and the transaction; it never learns who paid. So this links the
+  // transaction and says to read the sender off its inputs. Naming an address
+  // here would mean guessing a payee for real money, and a wrong guess pays a
+  // stranger while the customer is still owed.
+  const refundLine = (i) => (i.why !== 'cap' ? '' :
+    `<div style="margin-top:8px;padding:8px 10px;border-radius:4px;`
+    + `background:var(--panel);border:1px solid var(--yellow)">`
+    + `<b>Refund needed &mdash; send ${esc(i.pcn || 'the deposit')} PCN back.</b> `
+    + `The desk had already committed its whole allocation when this arrived, so no `
+    + `wPCN can be issued for it. The PCN is safe in the reserve until you return it.`
+    + (i.txid
+      ? ` <a href="${EXPLORER}/tx/${esc(i.txid)}" target="_blank" rel="noopener">Open `
+        + `the deposit on the explorer</a> and take the sender from its inputs &mdash; `
+        + `the desk records the deposit address, never who paid into it.`
+      : '')
+    + `</div>`);
+
   const block = (i, colour) =>
     `<div style="border-left:3px solid var(--${colour});padding:8px 12px;margin:10px 0;`
     + `background:var(--panel-2);border-radius:4px">`
     + `<div style="font-weight:700">${esc(i.title)}</div>`
     + (i.to ? `<div style="margin-top:4px">to <code>${esc(i.to)}</code></div>` : '')
     + `<pre style="white-space:pre-wrap;margin:6px 0 0;font-size:12px">${esc(i.detail.join(String.fromCharCode(10)))}</pre>`
+    + refundLine(i)
     + closeForm(i)
     + (i.close
         ? `<details style="margin-top:8px"><summary class="muted" style="cursor:pointer;font-size:12px">`
@@ -341,12 +402,20 @@ function workCard(w) {
       + 'every hour for ever.</p>'
       + actions.map((i) => block(i, 'green')).join('');
   }
-  if (held.length) {
-    body += `<h3>Blocked, needs a decision (${held.length})</h3>`
+  if (refund.length) {
+    body += `<h3>Refund the PCN &mdash; the allocation is full (${refund.length})</h3>`
+      + '<p class="muted">These arrived after the desk had committed its whole allocation, '
+      + 'so there is no wPCN to issue for them and raising the ceiling afterwards would be '
+      + 'issuing against a limit that was already spent. Send the PCN back to whoever paid '
+      + 'it, then close the wrap out or it is re-alerted every hour for ever.</p>'
+      + refund.map((i) => block(i, 'red')).join('');
+  }
+  if (decide.length) {
+    body += `<h3>Blocked, needs a decision (${decide.length})</h3>`
       + '<p class="muted">The PCN is safe in the reserve and nothing is lost by waiting. '
-      + 'Raise the allocation, refund the deposit, or pay it and record why &mdash; '
+      + 'Raise the limit, refund the deposit, or pay it and record why &mdash; '
       + 'but decide it deliberately.</p>'
-      + held.map((i) => block(i, 'yellow')).join('');
+      + decide.map((i) => block(i, 'yellow')).join('');
   }
   if (waiting.length) {
     body += `<h3>Still confirming (${waiting.length})</h3>`
@@ -411,6 +480,8 @@ export function wrapdeskPage(st, flash, work) {
   const w = work || { ok: false, why: 'not collected' };
   const nSend = w.ok ? w.items.filter((i) => i.kind === 'send').length : null;
   const nHeld = w.ok ? w.items.filter((i) => i.kind === 'withheld').length : null;
+  const nRefund = w.ok
+    ? w.items.filter((i) => i.kind === 'withheld' && i.why === 'cap').length : null;
   const nWait = w.ok ? w.items.filter((i) => i.kind === 'waiting').length : null;
 
   return '<h1>Wrap desk</h1>'
@@ -422,6 +493,7 @@ export function wrapdeskPage(st, flash, work) {
          st.open === null ? 'yellow' : (st.open ? 'green' : 'red')],
         ['To send', nSend === null ? '?' : String(nSend), nSend ? 'green' : 'muted'],
         ['Blocked', nHeld === null ? '?' : String(nHeld), nHeld ? 'yellow' : 'muted'],
+        ['PCN to refund', nRefund === null ? '?' : String(nRefund), nRefund ? 'red' : 'muted'],
         ['Confirming', nWait === null ? '?' : String(nWait), 'blue'],
         ['Allocation left', w.ok && w.allocation ? w.allocation.left.toFixed(0) + ' wPCN' : '?',
          w.ok && w.allocation && w.allocation.left < 300 ? 'yellow' : 'muted'],
