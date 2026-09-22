@@ -741,8 +741,19 @@ def main() -> int:
     # quietly vanished mid-rehearsal. They are kept, and they are the ONLY
     # thing carried over, so a real wrap can never be resurrected from a stale
     # state file by this path. `--clear-test-wraps` removes them.
-    _kept_tests = {k: v for k, v in (st.get("outstanding") or {}).items()
-                   if isinstance(v, dict) and v.get("test")}
+    # ONLY THE ONES STILL OWED. A test wrap that has been PAID must drop off
+    # the page like any other: keeping it would re-offer a Send button for
+    # money that already went out. The --send guard refuses a second payment
+    # (it checks `released` before signing), so this was never a double-spend
+    # -- but a row that offers to pay and then refuses is exactly the kind of
+    # control that teaches an operator to ignore what the page says.
+    _seen_now = st.get("seen") or {}
+    _kept_tests = {
+        k: v for k, v in (st.get("outstanding") or {}).items()
+        if isinstance(v, dict) and v.get("test")
+        and not (_seen_now.get(f"wrap:{k}") or {}).get("released")
+        and not (_seen_now.get(f"wrap:{k}") or {}).get("refunded")
+    }
     st["outstanding"] = dict(_kept_tests)
     for watch_addr, requester in watch.items():
         addr = explorer_get(f"/api/address/{watch_addr}")
