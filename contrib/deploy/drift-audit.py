@@ -57,7 +57,7 @@ TARGETS_FILE = Path(os.environ.get(
 # be pulled into the repo.
 DEPLOYMENTS = {
     "market": ("contrib/market", "/opt/pcoin-market", "~/.ssh/id_ed25519",
-               ["*.mjs", "*.css", "*.html", "*.sql"]),
+               ["*.mjs", "*.css", "*.html", "*.sql", "*.sh"]),
     # server.mjs on the box IS wrapdesk-server.mjs in the repo. A deployment
     # that renames its entrypoint looks like "one file only on the server and a
     # different one only in the repo", which reads as two problems and is none.
