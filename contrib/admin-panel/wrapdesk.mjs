@@ -32,6 +32,12 @@ export const CLOSED_FILE = '/etc/pcoin/control/wrapdesk-closed';
 // person to click -- nothing on this page is decided from the explorer.
 const EXPLORER = process.env.WRAPDESK_EXPLORER || 'https://explorer.pc.am';
 
+// Our own treasury. Used ONLY to pre-fill the destination on a rehearsal row,
+// never on a real refund -- a test wrap has no depositor to resolve, and an
+// address that is ours is the only safe thing to suggest.
+const TREASURY = process.env.PCOIN_TREASURY
+  || 'pc1qlvw6kx8wkcz8f6p0d6kswv69fjt33ll079f64e';
+
 // Every path the DESK treats as closing it, in the desk's own order. The panel
 // can only remove the first; the rest are shown so that a flag it cannot clear
 // is never mistaken for one it has.
@@ -499,6 +505,10 @@ function workCard(w) {
   // works and simply says "Send now" -- the watcher decides the amount, not
   // this label, so a missing label is cosmetic and never changes what is paid.
   const amountOf = (i) => (String(i.title || '').match(/([\d,]+\.?\d*)\s*wPCN/) || [])[1];
+  // A rehearsal row, labelled by the watcher. Only used to decide how much
+  // hand-holding the refund form needs -- it changes no amount and no address
+  // on a real payout.
+  const isTest = (i) => /TEST WRAP/.test(String(i.title || ''));
   const sendForm = (i) => (i.kind !== 'send' || !i.key ? '' :
     `<form method="post" style="margin-top:10px"`
     + ` onsubmit="return confirm('Send ${esc(amountOf(i) || '')} wPCN from the keeper`
@@ -546,11 +556,21 @@ function workCard(w) {
     + `<input type="hidden" name="key" value="${esc(i.key)}">`
     + `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">`
     + `<input name="pcn" required inputmode="decimal" pattern="[0-9]*\\.?[0-9]*"`
+    + ` value="${esc(isTest(i) ? '1' : '')}"`
     + ` placeholder="PCN to give back" style="flex:0 1 170px;padding:7px 10px;`
     + `border-radius:4px;border:1px solid var(--line);background:var(--panel);`
     + `color:inherit;font-family:ui-monospace,monospace;font-size:12px">`
+    // A TEST ROW CAN NEVER RESOLVE ITS OWN DESTINATION, so it is filled in.
+    // Its txid is random and pays nobody, so "leave blank to use the deposit's
+    // own sender" is advice that cannot work here -- and following it returns
+    // a refusal that reads like a fault. Pre-filled with the treasury, which
+    // is ours, visible in any PCoin wallet and on the explorer, so the
+    // rehearsal can actually be watched arriving. A real row is left blank,
+    // because there the blank has a correct meaning.
     + `<input name="to" spellcheck="false" autocomplete="off"`
-    + ` placeholder="leave blank to use the deposit's own sender"`
+    + (isTest(i) ? ` required value="${esc(TREASURY)}"` : '')
+    + ` placeholder="${esc(isTest(i) ? 'where to send the test PCN'
+        : "leave blank to use the deposit's own sender")}"`
     + ` style="flex:1 1 320px;min-width:240px;padding:7px 10px;border-radius:4px;`
     + `border:1px solid var(--line);background:var(--panel);color:inherit;`
     + `font-family:ui-monospace,monospace;font-size:12px">`
