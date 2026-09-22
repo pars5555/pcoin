@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://pc.am/sitemap.xml

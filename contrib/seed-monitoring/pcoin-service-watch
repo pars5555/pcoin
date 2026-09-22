@@ -35,8 +35,11 @@ Conventions match the rest of contrib/seed-monitoring: decide WHAT is wrong, exi
 non-zero, and let OnFailure= + pcoin-notify decide where that goes. No credential
 lives here and every endpoint checked is public.
 """
+import datetime
 import json
+import math
 import os
+import re
 import ssl
 import sys
 import time
@@ -44,8 +47,10 @@ import urllib.error
 import urllib.request
 
 # name, url, and what must be true of the body.
-#   key=...  a dotted path that must exist and be non-null in the JSON
-#   has=...  a substring that must appear in the text
+#   key=...            a dotted path that must exist and be non-null in the JSON
+#   has=...            a substring that must appear in the text
+#   expires_field=...  a header-style "Name: <iso date>" line in the body that
+#                      must not be expired or within expires_warn_days (30)
 # A service with neither is checked for status only, which is the weakest form
 # and is used where there is no machine-readable surface to assert on.
 SERVICES = [
@@ -78,6 +83,13 @@ SERVICES = [
     ("aicontrol",      "https://aicontrol.pc.am/",              {}),
     ("webbuilderbot",  "https://webcrafterai.com/",             {}),
     ("3dmodels",       "https://3dmodels.pc.am/",               {}),
+    # NOT A SERVICE -- a PROMISE with a date on it, watched for the same reason
+    # everything else here is. Nothing renews security.txt and nothing ever
+    # will, so an expiry alarm is the only thing that can stop it rotting into
+    # a file that tells a researcher the project is abandoned, which is the
+    # exact outcome it exists to prevent. See the expires_field branch below.
+    ("security.txt",   "https://pc.am/.well-known/security.txt",
+                                                {"expires_field": "Expires"}),
 ]
 
 TIMEOUT = float(os.environ.get("SERVICE_TIMEOUT", "20"))
@@ -129,6 +141,40 @@ def probe(url, want):
         if v is None:
             return False, "answered 200 but %s is missing or null" % want["key"]
         return True, "%s=%s" % (want["key"], str(v)[:24])
+    if "expires_field" in want:
+        # A DATE INSIDE THE BODY, not a certificate date. RFC 9116 makes
+        # Expires mandatory in security.txt, and an expired one reads as an
+        # abandoned project -- a researcher who sees it goes public instead of
+        # writing to us, which is the exact outcome the file exists to avoid.
+        #
+        # Nothing renews it automatically and nothing ever will, so the only
+        # thing that can stop it rotting is something that complains first.
+        # This is the same class as the pc.am price and the fairness figure
+        # (CLAUDE.md 8b): a promise on a public page with no expiry alarm.
+        m = re.search(r"^%s:\s*(\S+)" % re.escape(want["expires_field"]),
+                      body, re.M | re.I)
+        if not m:
+            return False, "answered 200 but has no %s: field" % want["expires_field"]
+        try:
+            # Accept the trailing Z that RFC 9116's examples use; fromisoformat
+            # only learned it in 3.11 and these hosts are mixed.
+            when = datetime.datetime.fromisoformat(
+                m.group(1).replace("Z", "+00:00"))
+        except ValueError:
+            return False, "%s: %r is not a date I can read" % (
+                want["expires_field"], m.group(1)[:32])
+        # Rounded UP, not truncated. timedelta.days floors, so a file expiring
+        # in exactly 31 days reads as 30 the instant any time has passed and
+        # alerts a day early -- harmless, but it makes the threshold mean
+        # something other than what it says, and a threshold nobody can predict
+        # is one people learn to ignore.
+        left = (when - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+        days = int(math.ceil(left / 86400.0))
+        if days < 0:
+            return False, "EXPIRED %d days ago (%s) -- renew it" % (-days, m.group(1))
+        if days <= int(want.get("expires_warn_days", 30)):
+            return False, "expires in %d days (%s) -- renew it" % (days, m.group(1))
+        return True, "expires in %d days" % days
     return True, "200"
 
 

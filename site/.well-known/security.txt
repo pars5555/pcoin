@@ -1,0 +1,17 @@
+# PCoin (PCN) -- https://pc.am
+#
+# The chain is live and carries real value. If you have found something that can
+# take money, halt the chain or rewrite it, please tell us before telling anyone
+# else. We will work with you on a fix and a disclosure date.
+#
+# Preferred: open a private GitHub security advisory (link below). It is private
+# to the maintainers and needs no key exchange. If you cannot use GitHub, email
+# the address below and say only that you have a security issue -- we will
+# arrange an encrypted channel before you send details.
+
+Contact: https://github.com/pars5555/pcoin/security/advisories/new
+Contact: mailto:pcoin@pc.am
+Expires: 2027-09-01T00:00:00.000Z
+Policy: https://github.com/pars5555/pcoin/blob/main/SECURITY.md
+Preferred-Languages: en
+Canonical: https://pc.am/.well-known/security.txt
