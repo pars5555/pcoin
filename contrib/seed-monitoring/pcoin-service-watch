@@ -35,7 +35,9 @@ Conventions match the rest of contrib/seed-monitoring: decide WHAT is wrong, exi
 non-zero, and let OnFailure= + pcoin-notify decide where that goes. No credential
 lives here and every endpoint checked is public.
 """
+import base64
 import datetime
+import hashlib
 import json
 import math
 import os
@@ -51,6 +53,8 @@ import urllib.request
 #   has=...            a substring that must appear in the text
 #   expires_field=...  a header-style "Name: <iso date>" line in the body that
 #                      must not be expired or within expires_warn_days (30)
+#   csp_hash=True      every inline <script> must hash to a value the page's
+#                      own Content-Security-Policy header lists
 # A service with neither is checked for status only, which is the weakest form
 # and is used where there is no machine-readable surface to assert on.
 SERVICES = [
@@ -90,6 +94,11 @@ SERVICES = [
     # exact outcome it exists to prevent. See the expires_field branch below.
     ("security.txt",   "https://pc.am/.well-known/security.txt",
                                                 {"expires_field": "Expires"}),
+    # THE TWO PAGES WHOSE INLINE SCRIPT IS PINNED BY HASH IN THE CSP. Change
+    # the script without recomputing the hash and the browser stops running
+    # it -- the page renders and does nothing, which no status check can see.
+    ("pc.am/pay",      "https://pc.am/pay/",      {"csp_hash": True}),
+    ("pc.am/app",      "https://pc.am/app/",      {"csp_hash": True}),
 ]
 
 TIMEOUT = float(os.environ.get("SERVICE_TIMEOUT", "20"))
@@ -123,6 +132,7 @@ def probe(url, want):
                                     context=ssl.create_default_context()) as r:
             body = r.read(400_000).decode("utf-8", "replace")
             code = r.getcode()
+            hdrs = r.headers
     except urllib.error.HTTPError as e:
         return False, "HTTP %s" % e.code
     except Exception as e:
@@ -141,6 +151,32 @@ def probe(url, want):
         if v is None:
             return False, "answered 200 but %s is missing or null" % want["key"]
         return True, "%s=%s" % (want["key"], str(v)[:24])
+    if want.get("csp_hash"):
+        # pc.am's CSP pins each inline <script> BY HASH instead of allowing
+        # 'unsafe-inline', which is what keeps /pay/ -- the page that builds a
+        # payment URI from location.search -- strict. The cost is that the hash
+        # and the script must move together: edit the script without
+        # recomputing and the browser silently stops executing it. The page
+        # still renders, and simply does nothing.
+        #
+        # Nothing about that is visible to a status check, so this recomputes
+        # the hash from the page the public actually gets and asserts the live
+        # header still lists it. Recompute with contrib/deploy/csp-hashes.py.
+        csp = hdrs.get("Content-Security-Policy") or ""
+        if not csp:
+            return False, ("answered 200 but sends NO Content-Security-Policy -- "
+                           "the vhost header is gone or Apache was not reloaded")
+        found = re.findall(r"<script>(.*?)</script>", body, re.S)
+        if not found:
+            return False, "answered 200 but has no inline <script>; the page changed shape"
+        for src in found:
+            h = "'sha256-%s'" % base64.b64encode(
+                hashlib.sha256(src.encode("utf-8")).digest()).decode()
+            if h not in csp:
+                return False, (f"its inline script hashes to {h}, which the live CSP "
+                               f"does NOT list -- the script will not execute. "
+                               f"Recompute with contrib/deploy/csp-hashes.py")
+        return True, "%d inline script(s), all hashed in the CSP" % len(found)
     if "expires_field" in want:
         # A DATE INSIDE THE BODY, not a certificate date. RFC 9116 makes
         # Expires mandatory in security.txt, and an expired one reads as an
