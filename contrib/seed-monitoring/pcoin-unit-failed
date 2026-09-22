@@ -42,7 +42,26 @@ RESULT=$(systemctl show "$UNIT" -p Result --value 2>/dev/null || echo unknown)
 CODE=$(systemctl show "$UNIT" -p ExecMainStatus --value 2>/dev/null || echo '?')
 # The last thing it said is the whole value of this alert. "pcoin-deposit-watch
 # failed" is a notification; its stderr is a diagnosis.
-TAIL=$(journalctl -u "$UNIT" -n 12 --no-pager -o cat 2>/dev/null | tail -n 12)
+# KEEP THE DIAGNOSIS, DROP THE BOILERPLATE.
+#
+# `journalctl -n 12` on a failed unit is mostly systemd talking to itself:
+# "Starting ...", "Failed to start ...", "Triggering OnFailure=", "Consumed
+# 1.110s CPU time", and the unit's own name prefixed to each. A real example
+# ran 986 characters of which four lines said anything, and the same three
+# sentences appeared twice. An alert nobody finishes reading is an alert
+# nobody reads.
+#
+# So: strip systemd's lifecycle chatter, collapse repeats, and keep the last
+# few lines that are actually the program speaking. If that leaves nothing,
+# fall back to the raw tail -- an ugly alert beats an empty one, because the
+# whole value here is the last thing the thing said before it died.
+_raw=$(journalctl -u "$UNIT" -n 25 --no-pager -o cat 2>/dev/null)
+TAIL=$(printf '%s\n' "$_raw" \
+    | grep -vE '^(Starting|Started|Stopping|Stopped|Finished|Failed to start) ' \
+    | grep -vE ': (Triggering OnFailure|Consumed .* CPU time|Deactivated successfully|Scheduled restart|Failed with result|Main process exited|start operation timed out)' \
+    | awk 'NF && $0 != prev { print } { prev = $0 }' \
+    | tail -n 6)
+[ -n "$TAIL" ] || TAIL=$(printf '%s\n' "$_raw" | tail -n 4)
 [ -n "$TAIL" ] || TAIL='(nothing in the journal)'
 
 SUBJECT="monitor FAILED: $(clean "$UNIT")"

@@ -106,8 +106,17 @@ if [ -n "$PARTDIR" ]; then
       function flush(b,   f) { f = sprintf("%s/part.%03d", dir, n); print b > f; close(f); n++ }
       BEGIN { n = 1; buf = "" }
       {
-        if (length(buf) > 0 && length(buf) + length($0) + 1 > max) { flush(buf); buf = $0 }
-        else { buf = (length(buf) ? buf "\n" $0 : $0) }
+        # A SINGLE LINE CAN ITSELF BE TOO LONG, and breaking only on newlines
+        # left that case failing exactly as before. Proved on 2026-09-22: a
+        # 6,840-character one-line body was still rejected "message is too
+        # long" on a host that had the split fix, while a 7,019-character
+        # multi-line body went out fine. Anything that builds a body by
+        # joining with ", " rather than newlines lands here -- so an
+        # over-long line is hard-wrapped rather than passed through whole.
+        line = $0
+        while (length(line) > max) { flush(substr(line, 1, max)); line = substr(line, max + 1) }
+        if (length(buf) > 0 && length(buf) + length(line) + 1 > max) { flush(buf); buf = line }
+        else { buf = (length(buf) ? buf "\n" line : line) }
       }
       END { if (length(buf) > 0) flush(buf) }
     '

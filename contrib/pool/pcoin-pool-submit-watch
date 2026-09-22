@@ -230,12 +230,32 @@ def main():
                           "was found and never reached the chain -- that is the submit path, "
                           "and every one is coins thrown away." % (found, mins))
         elif expected >= THRESHOLD:
+            # THE THIRD CAUSE, WHICH THIS ALERT USED TO RULE OUT BY MISTAKE.
+            #
+            # It said "no share cleared the network target -- so the submit
+            # path is NOT implicated. Look at whether hashrate left, or
+            # whether shares are checked against the right target." Both of
+            # those were fine on 2026-09-21, and this alert -- the only one
+            # that fired -- sent the operator to look at them for five hours.
+            # The pool had stopped RECORDING shares: the share table crossed
+            # ~8.7M rows, every write exceeded the 15s timeout, and "no share
+            # cleared the target" was true only because no share was being
+            # written down at all. A count of zero from a table nothing can
+            # write to is not evidence about hashrate.
+            #
+            # So the third cause is named, and named FIRST because it is the
+            # one that is invisible from here and the one that has happened.
             alerts.append("B. The pool has done %.1f blocks' worth of work since its last block "
                           "%.0f minutes ago and found NONE. At %.1f expected the chance of "
-                          "silence is about %.1f%%. NOTHING WAS FOUND -- no share cleared the "
-                          "network target -- so the submit path is NOT implicated. Look at "
-                          "whether hashrate left, or whether shares are checked against the "
-                          "right target."
+                          "silence is about %.1f%%.\n"
+                          "Check in this order:\n"
+                          "  1. IS IT STILL RECORDING SHARES? If the share table stopped "
+                          "accepting writes, 'no share cleared the target' is what that looks "
+                          "like from here, and it is not about hashrate. This is the "
+                          "2026-09-21 failure -- see pcoin-pool-share-watch, which answers it "
+                          "directly.\n"
+                          "  2. Did hashrate leave?\n"
+                          "  3. Are shares checked against the right target?"
                           % (expected, mins, expected, 100 * 2.718281828 ** (-expected)))
     except Unknown as e:
         print("  statistical check UNAVAILABLE: %s" % e)

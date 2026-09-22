@@ -679,9 +679,25 @@ function workCard(w) {
   return card('What needs you', body);
 }
 
+// What has ACTUALLY left the keeper, from the ledger the watcher writes.
+//
+// The watcher prints "Allocation: X of Y used, Z left" and that is all the
+// parser above can see -- `released` is in the state file and nowhere in the
+// output. Read here rather than added to that line, because the line's format
+// is matched by a regex and changing it would break the parse for an older
+// deployed copy. Unreadable returns null and the card simply omits the row:
+// a missing figure is better than a wrong one.
+function releasedWpcn() {
+  try {
+    const s = JSON.parse(readFileSync('/var/lib/pcoin-wrapdesk/state.json', 'utf8'));
+    const v = Number(((s || {}).allocation || {}).released_wpcn);
+    return Number.isFinite(v) ? v : null;
+  } catch { return null; }
+}
+
 function allocationCard(w) {
   if (!w.ok || !w.allocation) return '';
-  const a = w.allocation;
+  const a = { ...w.allocation, released: releasedWpcn() };
   const pct = a.total > 0 ? Math.min(100, (a.used / a.total) * 100) : 0;
   return card('Allocation',
     `<div style="display:flex;justify-content:space-between;font-size:13px">`
@@ -689,8 +705,23 @@ function allocationCard(w) {
     + `<span class="muted">${esc(a.left.toFixed(2))} left of ${esc(a.total.toFixed(2))}</span></div>`
     + `<div style="height:10px;background:var(--panel-2);border-radius:999px;margin-top:6px;overflow:hidden">`
     + `<div style="height:100%;width:${pct.toFixed(1)}%;background:var(--${pct > 90 ? 'red' : pct > 75 ? 'yellow' : 'green'})"></div></div>`
-    + note('This is a RUNNING TOTAL that only counts up, and it is raised by hand. '
-      + 'It is the ceiling on how much wPCN the desk may ever issue, not a daily budget.'));
+    // TWO FIGURES, BECAUSE ONE OF THEM DOES NOT MOVE WHEN YOU PAY.
+    //
+    // "issued" counts what the desk has COMMITTED -- a wrap is counted the
+    // moment its deposit confirms, days before anyone sends anything. So
+    // paying six customers 950 wPCN changed this number by zero, and it
+    // looked broken. It was not: the figure that moved is what has actually
+    // left the keeper, and it was not on the page at all.
+    + (typeof a.released === 'number'
+        ? `<div style="display:flex;justify-content:space-between;font-size:13px;margin-top:10px">`
+          + `<span>${esc(a.released.toFixed(2))} wPCN actually sent</span>`
+          + `<span class="muted">${esc(Math.max(0, a.used - a.released).toFixed(2))} `
+          + `committed but not yet paid</span></div>`
+        : '')
+    + note('"Issued" is a RUNNING TOTAL that only counts up, and it is raised by hand: the '
+      + 'ceiling on how much wPCN the desk may ever issue, not a daily budget. It counts a '
+      + 'wrap from the moment its deposit confirms, so PAYING somebody does not change it '
+      + '-- the second line is the one that moves when you press Send.'));
 }
 
 // EVERY DEPOSIT ADDRESS, NETTED, ON THE PAGE.
@@ -716,7 +747,14 @@ function reconcileCard() {
       note('This could not be computed, so nothing is shown rather than a figure that '
         + 'might be wrong. ' + esc(r.why || 'unknown')));
   }
-  const open = r.rows.filter((x) => x.readable && x.held_pcn > 1e-9);
+  // SETTLED IS NOT OWED. A refund paid from a personal wallet -- which the
+  // runbook says is the right order, because it takes the customer off the
+  // critical path of a vault ceremony -- never touches the deposit address,
+  // so the subtraction below cannot see it. The ledger can, and does. Showing
+  // one combined figure is how a customer paid in full on 9 September read as
+  // a 250 PCN debt on 22 September and was nearly paid twice.
+  const open = r.rows.filter((x) => x.readable && x.held_pcn > 1e-9 && !x.settled);
+  const settled = r.rows.filter((x) => x.readable && x.held_pcn > 1e-9 && x.settled);
   const bad = r.rows.filter((x) => !x.readable);
   const money = (n) => Number(n || 0).toLocaleString('en-US',
     { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -738,11 +776,23 @@ function reconcileCard() {
     `<p><b>${esc(String(r.square))} of ${esc(String(r.addresses))}</b> addresses are square `
     + `&mdash; received, refunded and backing all cancel out.</p>`
     + (open.length
-        ? `<p><b>${money(r.total_held_pcn)} PCN</b> is held beyond backing and refunds, `
-          + `across ${esc(String(open.length))} address(es). That is PCN nobody was `
-          + `entitled to wrap: refund it, or wrap it if there is allocation headroom.</p>`
-          + table
-        : `<p>Nothing is held beyond backing and refunds.</p>`)
+        ? `<p class="bad"><b>${money(r.open_held_pcn)} PCN is genuinely owed back</b>, across `
+          + `${esc(String(open.length))} address(es) with nothing recorded against them. `
+          + `That is PCN nobody was entitled to wrap: refund it, or wrap it if there is `
+          + `allocation headroom.</p>` + table
+        : `<p><b>Nothing is owed.</b> Every address is either square or already settled.</p>`)
+    + (settled.length
+        ? `<p class="muted" style="margin-top:12px"><b>${money(r.settled_held_pcn)} PCN</b> sits `
+          + `at ${esc(String(settled.length))} address(es) that the arithmetic below counts as `
+          + `"held" but the ledger has already settled &mdash; refunded from another wallet, or `
+          + `our own money that was never a customer deposit. <b>Do not pay these again.</b></p>`
+          + `<table style="width:100%;border-collapse:collapse;font-size:12px">`
+          + settled.map((x) => `<tr><td style="font-family:ui-monospace,monospace;font-size:11px">`
+            + `${esc(x.address)}</td><td style="text-align:right">${money(x.held_pcn)} PCN</td>`
+            + `<td style="text-align:right" class="muted">${esc(x.settled_why || 'settled')}</td>`
+            + `</tr>`).join('')
+          + `</table>`
+        : '')
     + (bad.length
         ? note(`${bad.length} address(es) could not be read, so they are counted in `
              + `neither column. Unreadable is not settled.`)

@@ -629,6 +629,26 @@ def reconcile():
         backing = wpcn / 0.95 if wpcn else 0.0
         releases = sum(1 for k, v in seen.items()
                        if v.get("released") and k.endswith(":" + a))
+        # A REFUND PAID FROM SOMEWHERE ELSE IS STILL A REFUND.
+        #
+        # `sent` only sees PCN leaving the DEPOSIT ADDRESS. The runbook says
+        # the right way to settle an over-deposit is to pay the customer from
+        # a personal wallet first and reimburse afterwards -- it takes them
+        # off the critical path of a vault ceremony -- and money repaid that
+        # way never touches the deposit address at all. So on 2026-09-22 this
+        # reported 250 PCN "held" for a customer who had been paid in full on
+        # 9 September, and it was about to be paid a second time.
+        #
+        # The ledger knows. Every settlement is recorded here as `refunded`
+        # (with the txid) or `not_a_deposit`, so those are read and shown in
+        # their own column instead of being silently absent from the sum.
+        settled = [v for k, v in seen.items()
+                   if k.endswith(":" + a) and (v.get("refunded") or v.get("not_a_deposit"))]
+        settled_n = len(settled)
+        settled_why = ("our own, not a customer deposit"
+                       if any(v.get("not_a_deposit") for v in settled)
+                       else ("recorded refunded" if settled_n else ""))
+        settled_txids = [str(v.get("refund_txid")) for v in settled if v.get("refund_txid")]
         rows.append({
             "address": a, "bsc": r.get("bsc"),
             "readable": True,
@@ -639,14 +659,24 @@ def reconcile():
             "backing_pcn": round(backing, 8),
             "held_pcn": round(recv - sent - backing, 8),
             "releases": releases,
+            "settled": settled_n,
+            "settled_why": settled_why,
+            "settled_txids": settled_txids,
         })
     rows.sort(key=lambda x: -(x.get("held_pcn") or 0))
-    held = sum(r["held_pcn"] for r in rows if r.get("readable") and r["held_pcn"] > 1e-9)
+    # Two totals, never one. "Held" that is already settled is not a debt, and
+    # adding the two together is how a paid customer looked unpaid.
+    open_held = sum(r["held_pcn"] for r in rows
+                    if r.get("readable") and r["held_pcn"] > 1e-9 and not r.get("settled"))
+    settled_held = sum(r["held_pcn"] for r in rows
+                       if r.get("readable") and r["held_pcn"] > 1e-9 and r.get("settled"))
     return {"ok": True, "at": int(time.time()), "rows": rows,
             "addresses": len(rows), "unreadable": unreadable,
             "square": sum(1 for r in rows
                           if r.get("readable") and abs(r["held_pcn"]) < 1e-9),
-            "total_held_pcn": round(held, 8),
+            "total_held_pcn": round(open_held + settled_held, 8),
+            "open_held_pcn": round(open_held, 8),
+            "settled_held_pcn": round(settled_held, 8),
             "ceiling_wpcn": PER_ADDRESS_CEILING}
 
 
@@ -903,7 +933,17 @@ def main() -> int:
                               f"  fee {FEE_PCT:g}%  : {fee:.2f} wPCN (kept, not sent)\n"
                               f"  SEND     : {net:.2f} wPCN\n"
                               f"  TO       : {pay_to}\n"
-                              f"Send from the inventory wallet.{over}\n"
+                              # The panel can pay this now. Saying "send from
+                              # the inventory wallet" was true until
+                              # 2026-09-22 and is now the slower of two
+                              # routes -- and it sat directly above a button
+                              # that does the whole thing, which reads as a
+                              # contradiction rather than a choice.
+                              f"PAY IT FROM THE ADMIN PANEL -- the wrap desk page has a "
+                              f"'Send {net:.2f} wPCN now' button that pays from the keeper "
+                              f"and closes this in one step. Sending by hand from the "
+                              f"inventory wallet still works; then paste the BSC hash into "
+                              f"'Mark as sent'.{over}\n"
                               f"{cycle_advice(amt)}"
                               f"WHEN SENT, close it out or this repeats hourly forever.\n"
                               f"Easiest: the wrap desk page in the admin panel has a "
@@ -1069,9 +1109,31 @@ def main() -> int:
             due.append((key, text))
 
     if due:
-        body = "\n\n".join(t for _, t in due)
-        body += (f"\n\n---\nThis repeats every {NAG_SECONDS//60} minutes until the "
-                 f"chain shows it done. Nothing here is marked complete by hand.")
+        # TELEGRAM REFUSES A MESSAGE OVER 4,096 CHARACTERS, AND REFUSING IS
+        # SILENT FROM HERE. On 2026-09-18 a backlog of 34 items built an
+        # 8,005-character digest; it was rejected three hours running with
+        # {"error_code":400,"description":"Bad Request: message is too long"}
+        # and the operator was told nothing at all. The one alert whose whole
+        # job is to say "somebody is owed money" was the one that could not be
+        # delivered, and it failed BECAUSE there was a lot to say.
+        #
+        # So the digest is bounded: full detail while it fits, then a line per
+        # item, then a count. It always ends with how to see the rest, because
+        # a truncated alert that does not say it was truncated is a lie.
+        full = "\n\n".join(t for _, t in due)
+        footer = (f"\n\n---\nThis repeats every {NAG_SECONDS//60} minutes until the "
+                  f"chain shows it done. Nothing here is marked complete by hand.")
+        if len(full) + len(footer) <= 3600:
+            body = full + footer
+        else:
+            # One line each: the first line of every item is its headline.
+            lines = [t.splitlines()[0] for _, t in due]
+            brief = "\n".join(lines)
+            if len(brief) > 3000:
+                brief = "\n".join(lines[:20]) + f"\n... and {len(lines)-20} more"
+            body = (f"{len(due)} items, too many to show in full here.\n\n{brief}"
+                    f"\n\nOpen the wrap desk page in the admin panel for the detail "
+                    f"-- every one of these has a button there." + footer)
         notify(f"wrap desk: {len(due)} thing(s) need you", body)
         for key, _ in due:
             st["nagged"][key] = now
@@ -1235,10 +1297,22 @@ if __name__ == "__main__":
             del out[k]
         # Their `seen` records go too, or a closed test wrap would sit in the
         # ledger for ever looking like a customer who was paid.
+        #
+        # SCAN `seen` ON ITS OWN MERITS, not just the keys still in
+        # `outstanding`. A test wrap that was PAID is filtered out of the
+        # rebuild (see the note there), so iterating `outstanding` alone could
+        # never find it -- and its `seen` record survived, was picked up by the
+        # announcement feed, and HELD every tick for ever because a random
+        # txid can never be verified against the explorer. Silent, harmless,
+        # and permanent: the worst combination. Both halves are cleaned now.
         seen = s_.get("seen") or {}
         for k in list(seen):
-            if k.startswith("wrap:") and any(k == f"wrap:{g}" for g in gone):
+            if not k.startswith("wrap:"):
+                continue
+            if any(k == f"wrap:{g}" for g in gone) or (seen[k] or {}).get("test"):
                 del seen[k]
+                if k not in [f"wrap:{g}" for g in gone]:
+                    gone.append(k[5:])
         save_state(s_)
         print(f"removed {len(gone)} test wrap(s).")
         for k in gone:
@@ -1445,6 +1519,11 @@ if __name__ == "__main__":
         s["seen"][key].update({"released": True, "at": int(time.time()),
                                "bsc_txhash": h, "verified": why,
                                "send_wpcn": amount})
+        # Carry the rehearsal flag into the ledger. Without it a PAID test wrap
+        # is indistinguishable from a customer once it leaves `outstanding`,
+        # and --clear-test-wraps has nothing left to match on.
+        if out.get("test"):
+            s["seen"][key]["test"] = True
         save_state(s)
         print(f"verified on BSC: {why}")
         print(f"PAID and closed: {key}")
