@@ -46,13 +46,73 @@
  * received" is how a paying customer gets told they did not pay.
  */
 import { createServer } from 'node:http';
-import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'node:fs';
 import { createHmac, timingSafeEqual, randomBytes } from 'node:crypto';
 import { dirname } from 'node:path';
 
 const PORT       = Number(process.env.WRAPDESK_PORT || 8791);
 const POOL_FILE  = process.env.WRAPDESK_POOL  || '/opt/wrapdesk/reserve-pool.txt';
 const STATE_FILE = process.env.WRAPDESK_STATE || '/var/lib/wrapdesk/requests.json';
+
+// THE OFF SWITCH. The file existing means intake is closed; its contents are a
+// note for whoever reads it later.
+//
+// Read PER REQUEST, deliberately. Every other setting on this desk comes from
+// the unit file, so changing one means an edit and a restart -- and restarting
+// this service to flip a switch the owner wants to control from a web page is a
+// needless risk taken on somebody else's behalf. A file costs one stat per
+// request, takes effect on the next click, and survives a reboot.
+//
+// Closing stops NEW requests and nothing else. Wraps already in flight keep
+// counting confirmations and are still paid. Closing the door and repudiating a
+// debt are different acts, and only the first one was announced.
+// A LIST, and the desk is closed if ANY of them exists.
+//
+// The first is the one the admin panel owns. It lives under /etc/pcoin/control
+// because the panel runs ProtectSystem=strict and /etc/pcoin is read-only to
+// it -- which is why the panel's close button could never work until
+// 2026-09-19, and failed with "could not change it" every time it was pressed.
+// The control directory is granted to the panel precisely because it holds no
+// secrets; /etc/pcoin holds this desk's SSO secret and the keeper's private key
+// and must never be panel-writable.
+//
+// The second is where this flag lived until then. It is still honoured, and
+// that is deliberate: an operator who creates it from memory or from an older
+// runbook must still close the desk. A safety flag that silently stopped
+// working because it moved is the worst possible outcome here.
+const CLOSED_FILES = (process.env.WRAP_CLOSED_FILES
+  || '/etc/pcoin/control/wrapdesk-closed,/etc/pcoin/wrapdesk-closed')
+  .split(',').map((x) => x.trim()).filter(Boolean);
+
+// Every flag file that exists, with whatever note is in it.
+function closedBy() {
+  const out = [];
+  for (const path of CLOSED_FILES) {
+    // existsSync decides; the read only fetches the note. These were one call
+    // before, inside a try/catch that returned null -- so a flag file that
+    // existed but could NOT be read (a permission change, a full disk) opened
+    // the desk. An unreadable safety flag is UNKNOWN, and unknown must fail
+    // closed, not open. This is CLAUDE.md 7.1 on the one switch that decides
+    // whether money can arrive.
+    if (!existsSync(path)) continue;
+    let note = '';
+    try { note = readFileSync(path, 'utf8'); }
+    catch (e) { note = `(this flag exists but could not be read: ${e.message})`; }
+    out.push({ path, note });
+  }
+  return out;
+}
+function intakeClosed() {
+  const hits = closedBy();
+  return hits.length ? hits.map((h) => h.note).join(String.fromCharCode(10)) : null;   // null = open
+}
+// Shown in place of the request form while the desk is closed.
+const CLOSED_FORM_NOTE = `<div class="card"><p class="muted" style="margin:0">
+The request form is hidden while the desk is closed, so there is nothing to fill
+in. <b>Nothing you have already sent is affected</b> &mdash; follow anything still
+confirming on the <a href="/track">track page</a>.</p></div>`;
+
 // pcoin-wrapdesk-watch's ledger. READ-ONLY here, and its absence is tolerated:
 // this desk must keep taking requests if the watcher has not run yet.
 const WATCH_STATE = process.env.WRAPDESK_WATCH_STATE || '/var/lib/pcoin-wrapdesk/state.json';
@@ -253,6 +313,123 @@ async function hcaptchaVerdict(token, ip) {
 const RESERVE = process.env.WRAP_RESERVE || 'pc1q7hhzmdkkx0zjtzj6qkwmuvhlgwfqjrc6j2dk52';
 const TOKEN   = process.env.WPCN_TOKEN   || '0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1';
 const ISSUED  = Number(process.env.WPCN_ISSUED || 50000);
+
+// ── RETURN redemptions: wPCN comes back to inventory instead of being burned ──
+//
+// The contract has NO mint. Every redeem() burns supply for ever, so the
+// 50,000 only ever shrinks, and once the desk's inventory is gone nothing can
+// wrap PCN into wPCN again -- at which point wPCN can trade ABOVE PCN with no
+// arbitrage able to pull it back (wPCN cannot follow PCN down without wPCN to
+// sell). Recycling keeps the 50,000 usable: a customer transfers wPCN to the
+// INVENTORY address, tells the desk which PCoin address to pay, and a person
+// sends the PCN exactly as for a burn. totalSupply is unchanged and the
+// reserve is unchanged; the payout comes from a non-reserve wallet, as burn
+// redemptions already do. Backing on /proof therefore needs no new arithmetic.
+//
+// The claim is bound to the SENDER, not to whoever posts first: the customer
+// signs an EIP-191 message naming the tx hash and the PCoin address with the
+// same wallet that sent the wPCN. A stranger watching the inventory address can
+// see the transfer, but cannot produce that signature. The desk checks the
+// receipt and the signature here; pcoin-redeem-watch checks BOTH again before
+// listing anything as payable -- the desk's word is never what pays.
+const isBscLower = (s) => typeof s === 'string' && /^0x[0-9a-f]{40}$/.test(s);
+const isTxHash = (s) => typeof s === 'string' && /^0x[0-9a-fA-F]{64}$/.test(s);
+const INVENTORY = (process.env.WPCN_INVENTORY || '0x37cefF465A3a2f72979062aD781DDa7293477b8a').toLowerCase();
+const RETURNS_FILE = process.env.WRAPDESK_RETURNS || '/var/lib/wrapdesk/returns.json';
+// eth_getTransactionReceipt for ONE hash is served by every public RPC (the
+// range-scanning calls are what they refuse). Tried in order.
+const BSC_RPCS = (process.env.WPCN_RPC ||
+  'https://bsc-dataseed.bnbchain.org,https://bsc-dataseed.binance.org,https://bsc-dataseed1.defibit.io')
+  .split(',').map((s) => s.trim()).filter(Boolean);
+// Signature recovery is delegated to the same Python that runs the watcher
+// (eth_account). Node has no secp256k1 recovery built in, and a hand-rolled one
+// in a money path is a worse risk than a subprocess. Empty = the desk records
+// the claim UNVERIFIED and says so; the watcher still verifies before paying.
+const RECOVER_CMD = process.env.WRAP_RECOVER_CMD === undefined
+  ? '/opt/wpcn/.venv/bin/python /opt/wrapdesk/recover.py'
+  : process.env.WRAP_RECOVER_CMD;
+const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+
+// The EXACT text the customer signs. pcoin-redeem-watch rebuilds it from the
+// stored fields and recovers the signer; a single changed character there or
+// here and every claim fails verification, which is the safe direction.
+const returnMessage = (txhash, pcoin) =>
+  `PCoin wrap desk: return wPCN for PCN\n` +
+  `BSC transaction: ${txhash}\n` +
+  `Send the PCN to: ${pcoin}\n` +
+  `I sent the wPCN in that transaction to ${INVENTORY} from the wallet signing this.`;
+
+async function bscRpc(method, params) {
+  for (const url of BSC_RPCS) {
+    try {
+      const c = new AbortController();
+      const t = setTimeout(() => c.abort(), 15000);
+      const r = await fetch(url, { method: 'POST', signal: c.signal,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
+      clearTimeout(t);
+      if (!r.ok) continue;
+      const j = await r.json();
+      if (j && j.error) continue;
+      if (j && 'result' in j) return { ok: true, result: j.result };
+    } catch { /* next */ }
+  }
+  return { ok: false, result: null };          // UNKNOWN, never "no such tx"
+}
+const addrFromTopic = (t) => '0x' + String(t || '').slice(-40).toLowerCase();
+
+function loadReturns() {
+  let st;
+  try { st = JSON.parse(readFileSync(RETURNS_FILE, 'utf8')); } catch { st = {}; }
+  if (!st || typeof st !== 'object' || Array.isArray(st)) st = {};
+  if (!st.claims || typeof st.claims !== 'object') st.claims = {};
+  return st;
+}
+function saveReturns(s) {
+  mkdirSync(dirname(RETURNS_FILE), { recursive: true });
+  const tmp = `${RETURNS_FILE}.tmp`;
+  writeFileSync(tmp, JSON.stringify(s, null, 1));
+  renameSync(tmp, RETURNS_FILE);
+}
+
+// 'ok' | 'bad' | 'unknown'. unknown is recorded as unverified, never as ok.
+async function recoverSigner(message, signature) {
+  if (!RECOVER_CMD) return { verdict: 'unknown', signer: null, why: 'no recover command configured' };
+  const [cmd, ...args] = RECOVER_CMD.split(/\s+/);
+  return new Promise((resolve) => {
+    let out = '', err = '';
+    const p = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    const timer = setTimeout(() => { p.kill(); resolve({ verdict: 'unknown', signer: null, why: 'recover timed out' }); }, 20000);
+    p.stdout.on('data', (d) => { out += d; });
+    p.stderr.on('data', (d) => { err += d; });
+    p.on('error', (e) => { clearTimeout(timer); resolve({ verdict: 'unknown', signer: null, why: `recover failed: ${e.message}` }); });
+    p.on('close', (code) => {
+      clearTimeout(timer);
+      const s = out.trim().toLowerCase();
+      if (code === 0 && /^0x[0-9a-f]{40}$/.test(s)) return resolve({ verdict: 'ok', signer: s, why: '' });
+      if (code === 3) return resolve({ verdict: 'bad', signer: null, why: 'signature does not parse' });
+      resolve({ verdict: 'unknown', signer: null, why: `recover exit ${code}: ${err.trim().slice(0, 200)}` });
+    });
+    p.stdin.end(JSON.stringify({ message, signature }));
+  });
+}
+
+// wPCN held by the desk's own inventory + the keeper, i.e. NOT in circulation.
+// null = UNKNOWN. Shown on /proof so "how much wPCN is actually out there" is a
+// published number rather than a guess.
+async function inventoryHeld() {
+  const held = async (a) => {
+    const r = await bscRpc('eth_call', [{ to: TOKEN, data: '0x70a08231' + a.slice(2).padStart(64, '0') }, 'latest']);
+    if (!r.ok || typeof r.result !== 'string' || !/^0x[0-9a-fA-F]*$/.test(r.result)) return null;
+    return Number(BigInt(r.result === '0x' ? '0x0' : r.result)) / 1e8;
+  };
+  const inv = await held(INVENTORY);
+  if (inv === null) return null;
+  const extra = await Promise.all(HELD_ALSO.map(held));
+  return extra.reduce((s, v) => s + (v ?? 0), inv);
+}
+const HELD_ALSO = (process.env.WPCN_HELD_ALSO || '0x477C9793C0d69283d703010500C86f7335B27521')
+  .split(',').map((s) => s.trim().toLowerCase()).filter(isBscLower);
 // Shown wherever the wait or the fee is described. Derived, so a change to
 // CONFIRMATIONS or the allocation cannot leave a stale number on a public page.
 const WAIT_H    = Math.round(CONFIRMATIONS / 6);          // 600 s target: 6 blocks an hour
@@ -355,6 +532,18 @@ function tooMany(ip) {
   if (hits.size > 5000) hits.clear();
   return a.length > cap;
 }
+// /return has its own, wider bucket. The page retries a claim every 5 s while
+// the chain catches up, so the 10/h allocation limit would lock a customer out
+// mid-claim. 120/h still bounds the signature-recovery subprocesses one IP can
+// spawn, and a recorded claim is idempotent so repeats cost nothing.
+const rhits = new Map();
+function tooManyReturns(ip) {
+  const now = Date.now(), w = 3600_000, cap = 120;
+  const a = (rhits.get(ip) || []).filter((t) => now - t < w);
+  a.push(now); rhits.set(ip, a);
+  if (rhits.size > 5000) rhits.clear();
+  return a.length > cap;
+}
 
 const esc = (s) => String(s).replace(/[&<>"']/g,
   (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
@@ -396,6 +585,19 @@ button:hover{background:#2ea043}
 button.ghost{background:#21262d;border:1px solid var(--line);color:var(--fg);font-weight:500;margin-top:0}
 button.ghost:hover{background:#30363d}
 button.ghost[disabled]{opacity:.55;cursor:default}
+/* A LINK that looks like a button. The open direction on a page whose headline
+   says "closed" needs to be the most clickable thing on it, or a visitor who
+   came to redeem reads the red banner and leaves. */
+.golink{display:inline-block;background:#238636;color:#fff;text-decoration:none;
+ padding:.7rem 1.4rem;border-radius:8px;font-weight:700;font-size:1rem;margin-top:.2rem}
+.golink:hover{background:#2ea043}
+.dir{display:flex;gap:.9rem;align-items:flex-start;padding:.85rem 0;border-bottom:1px solid #21262d}
+.dir:last-child{border-bottom:none}
+.dir .tag{flex:0 0 5.4rem;font-size:.72rem;font-weight:700;letter-spacing:.06em;
+ text-transform:uppercase;padding:.28rem 0;text-align:center;border-radius:999px}
+.tag.open{background:rgba(63,185,80,.16);color:var(--green)}
+.tag.shut{background:rgba(248,81,73,.16);color:var(--red)}
+@media (max-width:420px){.dir{flex-direction:column;gap:.35rem}.dir .tag{flex:none;width:5.4rem;text-align:left;padding-left:.6rem}}
 .good{color:var(--green)}
 .warn{border-left:3px solid var(--amber);padding-left:.9rem;color:#e3b341}
 .err{border-left:3px solid var(--red);padding-left:.9rem;color:#ff7b72}
@@ -513,19 +715,77 @@ reserve, on a different chain. You can check that reserve yourself on the
 <a href="/proof">proof page</a>.</p>
 <p class="warn"><b>This is manual.</b> A person releases your wPCN after checking.
 It is not instant and it is not automated.</p>
+<p class="warn"><b>Completed wraps are announced publicly.</b> When your wPCN
+is sent — or your PCN is paid back on a return — a post goes to
+<a href="https://t.me/PCoinPCN" rel="noopener">@PCoinPCN</a> with the amount and a
+link to both transactions. No name is published, but those transactions are public
+on their chains and the wallet each one paid is one click from the post. Treat a
+wrap as public, not private.</p>
 <p class="err"><b>The market for wPCN is small.</b> The PancakeSwap pool holds
 only a few hundred dollars of liquidity, so even a small trade moves its price
-sharply; <b>we trade that pool ourselves</b> to keep it near the rate posted at
-price.pc.am, and the <b>liquidity is not locked</b> — the project holds the LP
-tokens. Only send what you can afford to lose.</p></div>`;
+sharply; <b>we trade that pool ourselves</b> (a bot buys wPCN when the pool falls
+well below the rate posted at price.pc.am, within a small daily budget), and the
+<b>liquidity is not locked</b> — the project holds the LP tokens. Only send what
+you can afford to lose.</p>
+<p class="warn"><b>wPCN can trade above PCN, and nothing can pull it back.</b> The
+supply is fixed at 50,000 and cannot be minted. Arbitrage can always push wPCN
+<i>up</i> to PCN (buy wPCN, redeem, sell PCN), but it can only push wPCN <i>down</i>
+to PCN by wrapping more PCN — and once the desk's inventory of wPCN is gone,
+nobody can. Redeeming by <a href="/redeem">return</a> instead of burn keeps that
+inventory in existence; it does not remove the limit.</p></div>`;
 
 // ── pages ───────────────────────────────────────────────────────────────────
-const home = (msg = '', acct = null, leftPcn = null) => page('PCoin wrap desk — turn PCN into wPCN', '/', `
-<h1>Turn PCN into wPCN</h1>
+const home = (msg = '', acct = null, leftPcn = null) => page('PCoin wrap desk — wPCN and PCN, both directions', '/', `
+${intakeClosed() !== null ? `<div class="card">
+<h1 style="margin-top:0">One direction is open</h1>
+<p class="lead">Only one way round the desk is working at the moment. Which one
+you need decides everything on this page, so it is the first thing here.</p>
+
+<div class="dir">
+ <span class="tag open">open</span>
+ <div><b>wPCN &rarr; PCN.</b> Hand your wPCN back and the PCN is sent to you,
+ 1 for 1, no fee on this side. A person pays it, so allow hours rather than
+ minutes.<br><a class="golink" href="/redeem">Redeem wPCN &rarr; PCN</a></div>
+</div>
+
+<div class="dir">
+ <span class="tag shut">closed</span>
+ <div><b>PCN &rarr; wPCN.</b> New wrap requests are not being accepted. This is
+ temporary, and there is no reopening date.</div>
+</div>
+</div>
+
+<div class="card" style="border-left:4px solid #e5484d">
+<p><b>Nothing you are already owed is affected.</b> Every wrap that reached 100
+confirmations has been paid, and anything still confirming will be paid the same
+way.</p>
+<p><b>Do not send any more PCN to your deposit address.</b> Those addresses
+are no longer wrapped. PCN that arrives at one now is <b>returned, not
+converted</b> &mdash; by a person, which takes time. This applies even though the
+address still belongs to you and still works on the chain.</p>
+
+<p>You can still buy and sell wPCN on PancakeSwap (wPCN/USDT), and buy PCN
+directly at <a href="https://market.pc.am">market.pc.am</a>.</p>
+</div>` : ''}
+${intakeClosed() !== null ? '' : `<h1>Turn PCN into wPCN</h1>
 <p class="lead">wPCN is PCoin wrapped as a BEP-20 on BNB Smart Chain, so it can
 trade on PancakeSwap. Backed 1:1 by the PCN you send.</p>
+
+<div class="card">
+<div class="dir">
+ <span class="tag open">open</span>
+ <div><b>PCN &rarr; wPCN.</b> What this page does. ${PER_PERSON} PCN per person,
+ ${FEE_PCT}% fee, ${CONFIRMATIONS} confirmations before the wPCN is sent.
+ <span class="muted">Use the form below.</span></div>
+</div>
+<div class="dir">
+ <span class="tag open">open</span>
+ <div><b>wPCN &rarr; PCN.</b> The other way round: 1 for 1, no fee on that side.
+ <br><a class="golink" href="/redeem">Redeem wPCN &rarr; PCN</a></div>
+</div>
+</div>`}
 ${msg}
-<div class="card"><form method="POST" action="/request">
+${intakeClosed() !== null ? CLOSED_FORM_NOTE : `<div class="card"><form method="POST" action="/request">
 <label>Your BSC address — where the wPCN will be sent. Use a wallet <b>you</b>
 control (MetaMask, or any wallet that lets you add a custom BEP-20 token).
 <b>Never an exchange deposit address</b> — no exchange lists wPCN, so it could
@@ -537,12 +797,12 @@ not credit you.</label>
  max="${PER_PERSON}" placeholder="e.g. 100" required>
 ${HCAPTCHA_ON ? `<div class="h-captcha" data-sitekey="${HCAPTCHA_SITEKEY}" data-theme="dark" style="margin:.9rem 0"></div>` : ''}
 <button type="submit">Get my deposit address</button>
-</form></div>
+</form></div>`}
 
 <h2>How it works</h2><div class="card"><ol class="steps">
 <li>You give your BSC address and an amount.</li>
 <li>You get a PCoin deposit address that is <b>yours alone</b>.</li>
-<li>You send PCN to it — any amount up to ${PER_PERSON}, any number of times.</li>
+<li>You send PCN to it — any amount up to ${PER_PERSON}, any number of times.${intakeClosed() !== null ? ' <b>Not while the desk is closed: an address that receives PCN now has it returned, not wrapped.</b>' : ''}</li>
 <li>After <b>${CONFIRMATIONS} confirmations</b> (~${WAIT_H}&nbsp;h) a person sends your wPCN.</li>
 </ol><p class="muted" style="margin:.6rem 0 0">Track it at any point on the
 <a href="/track">track page</a> using your deposit address.</p>
@@ -805,6 +1065,12 @@ const REDEEM_JS = String.raw`
     } catch (e) {}
   }
 
+  // Shared with the return flow (RETURN_JS), which must not duplicate the
+  // bech32/base58 checker -- two copies is how one of them goes stale.
+  window.__wd = { checkAddress: checkAddress, parseAmount: parseAmount, fmt: fmt,
+                  errText: errText, ensureBsc: ensureBsc, hex32: hex32,
+                  getEth: function () { return eth || provider(); },
+                  setEth: function (e) { eth = e; } };
   $('connectBtn').addEventListener('click', connect);
   $('reviewBtn').addEventListener('click', review);
   $('sendBtn').addEventListener('click', send);
@@ -820,12 +1086,223 @@ const REDEEM_JS = String.raw`
 })();
 `;
 
-const redeem = () => page('Redeem wPCN back into PCN', '/redeem', `
-<h1>Redeem wPCN back into PCN</h1>
-<p class="lead">The door opens both ways. Redemption is done by the token
-contract itself — this page only helps your wallet call it.</p>
+const RETURN_JS = String.raw`
+(function () {
+  'use strict';
+  var SEL_TRANSFER = '0xa9059cbb';          // keccak('transfer(address,uint256)')[:4]
+  var SEL_BALANCE = '0x70a08231';
+  var $ = function (id) { return document.getElementById(id); };
+  var W = window.__wd, eth = null, account = null, balance = null, checked = null;
+  function say(id, cls, text) { var el = $(id); el.className = cls; el.textContent = text; el.hidden = !text; }
+  function readBalance() {
+    var data = SEL_BALANCE + account.slice(2).toLowerCase().padStart(64, '0');
+    return eth.request({ method: 'eth_call', params: [{ to: TOKEN, data: data }, 'latest'] }).then(function (r) {
+      balance = BigInt(r === '0x' ? 0 : r);
+      $('rbal').textContent = W.fmt(balance) + ' wPCN';
+      $('racct').textContent = account.slice(0, 6) + '…' + account.slice(-4);
+      $('rconnected').hidden = false;
+    });
+  }
+  function connect() {
+    eth = W.getEth();
+    if (!eth) { $('rnowallet').hidden = false; return; }
+    W.setEth(eth);
+    say('rmsg', 'muted', 'Waiting for the wallet…');
+    eth.request({ method: 'eth_requestAccounts' }).then(function (acc) {
+      account = acc && acc[0]; if (!account) throw new Error('No account was shared by the wallet.');
+      return W.ensureBsc();
+    }).then(readBalance).then(function () {
+      say('rmsg', '', ''); $('rform').hidden = false; $('rconnectBtn').hidden = true;
+    }).catch(function (e) { say('rmsg', 'err', 'Could not connect: ' + W.errText(e)); });
+  }
+  function review() {
+    var v = W.parseAmount($('ramount').value), a = $('raddr').value.trim();
+    checked = null; $('rconfirm').hidden = true;
+    if (v === null) return say('rmsg', 'err', 'Enter an amount in wPCN, up to 8 decimals, greater than zero.');
+    if (balance !== null && v > balance) return say('rmsg', 'err', 'That is more than this account holds (' + W.fmt(balance) + ' wPCN).');
+    say('rmsg', 'muted', 'Checking the address…');
+    W.checkAddress(a).then(function (r) {
+      if (!r.ok) return say('rmsg', 'err', 'PCoin address rejected: ' + r.why + '. Nothing was sent.');
+      if (/^pc1/i.test(a)) a = a.toLowerCase();
+      checked = { value: v, addr: a };
+      $('rc_amount').textContent = W.fmt(v) + ' wPCN';
+      $('rc_addr').textContent = a; $('rc_kind').textContent = r.kind; $('rc_acct').textContent = account;
+      say('rmsg', '', ''); $('rconfirm').hidden = false;
+    });
+  }
+  // Sign, then POST. Used by both the send flow and the "already sent" form.
+  // The signature covers the hash and the address only, so one signature stays
+  // valid across every retry while the chain catches up.
+  function post(payload) {
+    return fetch('/return', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload) }).then(function (r) { return r.json(); });
+  }
+  function claim(hash, addr, from, msgId, doneCb) {
+    hash = hash.toLowerCase();
+    var text = RETURN_MSG.replace('%TX%', hash).replace('%ADDR%', addr);
+    say(msgId, 'muted', 'Now sign the message in your wallet. It costs nothing and sends nothing — it only proves the wPCN came from you.');
+    return eth.request({ method: 'personal_sign', params: [text, from] }).then(function (sig) {
+      var payload = { txhash: hash, pcoin: addr, from: from, signature: sig }, tries = 0;
+      say(msgId, 'muted', 'Recording your claim…');
+      return (function attempt() {
+        return post(payload).then(function (j) {
+          if (j.ok) { say(msgId, 'ok', j.message); if (doneCb) doneCb(j); return j; }
+          if ((j.state === 'pending' || j.state === 'unreachable') && ++tries < 40) {
+            say(msgId, 'muted', j.state === 'pending'
+              ? 'Waiting for BNB Smart Chain to mine it… (this can take a minute)'
+              : 'The desk could not reach BNB Smart Chain; retrying…');
+            return new Promise(function (res) { setTimeout(res, 5000); }).then(attempt);
+          }
+          say(msgId, 'err', (j.message || 'The desk could not record the claim.') +
+            ' Your wPCN is safe at the desk address; use "Already sent? Claim it here" with the hash ' + hash + ' to try again.');
+          return j;
+        });
+      })();
+    });
+  }
+  function send() {
+    if (!checked) return;
+    var c = checked; checked = null; $('rconfirm').hidden = true;
+    $('rsendBtn').disabled = true;
+    say('rmsg', 'muted', 'Confirm the transfer in your wallet…');
+    var data = SEL_TRANSFER + INVENTORY.slice(2).padStart(64, '0') + W.hex32(c.value);
+    W.ensureBsc().then(function () {
+      return eth.request({ method: 'eth_sendTransaction', params: [{ from: account, to: TOKEN, data: data }] });
+    }).then(function (hash) {
+      $('rsendBtn').disabled = false; $('rform').hidden = true;
+      $('rtxlink').href = 'https://bscscan.com/tx/' + hash; $('rtxlink').textContent = hash;
+      $('rdone').hidden = false;
+      $('rdonemsg').textContent = 'Sent. Do not close this page yet — one more step: the signature that ties it to your PCoin address.';
+      try {
+        var k = 'wpcn-redeems', l = JSON.parse(localStorage.getItem(k) || '[]');
+        l.unshift({ hash: hash, amount: W.fmt(c.value), to: c.addr, at: new Date().toISOString(), kind: 'return' });
+        localStorage.setItem(k, JSON.stringify(l.slice(0, 20)));
+      } catch (e) {}
+      return claim(hash, c.addr, account, 'rstatus', function () {
+        $('rdonemsg').textContent = 'Recorded. Keep the hash — it is your receipt. A person pays ' + c.addr + '; nothing else needs to be done on your side.';
+      });
+    }).catch(function (e) {
+      $('rsendBtn').disabled = false; $('rform').hidden = false;
+      say('rmsg', 'err', 'Not sent: ' + W.errText(e));
+    });
+  }
+  function claimExisting() {
+    var h = $('ctx').value.trim(), a = $('caddr').value.trim();
+    if (!/^0x[0-9a-fA-F]{64}$/.test(h)) return say('cmsg', 'err', 'That is not a BSC transaction hash (0x + 64 hex characters).');
+    W.checkAddress(a).then(function (r) {
+      if (!r.ok) return say('cmsg', 'err', 'PCoin address rejected: ' + r.why + '.');
+      if (/^pc1/i.test(a)) a = a.toLowerCase();
+      eth = W.getEth();
+      if (!eth) return say('cmsg', 'err', 'No wallet in this browser. Open this page inside the wallet that sent the wPCN.');
+      W.setEth(eth);
+      $('cclaimBtn').disabled = true;
+      return eth.request({ method: 'eth_requestAccounts' }).then(function (acc) {
+        var from = acc && acc[0]; if (!from) throw new Error('No account was shared by the wallet.');
+        return claim(h, a, from, 'cmsg');
+      }).catch(function (e) { say('cmsg', 'err', W.errText(e)); })
+        .then(function () { $('cclaimBtn').disabled = false; });
+    });
+  }
+  $('rconnectBtn').addEventListener('click', connect);
+  $('rreviewBtn').addEventListener('click', review);
+  $('rsendBtn').addEventListener('click', send);
+  $('rmaxBtn').addEventListener('click', function () { if (balance !== null) { $('ramount').value = W.fmt(balance); } });
+  $('rbackBtn').addEventListener('click', function () { checked = null; $('rconfirm').hidden = true; });
+  $('raddr').addEventListener('input', function () { checked = null; $('rconfirm').hidden = true; });
+  $('ramount').addEventListener('input', function () { checked = null; $('rconfirm').hidden = true; });
+  $('cclaimBtn').addEventListener('click', claimExisting);
+  if (!W.getEth()) setTimeout(function () { if (!W.getEth()) { $('rnowallet').hidden = false; } }, 1200);
+})();
+`;
 
-<h2>From your wallet</h2><div class="card">
+const redeem = (msg = '') => page('Redeem wPCN back into PCN', '/redeem', `
+<h1>Redeem wPCN back into PCN</h1>
+<p class="lead">The door opens both ways. 1 PCN for every 1 wPCN, no fee on this
+side, paid by a person — allow hours, not minutes.</p>
+<p class="muted">When your PCN is paid, the desk announces it on <a
+href="https://t.me/PCoinPCN" rel="noopener">@PCoinPCN</a>: the amount, and a link to
+both transactions. No name is published — but the transactions are public on their
+chains, so treat a return as public rather than private.</p>
+${msg}
+<div class="card"><p style="margin:0"><b>Two ways to do it, same result for you.</b>
+<b>Return</b> sends your wPCN back to the desk's inventory, where it can be wrapped
+again by the next person. <b>Burn</b> destroys it through the contract. We ask
+you to <b>return</b>: the supply is fixed at 50,000 and cannot be minted, so every
+burn permanently shrinks what can ever be wrapped — and once that runs out wPCN
+can trade above PCN with nothing able to pull it back. Returning keeps the two
+prices linkable. Both pay you the same PCN.</p></div>
+
+<h2>Return — recommended</h2><div class="card" id="retcard">
+<ol class="steps" style="margin-bottom:.8rem">
+<li>Open this page <b>inside your wallet's browser</b> (MetaMask &rarr; Browser
+ &rarr; <code>wrapdesk.pc.am/redeem</code>), or on a computer with the MetaMask
+ extension. Tap <b>Connect wallet</b>.</li>
+<li>Enter the amount and the PCoin address (<code>pc1q…</code>) to receive the PCN,
+ then <b>Review</b>.</li>
+<li>Press <b>Send wPCN to the desk</b> and confirm in the wallet. The wPCN goes to
+ the desk's inventory address <code>${INVENTORY}</code>.</li>
+<li>The wallet then asks you to <b>sign a short message</b> (no fee, nothing is
+ sent) naming the transaction and your PCoin address. That signature is what
+ proves the wPCN came from you, so nobody else can claim it.</li>
+<li>A person sends the PCN to your address. Allow hours, not minutes.</li>
+</ol>
+<button id="rconnectBtn" type="button" style="margin-top:.4rem">Connect wallet</button>
+<div id="rnowallet" hidden>
+<p class="warn"><b>No wallet found in this browser.</b>
+On a phone, open this page inside your wallet's own browser —
+<a href="https://metamask.app.link/dapp/wrapdesk.pc.am/redeem">tap here to open it in MetaMask</a>.
+On a computer, use a browser with the MetaMask extension. Or send by hand — see
+"Already sent?" below.</p></div>
+<div id="rconnected" hidden><table>
+<tr><th>Account</th><td><code id="racct"></code></td></tr>
+<tr><th>wPCN held</th><td><b id="rbal"></b></td></tr></table></div>
+<div id="rform" hidden>
+<label for="ramount">Amount to return, in wPCN</label>
+<div style="display:flex;gap:.6rem;align-items:center">
+<input id="ramount" inputmode="decimal" autocomplete="off" placeholder="1.00000000">
+<button id="rmaxBtn" type="button" style="margin:0;padding:.55rem .8rem;background:#21262d">All</button></div>
+<label for="raddr">PCoin address to receive the PCN (pc1q…)</label>
+<input id="raddr" autocomplete="off" spellcheck="false" placeholder="pc1q…">
+<button id="rreviewBtn" type="button">Review</button>
+<div id="rconfirm" hidden style="margin-top:1.1rem;border:1px solid var(--amber);border-radius:9px;padding:1rem 1.1rem">
+<p style="margin:0 0 .5rem" class="warn"><b>Read this once more before you press the button.</b></p>
+<table>
+<tr><th>Send</th><td><b id="rc_amount"></b> from <code id="rc_acct"></code></td></tr>
+<tr><th>To the desk</th><td><code>${INVENTORY}</code></td></tr>
+<tr><th>PCN goes to</th><td><code id="rc_addr"></code><br><span class="muted" id="rc_kind"></span></td></tr></table>
+<p class="muted" style="margin:.5rem 0 0">The address has a valid checksum, which
+rules out a typo. It does not prove the address is <i>yours</i> — that only you
+can check, in the wallet you copied it from.</p>
+<button id="rsendBtn" type="button">Send wPCN to the desk</button>
+<button id="rbackBtn" type="button" style="background:#21262d;margin-left:.6rem">Back</button></div>
+</div>
+<div id="rdone" hidden>
+<p class="ok"><b>Recorded.</b> Transaction: <a id="rtxlink" rel="noopener" target="_blank" style="overflow-wrap:anywhere"></a></p>
+<p class="muted" id="rdonemsg">Keep that hash — it is your receipt. A person pays the
+PCoin address you gave; nothing else needs to be done on your side.</p></div>
+<p id="rstatus" class="muted" hidden></p>
+<p id="rmsg" hidden></p>
+<noscript><p class="err">This helper needs JavaScript. See "Already sent?" below for the route without it.</p></noscript>
+</div>
+
+<h2>Already sent? Claim it here</h2><div class="card">
+<p class="muted" style="margin-top:0">If you transferred wPCN to
+<code>${INVENTORY}</code> by hand, or the page closed before the signature step,
+give the transaction hash and your PCoin address here and sign with the <b>same
+wallet that sent it</b>. Without that signature the desk cannot know the wPCN was
+yours, and will not pay it out to a stranger who found the hash first.</p>
+<label for="ctx">BSC transaction hash</label>
+<input id="ctx" autocomplete="off" spellcheck="false" placeholder="0x…">
+<label for="caddr">PCoin address to receive the PCN (pc1q…)</label>
+<input id="caddr" autocomplete="off" spellcheck="false" placeholder="pc1q…">
+<button id="cclaimBtn" type="button">Sign and claim</button>
+<p id="cmsg" hidden></p></div>
+
+<h2>Burn — the contract route</h2><div class="card">
+<p class="muted" style="margin-top:0">Also valid, also paid 1:1. The contract burns
+your wPCN and logs your PCoin address; the burn cannot be undone and shrinks the
+supply for ever. Use it if you prefer not to trust the desk's ledger with your
+claim — the burn is a permanent on-chain record nobody can alter.</p>
 <ol class="steps" style="margin-bottom:.8rem">
 <li>On a phone, open this page <b>inside your wallet's own browser</b>
  (MetaMask &rarr; Browser tab &rarr; <code>wrapdesk.pc.am/redeem</code>). On a
@@ -867,7 +1344,7 @@ route further down.</p></div>
 <p class="muted" style="margin:.5rem 0 0">The address has a valid checksum, which
 rules out a typo. It does not prove the address is <i>yours</i> — that only you
 can check, in the wallet you copied it from.</p>
-<button id="sendBtn" type="button" style="background:#9e6a03">Burn and request PCN</button>
+<button id="sendBtn" type="button" style="background:#9e6a03">Burn and request PCN (cannot be undone)</button>
 <button id="backBtn" type="button" style="background:#21262d;margin-left:.6rem">Back</button></div>
 </div>
 <div id="done" hidden>
@@ -905,15 +1382,18 @@ null"</i>. That is BscScan's page, not your wallet — use the button above.</p>
 
 <h2>Why it matters</h2><div class="card"><p class="muted">A wrapped token nobody
 can redeem is an IOU resting on trust. A redeemable one is checkable — and it is
-what lets arbitrage hold the PCN and wPCN prices together. Every redemption also
-shows up in the <a href="/proof">backing figures</a>, because burning lowers the
-supply the reserve has to cover.</p></div>
-<script>var TOKEN=${JSON.stringify(TOKEN)};</script>
-<script>${REDEEM_JS}</script>`);
+what lets arbitrage hold the PCN and wPCN prices together. A <b>return</b> leaves
+the supply and the reserve exactly as they were and refills the desk's inventory;
+a <b>burn</b> lowers the supply the reserve has to cover, which shows on the
+<a href="/proof">proof page</a>. Either way you are paid the same.</p></div>
+<script>var TOKEN=${JSON.stringify(TOKEN)}, INVENTORY=${JSON.stringify(INVENTORY)}, RETURN_MSG=${JSON.stringify(returnMessage('%TX%', '%ADDR%'))};</script>
+<script>${REDEEM_JS}</script>
+<script>${RETURN_JS}</script>`);
 
 async function proof() {
-  const bal = await reserveBalance();
+  const [bal, held] = await Promise.all([reserveBalance(), inventoryHeld()]);
   const known = bal !== null;
+  const circ = held === null ? null : Math.max(0, ISSUED - held);
   const ratio = known && ISSUED > 0 ? bal / ISSUED : null;
   const bar = ratio === null ? 0 : Math.max(0, Math.min(100, ratio * 100));
   return page('Proof of backing', '/proof', `
@@ -932,6 +1412,10 @@ word for it — both numbers below are things you can check yourself.</p>
 <div><div class="muted">Surplus</div><div class="big">${
   known ? n2(Math.max(0, bal - ISSUED)) : '—'}</div>
   <div class="muted" style="font-size:.8rem">PCN above 1:1</div></div>
+<div><div class="muted">wPCN outside the desk</div><div class="big">${
+  circ === null ? 'UNKNOWN' : n2(circ)}</div>
+  <div class="muted" style="font-size:.8rem">issued minus what the desk's inventory and its market bot hold${
+  held === null ? '' : ` (${n2(held)})`}. Includes the PancakeSwap pool</div></div>
 </div>
 <div class="bar"><i style="width:${bar}%"></i></div>
 ${known
@@ -949,7 +1433,14 @@ raises the reserve without raising the supply it has to cover. The surplus is th
 excess: PCN in the reserve over and above the 1:1 requirement. It exists because
 the desk charges ${FEE_PCT}% and because wrapping adds backing faster than it adds
 circulating tokens. It is not customer money and holding it makes the token
-<i>more</i> covered, not less.</p></div>
+<i>more</i> covered, not less.</p>
+<p class="muted"><b>Why the inventory matters.</b> The supply cannot be minted, so
+the wPCN sitting in the desk's inventory is the only wPCN that can ever be wrapped
+again. Redeeming by <a href="/redeem">return</a> puts tokens back there;
+redeeming by burn destroys them. When the inventory is empty nobody can wrap, and
+wPCN can then trade <b>above</b> PCN with no arbitrage able to pull it back down.
+The reserve is unaffected either way — a return is paid from a separate wallet, so
+the backing figure above does not move.</p></div>
 
 <h2>Check it yourself</h2><div class="card"><table>
 <tr><th>Reserve address</th><td><a href="https://explorer.pc.am/address/${RESERVE}"><code>${RESERVE}</code></a><br>
@@ -1026,15 +1517,41 @@ app</a> or a node.</p></div>
 <h2>Is the PancakeSwap price the PCN price?</h2><div class="card">
 <p class="muted">No. The PCN price is the one posted at
 <a href="https://price.pc.am">price.pc.am</a>, and that is what every service
-that accepts PCN charges against. The pool is small and we trade it ourselves to
-keep it near that rate — so the pool follows price.pc.am, never the other way
-round. Do not read the pool as the market's verdict on PCN.</p></div>
+that accepts PCN charges against. The pool is small and a bot of ours buys wPCN
+when it falls well below that rate, within a small daily budget; when the pool
+falls on real selling the credit rate follows it down to a published floor, and
+the pool is never allowed to push that rate <i>up</i>. Do not read the pool as
+the market's verdict on PCN.</p></div>
 
 <h2>How do I get PCN back?</h2><div class="card"><p class="muted">Through the
-<a href="/redeem">redeem page</a>: your wallet burns the wPCN and names a PCoin
-address, and a person sends the PCN there — 1 PCN for every 1 wPCN burned, no
-fee on that side, but not instant. The burn is done by the token contract and
-cannot be undone, so check the PCoin address twice.</p></div>
+<a href="/redeem">redeem page</a>, 1 PCN for every 1 wPCN, no fee on that side,
+paid by a person so not instant. Two routes: <b>return</b> the wPCN to the desk's
+inventory and sign a message naming your PCoin address (recommended), or
+<b>burn</b> it through the contract. Both pay the same. Check the PCoin address
+twice either way.</p></div>
+
+<h2>Why return rather than burn?</h2><div class="card"><p class="muted">The wPCN
+contract has no mint function — that is a safety feature, checkable in the
+bytecode — so the 50,000 ever created is all there will be. A burn destroys
+tokens for ever; a return puts them back in the desk's inventory, where the next
+person can wrap PCN into them. Once the inventory is gone, nobody can turn PCN
+into wPCN any more, and then wPCN can trade <b>above</b> PCN with nothing to pull
+it back (see the next question). Returning keeps that from happening. The
+contract's <code>redeem()</code> is still there for anyone who prefers a
+permanent on-chain record.</p></div>
+
+<h2>Can wPCN and PCN have different prices?</h2><div class="card"><p class="muted">
+Yes, and the two directions are not symmetric. If wPCN trades <i>below</i> PCN,
+anyone can buy wPCN, redeem it 1:1 and end up with cheaper PCN — that pulls wPCN
+back up, and it works without limit. If wPCN trades <i>above</i> PCN, the only
+thing that pulls it back down is somebody wrapping PCN into wPCN and selling it,
+which needs wPCN in the desk's inventory to hand out. So wPCN can sit at a
+<b>premium</b> to PCN whenever the desk has no inventory or wrapping is closed,
+and no bot or contract can fix that. The rate PCoin's own services credit PCN at
+is never raised by the pool (they credit the lower of the posted rate and the
+pool), so a premium costs nobody who spends PCN — but somebody buying wPCN on
+PancakeSwap may be paying more than PCN costs at market.pc.am. Check both before
+you buy.</p></div>
 
 <h2>Who runs this?</h2><div class="card"><p class="muted">The PCoin project. The
 same people who run <a href="https://pc.am">pc.am</a>, the explorer and the
@@ -1129,7 +1646,90 @@ createServer(async (req, res) => {
       res.writeHead(302, { Location: '/', 'Set-Cookie': 'wd=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax' });
       return res.end();
     }
+    // ── a RETURN claim: "I sent wPCN to inventory in tx X; pay PCoin address Y" ─
+    if (req.method === 'POST' && p === '/return') {
+      const json = (code, obj) => {
+        res.writeHead(code, { 'content-type': 'application/json; charset=utf-8',
+          'referrer-policy': 'no-referrer', 'x-content-type-options': 'nosniff' });
+        res.end(JSON.stringify(obj));
+      };
+      if (tooManyReturns(ip)) return json(429, { ok: false, state: 'rate_limited', message: 'Too many requests from your address. Try again in an hour.' });
+      let b;
+      try { b = JSON.parse(await body(req)); } catch { return json(400, { ok: false, state: 'bad_request', message: 'Body must be JSON.' }); }
+      const txhash = String(b.txhash || '').toLowerCase();
+      const pcoin = String(b.pcoin || '').trim();
+      const from = String(b.from || '').toLowerCase();
+      const signature = String(b.signature || '');
+      if (!isTxHash(txhash)) return json(400, { ok: false, state: 'bad_request', message: 'txhash must be 0x + 64 hex characters.' });
+      if (!isPcn(pcoin)) return json(400, { ok: false, state: 'bad_request', message: 'That is not a PCoin address (pc1…).' });
+      if (!isBscLower(from)) return json(400, { ok: false, state: 'bad_request', message: 'from must be a BSC address.' });
+      if (!/^0x[0-9a-fA-F]{130}$/.test(signature)) return json(400, { ok: false, state: 'bad_request', message: 'The signature is malformed.' });
+
+      // Verify the signature FIRST -- it is the cheap check and the one that
+      // stops a stranger claiming somebody else's transfer. A message we
+      // cannot verify is recorded UNVERIFIED for the watcher to judge; it is
+      // never treated as verified.
+      const msg = returnMessage(txhash, pcoin);
+      const rec = await recoverSigner(msg, signature);
+      if (rec.verdict === 'bad' || (rec.verdict === 'ok' && rec.signer !== from)) {
+        console.warn(`[wrapdesk] return claim REJECTED (signer ${rec.signer || '?'} != ${from}) tx ${txhash} from ${ip}`);
+        return json(403, { ok: false, state: 'bad_signature',
+          message: 'That signature was not made by the wallet that sent the wPCN. Sign with the sending wallet.' });
+      }
+
+      const r = await bscRpc('eth_getTransactionReceipt', [txhash]);
+      if (!r.ok) return json(503, { ok: false, state: 'unreachable', signature,
+        message: 'Could not reach BNB Smart Chain just now. Nothing was recorded — try again in a minute.' });
+      const receipt = r.result;
+      if (!receipt) return json(202, { ok: false, state: 'pending', signature,
+        message: 'That transaction is not visible on chain yet.' });
+      if (receipt.status !== '0x1') return json(400, { ok: false, state: 'reverted',
+        message: 'That transaction failed on chain; no wPCN moved and nothing is owed.' });
+      const transfers = (receipt.logs || []).filter((l) =>
+        String(l.address).toLowerCase() === TOKEN.toLowerCase() &&
+        String(l.topics && l.topics[0]).toLowerCase() === TRANSFER_TOPIC &&
+        addrFromTopic(l.topics[2]) === INVENTORY &&
+        addrFromTopic(l.topics[1]) === from);
+      if (!transfers.length) return json(400, { ok: false, state: 'no_transfer',
+        message: `That transaction contains no wPCN transfer from ${from} to the desk's inventory address.` });
+
+      const st = loadReturns();
+      const recorded = [];
+      for (const l of transfers) {
+        const key = `${txhash}:${parseInt(l.logIndex, 16)}`;    // (txhash, logIndex), never txhash alone
+        const wpcn = Number(BigInt(l.data)) / 1e8;
+        const prev = st.claims[key];
+        if (prev && prev.pcoin !== pcoin) {
+          // Same transfer, different destination. Only the sender can sign, so
+          // this is the sender changing their mind -- allowed until paid, and
+          // the watcher lists both so a person sees the change.
+          if (prev.paid) return json(409, { ok: false, state: 'already_paid', message: 'That transfer has already been paid out.' });
+          st.claims[key] = { ...prev, pcoin, signature, message: msg, verified: rec.verdict === 'ok', updated_at: Math.floor(Date.now() / 1000), previous_pcoin: prev.pcoin };
+        } else if (!prev) {
+          st.claims[key] = { txhash, logIndex: parseInt(l.logIndex, 16), from, wpcn, pcoin, signature, message: msg,
+            verified: rec.verdict === 'ok', verify_note: rec.verdict === 'ok' ? '' : rec.why,
+            block: parseInt(receipt.blockNumber, 16), at: Math.floor(Date.now() / 1000), ip };
+        }
+        recorded.push({ key, wpcn });
+      }
+      saveReturns(st);
+      const total = recorded.reduce((s, x) => s + x.wpcn, 0);
+      console.log(`[wrapdesk] return claim ${recorded.map((x) => x.key).join(',')} ${total} wPCN -> ${pcoin} (${rec.verdict})`);
+      return json(200, { ok: true, state: 'recorded', keys: recorded.map((x) => x.key), wpcn: total,
+        message: `Recorded: ${n8(total)} wPCN returned in that transaction. A person will send ${n8(total)} PCN to ${pcoin}. Allow hours, not minutes.` });
+    }
+
     if (req.method === 'POST' && p === '/request') {
+      // FIRST, before anything is parsed or validated. A closed desk must not
+      // reach the allocation, the account cap or the state file at all.
+      if (intakeClosed() !== null) {
+        return send(503, home(`<p class="err"><b>Wrapping is closed &mdash; but <a href="/redeem">redeeming wPCN &rarr; PCN still works</a>.</b>
+          New wrap requests are not being accepted. Nothing you are already owed
+          is affected &mdash; every wrap that reached 100 confirmations has been
+          paid and anything still confirming will be.<br><br>
+          You can still buy and sell on PancakeSwap (wPCN/USDT), and buy PCN
+          directly at <a href="https://market.pc.am">market.pc.am</a>.</p>`));
+      }
       const f = new URLSearchParams(await body(req));
       const bsc = (f.get('bsc') || '').trim();
       const amount = Number(f.get('amount'));
@@ -1158,9 +1758,29 @@ createServer(async (req, res) => {
             return send(400, home(`<p class="err">Your account has <b>${n2(leftPcn)} PCN</b> of its
               ${ACCOUNT_MONTHLY_PCN} PCN monthly allowance left. Enter ${n2(leftPcn)} or less.</p>`));
           }
-        } else
+        }
+        // ONE REQUEST may never exceed PER_PERSON, signed in or NOT. The monthly
+        // allowance above governs the TOTAL an account may wrap over 30 days; it
+        // does not make a single oversized request payable. The payout side sends
+        // at most PER_PERSON*(1-FEE_PCT/100) wPCN per DEPOSIT ADDRESS, and this
+        // desk issues ONE PERMANENT deposit address per BSC address -- so a bigger
+        // single request takes the customer's PCN and then withholds the wPCN for
+        // ever. The DEPOSIT creates the obligation and nothing downstream can undo
+        // it. This check sat behind an `else` until 2026-09-21 and so never ran
+        // for a signed-in account.
+        //
+        // Do NOT tell a refused account it may "wrap again straight afterwards":
+        // the next deposit lands on the SAME permanent address and is capped there
+        // too. That sentence was drafted for this very message and caught before
+        // it shipped; it is recorded here so nobody writes it again.
         if (amount > PER_PERSON)
-          return send(400, home(`<p class="err">${n2(amount)} PCN is more than one person
+          return send(400, home(acct
+            ? `<p class="err">${n2(amount)} PCN is more than one request may wrap.
+              Your account may wrap ${ACCOUNT_MONTHLY_PCN} PCN a month, but a single
+              request is capped at <b>${PER_PERSON} PCN</b> &mdash; that is the most
+              the desk can pay out against one deposit address, and your deposit
+              address is permanent. Enter ${PER_PERSON} or less.</p>`
+            : `<p class="err">${n2(amount)} PCN is more than one person
             may wrap. The limit is <b>${PER_PERSON} PCN</b>, across every deposit you
             make &mdash; not per deposit. Enter ${PER_PERSON} or less.</p>`));
 
@@ -1249,7 +1869,24 @@ createServer(async (req, res) => {
           // released_wpcn is the stricter of the watcher's two figures: a release
           // recorded before amounts were logged is charged at the maximum it
           // could have been. Plan against the number that actually refuses.
-          return Math.max(Number(a.used_wpcn) || 0, Number(a.released_wpcn) || 0);
+          // Take the strictest of the watcher's figures. Each covers a blind
+          // spot the others have, and a ceiling must be wrong in the refusing
+          // direction:
+          //   used_wpcn       confirmed deposits that were not refunded
+          //   released_wpcn   what the watcher's own send gate tests; a release
+          //                   predating the amount field is charged at maximum
+          //   committed_wpcn  used PLUS deposits in the mempool. Absent from an
+          //                   older watcher, which is why this is a max and not
+          //                   a preference -- a missing key reads as 0 and the
+          //                   other two still apply.
+          //
+          // committed_wpcn is the one that was missing on 2026-09-21, when the
+          // desk allocated 9181.05 against a 9000 ceiling: every deposit was
+          // inside the limit at the moment it was accepted, because the ones
+          // still in the mempool counted for nothing.
+          return Math.max(Number(a.used_wpcn) || 0,
+                          Number(a.released_wpcn) || 0,
+                          Number(a.committed_wpcn) || 0);
         } catch { return 0; }
       })();
       const committed = Math.max(requested, deposited);
@@ -1309,7 +1946,7 @@ createServer(async (req, res) => {
       return send(200, page('Your deposit address', '/', `
 <h1>Send PCN to this address</h1>
 <div class="card"><p class="muted">Your deposit address — <b>yours alone</b>, and
-reusable. Send to it any time.</p>
+reusable. Send to it any time.${intakeClosed() !== null ? ' <b style="color:#e5484d">The desk is closed: PCN sent now is returned, not wrapped.</b>' : ''}</p>
 <p><code style="font-size:1.06rem">${esc(r.address)}</code></p></div>
 <div class="card"><table>
 <tr><th>You send</th><td>${esc(String(amount))} PCN</td></tr>
@@ -1477,6 +2114,13 @@ Times are estimates: PCoin blocks average ten minutes but vary a lot.</p>`));
   console.log(`wrapdesk on 127.0.0.1:${PORT}, ${pool.length} addresses, ` +
               `fee ${FEE_PCT}%, cap ${PER_PERSON}/person`);
   console.log(`  allocation ${TOTAL_ALLOC} wPCN total, enforced`);
+  console.log(`  returns -> inventory ${INVENTORY}, ledger ${RETURNS_FILE}, ` +
+              `signature check ${RECOVER_CMD ? 'via ' + RECOVER_CMD : 'OFF (claims recorded unverified)'}`);
+  // Say which state the intake is in, and on whose authority, every start.
+  // "The desk is closed" must never be something anyone infers.
+  const shut = closedBy();
+  if (shut.length) console.log(`  intake CLOSED by: ${shut.map((h) => h.path).join(', ')}`);
+  else console.log(`  intake OPEN -- none of ${CLOSED_FILES.join(', ')} exists`);
   // Say which state we are in, every start. "The captcha is on" must never be
   // something anyone infers from the config file they think they deployed.
   if (HCAPTCHA_ON) console.log('  hCaptcha ON');

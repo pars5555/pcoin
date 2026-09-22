@@ -732,6 +732,20 @@ def main() -> int:
               "explicitly.", file=sys.stderr)
 
     used_total = 0.0        # allocation consumed, summed across ALL addresses
+    # THE SAME OBLIGATION, ONE BLOCK EARLIER. A deposit sitting in the mempool
+    # has already been paid by the customer and already owes them wPCN, but it
+    # has no height and so never reached used_total -- the ceiling read as more
+    # headroom than the desk had, for as long as the deposit took to confirm.
+    # That is the one direction a cap must never be wrong in, and it is how the
+    # desk reached 9181.05 against a 9000 allocation on 2026-09-21.
+    #
+    # Counted separately rather than folded in, because they answer different
+    # questions: used_total is money the desk is committed to and cannot take
+    # back; this is money it expects to be committed to shortly. Both are
+    # rebuilt from the chain every run, so a deposit that is replaced or
+    # dropped stops being counted by itself -- over-counting for an hour
+    # refuses too EARLY, which is the safe direction.
+    pending_total = 0.0
     # Same figure, broken down BY DEPOSIT ADDRESS. The desk maps a deposit
     # address back to the account that requested it, so a per-account quota
     # can be summed from this without the desk ever seeing the chain itself.
@@ -971,6 +985,31 @@ def main() -> int:
                         per_addr.get(watch_addr, 0.0)
                         + min(a, PER_PERSON) * (1 - FEE_PCT / 100.0), 8)
 
+        # ... and the same for deposits that have ARRIVED but not yet been
+        # mined. See pending_total above for why these count.
+        #
+        # Two guards this needs and the confirmed loop does not:
+        #   * a txid already in conf_items is skipped. Some explorers keep a
+        #     transaction in unconfirmed_history for a tick after it is mined,
+        #     and counting it twice would refuse a customer on money that does
+        #     not exist.
+        #   * a mempool entry has NO HEIGHT, so neither the OPENED_AT_HEIGHT
+        #     floor nor the CLOSED_AT_HEIGHT ceiling can be evaluated on it.
+        #     The floor is safe to skip -- nothing in the mempool can pre-date
+        #     the desk -- but the closed case is not, so while the desk is
+        #     shut nothing arriving owes wPCN and none of this is counted.
+        if not (CLOSED_AT_HEIGHT > 0):
+            _conf_txids = {it.get("txid") for it in conf_items}
+            for it in pend_items:
+                _t = it.get("txid")
+                a = float(it.get("received_pcn") or 0)
+                if a <= 0 or (_t and _t in _conf_txids):
+                    continue
+                _k = f"wrap:{_t or '?'}:{watch_addr}"
+                if (st["seen"].get(_k, {}) or {}).get("refunded"):
+                    continue
+                pending_total += min(a, PER_PERSON) * (1 - FEE_PCT / 100.0)
+
     # REHEARSAL ROWS. A test wrap has no deposit on the chain, so the scan
     # above cannot produce a row for it -- and a row is the whole point, since
     # the buttons live on rows. Emitted here, labelled TEST in the title so it
@@ -989,7 +1028,7 @@ def main() -> int:
                       f"Remove every one of these with --clear-test-wraps.\n"
                       f"  pcoin-wrapdesk-watch --released {_k} <bsc_txhash>"))
 
-    if used_total > 0:
+    if used_total > 0 or pending_total > 0:
         left = TOTAL_ALLOC - used_total
         # TWO figures, and the operator needs the smaller one to plan against.
         #
@@ -1006,6 +1045,10 @@ def main() -> int:
         # Reporting only the first told the operator 825.50 left while the gate would
         # refuse past ~360. Neither number is wrong; showing only one of them was.
         gate_left = TOTAL_ALLOC - released_wpcn
+        # The third figure, and the one that predicts a breach rather than
+        # reporting one: what is left once every deposit already on the chain
+        # -- confirmed or not -- has been paid.
+        committed_left = TOTAL_ALLOC - (used_total + pending_total)
         gap = ""
         if released_wpcn > used_total + 0.01:
             gap = ("\n  The send gate is stricter: %.2f used, %.2f left,"
@@ -1013,13 +1056,21 @@ def main() -> int:
                    " and are charged at the maximum. PLAN AGAINST THAT NUMBER -- it is"
                    " the one that refuses."
                    % (released_wpcn, gate_left, unknown_released))
+        # Deposits in the mempool are an obligation the desk has already taken
+        # on, so they are named on the same line rather than left to surface an
+        # hour later as a ceiling that moved on its own.
+        if pending_total > 0:
+            gap += ("\n  Plus %.2f wPCN against deposits still UNCONFIRMED, which"
+                    " leaves %.2f once they land. They are already owed -- the"
+                    " customer has paid." % (pending_total, committed_left))
         tasks.append(("allocation",
-                      "action" if (left <= 0 or gate_left <= 0) else "info",
+                      "action" if (left <= 0 or gate_left <= 0 or committed_left <= 0)
+                      else "info",
                       f"Allocation: {used_total:.2f} of {TOTAL_ALLOC:.0f} wPCN used, "
                       f"{left:.2f} left." + gap
                       + ("\n*** THE ALLOCATION IS EXHAUSTED. Do not wrap more "
                          "without deciding deliberately to raise it. ***"
-                         if left <= 0 else "")))
+                         if min(left, committed_left) <= 0 else "")))
 
     # ---- PUBLISH the allocation figure so the DESK can refuse on it -------
     #
@@ -1038,10 +1089,22 @@ def main() -> int:
     #   used_wpcn      what actually went out and stayed out (refunds excluded)
     #   released_wpcn  what the send gate tests; >= used_wpcn, because a release
     #                  recorded before send_wpcn existed is charged at maximum
+    #   pending_wpcn   owed against deposits that have arrived but are not yet
+    #                  mined. Invisible to the two figures above, which is how
+    #                  the desk reached 9181.05 against a 9000 allocation: a
+    #                  deposit in the mempool is already paid for and already
+    #                  owed, and for the hour it took to confirm the ceiling
+    #                  read as having room it did not have.
+    #   committed_wpcn used + pending. THE FIGURE THE DESK MUST REFUSE ON.
+    #                  Published as its own key rather than folded into
+    #                  used_wpcn so that a desk running older code keeps the
+    #                  behaviour it has instead of silently changing meaning.
     st["allocation"] = {
         "per_address": per_addr,
         "used_wpcn": round(used_total, 8),
         "released_wpcn": round(released_wpcn, 8),
+        "pending_wpcn": round(pending_total, 8),
+        "committed_wpcn": round(used_total + pending_total, 8),
         "total_alloc": TOTAL_ALLOC,
         "at": int(time.time()),
     }
