@@ -24,7 +24,7 @@
   <div class="grid">
     <div class="card"><div class="k">Price now</div><div class="v" id="price">&mdash;</div>
       <div class="s">USD for the next PCN</div></div>
-    <div class="card"><div class="k">Left on the ladder</div><div class="v" id="remaining">&mdash;</div>
+    <div class="card"><div class="k">Available to buy</div><div class="v" id="remaining">&mdash;</div>
       <div class="s" id="soldPct">of 100,000 PCN</div></div>
     <div class="card"><div class="k">Order limits</div><div class="v" id="minOrder">&mdash;</div>
       <div class="s" id="minOrderNote">per order</div></div>
@@ -42,7 +42,10 @@
   </div>
 
   <!-- ── signed out ── -->
-  <div id="authPanel" class="panel">
+  <!-- `hidden` on purpose, exactly like #app below: refresh() reveals whichever
+       panel is right. Without it the signed-out form (and the hCaptcha widget
+       inside it) painted on every load and then vanished. -->
+  <div id="authPanel" class="panel" hidden>
     <div class="tabs" role="tablist">
       <button class="tab" id="t-in" aria-selected="true" onclick="showTab('in')">Sign in</button>
       <button class="tab" id="t-up" aria-selected="false" onclick="showTab('up')">Create account</button>
@@ -154,11 +157,40 @@ async function doAuth() {
     await refresh();
     const next = new URL(location.href).searchParams.get('next') || '';
     if (next.startsWith('https://wrapdesk.pc.am/')) { location.href = next; return; }
+    // exchange.pc.am sign-in: an exact same-origin path, never an arbitrary URL.
+    if (next === '/sso/exchange?return=https%3A%2F%2Fexchange.pc.am%2Fsso') { location.href = next; return; }
   } catch (e) {
     show($('authMsg'), 'err', e.message);
     if (window.hcaptcha) try { hcaptcha.reset(); } catch (_) { /* widget not rendered */ }
   }
   btn.disabled = false;
+}
+
+// Fetch hCaptcha's script the first time we actually need it, i.e. when we are
+// about to show the sign-in form. A signed-in console never calls this, so a
+// signed-in page load makes no request to js.hcaptcha.com at all.
+//
+// The submit button stays disabled until the widget is ready. Lazy loading
+// without that trades a cosmetic flash for a real failure: click before the
+// widget renders and doAuth() posts an empty token, which the server rejects as
+// 'missing' -- with no captcha on screen to explain it.
+function ensureCaptcha() {
+  const slot = document.querySelector('.h-captcha');
+  if (!slot) return;                    // captcha not configured; nothing to wait for
+  if (document.getElementById('hcaptcha-js')) return;   // already loading or loaded
+  const btn = $('authBtn');
+  btn.disabled = true;
+  const s = document.createElement('script');
+  s.id = 'hcaptcha-js';
+  s.src = 'https://js.hcaptcha.com/1/api.js';
+  s.async = true;
+  s.defer = true;
+  // Re-enable either way. If hCaptcha cannot be reached, a permanently dead
+  // button would lock every user out of their own account; let them try and
+  // let the server be the one that refuses.
+  s.onload = () => { btn.disabled = false; };
+  s.onerror = () => { btn.disabled = false; };
+  document.head.appendChild(s);
 }
 
 async function refresh() {
@@ -170,6 +202,7 @@ async function refresh() {
     $('signout').hidden = false;
     renderOrders(me.orders || []);
   } catch {
+    ensureCaptcha();
     $('authPanel').hidden = false;
     $('app').hidden = true;
     $('signout').hidden = true;
@@ -331,15 +364,28 @@ function calc() {
       // an order inside a single step leaves the next buyer's price untouched,
       // and "moves the price from $0.015 to $0.015" reads as a broken page.
       const steps = c.rungsTouched ?? c.rungsConsumed;
+      // THREE cases, not two. The second branch used to assume that a price
+      // which did not move meant an order inside ONE step -- true until the ask
+      // cap started binding, and then false and confidently so: with every rung
+      // clamped to the cap, a 5,000 PCN order crosses SEVEN steps and the page
+      // told the buyer it was "inside a single step".
+      const capped = !c.priceMoves && steps > 1;
       const movement = c.exhausted
         ? 'It would take <b>every remaining step</b> and empty the ladder.'
         : c.priceMoves
           ? 'It climbs <b>' + steps + '</b> of the 100 steps, taking the price for the next '
             + 'buyer from ' + money(c.priceBefore) + ' to <b>' + money(c.marginalPriceAfter)
             + '</b>.'
-          : 'That is <b>' + pctOfLadder(c.pctOfLadder) + '</b> of the ladder — inside a single '
-            + 'step, so the price for the next buyer stays at <b>' + money(c.priceBefore)
-            + '</b>.';
+          : capped
+            ? 'It climbs <b>' + steps + '</b> of the 100 steps, but the price does not move: '
+              + 'every step above <b>' + money(c.priceBefore) + '</b> is currently being sold '
+              + 'AT that price, because the ask is capped to stay close to the open market. '
+              + 'That is why the average per coin is the same whether you buy 10 or 10,000 '
+              + '\u2014 ' + 'the cap, not a broken calculator. It will start climbing again once the '
+              + 'market price rises enough for the cap to clear the next step.'
+            : 'That is <b>' + pctOfLadder(c.pctOfLadder) + '</b> of the ladder — inside a single '
+              + 'step, so the price for the next buyer stays at <b>' + money(c.priceBefore)
+              + '</b>.';
       $('calcBox').innerHTML =
           '<b>' + fmtPcn(c.filledPcn) + ' PCN</b> costs <b>' + usd(c.totalCost)
         + '</b>, an average of <b>' + money(c.averagePrice) + '</b> per coin.<br>'
@@ -426,9 +472,18 @@ $('signout').onclick = async () => { await fetch('/api/logout'); refresh(); };
   } catch { $('price').textContent = 'unavailable'; }
   try {
     const l = await (await fetch('/api/ladder/state')).json();
-    $('remaining').textContent = Math.round(l.remainingPcn).toLocaleString();
+    // Lead with what we will actually SELL, not what is left on the ladder.
+    // The book runs to 84,538 PCN; the deliverable cap is 50,000 and the buy
+    // path enforces it. null means the backing could not be read -- show a
+    // dash, never a number, because orders are being refused in that state.
+    const remainPcn = Math.round(Number(l.remainingPcn));
+    const sellable  = (l.sellableNowPcn === null || l.sellableNowPcn === undefined)
+      ? null : Math.round(Number(l.sellableNowPcn));
+    $('remaining').textContent = sellable === null ? '\u2014' : sellable.toLocaleString();
     $('soldPct').textContent = l.pctSold.toFixed(2) + '% of '
-      + Number(l.totalPcn).toLocaleString() + ' PCN sold';
+      + Number(l.totalPcn).toLocaleString() + ' PCN sold'
+      + ((sellable !== null && sellable < remainPcn)
+          ? ' \u00b7 ' + remainPcn.toLocaleString() + ' left on the ladder' : '');
 
     // The opening paragraph describes the ladder, so it is built from the
     // ladder rather than typed into the markup. It read "$0.001 up to $10.00,

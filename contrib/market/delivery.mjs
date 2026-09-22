@@ -37,6 +37,14 @@ export const FLOAT_WARN     = 24000;   // PCN — below this, nag every 10 minut
 export const FLOAT_STOP     = 1000;    // PCN — below this, stop sending entirely
 export const OWNER_BAL_MAX_AGE_MS = 30 * 60 * 1000;   // stop selling past this
 
+// What counts as a purchase worth announcing and counting. Deliberately NOT
+// 'delivered' alone: a paid order counts from the moment the money lands, before
+// anyone has released the coins. Deliberately NOT 'needs_review' (undecided) or
+// 'test_completed' (ours). `pcoin-listing-banner` counts on the same basis, so
+// the post's number and the pinned progress bar can never disagree.
+const ANNOUNCEABLE = ['awaiting_delivery', 'sending', 'delivered'];
+const COUNTED_MIN_USD = 20;   // must match BANNER_MIN_USD in pcoin-listing-banner
+
 /** Minimal JSON-RPC client for the local node.
  *
  *  TWO CREDENTIALS, DELIBERATELY UNEQUAL.
@@ -364,6 +372,72 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
     }
   }
 
+  /** Say thank you, publicly, once per order.
+   *
+   *  Called from TWO places on purpose: the IPN handler when the payment lands
+   *  (the usual one, owner's instruction 2026-09-14 -- "once payment received on
+   *  nowpayment it should post on channel"), and recordSent() when the coins go
+   *  out, which covers an order delivered without ever passing through an IPN.
+   *  `pcoin-approve --key purchase-<id>` dedupes, so whichever fires first
+   *  publishes and the other does nothing.
+   *
+   *  EVERY qualifying purchase is announced, the project's own accounts
+   *  included -- owner's decision, same day. An earlier guard suppressed
+   *  own-account buys; it was removed deliberately, so do not reinstate it
+   *  without asking him.
+   *
+   *  Never throws. An announcement must not be able to affect a delivery, and
+   *  must not turn an IPN into a non-200 that makes NOWPayments retry a payment
+   *  we have already recorded.
+   */
+  async function announcePurchase(orderId) {
+    try {
+      // Re-read rather than trust the caller. The IPN branch that calls this
+      // may have moved the order to needs_review a few lines earlier -- an
+      // UNBACKED reservation or an UNDERPAYMENT -- and neither is a sale.
+      // Keeping the test here means every future caller inherits it.
+      // `q` already unwraps mysql2's [rows, fields], so this is ONE level of
+      // destructuring, not two. `const [[o]]` here threw on every call.
+      const [o] = await q(
+        `SELECT status, usd FROM orders WHERE order_id=?`, [orderId]);
+      if (!o) { log.error('[announce] no such order ' + orderId); return; }
+      if (!ANNOUNCEABLE.includes(o.status)) {
+        log.info?.('[announce] not announcing ' + orderId + ': status ' + o.status);
+        return;
+      }
+      if (!(Number(o.usd) >= COUNTED_MIN_USD)) return;
+
+      const [c] = await q(
+        `SELECT COUNT(*) AS n FROM orders
+          WHERE paid_at IS NOT NULL AND usd >= ?
+            AND status IN (${ANNOUNCEABLE.map(() => '?').join(',')})`,
+        [COUNTED_MIN_USD, ...ANNOUNCEABLE]);
+      const n = Number(c?.n || 0);
+      const text =
+        'Someone just bought PCN on market.pc.am \u2014 thank you. \uD83C\uDF89\n\n' +
+        'That\u2019s ' + n + ' purchase' + (n === 1 ? '' : 's') +
+        ' on the road to a listing. Every one counts, and it\u2019s real people ' +
+        'choosing PCN that gets us there.\n\n' +
+        'market.pc.am is open if you\u2019d like to be next.';
+      const { execFile } = await import('node:child_process');
+      await new Promise(resolve => {
+        execFile('/usr/local/bin/pcoin-approve',
+          ['submit', '--dest', 'channel', '--source', 'market-purchase',
+           // Keyed on the order, so neither caller can queue the same
+           // thank-you twice.
+           '--key', 'purchase-' + orderId, '--text', text],
+          { timeout: 20000 },
+          (err, out, errOut) => {
+            if (err) log.error('[announce] purchase post failed: ' + (errOut || err.message));
+            else log.info?.('[announce] queued purchase post for ' + orderId);
+            resolve();
+          });
+      });
+    } catch (e) {
+      log.error('[announce] purchase post threw: ' + e.message);
+    }
+  }
+
   /** Record a send. Guarded on delivered_txid IS NULL: overwriting an existing
    *  txid would erase the evidence of the first payment, which is precisely the
    *  record you need when two have gone out. If it does not match, something
@@ -374,44 +448,10 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
               delivery_error=NULL
         WHERE order_id=? AND delivered_txid IS NULL`, [txid, orderId]);
     if (r.affectedRows === 1) {
-      // A genuine first-time delivery. Say thank you, publicly, once.
-      // Wrapped whole: an announcement must never be able to affect a delivery
-      // that has already left the wallet.
-      try {
-        // Accounts the PROJECT owns. A purchase from one of these is us.
-        const OWN_ACCOUNTS = ['pcoin@pc.am', 'pcoinpcn@gmail.com'];
-        const [[who]] = await q('SELECT email FROM orders WHERE order_id=?', [orderId]);
-        const buyer = String(who?.email || '').trim().toLowerCase();
-        if (OWN_ACCOUNTS.includes(buyer)) {
-          log.error('[announce] not announcing ' + orderId + ': project-owned account');
-        } else {
-        const [[c]] = await q(
-          `SELECT COUNT(*) AS n FROM orders WHERE status='delivered' AND usd >= 20`);
-        const n = Number(c?.n || 0);
-        const text =
-          'Someone just bought PCN on market.pc.am \u2014 thank you. \uD83C\uDF89\n\n' +
-          'That\u2019s ' + n + ' purchase' + (n === 1 ? '' : 's') +
-          ' on the road to a listing. Every one counts, and it\u2019s real people ' +
-          'choosing PCN that gets us there.\n\n' +
-          'market.pc.am is open if you\u2019d like to be next.';
-        const { execFile } = await import('node:child_process');
-        await new Promise(resolve => {
-          execFile('/usr/local/bin/pcoin-approve',
-            ['submit', '--dest', 'channel', '--source', 'market-purchase',
-             // Keyed on the order, so a re-run can never queue the same
-             // thank-you twice even if this line is reached again.
-             '--key', 'purchase-' + orderId, '--text', text],
-            { timeout: 20000 },
-            (err, out, errOut) => {
-              if (err) log.error('[announce] purchase post failed: ' + (errOut || err.message));
-              else log.info?.('[announce] queued purchase post for ' + orderId);
-              resolve();
-            });
-        });
-        }
-      } catch (e) {
-        log.error('[announce] purchase post threw: ' + e.message);
-      }
+      // A genuine first-time delivery. Say thank you publicly -- unless the
+      // payment already did, which is the normal case now. pcoin-approve's
+      // per-order key makes the second call a no-op rather than a second post.
+      await announcePurchase(orderId);
     }
     if (r.affectedRows !== 1) {
       const [row] = await q(`SELECT delivered_txid FROM orders WHERE order_id=?`, [orderId]);
@@ -490,6 +530,12 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
         WHERE order_id=? AND delivered_txid IS NULL`, [txid, orderId]);
     if (r.affectedRows !== 1) throw new Error('another writer recorded this first');
     await notify(`✅ <b>Marked delivered by hand</b>\n<code>${orderId}</code>\n<code>${txid}</code>`);
+    // A hand-recorded delivery is still a purchase. This path writes its own
+    // UPDATE instead of going through recordSent(), so without this line it was
+    // the one delivery route that announced nothing -- and it is the route used
+    // exactly when a customer has been kept waiting. Deduped per order, so if
+    // the payment hook already posted, this does nothing.
+    await announcePurchase(orderId);
     return { ok: true };
   }
 
@@ -604,7 +650,8 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
 
   return { deliver, deliverForce: id => deliver(id, { force: true }),
            markDelivered, pendingDeliveries, checkFloat, reconcileSending,
-           floatBalance, receiveAddress, findSentTx, alreadySent, isAuto };
+           floatBalance, receiveAddress, findSentTx, alreadySent, isAuto,
+           announcePurchase };
 }
 
 // ── how much we can promise ────────────────────────────────────────────────

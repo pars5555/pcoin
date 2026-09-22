@@ -142,3 +142,7 @@ contrib/pcnaibot/node_modules/
 
 # local agent tool config, not project code
 .claude/
+
+# drift-audit.py --pull writes the SERVER copy of a file here for diffing.
+# It must never be committed: it is what the server has, not what we decided.
+contrib/deploy/_drift/
