@@ -349,8 +349,33 @@ def save_state(st):
 # than something to trim and post.
 MAX_ANSWER_CHARS = int(os.environ.get("ANSWER_MAX_CHARS", "2000"))
 
+# PUBLISHED endpoints that are ALLOWED to appear even though they look like a
+# leak. This is an allow-list, not a loosened pattern, for the same reason the
+# rate guard became one: the rule stays absolute and the exceptions are named.
+#
+# WHY IT EXISTS. pcoin-facts instructs the bot, in as many words, to hand out
+# the independent pool's stratum address when a miner asks for an alternative
+# -- and the IP rule below then silently held every answer that obeyed. On
+# 2026-09-21, during the seven-hour pool stall, that killed BOTH replies to the
+# one miner who was actively leaving: he asked twice why pool2 would not answer
+# and got silence, then left for another pool. The feed and the guard
+# contradicted each other and the guard won without saying so.
+#
+# Only add an address here that is already public on pc.am or in the docs.
+PUBLIC_ENDPOINTS = [
+    "198.244.169.49",   # the independent pool's stratum, given out by pcoin-facts
+]
+
+
+def _strip_public(text):
+    """Remove the allow-listed endpoints before the IP rule looks at the text."""
+    for a in PUBLIC_ENDPOINTS:
+        text = text.replace(a, "")
+    return text
+
+
 FORBIDDEN = [
-    (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "an IP address"),
+    (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "an IP address", _strip_public),
     (re.compile(r"(?i)(?<![\w/])(?:/opt/|/etc/|/var/lib/|/usr/local/|/var/www/)"), "a server path"),  # \b NEVER MATCHED HERE: there is no word boundary between a space and a slash, so this rule only ever fired on the useless case (a/opt/x) and missed every real one (it is in /opt/x). Broken in all 11 backups; found 2026-09-17 by a test that asserted the rule FIRES, rather than one that asserted an answer passed.
     (re.compile(r"(?i)\b(systemctl|journalctl|ssh\s+root|sudo\s|crontab|docker\s|pm2\s)"), "a server command"),
     (re.compile(r"(?i)\b(bearer\s+[\w\-.]{12,}|api[_-]?key\s*[:=]|token\s*[:=])"), "a credential"),
@@ -431,8 +456,14 @@ def guard(text):
     for found in RATE_RE.findall(text):
         if not rate_is_live(found):
             return 'a PCN rate we did not read live (%s)' % found.strip()
-    for rx, why in FORBIDDEN:
-        if rx.search(t):
+    for rule in FORBIDDEN:
+        # A rule may carry a third element: a function that removes the
+        # ALLOWED spellings before the pattern is applied. Blanking them is
+        # deliberately not the same as weakening the pattern -- the rule still
+        # catches every address that is not on the published list.
+        rx, why = rule[0], rule[1]
+        subject = rule[2](t) if len(rule) > 2 else t
+        if rx.search(subject):
             return why
     return None
 

@@ -66,6 +66,13 @@ SOURCES = {
     # "is the pool up / how many miners" is among the most asked questions in
     # the group. Public route, no credential.
     "pool": "https://pool.pc.am/api/pools/pcoin",
+    # POOL2 IS READ, NOT ASSUMED. On 2026-09-21 a miner reported pool2 timing
+    # out and the bot answered "pool2.pc.am is up from our side -- miners are
+    # connected to it right now". That happened to be true and the bot had no
+    # way to know it: pool2 was in the prompt as a fact about the world, not in
+    # the facts as something measured. A second pool you cannot see is a second
+    # pool you will eventually lie about.
+    "pool2": "https://pool2.pc.am/api/pools/pcoin",
 }
 
 # One transaction, looked up by its own id. NOT in SOURCES because it is asked
@@ -119,6 +126,23 @@ def cached(refresh=False):
     except Exception:
         pass
     return c
+
+
+def _epoch(v):
+    """Seconds since the epoch from whatever the pool API gave us.
+
+    It returns an ISO-8601 string ("2026-09-22T01:12:05.858Z") but a millisecond
+    integer is the other plausible shape and has appeared in this codebase
+    before, so both are accepted. Anything else RAISES rather than returning a
+    zero -- a bad timestamp read as 1970 would render as "480,000 hours ago",
+    which looks like data instead of the parse failure it is.
+    """
+    if isinstance(v, (int, float)):
+        return float(v) / 1000.0 if float(v) > 1e11 else float(v)
+    import datetime
+    return datetime.datetime.strptime(
+        str(v)[:19], "%Y-%m-%dT%H:%M:%S").replace(
+            tzinfo=datetime.timezone.utc).timestamp()
 
 
 def n(v, dp=None):
@@ -189,28 +213,90 @@ def block(c):
         out.append("EXPLORER WEBSITE: could not be checked from here (%s). That is UNKNOWN -- "
                    "do not say it is up and do not say it is down." % detail)
 
-    # ── the pool ───────────────────────────────────────────────────────────
-    if "pool" in bad:
-        out.append("POOL: UNREADABLE (%s) -- say you cannot see the pool right now. "
-                   "Do NOT say it is down and do NOT give a miner count." % bad["pool"])
-    else:
-        p = (d["pool"].get("pool") or d["pool"])
+    # ── the pools ──────────────────────────────────────────────────────────
+    # BOTH pools, and each one's HEALTH, not just its size. On 2026-09-21
+    # pool.pc.am stopped recording shares for 7h15m; miners asked about it in
+    # the group and the bot answered "I can't see the pool's share of the
+    # network from here" and filed it for a human, because the only pool facts
+    # it had were miner count and hashrate -- neither of which changes when the
+    # pool goes deaf. The signature it needed was right there in the same API
+    # and nobody had passed it on: miners still connected, shares per second
+    # ZERO. That pair is the fault, and it is now stated outright.
+    for key, label in (("pool", "pool.pc.am"), ("pool2", "pool2.pc.am")):
+        if key in bad:
+            out.append("POOL %s: UNREADABLE (%s) -- say you cannot see this pool right "
+                       "now. Do NOT say it is down and do NOT give a miner count."
+                       % (label, bad[key]))
+            continue
+        p = (d[key].get("pool") or d[key])
         ps = p.get("poolStats") or {}
         ns = p.get("networkStats") or {}
         ph, nh = ps.get("poolHashrate"), ns.get("networkHashrate")
+        miners, sps = ps.get("connectedMiners"), ps.get("sharesPerSecond")
         share = ("%.0f%%" % (100.0 * float(ph) / float(nh))
                  if ph and nh and float(nh) > 0 else "unknown")
         out.append(
-            "POOL pool.pc.am: %s miners connected, pool hashrate %s H/s, network %s H/s, "
-            "so the pool is about %s of the network. Blocks it has found in total: %s."
-            % (ps.get("connectedMiners"), n(ph), n(nh), share, p.get("totalBlocks")))
+            "POOL %s: %s miners connected, pool hashrate %s H/s, network %s H/s, "
+            "so it is about %s of the network. Blocks found in total: %s."
+            % (label, miners, n(ph), n(nh), share, p.get("totalBlocks")))
+
+        # How long since this pool last found a block, and whether that is odd.
+        # A pool with a small share of the network legitimately goes hours
+        # between blocks, so the gap alone proves nothing and must not be read
+        # as a fault -- which is why the share of the network is quoted with it.
+        age_h = None
+        try:
+            lb = p.get("lastPoolBlockTime")
+            if lb:
+                age_h = (time.time() - _epoch(lb)) / 3600.0
+        except Exception:
+            age_h = None
+        if age_h is not None:
+            out.append("  %s last found a block %.1f hours ago." % (label, age_h))
+
+        # THE STALL SIGNATURE. Miners attached and no shares arriving is not a
+        # quiet patch; it is the pool failing to record work. Say so plainly,
+        # because a miner seeing "pool could not record the share; retry" is
+        # RIGHT and must never be told to check their own setup.
+        if isinstance(miners, int) and miners > 0 and isinstance(sps, (int, float)):
+            if sps <= 0:
+                out.append(
+                    "  *** %s IS NOT RECORDING SHARES RIGHT NOW: %s miners are connected "
+                    "and shares per second is %s. This is a REAL FAULT on our side and it "
+                    "is already known. If someone reports \"pool is behind: retry this "
+                    "share\" or \"pool could not record the share\", CONFIRM it, say it is "
+                    "being worked on, do NOT ask them to change anything on their end, and "
+                    "suggest the other pool as somewhere to hash meanwhile. ***"
+                    % (label, miners, n(sps, 2)))
+            else:
+                out.append("  %s is recording shares normally (%s shares/second)."
+                           % (label, n(sps, 2)))
+    # WHAT pool2 IS FOR. Kept from the server-only version of this file
+    # (added 2026-09-19, never committed) because it answers a question that
+    # was asked in the group on 2026-09-19 and never got a reply: "no
+    # explanation anywhere about pool2.pc.am yet, what is the purpose of that
+    # second pool", and "is the PCoin Windows miner one that supports a
+    # failover". Both are answered here.
+    if "pool2" not in bad:
         out.append(
-            "A SECOND, INDEPENDENT POOL EXISTS and is run by somebody outside the project: "
-            "stratum 198.244.169.49:3333, RandomX, no registration. We do not run it and "
-            "cannot vouch for it, and its web stats page does not answer -- but its stratum "
-            "is live and building on this chain. If a miner asks for an alternative, give "
-            "them that address: a chain where most blocks come from one pool is less secure, "
-            "and pointing people elsewhere is genuinely good for PCoin.")
+            "WHAT pool2.pc.am:3333 IS FOR: it is OUR second pool -- same 2% fee, same PPLNS, "
+            "on a DIFFERENT server -- and it exists so mining continues if pool.pc.am is "
+            "unreachable. A miner may use either, and a miner that supports a failover pool "
+            "should list both, pool.pc.am first. Adding it changes nothing about payouts: "
+            "each pool pays its own blocks from its own coinbase, to the same address.")
+
+    # UNCONDITIONAL. This paragraph is static text about somebody else's pool
+    # -- it needs no reading of ours to be true. It used to sit behind
+    # `if "pool" not in bad or "pool2" not in bad`, which withheld it exactly
+    # when BOTH our pools were unreadable: the one moment a miner most needs
+    # somewhere else to point their hashrate.
+    out.append(
+        "A SECOND, INDEPENDENT POOL EXISTS and is run by somebody outside the project: "
+        "stratum 198.244.169.49:3333, RandomX, no registration. We do not run it and "
+        "cannot vouch for it, and its web stats page does not answer -- but its stratum "
+        "is live and building on this chain. If a miner asks for an alternative, give "
+        "them that address: a chain where most blocks come from one pool is less secure, "
+        "and pointing people elsewhere is genuinely good for PCoin.")
 
     if "price" in bad:
         out.append("PRICE: UNREADABLE (%s) -- say you cannot read the rate right now." % bad["price"])

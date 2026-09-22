@@ -328,7 +328,24 @@ CREATE TABLE IF NOT EXISTS shares (
 -- paying 21.7 ms of RandomX for a replay, but THIS is what makes it true: the
 -- memory set dies with the process and this does not.
 CREATE UNIQUE INDEX IF NOT EXISTS shares_job_nonce ON shares(job_id, nonce);
-CREATE INDEX IF NOT EXISTS shares_miner ON shares(miner);
+-- shares_miner(miner) WAS HERE AND IS DELIBERATELY GONE (2026-09-22).
+-- Nothing read it. The only query that touches the miner column at all is
+-- shareSummary, and that one says GROUP BY +miner precisely to STOP the
+-- planner choosing this index -- see the note on shares_at_miner below. So it
+-- was maintained on every single insert and consulted by nothing: 148 MB on
+-- the live pool, and a randomly-ordered b-tree insert per share, which is the
+-- expensive kind. Verified before removal with EXPLAIN QUERY PLAN on the live
+-- table: the plan is SEARCH shares USING COVERING INDEX shares_at_miner,
+-- with no mention of shares_miner.
+--
+-- Write cost per share is what stopped the pool on 2026-09-21, so an index
+-- nobody reads is not free -- it is a share the pool cannot record later.
+-- Dropping it in the schema is the half that matters: CREATE INDEX IF NOT
+-- EXISTS runs on every open, so removing the live index without removing
+-- this line just rebuilds it at the next restart.
+--
+-- If a per-miner lookup is ever genuinely needed, add it back with the query
+-- that needs it in the same change, and check the plan actually picks it.
 -- Covering index for the two window queries: pplnsWindow walks back from the
 -- newest share, shareSummary sums a recent time slice. Both filter on a range
 -- over at/id and neither can use shares_miner to do it.

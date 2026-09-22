@@ -1,0 +1,11 @@
+[Unit]
+Description=Check every 2 minutes that the pool is recording shares
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+AccuracySec=15s
+Unit=pcoin-pool-share-watch.service
+
+[Install]
+WantedBy=timers.target

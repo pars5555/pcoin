@@ -1,0 +1,17 @@
+[Unit]
+Description=Hourly prune of old pool shares
+
+[Timer]
+# HOURLY, not nightly, and that matters as much as the window. A daily prune
+# lets the table sawtooth up by a whole day of intake between runs, and the
+# 2026-09-21 stall happened at the TOP of that sawtooth -- 13 hours after a
+# run that had reported success. Hourly keeps the floor and the peak equal.
+#
+# Give each pool a different minute so two pools never prune together and a
+# shared alert window stays readable: the primary uses :14, pool2 uses :37.
+OnCalendar=*-*-* *:14:00 UTC
+Persistent=true
+AccuracySec=5min
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,319 @@
+#!/usr/bin/env python3
+"""Is the pool still RECORDING shares? -- the alarm that 2026-09-21 needed.
+
+WHY THIS EXISTS, AND WHY THE EXISTING WATCHER WAS NOT ENOUGH.
+On 2026-09-21 the shares table grew past what SQLite could write into inside
+the pool's 15s RUN_TIMEOUT_MS. From 17:50 UTC every share submission timed out.
+The pool stayed up, kept its stratum port open, kept handing out work and kept
+answering /health with "ok" -- it simply banked nothing. It therefore found no
+block for 7h15m.
+
+The only alarm that fired was `pcoin-pool-submit-watch`, which asks "have we
+found the blocks we would expect": a statistical question that needs three
+consecutive failing 5-minute windows and, at this pool's share of the network,
+took 79 MINUTES to speak up. Two miners in the Telegram group beat it, and the
+operator did not act for another five hours.
+
+This asks the direct question instead -- "when was the last share written" --
+which is one indexed lookup and is true within seconds. A stall is caught in
+two ticks rather than in an hour of inference.
+
+IT ALSO WATCHES THE CAUSE, NOT ONLY THE SYMPTOM. The stall arrived by growth:
+nothing had changed, the table simply got bigger until writes stopped fitting
+in the timeout. So the row estimate is checked against ROWS_WARN and says so
+BEFORE the pool falls over, which is the only version of this alarm worth
+having twice.
+
+DOCTRINE (CLAUDE.md 7.1). A source that could not be read resolves NOTHING. An
+unreadable database is not "stalled" and an unreachable API is not "no miners":
+both report UNKNOWN, alert once as UNKNOWN, and never silently pass. The check
+that matters most is the one that must not quietly succeed.
+
+RE-ALERTS ARE GATED ON CHANGE, NOT TIME (CLAUDE.md 9.5) -- the concentration
+watch once sent the same figure twenty-four times in eight hours and taught
+everyone to ignore it.
+
+    pcoin-pool-share-watch                 one tick, alert if warranted
+    pcoin-pool-share-watch --dry-run       print; send NOTHING
+    pcoin-pool-share-watch --selftest      force every branch and prove it fires
+"""
+import argparse
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+import time
+import urllib.request
+
+DB = os.environ.get("POOL_DB", "/opt/pcoin-pool/pool.sqlite")
+API = os.environ.get("POOL_API", "http://127.0.0.1:8790/api/pools/pcoin")
+POOL_NAME = os.environ.get("POOL_NAME", "pool.pc.am")
+STATE = os.environ.get("SHARE_WATCH_STATE", "/var/lib/pcoin-monitor/pool-share-watch.json")
+NOTIFY = os.environ.get("PCOIN_NOTIFY", "/usr/local/bin/pcoin-notify")
+
+# Three minutes. At 11 shares/second a healthy pool writes ~2,000 in that time,
+# so silence for 180s with miners attached is not a quiet patch, it is a fault.
+STALE_SECONDS = int(os.environ.get("SHARE_STALE_SECONDS", "180"))
+# The 2026-09-21 stall began at ~8.7M rows. This is the EARLY warning, set well
+# below it so there is time to act rather than a post-mortem.
+ROWS_WARN = int(os.environ.get("SHARE_ROWS_WARN", "4000000"))
+
+
+class Unknown(Exception):
+    """Could not be determined. Never an answer, never a 'no'."""
+
+
+def read_db():
+    """(newest_share_epoch_seconds, estimated_rows). Raises Unknown."""
+    try:
+        # Read-only, and a short timeout: if the ledger is so busy that even
+        # this cannot run, that is itself the thing being looked for -- but it
+        # must be reported as UNKNOWN, not guessed at.
+        con = sqlite3.connect("file:%s?mode=ro" % DB, uri=True, timeout=10)
+        try:
+            cur = con.cursor()
+            # THREE SEPARATE STATEMENTS, ON PURPOSE. SQLite's MIN/MAX
+            # optimisation -- the one that turns an aggregate into a single
+            # index seek -- applies ONLY to a query with exactly one aggregate
+            # and no GROUP BY. `SELECT MAX(at), MIN(id), MAX(id)` looks cheaper
+            # and is not: it falls back to a full table scan, every two
+            # minutes, and worst exactly during the bloat this alarm exists to
+            # catch. Split, each one is a seek: MAX(at) rides the leading
+            # column of shares_at_miner, MIN/MAX(id) ride the rowid.
+            def one(sql):
+                cur.execute(sql)
+                return cur.fetchone()[0]
+            newest = one("SELECT MAX(at) FROM shares;")
+            lo = one("SELECT MIN(id) FROM shares;")
+            hi = one("SELECT MAX(id) FROM shares;")
+        finally:
+            con.close()
+    except Exception as e:
+        raise Unknown("cannot read the share ledger (%s)" % str(e)[:120])
+    if newest is None:
+        raise Unknown("the share ledger holds no shares at all")
+    # An UPPER BOUND on the row count, not a count: ids are monotonic and the
+    # prune deletes from the oldest end, so the span brackets the live rows and
+    # errs high. COUNT(*) is O(table) and is exactly the kind of query this
+    # alarm must not add to a pool already struggling to write.
+    rows = (int(hi) - int(lo) + 1) if lo is not None else 0
+    return int(newest) / 1000.0, rows
+
+
+def read_miners():
+    """Connected miners, from the stratum server's own memory. Raises Unknown.
+
+    Deliberately NOT from the database. The whole failure mode being watched is
+    "the database is unwritable while the pool is otherwise fine", so the
+    question "is anyone actually mining" has to be answered by something that
+    does not touch the database at all.
+    """
+    try:
+        with urllib.request.urlopen(API, timeout=10) as r:
+            d = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception as e:
+        raise Unknown("cannot read the pool API (%s)" % str(e)[:120])
+    try:
+        return int(((d.get("pool") or d).get("poolStats") or {})["connectedMiners"])
+    except Exception:
+        raise Unknown("the pool API answered without a miner count")
+
+
+def load():
+    try:
+        with open(STATE, encoding="utf-8") as f:
+            s = json.load(f)
+    except Exception:
+        s = {}
+    # NORMALISE rather than merely survive an unreadable file (CLAUDE.md 7.14):
+    # a state file that PARSES but lacks a key is the case that crashed
+    # pcoin-wrapdesk-watch on its first install.
+    if not isinstance(s, dict):
+        s = {}
+    s.setdefault("verdict", "")
+    s.setdefault("since", 0)
+    return s
+
+
+def save(s):
+    d = os.path.dirname(STATE)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    tmp = STATE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(s, f, indent=1)
+    os.replace(tmp, STATE)
+
+
+def decide(age, rows, miners, db_err, api_err):
+    """Return (verdict, subject, body). Pure -- everything it needs is passed in,
+    which is what lets --selftest force every branch without a pool."""
+    if db_err:
+        return ("unknown-db", "pool share watch: CANNOT CHECK (%s)" % POOL_NAME,
+                "The share ledger could not be read, so whether shares are being "
+                "recorded is UNKNOWN -- this is not a report that the pool is down, "
+                "and not a report that it is up.\n\n%s" % db_err)
+    # ORDER MATTERS, AND THE BLOAT CHECK COMES BEFORE ANYTHING API-DEPENDENT.
+    # It was originally last, behind the miner-count branches, so an
+    # unreadable pool API silently skipped it -- the early warning disappeared
+    # in precisely the degraded conditions it is meant to speak up in. Row
+    # count is a fact about the DATABASE alone; nothing about the API can make
+    # it unknowable, so it must not sit behind an API branch.
+    if miners is not None and miners > 0 and age > STALE_SECONDS:
+        return ("stalled", "POOL IS NOT RECORDING SHARES (%s)" % POOL_NAME,
+                "%d miner(s) are connected to %s and the newest share in the ledger "
+                "is %d seconds old. The pool is handing out work and banking none of "
+                "it, so it can find no blocks and miners are working for nothing.\n\n"
+                "This is the 2026-09-21 failure: the share table grew until writes "
+                "stopped fitting inside the pool's 15s timeout. Check the row count "
+                "(estimate now %s) and the prune timer before anything else.\n\n"
+                "Miners see: \"pool could not record the share; retry\"."
+                % (miners, POOL_NAME, age, rows))
+    if rows is not None and rows > ROWS_WARN:
+        return ("bloated", "pool share table is getting dangerously large (%s)" % POOL_NAME,
+                "The share table is about %s rows, over the %s warning line. Recording "
+                "is still working (newest share %d s old), so this is early warning, not "
+                "an outage.\n\nAt ~8.7M rows on 2026-09-21 every write began exceeding "
+                "the pool's 15s timeout and the pool stopped recording shares for 7h15m. "
+                "Shorten RETAIN_HOURS on pcoin-pool-prune-shares, or run it more often, "
+                "before it gets there." % (rows, ROWS_WARN, age))
+    if miners is None and age > STALE_SECONDS:
+        # The ledger is readable and stale, but without the miner count
+        # "stalled" cannot be told apart from "nobody is mining". A fresh
+        # ledger needs no miner count at all, so that case has already fallen
+        # through to ok above.
+        return ("unknown-api", "pool share watch: CANNOT CHECK (%s)" % POOL_NAME,
+                "The newest share is %d s old, but the miner count could not be read, "
+                "so 'stalled' cannot be told apart from 'nobody is mining'.\n\n%s"
+                % (age or 0, api_err))
+    return ("ok", "", "")
+
+
+def describe(age, rows, miners, db_err, api_err):
+    bits = []
+    bits.append("ledger: UNREADABLE (%s)" % db_err if db_err
+                else "newest share %ds old, ~%s rows" % (age, rows))
+    bits.append("miners: UNREADABLE (%s)" % api_err if api_err
+                else "%s connected" % miners)
+    return "%s -- %s" % (POOL_NAME, "; ".join(bits))
+
+
+def selftest(notify, sent):
+    """Prove every branch FIRES against known-bad input.
+
+    A check that cannot fire is indistinguishable from a check that passes
+    (CLAUDE.md 8c). This project has shipped two of those -- a holding check
+    whose threshold was arithmetically unreachable, and a secrets regex that
+    could never match a multi-word string -- so a new alarm asserts that it
+    speaks up, not merely that it stays quiet.
+    """
+    cases = [
+        ("stalled",     (STALE_SECONDS + 60, 1000, 5, None, None)),
+        ("bloated",     (10, ROWS_WARN + 1, 5, None, None)),
+        ("unknown-db",  (None, None, 5, "forced: ledger unreadable", None)),
+        ("unknown-api", (STALE_SECONDS + 60, 1000, None, None, "forced: api unreadable")),
+        ("ok",          (10, 1000, 5, None, None)),
+        # A stale ledger with NO miners is not a fault: nobody is submitting.
+        ("ok",          (STALE_SECONDS + 60, 1000, 0, None, None)),
+        # Unreadable API but a FRESH ledger resolves to ok, not to a cry for help.
+        ("ok",          (10, 1000, None, None, "forced: api unreadable")),
+        # REGRESSION GUARD. Bloat is a fact about the database, so an
+        # unreadable API must not hide it. This returned "ok" until
+        # 2026-09-22, which is the early warning going quiet in exactly the
+        # degraded conditions it exists for.
+        ("bloated",     (10, ROWS_WARN + 1, None, None, "forced: api unreadable")),
+        # A stall outranks bloat: both are true at once in the real failure,
+        # and the stall is the one that needs acting on this minute.
+        ("stalled",     (STALE_SECONDS + 60, ROWS_WARN + 1, 5, None, None)),
+    ]
+    bad = 0
+    for want, args in cases:
+        got, subject, _body = decide(*args)
+        ok = got == want
+        bad += 0 if ok else 1
+        print("%-4s expected %-12s got %-12s %s"
+              % ("PASS" if ok else "FAIL", want, got, subject or ""))
+    # And prove the notifier path itself is reachable, without sending.
+    notify("pool share watch: SELFTEST", "This is the selftest firing the notifier path.")
+    print()
+    print("%d case(s) failed; notifier path exercised %d time(s) (nothing was sent)"
+          % (bad, len(sent)))
+    return 1 if bad else 0
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dry-run", action="store_true", help="print; notify nobody")
+    ap.add_argument("--selftest", action="store_true",
+                    help="force each branch against known-bad input and prove it fires")
+    a = ap.parse_args()
+
+    sent = []
+
+    def notify(subject, body):
+        if a.dry_run or a.selftest:
+            print("--- DRY RUN: would have sent, and did NOT ---")
+            print("SUBJECT: %s" % subject)
+            print(body)
+            sent.append(subject)
+            return
+        one_line = " ".join(body.split())[:400]
+        # Reporting must never be able to kill detection (CLAUDE.md 7.13).
+        try:
+            subprocess.run(["logger", "-t", "pcoin-pool-share-watch", "--",
+                            "ALERT: %s -- %s" % (subject, one_line)], timeout=15)
+        except Exception:
+            pass
+        if not os.path.exists(NOTIFY) or not os.access(NOTIFY, os.X_OK):
+            print("NOTIFIER MISSING (%s): alert went to syslog only." % NOTIFY,
+                  file=sys.stderr)
+            return
+        try:
+            subprocess.run([NOTIFY, subject, body], timeout=30)
+        except Exception as e:
+            print("notifier failed (%s): alert went to syslog only." % str(e)[:80],
+                  file=sys.stderr)
+        sent.append(subject)
+
+    if a.selftest:
+        return selftest(notify, sent)
+
+    # ---- gather. Each source resolves, or resolves NOTHING. ----------------
+    try:
+        newest, rows = read_db()
+        age = time.time() - newest
+        db_err = None
+    except Unknown as e:
+        newest, rows, age, db_err = None, None, None, str(e)
+
+    try:
+        miners, api_err = read_miners(), None
+    except Unknown as e:
+        miners, api_err = None, str(e)
+
+    verdict, subject, body = decide(age, rows, miners, db_err, api_err)
+    print(describe(age, rows, miners, db_err, api_err))
+
+    st = load()
+    if verdict == "ok":
+        if st["verdict"] not in ("", "ok"):
+            notify("pool share watch: RECOVERED (%s)" % POOL_NAME,
+                   "Shares are being recorded again on %s.\n\n%s"
+                   % (POOL_NAME, describe(age, rows, miners, db_err, api_err)))
+    elif verdict != st["verdict"]:
+        # Changed verdict -- say so. Unchanged -- stay quiet, however bad it is.
+        notify(subject, body)
+    else:
+        print("  (unchanged verdict %r -- not re-alerting)" % verdict)
+
+    if not a.dry_run:
+        if verdict != st["verdict"]:
+            st["since"] = int(time.time())
+        st["verdict"] = verdict
+        save(st)
+    return 0 if verdict == "ok" else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

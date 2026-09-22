@@ -251,6 +251,12 @@ EXPIRE_HOURS = float(os.environ.get("APPROVE_EXPIRE_HOURS", "48"))
 AUTO_DELIVER_SECONDS = int(os.environ.get("APPROVE_AUTO_SECONDS", "900"))
 MAX_TEXT = 3900          # Telegram's own limit is 4096; leave room for the footer.
 MAX_CAPTION = 1000       # Telegram caps a photo caption at 1024.
+# How many publish attempts before an item is declared FAILED and stops
+# retrying. High enough that a genuine outage -- Telegram or Discord being
+# briefly unreachable -- is ridden out rather than abandoned, low enough that a
+# permanently impossible post stops within the hour instead of running for two
+# days. Set from the tick interval: at one attempt per tick this is minutes.
+MAX_PUBLISH_ATTEMPTS = int(os.environ.get("APPROVE_MAX_PUBLISH_ATTEMPTS", "20"))
 
 DISCORD_CONF = os.environ.get("DISCORD_CONF", "/etc/pcoin/discord.conf")
 DISCORD_MAX_CONTENT = 2000   # a message body; longer text goes in an embed
@@ -326,6 +332,89 @@ def load():
                  "while the queue cannot be read." % (QUEUE, e))
     d.setdefault("items", [])
     return d
+
+
+class queue_lock:
+    """Hold the queue lock across a READ-MODIFY-WRITE of queue.json.
+
+    WHY EVERY WRITER NEEDS THIS AND NOT JUST `tick`.
+    `tick` has taken this lock since 2026-09-16, for the reason written in its
+    own docstring. `submit` never did -- and `submit` is the other writer. Both
+    do load() ... save(), so the interleaving is the textbook lost update:
+
+        tick   load()              -> 131 items in memory
+        submit load()              -> 131 items
+        submit append + save()     -> 132 items on disk
+        tick   ... save()          -> 131 items on disk, THE NEW ONE IS GONE
+
+    Observed on 2026-09-22: an announcement submitted at 01:25:21 appeared in
+    `list`, and was gone from queue.json minutes later having never published,
+    while the stored-item count stayed at 131 across the whole window. The
+    submitter is told nothing -- it gets an id back and exits 0 -- so a lost
+    post looks exactly like a post nobody approved. A group answer queued
+    through the same path disappears the same way, silently.
+
+    `tick` stays NON-BLOCKING: a tick that cannot get the lock has nothing
+    urgent to do and the next one is seconds away. Everything else BLOCKS,
+    because dropping a submission is the failure being fixed and waiting a
+    moment for it is free.
+    """
+
+    def __init__(self, blocking=True, timeout=30.0):
+        self.blocking, self.timeout, self.lf, self.held = blocking, timeout, None, False
+
+    def __enter__(self):
+        # Imported here, not at the top: fcntl is Unix-only and this file is
+        # edited and self-tested on Windows. See the note in cmd_tick().
+        #
+        # AND MISSING fcntl IS NOT FATAL HERE, unlike in cmd_tick(). `submit`
+        # and `decide` are reached by `selftest`, which the header says is run
+        # on Windows -- so an unconditional import turned the whole self-test
+        # into an ImportError on the one platform it was meant to keep
+        # working. There is no concurrent tick on a workstation, so running
+        # unlocked there is correct rather than merely tolerable; on Unix the
+        # import always succeeds and the lock is always taken.
+        try:
+            import fcntl
+        except ImportError:
+            self.held = True          # nothing to contend with on this platform
+            return self
+        try:
+            d = os.path.dirname(QUEUE)
+            if d:
+                os.makedirs(d, exist_ok=True)
+            self.lf = open(QUEUE + ".lock", "a+")
+        except OSError as e:
+            sys.exit("cannot open the queue lock %s.lock: %s" % (QUEUE, e))
+        deadline = time.time() + self.timeout
+        while True:
+            try:
+                fcntl.flock(self.lf.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.held = True
+                return self
+            except OSError:
+                if not self.blocking:
+                    return self
+                if time.time() >= deadline:
+                    # REFUSE rather than write without the lock. A submission
+                    # that is dropped is worse than one that says it failed.
+                    sys.exit("could not get the queue lock within %gs -- nothing "
+                             "was written. Try again." % self.timeout)
+                time.sleep(0.2)
+
+    def __exit__(self, *exc):
+        # self.lf is None when fcntl was unavailable and no file was opened,
+        # so this must not import fcntl unconditionally either.
+        if not self.lf:
+            return False
+        import fcntl
+        if self.held:
+            try:
+                fcntl.flock(self.lf.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+        self.lf.close()
+        return False
 
 
 def save(d):
@@ -612,6 +701,57 @@ def publish_item(i, send_tg, send_dc):
         i["error"] = "publish failed: " + "; ".join(errors)
         changed = True
         print("publish incomplete for %s: %s" % (i["id"], i["error"]))
+        # A RETRY THAT CAN NEVER SUCCEED MUST STOP AND SAY SO.
+        # Item 68f1e002a95a retried every tick for TWO DAYS with the same
+        # "HTTP Error 400: Bad Request". It was a group reply whose parent
+        # message had been deleted by the group's own spam moderation, so
+        # Telegram could never accept it, and nothing noticed: the failure
+        # printed at the same severity as normal progress, filled the journal,
+        # and had to be found by a human reading logs. Both session handoffs
+        # carried "drop the stuck queue item" as an open task instead.
+        #
+        # So: count the attempts and give up. `failed` is already a terminal
+        # state the rest of this file understands, and ops is told ONCE --
+        # which is the difference between an alert and a background noise.
+        i["attempts"] = int(i.get("attempts") or 0) + 1
+        if i["attempts"] >= MAX_PUBLISH_ATTEMPTS:
+            # NEVER GIVE UP ON A HALF-PUBLISHED ITEM, AND NEVER SAY "NOTHING
+            # WAS PUBLISHED" UNLESS THAT IS TRUE. A `channel` item has two
+            # sides; if Telegram took it and Discord did not, abandoning it
+            # here would strand the Discord half for ever AND tell the owner
+            # to requeue -- which re-sends to @PCoinPCN, where subscribers
+            # would see the same announcement twice. A duplicate public post
+            # cannot be taken back, so the item keeps retrying the side that
+            # is still missing and the alert says exactly which.
+            done = [sd for sd in sides if i.get("published_%s_at" % sd)]
+            if done:
+                print("  %s is PART-published (%s done) after %d attempts -- still "
+                      "retrying the rest, NOT giving up"
+                      % (i["id"], "+".join(done), i["attempts"]))
+                if i["attempts"] == MAX_PUBLISH_ATTEMPTS:
+                    notify_ops(
+                        "approval gate: an item is stuck half-published",
+                        "Item %s (%s -> %s) reached %s on %s but keeps failing on the "
+                        "other side after %d attempts.\n\nLast error: %s\n\nIt is STILL "
+                        "RETRYING and has NOT been abandoned. Do NOT requeue it -- the "
+                        "side that already went out would be posted twice.\n\nText: %s"
+                        % (i["id"], i.get("source") or "unknown", i["dest"],
+                           "+".join(done), i["dest"], i["attempts"], i["error"],
+                           (i.get("text") or "")[:300]))
+            else:
+                i["state"] = "failed"
+                print("  giving up on %s after %d attempts -- state=failed"
+                      % (i["id"], i["attempts"]))
+                notify_ops(
+                    "approval gate gave up on an item",
+                    "Item %s (%s -> %s) failed to publish %d times and has been marked "
+                    "failed, so it stops retrying.\n\nLast error: %s\n\nIf it was a group "
+                    "reply, the most likely cause is that the message it answers was "
+                    "deleted -- Telegram refuses a reply to a message that is gone. "
+                    "Nothing was published on any side; requeue it if it still "
+                    "matters.\n\nText: %s"
+                    % (i["id"], i.get("source") or "unknown", i["dest"], i["attempts"],
+                       i["error"], (i.get("text") or "")[:300]))
         done = [i["published_%s_at" % sd] for sd in sides if i.get("published_%s_at" % sd)]
         if done and not i.get("asym_alerted") and now() - min(done) >= DISCORD_ALERT_AFTER:
             i["asym_alerted"] = now()
@@ -659,6 +799,14 @@ def cmd_submit(a):
         # the bytes cannot be.
         photo_b64 = base64.b64encode(blob).decode()
 
+    # Everything above this point only validates and reads the photo. From here
+    # the queue is read, changed and written back, so it happens under the lock
+    # -- split out the same way cmd_tick/_tick_locked already is.
+    with queue_lock():
+        return _submit_locked(a, text, photo_sha, photo_b64)
+
+
+def _submit_locked(a, text, photo_sha, photo_b64):
     d = load()
     pending = [i for i in d["items"] if i["state"] in ("pending", "awaiting")]
     if len(pending) >= MAX_PENDING:
@@ -1003,6 +1151,13 @@ def cmd_decide(a):
                    "Telegram user %s tried to decide approval item %s. Ignored."
                    % (a.by, a.id))
         sys.exit("refusing: user %s is not the owner" % a.by)
+    # Under the lock for the same reason as submit: this is a read-modify-write
+    # of the queue, and a tick running concurrently would discard the decision.
+    with queue_lock():
+        return _decide_locked(a)
+
+
+def _decide_locked(a):
     d = load()
     for i in d["items"]:
         if i["id"] != a.id:

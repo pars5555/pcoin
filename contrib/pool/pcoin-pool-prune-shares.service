@@ -1,0 +1,24 @@
+[Unit]
+Description=Prune pool shares older than the retention window
+After=pcoin-pool.service
+
+[Service]
+Type=oneshot
+# 24 HOURS, and the unit is in the repo so this number is reviewable.
+#
+# It was RETAIN_DAYS=7 until 2026-09-21, when the shares table reached ~8.7M
+# rows, every store call began exceeding the pool's 15s RUN_TIMEOUT_MS, and
+# share recording stopped dead for 7h15m (blocks 8975 -> 8997). The window is
+# now set by what actually READS a share: PPLNS is minutes, the public
+# hashrate is the last 600 seconds, and the widest reader in the tree is a
+# hand-run 24h report. Nothing reads one older than that.
+#
+# Do NOT set RETAIN_DAYS here. The script still honours it for an un-updated
+# host, but warns loudly on every run, because 7 days is the setting that
+# broke the pool.
+Environment=RETAIN_HOURS=24
+ExecStart=/usr/local/bin/pcoin-pool-prune-shares
+Nice=15
+IOSchedulingClass=idle
+StandardOutput=append:/var/log/pcoin-pool-prune.log
+StandardError=append:/var/log/pcoin-pool-prune.log

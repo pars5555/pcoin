@@ -1,0 +1,22 @@
+[Unit]
+Description=PCoin pool share watch -- is the pool still RECORDING shares?
+After=network-online.target pcoin-pool.service
+
+[Service]
+Type=oneshot
+Environment=POOL_DB=/opt/pcoin-pool/pool.sqlite
+Environment=POOL_API=http://127.0.0.1:8790/api/pools/pcoin
+Environment=POOL_NAME=pool.pc.am
+Environment=SHARE_WATCH_STATE=/var/lib/pcoin-monitor/pool-share-watch.json
+# 180s: at ~11 shares/second a healthy pool writes ~2,000 in that time.
+Environment=SHARE_STALE_SECONDS=180
+# Early warning. The 2026-09-21 stall began at ~8.7M rows.
+Environment=SHARE_ROWS_WARN=4000000
+ExecStart=/usr/local/bin/pcoin-pool-share-watch
+Nice=10
+MemoryMax=128M
+TimeoutStartSec=90
+# A non-zero exit here means "the pool has a problem", which the script has
+# ALREADY reported itself. Letting systemd treat that as a unit failure would
+# raise a second, less informative alert for the same event.
+SuccessExitStatus=0 1
