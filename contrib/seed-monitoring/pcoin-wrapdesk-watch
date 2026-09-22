@@ -40,6 +40,7 @@ Alerts go to the PRIVATE ops channel via pcoin-notify. Never the public one.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -430,6 +431,223 @@ def verify_wpcn_sent(txhash, to_addr, expect_wpcn):
     more = "" if sent <= expect_wpcn + 0.005 else "  MORE THAN OWED -- check this was deliberate."
     return True, (f"{sent:.8f} wPCN reached {to_addr} in {txhash} "
                   f"(block {rcpt.get('blockNumber')}).{more}")
+
+
+# ---------------------------------------------------------------------------
+# SENDING, not just asking. Everything below is the --send path.
+#
+# Until 2026-09-22 this script only ever ALERTED: it worked out who was owed
+# what and a human sent the wPCN by hand from MetaMask. That is safe and it is
+# slow, and "slow" here means a customer waits while the operator is asleep.
+#
+# The keeper already holds a server-side key (/etc/pcoin/keeper.conf) and
+# already signs BSC transactions every day to arbitrage the pool, so paying a
+# wrap from it adds NO custody that was not already taken -- the same key, the
+# same host, the same blast radius. What it adds is the ability to spend that
+# float without a person, which is why every guard below refuses rather than
+# assumes, and why the operator still presses the button.
+KEEPER_CONF = os.environ.get("KEEPER_CONF", "/etc/pcoin/keeper.conf")
+# A bug that sends one payout twice is recoverable. A bug that sends a hundred
+# is not, so there is a ceiling on a day's total regardless of what is owed.
+SEND_DAILY_CAP = float(os.environ.get("WRAP_SEND_DAILY_CAP", "1000"))
+# The plumbing test (--send-test) may only ever move a trivial amount.
+SEND_TEST_MAX = float(os.environ.get("WRAP_SEND_TEST_MAX", "5"))
+# 250 PCN less the 5% fee. The same ceiling the alerting path applies.
+PER_ADDRESS_CEILING = float(os.environ.get("WRAP_PER_PERSON", 250)) * 0.95
+
+
+def read_conf(path):
+    """KEY=VALUE config, as every tool here writes it. Values are never logged."""
+    out = {}
+    with open(path) as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            out[k.strip()] = v.strip()
+    return out
+
+
+def keeper_connect():
+    """(w3, acct, token) signing as the KEEPER. Raises with a readable reason.
+
+    Deliberately NOT deploy.load()/connect(): that pair signs as the DEPLOYER,
+    whose key is burned and whose address must stay empty for ever. Same
+    connect logic, different identity -- and the chain id is re-checked here
+    because signing on the wrong chain is unrecoverable.
+    """
+    wpcn_dir = os.environ.get("WPCN_DIR", "/opt/wpcn")
+    sys.path.insert(0, wpcn_dir)
+    from web3 import Web3
+    from web3.middleware import ExtraDataToPOAMiddleware
+    # THE IDENTITY AND THE ENDPOINT LIVE IN DIFFERENT FILES, on purpose:
+    # /etc/pcoin/keeper.conf holds ONLY the keeper's key (0600 root), while
+    # /opt/wpcn/wpcn.conf holds the RPC and the contract addresses and is not
+    # a secret at all. Reading both is not a wart -- it is why the key file has
+    # exactly one line in it, so anything that reads it can be seen to want
+    # only that.
+    key = read_conf(KEEPER_CONF).get("KEEPER_PRIVATE_KEY")
+    if not key:
+        raise RuntimeError(f"no KEEPER_PRIVATE_KEY in {KEEPER_CONF}")
+    cfg = read_conf(os.path.join(wpcn_dir, "wpcn.conf"))
+    if not cfg.get("RPC") or not cfg.get("TOKEN"):
+        raise RuntimeError(f"{wpcn_dir}/wpcn.conf has no RPC or TOKEN")
+    w3 = Web3(Web3.HTTPProvider(cfg["RPC"], request_kwargs={"timeout": 60}))
+    # BSC is proof-of-authority and its extraData is longer than Ethereum's.
+    w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+    if not w3.is_connected():
+        raise RuntimeError(f"cannot reach {cfg['RPC']}")
+    if w3.eth.chain_id != 56:
+        raise RuntimeError(f"WRONG CHAIN: chain_id {w3.eth.chain_id}, expected 56")
+    acct = w3.eth.account.from_key(key)
+    abi = [{"constant": False,
+            "inputs": [{"name": "to", "type": "address"},
+                       {"name": "value", "type": "uint256"}],
+            "name": "transfer", "outputs": [{"name": "", "type": "bool"}],
+            "type": "function"},
+           {"constant": True, "inputs": [{"name": "a", "type": "address"}],
+            "name": "balanceOf", "outputs": [{"name": "", "type": "uint256"}],
+            "type": "function"}]
+    token = w3.eth.contract(address=Web3.to_checksum_address(cfg["TOKEN"]), abi=abi)
+    return w3, acct, token
+
+
+def sent_today(s):
+    """wPCN this script has broadcast today, from its own record."""
+    day = time.strftime("%Y-%m-%d", time.gmtime())
+    tot = 0.0
+    for rec in (s.get("sends") or {}).values():
+        if rec.get("day") == day and rec.get("broadcast"):
+            try:
+                tot += float(rec.get("wpcn") or 0)
+            except (TypeError, ValueError):
+                pass
+    return tot
+
+
+def broadcast_wpcn(w3, acct, token, to_addr, amount_wpcn, label, on_broadcast=None):
+    """Sign, send, wait. Returns (txhash, receipt). Raises on refusal.
+
+    `on_broadcast` is called with the hash THE MOMENT it is known and before
+    the receipt is waited for. That callback is what writes the hash to disk,
+    and it is the difference between a lost connection costing a retry and a
+    lost connection costing a double payment.
+    """
+    from web3 import Web3
+    to_addr = Web3.to_checksum_address(to_addr)
+    units = int(round(amount_wpcn * (10 ** WPCN_DECIMALS)))
+    if units <= 0:
+        raise RuntimeError(f"refusing to send {amount_wpcn} wPCN")
+    have = token.functions.balanceOf(acct.address).call()
+    if have < units:
+        raise RuntimeError(
+            f"the keeper holds {have / 10 ** WPCN_DECIMALS:,.8f} wPCN and this needs "
+            f"{amount_wpcn:,.8f}. Top it up; nothing was sent.")
+    bnb = w3.eth.get_balance(acct.address)
+    if bnb <= 0:
+        raise RuntimeError("the keeper has no BNB for gas; nothing was sent.")
+    tx = token.functions.transfer(to_addr, units).build_transaction(
+        {"from": acct.address})
+    tx["nonce"] = w3.eth.get_transaction_count(acct.address)
+    tx["chainId"] = 56
+    # Pick ONE fee model: BSC rejects a transaction carrying both gasPrice and
+    # the EIP-1559 pair, and legacy gasPrice is what its validators price on.
+    tx.pop("maxFeePerGas", None)
+    tx.pop("maxPriorityFeePerGas", None)
+    tx.setdefault("gasPrice", w3.eth.gas_price)
+    tx["gas"] = int(w3.eth.estimate_gas(tx) * 1.25)
+    signed = acct.sign_transaction(tx)
+    h = w3.eth.send_raw_transaction(signed.raw_transaction).hex()
+    if not h.startswith("0x"):
+        h = "0x" + h
+    print(f"  {label}: broadcast {h}")
+    if on_broadcast:
+        on_broadcast(h)
+    r = w3.eth.wait_for_transaction_receipt(h, timeout=300)
+    if r.status != 1:
+        raise RuntimeError(f"the transaction REVERTED in block {r.blockNumber} ({h})")
+    print(f"  {label}: mined in block {r.blockNumber}, {r.gasUsed:,} gas")
+    return h, r
+
+
+def reconcile():
+    """Every deposit address, netted, as JSON. The money view nothing else gives.
+
+    WHY THIS EXISTS, AND WHY IT IS NOT A SCRIPT SOMEBODY RUNS.
+    On 2026-09-22 an audit compared each address's GROSS PCN received against
+    the 250 cap and called the difference "over". It reported 2,000 PCN owed
+    across two customers. The real figure was 250 across one: the arithmetic
+    had never subtracted refunds that had already been paid, so a customer
+    settled in full back in September still looked like an open debt.
+    Nothing in the system disagreed, because nothing in the system was doing
+    this sum at all -- it lived in a throwaway script, and a throwaway script
+    is where an error like that survives.
+
+    So the sum lives here now, in the tool that owns the state, and the panel
+    renders it. The shape that matters is:
+
+        held = received - refunded - backing_for_wPCN_already_issued
+
+    where backing = wPCN issued / 0.95, because 250 PCN backs 237.50 wPCN. A
+    positive `held` is PCN sitting with us that nobody was entitled to wrap;
+    zero means the address is square. Read `held`, never `received`.
+
+    An address the explorer cannot answer for is reported with readable=false
+    and NO figures, because an unreadable address is not a settled one.
+    """
+    s = load_state()
+    alloc = ((s.get("allocation") or {}).get("per_address") or {})
+    seen = (s.get("seen") or {})
+    try:
+        with open(REQUESTS) as f:
+            reqs = (json.load(f).get("requests") or {})
+    except Exception as e:
+        return {"ok": False, "why": f"cannot read {REQUESTS}: {e}"}
+
+    rows, unreadable = [], 0
+    for r in reqs.values():
+        a = r.get("address")
+        if not a:
+            continue
+        d = explorer_get(f"/api/address/{a}?limit=100")
+        hist = ((d or {}).get("history") or {})
+        if d is None or "items" not in hist:
+            unreadable += 1
+            rows.append({"address": a, "bsc": r.get("bsc"), "readable": False})
+            continue
+        if hist.get("has_more"):
+            # More than 100 transactions on one deposit address. Refuse to
+            # report a total that is knowably partial.
+            unreadable += 1
+            rows.append({"address": a, "bsc": r.get("bsc"), "readable": False,
+                         "why": "more than 100 transactions; totals would be partial"})
+            continue
+        recv = sum(int(i["received_sat"]) for i in hist["items"]) / 1e8
+        sent = sum(int(i["sent_sat"]) for i in hist["items"]) / 1e8
+        wpcn = float(alloc.get(a) or 0)
+        backing = wpcn / 0.95 if wpcn else 0.0
+        releases = sum(1 for k, v in seen.items()
+                       if v.get("released") and k.endswith(":" + a))
+        rows.append({
+            "address": a, "bsc": r.get("bsc"),
+            "readable": True,
+            "asked_pcn": float(r.get("amount") or 0),
+            "received_pcn": round(recv, 8),
+            "refunded_pcn": round(sent, 8),
+            "wpcn_issued": round(wpcn, 8),
+            "backing_pcn": round(backing, 8),
+            "held_pcn": round(recv - sent - backing, 8),
+            "releases": releases,
+        })
+    rows.sort(key=lambda x: -(x.get("held_pcn") or 0))
+    held = sum(r["held_pcn"] for r in rows if r.get("readable") and r["held_pcn"] > 1e-9)
+    return {"ok": True, "at": int(time.time()), "rows": rows,
+            "addresses": len(rows), "unreadable": unreadable,
+            "square": sum(1 for r in rows
+                          if r.get("readable") and abs(r["held_pcn"]) < 1e-9),
+            "total_held_pcn": round(held, 8),
+            "ceiling_wpcn": PER_ADDRESS_CEILING}
 
 
 def main() -> int:
@@ -927,6 +1145,214 @@ if __name__ == "__main__":
         print(f"  reason: {s_['seen'][key]['reason']}")
         sys.exit(0)
 
+
+    # READ-ONLY. Takes no lock, writes nothing, and is safe to run at any time.
+    if len(sys.argv) >= 2 and sys.argv[1] == "--reconcile":
+        rec = reconcile()
+        if "--json" in sys.argv:
+            print(json.dumps(rec, indent=1))
+            sys.exit(0 if rec.get("ok") else 3)
+        if not rec.get("ok"):
+            print(f"COULD NOT RECONCILE: {rec.get('why')}")
+            sys.exit(3)
+        print(f"{'deposit address':<44} {'recv':>10} {'refunded':>10} "
+              f"{'wPCN out':>10} {'backing':>10} {'HELD':>10}")
+        print("-" * 98)
+        for r in rec["rows"]:
+            if not r.get("readable"):
+                print(f"{r['address']:<44} {'UNREADABLE -- resolves nothing':>54}")
+                continue
+            if abs(r["held_pcn"]) < 1e-9:
+                continue
+            print(f"{r['address']:<44} {r['received_pcn']:>10.2f} "
+                  f"{r['refunded_pcn']:>10.2f} {r['wpcn_issued']:>10.2f} "
+                  f"{r['backing_pcn']:>10.2f} {r['held_pcn']:>10.2f}")
+        print("-" * 98)
+        print(f"{rec['square']} of {rec['addresses']} addresses are square; "
+              f"{rec['unreadable']} unreadable")
+        print(f"PCN held beyond backing and refunds: {rec['total_held_pcn']:,.2f}")
+        sys.exit(0)
+
+    # PLUMBING TEST. Moves a trivial amount to an address you name, touches no
+    # wrap and closes nothing. It exists so the signing path can be proven end
+    # to end -- key, RPC, gas, nonce, receipt -- WITHOUT a customer's payout
+    # being the first thing this code ever sends. Capped hard, because a test
+    # that can move real money is not a test.
+    if len(sys.argv) >= 4 and sys.argv[1] == "--send-test":
+        dry = "--dry-run" in sys.argv
+        to_addr = sys.argv[2]
+        try:
+            amount = float(sys.argv[3])
+        except ValueError:
+            print(f"REFUSED: {sys.argv[3]!r} is not a number.")
+            sys.exit(2)
+        if not re.fullmatch(r"0x[0-9a-fA-F]{40}", to_addr or ""):
+            print(f"REFUSED: {to_addr!r} is not a BSC address.")
+            sys.exit(2)
+        if not 0 < amount <= SEND_TEST_MAX:
+            print(f"REFUSED: --send-test may move at most {SEND_TEST_MAX} wPCN, "
+                  f"and got {amount}. Use --send for a real payout.")
+            sys.exit(2)
+        try:
+            w3, acct, token = keeper_connect()
+        except Exception as e:
+            print(f"COULD NOT CONNECT: {e}\nNothing was sent.")
+            sys.exit(3)
+        bal = token.functions.balanceOf(acct.address).call() / 10 ** WPCN_DECIMALS
+        bnb = w3.eth.get_balance(acct.address) / 1e18
+        print(f"keeper {acct.address}")
+        print(f"  holds {bal:,.8f} wPCN, {bnb:.6f} BNB")
+        print(f"  would send {amount:,.8f} wPCN -> {to_addr}")
+        if dry:
+            print("DRY RUN: nothing was sent.")
+            sys.exit(0)
+        take_state_lock()
+        s_ = load_state()
+        try:
+            h, _r = broadcast_wpcn(w3, acct, token, to_addr, amount, "send-test")
+        except Exception as e:
+            print(f"FAILED: {e}")
+            sys.exit(2)
+        s_.setdefault("sends", {})[f"test:{h}"] = {
+            "day": time.strftime("%Y-%m-%d", time.gmtime()),
+            "wpcn": amount, "to": to_addr, "broadcast": h, "test": True,
+            "at": int(time.time())}
+        save_state(s_)
+        ok, why = verify_wpcn_sent(h, to_addr, amount)
+        print(f"verification: {why}" if ok else f"VERIFY SAID: {why}")
+        print(f"tx {h}")
+        sys.exit(0 if ok else 2)
+
+    # PAY AN OUTSTANDING WRAP, FOR REAL.
+    if len(sys.argv) >= 3 and sys.argv[1] == "--send":
+        dry = "--dry-run" in sys.argv
+        take_state_lock()
+        s = load_state()
+        txid = sys.argv[2]
+        if txid.startswith("wrap:"):
+            txid = txid[5:]
+        outstanding = list((s.get("outstanding") or {}).keys())
+        hits = [t for t in outstanding if t.startswith(txid)]
+        if len(hits) == 1:
+            txid = hits[0]
+        elif len(hits) > 1:
+            print(f"AMBIGUOUS: {txid!r} matches {len(hits)} outstanding wraps.")
+            for t in hits:
+                print(f"  {t}")
+            sys.exit(2)
+        elif txid not in outstanding:
+            print(f"NO MATCH: {txid!r} is not an outstanding wrap. Nothing sent.")
+            for t in outstanding:
+                print(f"  {t}")
+            sys.exit(2)
+
+        out = (s.get("outstanding") or {}).get(txid) or {}
+        to_addr, addr = out.get("to"), out.get("address")
+        try:
+            amount = float(out.get("send_wpcn") or 0)
+        except (TypeError, ValueError):
+            amount = 0.0
+        key = f"wrap:{txid}"
+
+        # ---- every refusal below is a refusal, not a smaller send -----------
+        if not to_addr or amount <= 0:
+            print(f"REFUSED: {txid} has no recipient and amount on file.")
+            sys.exit(2)
+        if (s.get("seen") or {}).get(key, {}).get("released"):
+            print(f"REFUSED: {key} is already marked released. Nothing sent.")
+            sys.exit(2)
+        if amount > PER_ADDRESS_CEILING + 1e-9:
+            print(f"REFUSED: {amount:,.8f} wPCN is above the {PER_ADDRESS_CEILING:,.2f} "
+                  f"per-address ceiling. Nothing sent.")
+            sys.exit(2)
+
+        # THE CROSS-RUN CEILING, WHICH THE ALERTING PATH DOES NOT APPLY.
+        # `per_addr_wpcn` is rebuilt empty each run and already-released
+        # deposits are skipped before the gate, so the ceiling is real within
+        # one pass and absent across time -- that is how one deposit address
+        # was paid 475.00, twice its ceiling, in two releases six days apart.
+        # A button that can repeat that on a click is worse than the bug.
+        prior = 0.0
+        for k, rec in (s.get("seen") or {}).items():
+            if rec.get("released") and k.endswith(":" + str(addr)):
+                try:
+                    prior += float(rec.get("send_wpcn") or 0)
+                except (TypeError, ValueError):
+                    pass
+        if prior + amount > PER_ADDRESS_CEILING + 1e-9:
+            print(f"REFUSED: {addr} has already been paid {prior:,.8f} wPCN; another "
+                  f"{amount:,.8f} would total {prior + amount:,.8f}, over the "
+                  f"{PER_ADDRESS_CEILING:,.2f} ceiling. Nothing sent.")
+            sys.exit(2)
+
+        already = sent_today(s)
+        if already + amount > SEND_DAILY_CAP + 1e-9:
+            print(f"REFUSED: {already:,.2f} wPCN already went out today and this would "
+                  f"take it to {already + amount:,.2f}, over the {SEND_DAILY_CAP:,.2f} "
+                  f"daily cap. Nothing sent.")
+            sys.exit(2)
+
+        # A BROADCAST THAT WAS NEVER CONFIRMED IS NOT A BROADCAST TO REPEAT.
+        # If the previous attempt wrote a hash and then died before the
+        # receipt, the coins may well be gone. Sending again is how one payout
+        # becomes two, so this stops and makes a person look at the chain.
+        pending = (s.get("sends") or {}).get(key)
+        if pending and pending.get("broadcast") and not pending.get("confirmed"):
+            print(f"REFUSED: a previous --send for {key} broadcast "
+                  f"{pending['broadcast']} and never recorded a receipt.\n"
+                  f"Check that hash on BscScan FIRST. If it succeeded, close the wrap "
+                  f"with --released; if it never made it, clear the 'sends' entry by "
+                  f"hand. This will not send again on its own.")
+            sys.exit(3)
+
+        print(f"wrap    {txid}")
+        print(f"  pay   {amount:,.8f} wPCN -> {to_addr}")
+        print(f"  from  deposit address {addr}")
+        print(f"  today {already:,.2f} of {SEND_DAILY_CAP:,.2f} wPCN cap used")
+        try:
+            w3, acct, token = keeper_connect()
+        except Exception as e:
+            print(f"COULD NOT CONNECT: {e}\nNothing was sent.")
+            sys.exit(3)
+        bal = token.functions.balanceOf(acct.address).call() / 10 ** WPCN_DECIMALS
+        print(f"  keeper {acct.address} holds {bal:,.8f} wPCN")
+        if dry:
+            print("DRY RUN: nothing was sent.")
+            sys.exit(0)
+
+        def _remember(h):
+            s.setdefault("sends", {})[key] = {
+                "day": time.strftime("%Y-%m-%d", time.gmtime()),
+                "wpcn": amount, "to": to_addr, "broadcast": h,
+                "confirmed": False, "at": int(time.time())}
+            save_state(s)
+
+        try:
+            h, _r = broadcast_wpcn(w3, acct, token, to_addr, amount,
+                                   f"wrap {txid[:12]}", on_broadcast=_remember)
+        except Exception as e:
+            print(f"FAILED: {e}")
+            sys.exit(2)
+
+        # Same check --released performs, against the chain, before recording.
+        ok, why = verify_wpcn_sent(h, to_addr, amount)
+        if ok is not True:
+            print(f"SENT BUT NOT VERIFIED: {why}\n"
+                  f"The hash is {h} and it is recorded under 'sends'. Check it and "
+                  f"close with --released {txid} {h} if it is good.")
+            sys.exit(3)
+        s["sends"][key]["confirmed"] = True
+        s.setdefault("seen", {}).setdefault(key, {})
+        s["seen"][key].update({"released": True, "at": int(time.time()),
+                               "bsc_txhash": h, "verified": why,
+                               "send_wpcn": amount})
+        save_state(s)
+        print(f"verified on BSC: {why}")
+        print(f"PAID and closed: {key}")
+        notify("wrap desk: paid automatically",
+               f"Sent {amount:,.8f} wPCN to {to_addr} for wrap {txid}.\n"
+               f"tx {h}\nVerified: {why}")
+        sys.exit(0)
 
     if len(sys.argv) >= 3 and sys.argv[1] == "--released":
         take_state_lock()

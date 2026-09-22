@@ -34,7 +34,7 @@ import { jobsPage } from './jobs.mjs';
 import { aiPage } from './ai.mjs';
 import { exchangesPage } from './exchanges.mjs';
 import { approvalsPage } from './approvals.mjs';
-import { wrapdeskPage, wrapdeskState, wrapdeskWork, markReleased, CLOSED_FILE } from './wrapdesk.mjs';
+import { wrapdeskPage, wrapdeskState, wrapdeskWork, markReleased, sendWrap, CLOSED_FILE } from './wrapdesk.mjs';
 import { announceFeed, markAnnounced, BACKLOG_LOUD_AT } from './wrapdesk-announce.mjs';
 import { keeperPage, keeperData, validate as keeperValidate, writeTuning } from './keeper.mjs';
 import { minersPage, minersData } from './miners.mjs';
@@ -1022,6 +1022,19 @@ async function handle(req, res) {
         flash = r.ok
           ? 'Recorded as sent. ' + r.out.split(CH10).filter(Boolean).join(' ')
           : 'NOT recorded, nothing was changed: ' + r.out.split(CH10).filter(Boolean).join(' ');
+      } else if (action === 'send') {
+        // PAY IT, from the keeper, and close it in the same step.
+        //
+        // Every guard is in the watcher, not here: the per-address ceiling
+        // INCLUDING previous runs, the daily cap, the refusal to re-broadcast
+        // anything whose receipt was never recorded, and the same chain
+        // verification 'released' performs once the receipt is in. The panel
+        // only passes the key through and shows whatever came back -- so a
+        // refusal arrives with its reason and nothing has moved.
+        const r = sendWrap(String(form.get('key') || ''));
+        flash = r.ok
+          ? 'SENT and closed. ' + r.out.split(CH10).filter(Boolean).join(' ')
+          : 'NOT sent: ' + r.out.split(CH10).filter(Boolean).join(' ');
       }
     } catch (e) {
       flash = 'Could not change it: ' + e.message + ' -- nothing was altered.';

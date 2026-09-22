@@ -199,6 +199,60 @@ export function markReleased(key, txhash) {
   }
 }
 
+// SEND THE wPCN, rather than telling the operator to go and do it by hand.
+//
+// The keeper already holds a server-side key and already signs BSC
+// transactions daily, so this spends custody that was ALREADY taken -- it is
+// not a new key and not a new host. What it removes is the half-hour of
+// MetaMask in the middle of a payout.
+//
+// The panel does none of it. The watcher re-resolves the key, re-checks the
+// per-address ceiling INCLUDING what previous runs already paid (the one
+// guard the alerting path is missing), checks the daily cap, refuses to
+// re-broadcast anything whose receipt was never recorded, and only then signs.
+// After the receipt it runs the same chain verification `Mark as sent` uses.
+// So this button cannot pay someone twice and cannot pay someone over the cap.
+export function sendWrap(key) {
+  const ctx = watchContext();
+  if (!ctx.ok) return { ok: false, out: ctx.why };
+  if (!/^[0-9a-f]{64}:[0-9a-z]+$/i.test(String(key || ''))) {
+    return { ok: false, out: 'That wrap key does not look right, so nothing was sent. '
+      + 'Reload the page and try again.' };
+  }
+  try {
+    // Longer than markReleased's budget on purpose: this waits for a block.
+    const out = execFileSync(ctx.argv[0], [...ctx.argv.slice(1), '--send', key],
+      { encoding: 'utf8', timeout: 360000, env: ctx.env });
+    return { ok: true, out: String(out).trim() };
+  } catch (e) {
+    const said = [e && e.stdout, e && e.stderr].map((x) => String(x || '').trim())
+      .filter(Boolean).join(String.fromCharCode(10));
+    return { ok: false, out: said || `the send did not run: ${e.message}` };
+  }
+}
+
+// THE MONEY VIEW, NETTED. See the long note on reconcile() in the watcher.
+//
+// Short version: on 2026-09-22 an audit read GROSS PCN received against the
+// cap and reported 2,000 PCN owed across two customers. The truth was 250
+// across one -- it had never subtracted refunds already paid. That sum now
+// lives in the watcher and is rendered here, so the netted figure is the one
+// on screen and nobody has to recompute it in a throwaway script again.
+export function wrapdeskReconcile() {
+  const ctx = watchContext();
+  if (!ctx.ok) return { ok: false, why: ctx.why };
+  try {
+    const out = execFileSync(ctx.argv[0],
+      [...ctx.argv.slice(1), '--reconcile', '--json'],
+      { encoding: 'utf8', timeout: 180000, env: ctx.env });
+    return JSON.parse(String(out));
+  } catch (e) {
+    const said = [e && e.stdout, e && e.stderr].map((x) => String(x || '').trim())
+      .filter(Boolean).join(' ');
+    return { ok: false, why: said || `could not reconcile: ${e.message}` };
+  }
+}
+
 export function wrapdeskWork() {
   const ctx = watchContext();
   if (!ctx.ok) return { ok: false, why: ctx.why };
@@ -332,6 +386,34 @@ function workCard(w) {
   // reverted send, or a send to the previous customer is refused with the
   // reason and nothing is written -- so pressing this can only ever record
   // something the chain already agrees happened.
+  // SEND IT FROM HERE. One button, one confirm, no MetaMask.
+  //
+  // Deliberately a separate <form> from "Mark as sent" rather than a second
+  // button inside it: that form REQUIRES a transaction hash, and a browser
+  // will not submit it while the box is empty. Sharing it would make this
+  // button silently do nothing, which is the failure mode this whole page
+  // exists to avoid.
+  // The amount is read back out of the title the watcher printed ("ACTION:
+  // send 237.50 wPCN") rather than carried as a field, because the title is
+  // what the operator is looking at. If it cannot be parsed the button still
+  // works and simply says "Send now" -- the watcher decides the amount, not
+  // this label, so a missing label is cosmetic and never changes what is paid.
+  const amountOf = (i) => (String(i.title || '').match(/([\d,]+\.?\d*)\s*wPCN/) || [])[1];
+  const sendForm = (i) => (i.kind !== 'send' || !i.key ? '' :
+    `<form method="post" style="margin-top:10px"`
+    + ` onsubmit="return confirm('Send ${esc(amountOf(i) || '')} wPCN from the keeper`
+    + ` now? This moves real money and cannot be undone.')">`
+    + `<input type="hidden" name="action" value="send">`
+    + `<input type="hidden" name="key" value="${esc(i.key)}">`
+    + `<button style="background:var(--accent,#2dd4bf);color:#0b1020;border:0;`
+    + `border-radius:999px;padding:8px 18px;cursor:pointer;font-weight:700">`
+    + `Send ${esc(amountOf(i) ? `${amountOf(i)} wPCN ` : '')}now</button>`
+    + `<p class="muted" style="margin:6px 0 0;font-size:12px">Pays from the keeper wallet `
+    + `and closes the wrap in one step. Refused if this address has already been paid, `
+    + `if it would cross the per-address ceiling or the daily cap, or if an earlier `
+    + `attempt broadcast something whose receipt was never recorded. The receipt is `
+    + `checked on BNB Smart Chain before anything is written down.</p></form>`);
+
   const closeForm = (i) => (i.kind !== 'send' || !i.key ? '' :
     `<form method="post" style="margin-top:10px">`
     + `<input type="hidden" name="action" value="released">`
@@ -382,6 +464,7 @@ function workCard(w) {
     + (i.to ? `<div style="margin-top:4px">to <code>${esc(i.to)}</code></div>` : '')
     + `<pre style="white-space:pre-wrap;margin:6px 0 0;font-size:12px">${esc(i.detail.join(String.fromCharCode(10)))}</pre>`
     + refundLine(i)
+    + sendForm(i)
     + closeForm(i)
     + (i.close
         ? `<details style="margin-top:8px"><summary class="muted" style="cursor:pointer;font-size:12px">`
@@ -438,6 +521,67 @@ function allocationCard(w) {
     + `<div style="height:100%;width:${pct.toFixed(1)}%;background:var(--${pct > 90 ? 'red' : pct > 75 ? 'yellow' : 'green'})"></div></div>`
     + note('This is a RUNNING TOTAL that only counts up, and it is raised by hand. '
       + 'It is the ceiling on how much wPCN the desk may ever issue, not a daily budget.'));
+}
+
+// EVERY DEPOSIT ADDRESS, NETTED, ON THE PAGE.
+//
+// This card exists because of a specific mistake. On 2026-09-22 an audit
+// compared each address's GROSS PCN received against the 250 cap and reported
+// 2,000 PCN owed across two customers. The real figure was 250 across one: it
+// had never subtracted refunds already paid, so a customer settled in full in
+// September still read as an open debt. The arithmetic lived in a throwaway
+// script, which is exactly where that error could survive unchallenged.
+//
+// The column that matters is HELD:
+//
+//     held = received - refunded - (wPCN issued / 0.95)
+//
+// A positive HELD is PCN sitting with us that nobody was entitled to wrap.
+// Zero means square. `received` on its own means nothing and is shown only so
+// the subtraction can be checked by eye.
+function reconcileCard() {
+  const r = wrapdeskReconcile();
+  if (!r.ok) {
+    return card('Every deposit address, netted',
+      note('This could not be computed, so nothing is shown rather than a figure that '
+        + 'might be wrong. ' + esc(r.why || 'unknown')));
+  }
+  const open = r.rows.filter((x) => x.readable && x.held_pcn > 1e-9);
+  const bad = r.rows.filter((x) => !x.readable);
+  const money = (n) => Number(n || 0).toLocaleString('en-US',
+    { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const row = (x) =>
+    `<tr><td style="font-family:ui-monospace,monospace;font-size:11px">${esc(x.address)}</td>`
+    + `<td style="text-align:right">${money(x.received_pcn)}</td>`
+    + `<td style="text-align:right">${money(x.refunded_pcn)}</td>`
+    + `<td style="text-align:right">${money(x.wpcn_issued)}</td>`
+    + `<td style="text-align:right">${money(x.backing_pcn)}</td>`
+    + `<td style="text-align:right;font-weight:700">${money(x.held_pcn)}</td></tr>`;
+  const table = !open.length ? '' :
+    `<table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:10px">`
+    + `<tr class="muted"><th style="text-align:left">deposit address</th>`
+    + `<th style="text-align:right">received</th><th style="text-align:right">refunded</th>`
+    + `<th style="text-align:right">wPCN out</th><th style="text-align:right">backing</th>`
+    + `<th style="text-align:right">HELD</th></tr>`
+    + open.map(row).join('') + `</table>`;
+  return card('Every deposit address, netted',
+    `<p><b>${esc(String(r.square))} of ${esc(String(r.addresses))}</b> addresses are square `
+    + `&mdash; received, refunded and backing all cancel out.</p>`
+    + (open.length
+        ? `<p><b>${money(r.total_held_pcn)} PCN</b> is held beyond backing and refunds, `
+          + `across ${esc(String(open.length))} address(es). That is PCN nobody was `
+          + `entitled to wrap: refund it, or wrap it if there is allocation headroom.</p>`
+          + table
+        : `<p>Nothing is held beyond backing and refunds.</p>`)
+    + (bad.length
+        ? note(`${bad.length} address(es) could not be read, so they are counted in `
+             + `neither column. Unreadable is not settled.`)
+        : '')
+    + note('HELD = received &minus; refunded &minus; (wPCN issued / 0.95). Read that column, '
+         + 'never `received`: on 2026-09-22 comparing gross receipts against the cap '
+         + 'reported 2,000 PCN owed when the true figure was 250, because refunds already '
+         + 'paid were never subtracted. This sum is computed live from the chain on every '
+         + 'page load so it cannot go stale.'));
 }
 
 export function wrapdeskPage(st, flash, work) {
@@ -500,6 +644,7 @@ export function wrapdeskPage(st, flash, work) {
       ])
     + workCard(w)
     + allocationCard(w)
+    + reconcileCard()
     + card('Switch',
         '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">'
         + button + statusPill + '</div>'
