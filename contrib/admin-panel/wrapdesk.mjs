@@ -527,8 +527,18 @@ function workCard(w) {
   // records who paid), the amount left blank because only a person knows
   // whether this is the whole deposit or the part above the cap.
   const refundForm = (i) => (!i.key ? '' :
-    `<details style="margin-top:10px"><summary style="cursor:pointer;color:var(--yellow)">`
-    + `Refund PCN instead</summary>`
+    // A PLAIN <summary> WAS NOT FINDABLE. It rendered as a line of coloured
+    // text under a large green button, and the operator pressed Send three
+    // times in a row while trying to reach the refund -- each press moving
+    // real money. A control that is one of two choices must LOOK like one of
+    // two choices, so this is styled as the button it is and says what it
+    // does. Still collapsed: six real rows with two open input boxes each is
+    // a page that invites a mis-click on somebody's money.
+    `<details style="margin-top:10px"><summary style="cursor:pointer;`
+    + `display:inline-block;background:transparent;color:var(--yellow);`
+    + `border:2px solid var(--yellow);border-radius:999px;padding:7px 18px;`
+    + `font-weight:700;list-style:none">`
+    + `&#8617; Refund PCN instead &mdash; tap to open</summary>`
     + `<form method="post" style="margin-top:8px"`
     + ` onsubmit="return confirm('Send this PCN back from the market wallet now? `
     + `This moves real money and cannot be undone.')">`
