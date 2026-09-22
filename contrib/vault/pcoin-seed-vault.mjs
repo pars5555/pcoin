@@ -306,6 +306,115 @@ async function cmdNew(system, chain = 'pcn') {
  * can spend. This is the one step of the whole procedure that is safe to run on
  * any machine, including a server.
  */
+/**
+ * SEAL A WALLET THAT ALREADY EXISTS.
+ *
+ * `new` generates a fresh phrase, which is exactly wrong for a system already
+ * in production: it would write a `-seed.enc.json` for a DIFFERENT wallet, and
+ * the operator would believe the live one was backed up. That is a worse state
+ * than no backup at all, because nobody goes looking for a file that is there.
+ *
+ * webai.pc.am is the case this was written for. Its 2,000 deposit addresses
+ * were derived offline on 2026-09-06 and have taken real money; the seed was
+ * used again on 2026-09-17 to sweep them, so it exists. It simply never
+ * reached the vault, and the audit has been saying so daily.
+ *
+ * THE PROOF IS THE WHOLE POINT. The typed phrase is not trusted: it is used to
+ * derive address #0, which must equal an address the caller supplies from the
+ * live pool file. A phrase that does not reproduce that address is the wrong
+ * phrase, and nothing is written. Without that check this command would
+ * cheerfully seal a typo and call it a backup -- the same class of mistake as
+ * a backup nobody has ever restored.
+ */
+async function cmdAdopt(system, expectAddr0, chain = 'pcn') {
+  if (!system) die('--system <name> is required, e.g. --system webai');
+  if (!expectAddr0) {
+    die('--address0 <addr> is required.\n' +
+        '  It is the FIRST address of the live pool -- for webai, line 1 of\n' +
+        '  contrib/vault/webai-pool-0-1999.txt. It is what proves the phrase\n' +
+        '  you type is the one that actually produced the wallet in production.');
+  }
+  if (chain !== 'pcn' && chain !== 'evm') die("--chain must be 'pcn' or 'evm'");
+  const evm = chain === 'evm';
+  const xpubFile = evm ? system + '-evm-address.txt' : system + '-xpub.txt';
+  const blobFile = evm ? system + '-evm-seed.enc.json' : system + '-seed.enc.json';
+  for (const f of [xpubFile, blobFile]) {
+    if (existsSync(f)) die(f + ' already exists - refusing to overwrite. Move it aside first.');
+  }
+
+  console.log('\n  Sealing an EXISTING wallet for: ' + system);
+  console.log('  Nothing is generated. The phrase you type must be the one that');
+  console.log('  already produced this system\'s addresses.\n');
+  console.log('  Typing is hidden, exactly like a passphrase.\n');
+
+  let mnemonic = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const typed = (await ask('  Twelve words: ', { hidden: true }))
+      .trim().replace(/\s+/g, ' ').toLowerCase();
+    if (!bip39.validateMnemonic(typed, wordlist)) {
+      console.log('  That is not a valid BIP39 phrase (checksum failed). '
+                  + 'Check for a typo.\n');
+      continue;
+    }
+    const a = evm ? evmAccountFromMnemonic(typed) : accountFromMnemonic(typed);
+    const got = evm ? evmAddressFromXpub(a.publicExtendedKey, 0)
+                    : addressFromXpub(a.publicExtendedKey, 0);
+    if (got.toLowerCase() !== String(expectAddr0).trim().toLowerCase()) {
+      // Say what was expected, never what was derived: printing the derived
+      // address of a wrong phrase leaks a little about it, and helps nobody.
+      console.log('  Those words do NOT produce ' + expectAddr0);
+      console.log('  That is a different wallet. Nothing has been written.\n');
+      continue;
+    }
+    mnemonic = typed;
+    break;
+  }
+  if (!mnemonic) {
+    die('The phrase never matched ' + expectAddr0 + '. Nothing was written.\n' +
+        '  Either it was mistyped, or it is not the seed behind this system.\n' +
+        '  A blob sealed from the wrong phrase is worse than no blob at all.');
+  }
+  console.clear();
+  process.stdout.write('\x1b[3J');
+  console.log('  Screen and scrollback cleared.');
+  console.log('  Phrase VERIFIED: it derives ' + expectAddr0 + '.\n');
+
+  const acct = evm ? evmAccountFromMnemonic(mnemonic) : accountFromMnemonic(mnemonic);
+  const xpub = acct.publicExtendedKey;
+  const addr0 = evm ? evmAddressFromXpub(xpub, 0) : addressFromXpub(xpub, 0);
+
+  let pass;
+  for (;;) {
+    pass = await ask('  Passphrase to encrypt the backup: ', { hidden: true });
+    if (pass.length < 12) { console.log('  Too short - use at least 12 characters.\n'); continue; }
+    const again = await ask('  Again: ', { hidden: true });
+    if (pass !== again) { console.log('  They do not match.\n'); continue; }
+    break;
+  }
+  console.log('\n  Encrypting...');
+
+  const blob = encrypt(mnemonic, pass);
+  blob.system = system;
+  blob.chain = chain;
+  blob.path = evm ? ACCOUNT_PATH_EVM : ACCOUNT_PATH;
+  blob.xpub = xpub;
+  blob.address0 = addr0;
+  blob.created = new Date().toISOString().slice(0, 10);
+  // Says how this blob came to exist. `new` blobs are born with their wallet;
+  // this one adopted a wallet that was already carrying money, and a reader in
+  // a recovery six months from now should not have to work that out.
+  blob.adopted = true;
+
+  if (decrypt(blob, pass) !== mnemonic) die('Encrypted copy failed to round-trip. Nothing written.');
+
+  writeFileSync(blobFile, JSON.stringify(blob, null, 2) + '\n');
+  writeFileSync(xpubFile, xpub + '\n');
+  console.log('  Wrote ' + blobFile);
+  console.log('  Wrote ' + xpubFile);
+  console.log('\n  Now verify it, then copy the blob to BOTH vault hosts:');
+  console.log('    node pcoin-seed-vault.mjs verify --file ' + blobFile);
+}
+
 async function cmdPool(system, count, start, branchName) {
   if (!system) die('--system <name> is required, e.g. --system checker');
   const xpubFile = system + '-xpub.txt';
@@ -536,6 +645,7 @@ const cmd = argv[0];
 
 if (argv.includes('--selftest')) selftest();
 else if (cmd === 'new') await cmdNew(flag('--system'), flag('--chain') || 'pcn');
+else if (cmd === 'adopt') await cmdAdopt(flag('--system'), flag('--address0'), flag('--chain') || 'pcn');
 else if (cmd === 'pool') await cmdPool(flag('--system'), flag('--count'), flag('--start'), flag('--branch'));
 else if (cmd === 'verify') await cmdVerify(flag('--file'));
 else if (cmd === 'identify') await cmdIdentify(flag('--file'));
