@@ -66,9 +66,14 @@ DEPLOYMENTS = {
     # NOT /opt/pcoin-explorer/src -- that is a checkout of this whole repo. The
     # units run from contrib/explorer inside it, which is the directory that
     # actually has to match.
+    # RECURSIVE, not a list of packages. The first version globbed
+    # pcoin_indexer/ and pcoin_explorer/ by name and reported this deployment
+    # CLEAN -- while pcoin_api/ sat unexamined with three locally modified
+    # files in it. A blind spot in an audit is worse than no audit, because it
+    # produces a clean report somebody then trusts. Naming directories is how
+    # you get one, so this names none.
     "explorer": ("contrib/explorer", "/opt/pcoin-explorer/src/contrib/explorer",
-                 "~/.ssh/id_ed25519", ["*.py", "pcoin_indexer/*.py",
-                                       "pcoin_explorer/*.py"]),
+                 "~/.ssh/id_ed25519", ["**/*.py"]),
     "pool": ("contrib/pool", "/opt/pcoin-pool", "~/.ssh/id_ed25519",
              ["*.mjs"]),
 }
@@ -125,10 +130,25 @@ def audit(name, target, pull=False):
             if f.name not in IGNORE:
                 local[rel] = norm(f.read_bytes())
 
-    pat = " ".join(globs)
+    # LISTED WITH find, NOT A SHELL GLOB. In POSIX sh "**" is just "*", so
+    # "**/*.py" matches exactly one level deep and silently skips the top level
+    # and anything nested further. It happens to cover contrib/explorer today
+    # because every package there is one level down -- which is luck, not a
+    # property, and a pattern that looks recursive and is not is precisely how
+    # an audit reports a directory clean without having read it.
+    finds = []
+    for g in globs:
+        if g.startswith("**/"):
+            finds.append(f"find . -type f -name '{g[3:]}'")
+        elif "/" in g:
+            d, _, base = g.rpartition("/")
+            finds.append(f"find ./{d} -maxdepth 1 -type f -name '{base}'")
+        else:
+            finds.append(f"find . -maxdepth 1 -type f -name '{g}'")
+    pat = "{ " + "; ".join(finds) + r"; } 2>/dev/null | sed 's#^\./##' | sort -u"
+
     rc, out, err = sh(f'ssh -o ConnectTimeout=20 -o BatchMode=yes -i {key} {target} '
-                      f'"cd {remote} 2>/dev/null && for f in {pat}; do '
-                      f'[ -f \\"$f\\" ] && echo \\"$f\\"; done"')
+                      f'"cd {remote} 2>/dev/null && {pat}"')
     if rc != 0 or not out.strip():
         # UNREADABLE IS NOT CLEAN. This is the one answer that must never be
         # mistaken for "no drift" -- that is CLAUDE.md 7.1 and it is why this
@@ -146,8 +166,8 @@ def audit(name, target, pull=False):
     SEP = "@@@PCOIN-DRIFT@@@"
     rc, blob, err = sh(
         f'ssh -o ConnectTimeout=20 -o BatchMode=yes -i {key} {target} '
-        f'"cd {remote} && for f in {pat}; do [ -f \\"$f\\" ] && '
-        f'{{ echo \'{SEP}\'\\"$f\\"; cat \\"$f\\"; }}; done"')
+        f'"cd {remote} && {pat} | while read -r f; do '
+        f'echo \'{SEP}\'\\"$f\\"; cat \\"$f\\"; done"')
     if rc != 0:
         print(f"  COULD NOT READ {target}:{remote} -- UNKNOWN, not clean")
         return 1
