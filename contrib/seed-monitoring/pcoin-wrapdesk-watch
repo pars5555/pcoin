@@ -734,7 +734,16 @@ def main() -> int:
     per_addr_wpcn = {}      # cumulative per depositor, across all their deposits
     # Rebuilt from the chain every run, never accumulated -- it is what
     # --released resolves an abbreviated txid against.
-    st["outstanding"] = {}
+    #
+    # TEST ENTRIES SURVIVE THE REBUILD, and nothing else does. A test wrap is
+    # not on the chain, so a plain rebuild erases it within the hour -- which
+    # would mean the operator's rehearsal of the Send and Refund buttons
+    # quietly vanished mid-rehearsal. They are kept, and they are the ONLY
+    # thing carried over, so a real wrap can never be resurrected from a stale
+    # state file by this path. `--clear-test-wraps` removes them.
+    _kept_tests = {k: v for k, v in (st.get("outstanding") or {}).items()
+                   if isinstance(v, dict) and v.get("test")}
+    st["outstanding"] = dict(_kept_tests)
     for watch_addr, requester in watch.items():
         addr = explorer_get(f"/api/address/{watch_addr}")
         who = (f"\nRequester BSC address: {requester}" if requester
@@ -910,6 +919,24 @@ def main() -> int:
                     per_addr[watch_addr] = round(
                         per_addr.get(watch_addr, 0.0)
                         + min(a, PER_PERSON) * (1 - FEE_PCT / 100.0), 8)
+
+    # REHEARSAL ROWS. A test wrap has no deposit on the chain, so the scan
+    # above cannot produce a row for it -- and a row is the whole point, since
+    # the buttons live on rows. Emitted here, labelled TEST in the title so it
+    # can never be read as a customer on the page, and only ever present
+    # because somebody ran --make-test-wrap.
+    for _k, _v in sorted(_kept_tests.items()):
+        _amt = float(_v.get("send_wpcn") or 0)
+        tasks.append((_k, "action",
+                      f"ACTION: send {_amt:.2f} wPCN   [TEST WRAP -- not a customer]\n"
+                      f"  SEND     : {_amt:.2f} wPCN\n"
+                      f"  TO       : {_v.get('to')}\n"
+                      f"Created by --make-test-wrap so the Send and Refund buttons can be "
+                      f"rehearsed before they are used on a customer. The wPCN and PCN that "
+                      f"move are REAL; only the obligation is invented. There is no deposit "
+                      f"behind this, so the refund box needs an address typed into it.\n"
+                      f"Remove every one of these with --clear-test-wraps.\n"
+                      f"  pcoin-wrapdesk-watch --released {_k} <bsc_txhash>"))
 
     if used_total > 0:
         left = TOTAL_ALLOC - used_total
@@ -1145,6 +1172,67 @@ if __name__ == "__main__":
         print(f"  reason: {s_['seen'][key]['reason']}")
         sys.exit(0)
 
+
+    # A REHEARSAL RECORD, so the buttons can be pressed before real money is.
+    #
+    # The operator's rule, and it is a good one: prove the Send and Refund
+    # buttons move a trivial amount before using them on a customer. That needs
+    # a row on the page, and a real one cannot be conjured -- a genuine wrap
+    # needs a deposit and 100 confirmations, which is most of a day.
+    #
+    # So this injects one, marked `test`, which is the flag that (a) keeps it
+    # across the hourly rebuild and (b) makes it obvious in the state file that
+    # it is not a customer. The txid is random and pays nothing on its own: the
+    # amounts are whatever is passed, the buttons are the real ones, and the
+    # wPCN and PCN that move are real. Only the OBLIGATION is invented.
+    if len(sys.argv) >= 3 and sys.argv[1] == "--make-test-wrap":
+        import secrets
+        try:
+            wpcn = float(sys.argv[2])
+        except ValueError:
+            print(f"REFUSED: {sys.argv[2]!r} is not a number of wPCN.")
+            sys.exit(2)
+        to = sys.argv[3] if len(sys.argv) > 3 else None
+        if not to or not re.fullmatch(r"0x[0-9a-fA-F]{40}", to):
+            print("usage: --make-test-wrap <wpcn> <bsc-address> [pcoin-address]")
+            sys.exit(2)
+        if not 0 < wpcn <= SEND_TEST_MAX:
+            print(f"REFUSED: a test wrap may be at most {SEND_TEST_MAX} wPCN.")
+            sys.exit(2)
+        addr = sys.argv[4] if len(sys.argv) > 4 else RESERVE
+        take_state_lock()
+        s_ = load_state()
+        txid = secrets.token_hex(32)
+        key = f"{txid}:{addr}"
+        s_.setdefault("outstanding", {})[key] = {
+            "pcn": round(wpcn / 0.95, 8), "send_wpcn": wpcn, "to": to,
+            "address": addr, "test": True, "at": int(time.time())}
+        save_state(s_)
+        print(f"test wrap created: {key}")
+        print(f"  it will offer to send {wpcn} wPCN to {to}")
+        print(f"  and to refund PCN to whoever the deposit came from "
+              f"(there is none, so type an address into the refund box)")
+        print("  remove every test wrap with: --clear-test-wraps")
+        sys.exit(0)
+
+    if len(sys.argv) >= 2 and sys.argv[1] == "--clear-test-wraps":
+        take_state_lock()
+        s_ = load_state()
+        out = s_.get("outstanding") or {}
+        gone = [k for k, v in out.items() if isinstance(v, dict) and v.get("test")]
+        for k in gone:
+            del out[k]
+        # Their `seen` records go too, or a closed test wrap would sit in the
+        # ledger for ever looking like a customer who was paid.
+        seen = s_.get("seen") or {}
+        for k in list(seen):
+            if k.startswith("wrap:") and any(k == f"wrap:{g}" for g in gone):
+                del seen[k]
+        save_state(s_)
+        print(f"removed {len(gone)} test wrap(s).")
+        for k in gone:
+            print(f"  {k}")
+        sys.exit(0)
 
     # READ-ONLY. Takes no lock, writes nothing, and is safe to run at any time.
     if len(sys.argv) >= 2 and sys.argv[1] == "--reconcile":

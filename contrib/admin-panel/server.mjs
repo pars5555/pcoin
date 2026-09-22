@@ -34,7 +34,7 @@ import { jobsPage } from './jobs.mjs';
 import { aiPage } from './ai.mjs';
 import { exchangesPage } from './exchanges.mjs';
 import { approvalsPage } from './approvals.mjs';
-import { wrapdeskPage, wrapdeskState, wrapdeskWork, markReleased, sendWrap, CLOSED_FILE } from './wrapdesk.mjs';
+import { wrapdeskPage, wrapdeskState, wrapdeskWork, markReleased, sendWrap, refundWrap, CLOSED_FILE } from './wrapdesk.mjs';
 import { announceFeed, markAnnounced, BACKLOG_LOUD_AT } from './wrapdesk-announce.mjs';
 import { keeperPage, keeperData, validate as keeperValidate, writeTuning } from './keeper.mjs';
 import { minersPage, minersData } from './miners.mjs';
@@ -1035,6 +1035,18 @@ async function handle(req, res) {
         flash = r.ok
           ? 'SENT and closed. ' + r.out.split(CH10).filter(Boolean).join(' ')
           : 'NOT sent: ' + r.out.split(CH10).filter(Boolean).join(' ');
+      } else if (action === 'refund') {
+        // GIVE THE PCN BACK. The market host sends it -- it holds the only
+        // spendable PCN wallet, because deposit addresses and the reserve are
+        // deliberately unspendable from any server -- and only once a txid
+        // exists is the wrap recorded as refunded. The destination defaults to
+        // the deposit transaction's own sender, because the desk never records
+        // who paid; if that cannot be read, nothing is sent and it says so.
+        const r = refundWrap(String(form.get('key') || ''),
+          String(form.get('pcn') || ''), String(form.get('to') || ''));
+        flash = r.ok
+          ? 'REFUNDED. ' + r.out.split(CH10).filter(Boolean).join(' ')
+          : 'NOT refunded: ' + r.out.split(CH10).filter(Boolean).join(' ');
       }
     } catch (e) {
       flash = 'Could not change it: ' + e.message + ' -- nothing was altered.';

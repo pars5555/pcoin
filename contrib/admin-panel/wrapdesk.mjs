@@ -231,6 +231,106 @@ export function sendWrap(key) {
   }
 }
 
+// WHO DO WE GIVE IT BACK TO? The desk never records it.
+//
+// The public page says "it does not matter which wallet or address you send
+// from", so there is no customer address on file. It is recoverable anyway:
+// the deposit transaction's own inputs are the depositor's addresses, and a
+// refund to inputs[0] goes back where the money came from. Verified against
+// the live explorer on 2026-09-21 and used by hand for the 2026-09-17 refund
+// before it was ever automated.
+//
+// Returns null when it cannot be determined, and null must stay null: a
+// refund to a guessed address is money given to a stranger.
+function depositorOf(txid) {
+  const bases = [process.env.PCOIN_EXPLORER, 'http://127.0.0.1:8080',
+    'https://explorer.pc.am'].filter(Boolean);
+  for (const base of bases) {
+    try {
+      const out = execFileSync('curl', ['-s', '--max-time', '20',
+        `${base}/api/tx/${encodeURIComponent(txid)}`], { encoding: 'utf8', timeout: 30000 });
+      const tx = (JSON.parse(out) || {}).tx;
+      const a = ((tx && tx.inputs) || []).map((i) => i && i.address).filter(Boolean)[0];
+      if (a) return a;
+    } catch { /* try the next base */ }
+  }
+  return null;
+}
+
+// GIVE THE PCN BACK, from the panel.
+//
+// Two steps, in this order, and the order is the whole design:
+//   1. the market host sends the PCN -- it is the only box with a spendable
+//      PCN wallet, because deposit addresses and the reserve are deliberately
+//      unspendable from any server. It is idempotent on the wrap key, so a
+//      lost response costs a retry and never a second refund.
+//   2. only once a txid exists is the wrap recorded refunded.
+// Doing it the other way round would mark a customer repaid on the strength of
+// an intention. The hash written down is the one the market host broadcast --
+// not one typed by an operator -- so it cannot be a hash of something else.
+export function refundWrap(key, pcn, to) {
+  const ctx = watchContext();
+  if (!ctx.ok) return { ok: false, out: ctx.why };
+  if (!/^[0-9a-f]{64}:[0-9a-z]+$/i.test(String(key || ''))) {
+    return { ok: false, out: 'That wrap key does not look right; nothing was sent.' };
+  }
+  const amount = Number(pcn);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return { ok: false, out: `"${pcn}" is not an amount of PCN; nothing was sent.` };
+  }
+  const txid = String(key).split(':')[0];
+  const dest = String(to || '').trim() || depositorOf(txid);
+  if (!dest) {
+    return { ok: false, out: 'Could not work out who to refund: the deposit transaction '
+      + 'could not be read, so its sender is unknown. Nothing was sent. Type the address '
+      + 'in by hand if you know it.' };
+  }
+  let creds;
+  try {
+    creds = JSON.parse(readFileSync('/opt/pcoin-admin/upstream.json', 'utf8'));
+  } catch (e) {
+    return { ok: false, out: `could not read the upstream credentials: ${e.message}` };
+  }
+  const tok = creds && creds.market && creds.market.refundToken;
+  const url = (creds && creds.market && creds.market.refundUrl)
+    || 'https://market.pc.am/api/ops/refund-pcn';
+  if (!tok) {
+    return { ok: false, out: 'No market refundToken is configured in upstream.json, so '
+      + 'refunds are switched off. Nothing was sent.' };
+  }
+  let body;
+  try {
+    body = execFileSync('curl', ['-s', '--max-time', '120', '-X', 'POST', url,
+      '-H', 'content-type: application/json',
+      '-H', `authorization: Bearer ${tok}`,
+      '--data-binary', JSON.stringify({ key, to: dest, pcn: amount })],
+    { encoding: 'utf8', timeout: 140000 });
+  } catch (e) {
+    return { ok: false, out: `the refund call did not complete (${e.message}). It may or `
+      + `may not have sent -- check the market wallet for a transaction with comment `
+      + `${key} BEFORE trying again.` };
+  }
+  let r;
+  try { r = JSON.parse(body); } catch { r = null; }
+  if (!r || r.ok !== true) {
+    return { ok: false, out: (r && r.error) || `the market host answered something `
+      + `unreadable: ${String(body).slice(0, 200)}` };
+  }
+  // Sent. Now record it -- and if RECORDING fails, say so loudly, because the
+  // money has already moved and the ledger has not caught up.
+  try {
+    const out = execFileSync(ctx.argv[0],
+      [...ctx.argv.slice(1), '--refunded', key, r.txid],
+      { encoding: 'utf8', timeout: 120000, env: ctx.env });
+    return { ok: true, out: `${r.already ? 'Already refunded earlier' : 'Refunded'} `
+      + `${amount} PCN to ${dest}, tx ${r.txid}. ${String(out).trim()}` };
+  } catch (e) {
+    return { ok: false, out: `THE PCN WAS SENT (tx ${r.txid}) BUT THE WRAP WAS NOT `
+      + `RECORDED AS REFUNDED. Close it by hand: --refunded ${key} ${r.txid}. `
+      + `(${e.message})` };
+  }
+}
+
 // THE MONEY VIEW, NETTED. See the long note on reconcile() in the watcher.
 //
 // Short version: on 2026-09-22 an audit read GROSS PCN received against the
@@ -414,6 +514,45 @@ function workCard(w) {
     + `attempt broadcast something whose receipt was never recorded. The receipt is `
     + `checked on BNB Smart Chain before anything is written down.</p></form>`);
 
+  // REFUND, ON EVERY RECORD THAT HAS A KEY -- not only the over-cap ones.
+  //
+  // The reason to give PCN back is not always "the allocation was full": a
+  // customer can change their mind, a deposit can be a mistake, a wrap can be
+  // withheld for a reason that never resolves. Offering the button only where
+  // the code had already decided a refund was due meant every other case went
+  // back to SSH, which is where the mistakes live.
+  //
+  // The amount and the destination are both editable and both pre-filled:
+  // the destination from the deposit transaction's own inputs (the desk never
+  // records who paid), the amount left blank because only a person knows
+  // whether this is the whole deposit or the part above the cap.
+  const refundForm = (i) => (!i.key ? '' :
+    `<details style="margin-top:10px"><summary style="cursor:pointer;color:var(--yellow)">`
+    + `Refund PCN instead</summary>`
+    + `<form method="post" style="margin-top:8px"`
+    + ` onsubmit="return confirm('Send this PCN back from the market wallet now? `
+    + `This moves real money and cannot be undone.')">`
+    + `<input type="hidden" name="action" value="refund">`
+    + `<input type="hidden" name="key" value="${esc(i.key)}">`
+    + `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">`
+    + `<input name="pcn" required inputmode="decimal" pattern="[0-9]*\\.?[0-9]*"`
+    + ` placeholder="PCN to give back" style="flex:0 1 170px;padding:7px 10px;`
+    + `border-radius:4px;border:1px solid var(--line);background:var(--panel);`
+    + `color:inherit;font-family:ui-monospace,monospace;font-size:12px">`
+    + `<input name="to" spellcheck="false" autocomplete="off"`
+    + ` placeholder="leave blank to use the deposit's own sender"`
+    + ` style="flex:1 1 320px;min-width:240px;padding:7px 10px;border-radius:4px;`
+    + `border:1px solid var(--line);background:var(--panel);color:inherit;`
+    + `font-family:ui-monospace,monospace;font-size:12px">`
+    + `<button style="background:var(--yellow);color:#0b1020;border:0;border-radius:999px;`
+    + `padding:8px 18px;cursor:pointer;font-weight:700">Refund</button></div>`
+    + `<p class="muted" style="margin:6px 0 0;font-size:12px">Paid from the market wallet `
+    + `&mdash; deposit addresses and the reserve are deliberately unspendable from any `
+    + `server. Idempotent on the wrap key, so a lost answer costs a retry and never a `
+    + `second refund. Left blank, the destination is read from the deposit transaction's `
+    + `own inputs; if that cannot be read, nothing is sent and you are told.</p>`
+    + `</form></details>`);
+
   const closeForm = (i) => (i.kind !== 'send' || !i.key ? '' :
     `<form method="post" style="margin-top:10px">`
     + `<input type="hidden" name="action" value="released">`
@@ -465,6 +604,7 @@ function workCard(w) {
     + `<pre style="white-space:pre-wrap;margin:6px 0 0;font-size:12px">${esc(i.detail.join(String.fromCharCode(10)))}</pre>`
     + refundLine(i)
     + sendForm(i)
+    + refundForm(i)
     + closeForm(i)
     + (i.close
         ? `<details style="margin-top:8px"><summary class="muted" style="cursor:pointer;font-size:12px">`

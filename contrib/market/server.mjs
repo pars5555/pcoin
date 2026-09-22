@@ -237,6 +237,13 @@ setInterval(() => S.reload(), 30_000).unref?.();
 import { makeNodeRpc, makeDelivery, makeBacking } from './delivery.mjs';
 import { makeNotifier, readNotifyConfig } from './notify.mjs';
 import { clientIp } from './clientip.mjs';
+import { geoFor, geoLine, ensureSchema as ensureGeoSchema } from './geoip.mjs';
+
+// Settings are read at CALL time, not captured here: the key can be rotated
+// and the feature switched off from the admin panel without a restart.
+const geoOpts = () => ({ q, key: S.get('geoipKey'), base: S.get('geoipBaseUrl'),
+                         enabled: S.get('geoipEnabled'), log: console });
+
 
 const alertCfg = readNotifyConfig('/etc/pcoin/alert.conf');
 const notify = makeNotifier({
@@ -1212,6 +1219,110 @@ createServer(async (req, res) => {
     // ---- the ladder, in public ----
     // Read-only and unauthenticated on purpose: this is the price, and the
     // price oracle on this same box polls it to drive `serviceRate`.
+    // REFUND PCN, for the wrap desk on another host. THIS ONE SPENDS.
+    //
+    // The wrap desk lives on a different box and holds no PCN it can spend:
+    // deposit addresses and the reserve are deliberately unspendable from any
+    // server, so a refund has to come from a different pot. `market-hot` is
+    // that pot -- it is already the wallet this process sends deliveries from,
+    // so this adds no key, no wallet and no host that was not already
+    // spending. It adds one narrow, capped, separately-credentialled way to
+    // ask it to.
+    //
+    // ITS OWN TOKEN, NOT readToken. A read credential must never authorise a
+    // spend: they are handed out for different reasons and rotated on
+    // different days, and the panel holds both. Unset means refunds are OFF,
+    // not open -- a missing credential fails closed.
+    //
+    // IDEMPOTENT BY COMMENT, which is how delivery.mjs already does it: the
+    // wrap key goes into the transaction's comment, and before sending we look
+    // for a transaction already carrying it. An RPC that TIMES OUT says nothing
+    // about whether the node broadcast -- so a lookup that THROWS resolves
+    // nothing and refuses, rather than collapsing into "nothing was sent" and
+    // paying twice (delivery.mjs:139-150 is the same rule, learned the hard way).
+    if (p === '/api/ops/refund-pcn' && req.method === 'POST') {
+      const want = cfg.refundToken;
+      if (!want) {
+        return json(res, 503, { error: 'no refundToken is configured, so refunds are '
+          + 'switched off here. This is not an authentication failure.' });
+      }
+      const m = (req.headers.authorization || '').match(/^Bearer\s+(.+)$/i);
+      if (!m || m[1] !== want) {
+        return json(res, 401, { error: 'refunds need the refund token, which is not '
+          + 'the read token' });
+      }
+      const b = jsonBodyOr400(await body(req), res);
+      if (b === null) return undefined;
+      const key = String(b.key || '').trim();
+      const to = String(b.to || '').trim();
+      const pcn = Number(b.pcn);
+      // A cap that is generous for a refund and useless for a drain. The
+      // largest legitimate single refund this desk can produce is one
+      // over-cap deposit, and those have run to a few hundred PCN.
+      const MAX_REFUND_PCN = Number(cfg.refundMaxPcn || 600);
+      if (!/^[0-9a-zA-Z:._-]{4,160}$/.test(key)) {
+        return json(res, 400, { error: 'a refund needs an idempotency key (the wrap key)' });
+      }
+      // bech32 as PCoin uses it: hrp `pc1`, then the bech32 charset, which
+      // deliberately excludes 1, b, i and o so a transcription slip is caught
+      // rather than silently becoming a different address.
+      if (!/^pc1[02-9ac-hj-np-z]{20,87}$/.test(to)) {
+        return json(res, 400, { error: `${to} does not look like a PCoin bech32 `
+          + 'address; nothing was sent' });
+      }
+      if (!Number.isFinite(pcn) || pcn <= 0 || pcn > MAX_REFUND_PCN) {
+        return json(res, 400, { error: `amount must be above 0 and at most `
+          + `${MAX_REFUND_PCN} PCN; got ${b.pcn}` });
+      }
+      // NO validateaddress PRE-CHECK, DELIBERATELY. This wallet's RPC identity
+      // runs under rpcwhitelistdefault=0 and `validateaddress` is not on its
+      // list -- it answers 403. Widening a live wallet's RPC permissions to buy
+      // a nicety is the wrong trade, and it buys nothing: `sendtoaddress`
+      // validates the address itself and refuses a malformed one without
+      // moving a satoshi. So the authoritative check simply happens one step
+      // later, and an address that cannot be paid is still never paid.
+      //
+      // This is NOT "unknown became yes" -- nothing is resolved optimistically
+      // here. The shape filter below only turns an obvious typo into a fast,
+      // readable error instead of an RPC round trip. A typo that is still
+      // valid bech32 is caught by neither, and nothing can catch that.
+
+      // Already done? Look before spending.
+      let prior;
+      try {
+        const txs = await node.wallet('listtransactions', ['*', 1000, 0, true]);
+        prior = (txs || []).find(t => t.comment === key && t.category === 'send'
+          && t.abandoned !== true && Number(t.confirmations) > -1) || null;
+      } catch (e) {
+        return json(res, 503, { error: `could not check whether ${key} was already `
+          + `refunded (${e.message}). Nothing was sent -- an unanswerable question `
+          + `must not resolve to the answer that spends money.` });
+      }
+      if (prior) {
+        return json(res, 200, { ok: true, already: true, txid: prior.txid,
+          note: 'a refund carrying this key was already sent; nothing new was broadcast' });
+      }
+
+      try {
+        const txid = await node.wallet('sendtoaddress', [
+          to,
+          Number(pcn.toFixed(8)),
+          key,              // comment -- THE recovery handle, see above
+          '',
+          false,            // the customer gets the full amount; we pay the fee
+        ]);
+        try {
+          notify('wrap desk: PCN refunded',
+            `Sent ${pcn} PCN to ${to} for ${key}.\ntx ${txid}`);
+        } catch { /* reporting must never break the thing it reports on */ }
+        return json(res, 200, { ok: true, already: false, txid, pcn, to });
+      } catch (e) {
+        // The send may or may not have gone out. Say exactly that.
+        return json(res, 502, { error: `the send failed or its answer was lost: `
+          + `${e.message}. Check for a transaction with comment ${key} BEFORE retrying.` });
+      }
+    }
+
     // Read-only operator summary for the unified admin panel. Token-gated with
     // its own credential -- a customer session must never reach it, and this
     // token opens nothing else. GET only; it writes nothing anywhere.
@@ -1732,12 +1843,34 @@ createServer(async (req, res) => {
               [invoice.id || null, invoice.invoice_url || null, orderId]);
 
       const willAutoSend = S.get('autoMaxUsd') > 0 && usd <= S.get('autoMaxUsd');
+
+      // WHERE DID THIS COME FROM. Deliberately AFTER the order is committed:
+      // the lookup is a network call and an order must never wait on one, nor
+      // fail because a geo service is slow. geoFor() cannot throw and returns
+      // null when it does not know, so every branch below is safe.
+      const orderIp = clientIp(req);
+      let orderGeo = null;
+      try {
+        orderGeo = await geoFor(orderIp, geoOpts());
+        if (orderGeo) {
+          // Snapshot it ON THE ORDER. The ip_geo cache says where that address
+          // is today; this records where the order came from when it was
+          // placed, which is the fact an operator needs a year from now.
+          await q(`UPDATE orders SET geo_country=?, geo_city=?, geo_isp=? WHERE order_id=?`,
+                  [orderGeo.country || null, orderGeo.city || null, orderGeo.isp || null, orderId])
+            .catch(e => console.warn('[geoip] order snapshot:', e.message));
+        }
+      } catch (e) {
+        console.warn('[geoip] order lookup:', e.message);
+      }
+
       await notify(
         `🔵 <b>New order</b>\n<code>${orderId}</code>\n` +
         `$${usd.toFixed(2)} → <b>${w.pcn.toFixed(8)} PCN</b> @ ${w.avgPrice.toFixed(8)}\n` +
         `to <code>${addr}</code>\n` +
         `${email}\n` +
         `Delivery: <b>${willAutoSend ? 'automatic once paid' : 'MANUAL — you will send this one'}</b>\n` +
+        `${geoLine(orderIp, orderGeo)}\n` +
         `Not paid yet — this is the order being created.`);
 
       return json(res, 200, {
