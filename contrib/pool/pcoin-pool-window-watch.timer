@@ -1,0 +1,18 @@
+[Unit]
+Description=Hourly check that the pool still holds a full PPLNS payout window
+
+[Timer]
+# HOURLY, not every two minutes like the share watch. Coverage is a
+# slow-moving property measured in hours, and the SUM(weight) it needs is the
+# one O(table) query the share watch deliberately refuses to run -- the whole
+# reason this is a separate unit.
+OnBootSec=10min
+OnUnitActiveSec=1h
+# Spread away from the prune timer, which also runs hourly: reading the ledger
+# while it is being deleted from would measure a moment that never existed.
+RandomizedDelaySec=5min
+AccuracySec=1min
+Unit=pcoin-pool-window-watch.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,25 @@
+[Unit]
+Description=PCoin pool window watch -- can the pool still PAY the next block correctly?
+After=network-online.target pcoin-pool.service
+
+[Service]
+Type=oneshot
+Environment=POOL_DB=/opt/pcoin-pool/pool.sqlite
+Environment=POOL_CONFIG=/opt/pcoin-pool/pool.config.json
+Environment=POOL_NAME=pool.pc.am
+Environment=WINDOW_WATCH_STATE=/var/lib/pcoin-monitor/pool-window-watch.json
+# Warn below 2.00x. pool2 measured 1.64x on 2026-09-22, so a line at 1.00x
+# would be a post-mortem rather than a warning -- by then the window is
+# already being cut short and miners are already underpaid.
+Environment=WINDOW_COVERAGE_WARN=2.0
+# Re-alert only when coverage has moved this far, so a slow slide is reported
+# again without the same figure arriving every run.
+Environment=WINDOW_COVERAGE_STEP=0.25
+ExecStart=/usr/local/bin/pcoin-pool-window-watch
+Nice=15
+MemoryMax=192M
+TimeoutStartSec=180
+# A non-zero exit means "the pool has a problem", which the script has ALREADY
+# reported itself. Letting systemd call that a unit failure would raise a
+# second, less informative alert for the same event.
+SuccessExitStatus=0 1

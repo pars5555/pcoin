@@ -1,0 +1,346 @@
+#!/usr/bin/env python3
+"""Does the pool still hold enough shares to PAY the next block correctly?
+
+WHY THIS EXISTS
+
+The shares table is not history, it is the payout ledger. PPLNS pays whoever
+contributed the last `blockWork x windowMultiplier` of work, so when a block
+lands the split is computed by walking backwards through shares until their
+cumulative weight reaches N. Delete a share that belongs inside that window and
+its owner is simply not paid for it.
+
+Retention is a fixed number of HOURS; the window is a fixed amount of WORK.
+Those are different units, and the exchange rate between them is the pool's
+share of network hashrate -- which nobody controls. Measured on pool2 on
+2026-09-22 the window needed 14.7 h of the 24 h retained: a margin of 1.64x,
+and the pool losing half its miners, or the network difficulty rising, is
+enough to close it.
+
+WHAT MAKES IT INVISIBLE WITHOUT THIS
+
+store.mjs handles "the whole table weighs less than N" by using the whole table
+and saying nothing:
+
+    if (limit >= Number(have)) { limit = Number(have) || 1; break; }
+
+That is exactly right for a young pool, which has simply not accumulated N yet
+and owes nobody anything. It is exactly wrong after the prune has cut into the
+window -- and the code cannot tell the two apart, because both look like "the
+table is smaller than N". The payout is quietly computed over a truncated
+window and everyone whose shares were deleted gets nothing. Nothing throws,
+nothing logs, and the block pays out normally to whoever is left.
+
+THIS CAN tell them apart: MIN(id) > 1 means rows have been DELETED. A single
+rowid seek, no config to read, and it is the fact that turns "small table" into
+"truncated window". Combined with coverage < 1 it is the difference between a
+new pool and miners being underpaid right now.
+
+WHY IT IS NOT PART OF pcoin-pool-share-watch
+
+That one runs every two minutes and is carefully built out of index seeks,
+because the failure it watches for is the database being too slow to write.
+SUM(weight) is O(table) -- exactly the query it refuses to add. Coverage is a
+slow-moving property measured in hours, so it gets its own timer and a long
+interval instead.
+
+DOCTRINE (CLAUDE.md 7.1). An unreadable ledger is not "fine" and an unreachable
+node is not "no drift": both report UNKNOWN, alert as UNKNOWN, and never pass
+silently. Re-alerts are gated on CHANGE, not time (CLAUDE.md 9.5).
+
+    pcoin-pool-window-watch              one tick, alert if warranted
+    pcoin-pool-window-watch --dry-run    print; send NOTHING
+    pcoin-pool-window-watch --selftest   force every branch and prove it fires
+"""
+import argparse
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+
+DB = os.environ.get("POOL_DB", "/opt/pcoin-pool/pool.sqlite")
+CONFIG = os.environ.get("POOL_CONFIG", "/opt/pcoin-pool/pool.config.json")
+POOL_NAME = os.environ.get("POOL_NAME", "pool.pc.am")
+STATE = os.environ.get("WINDOW_WATCH_STATE",
+                       "/var/lib/pcoin-monitor/pool-window-watch.json")
+NOTIFY = os.environ.get("PCOIN_NOTIFY", "/usr/local/bin/pcoin-notify")
+
+# Coverage is total share weight divided by the PPLNS window N. Below 1.0 the
+# window does not fit in what is retained and miners are being underpaid NOW;
+# this is the line at which there is still time to act. 2.0 was chosen because
+# pool2 sat at 1.64 when this was written -- a warning that only fires below
+# 1.0 is a post-mortem, not a warning.
+COVERAGE_WARN = float(os.environ.get("WINDOW_COVERAGE_WARN", "2.0"))
+# Re-alert when coverage moves by more than this, so a slow slide is reported
+# again without a static figure being repeated every run.
+COVERAGE_STEP = float(os.environ.get("WINDOW_COVERAGE_STEP", "0.25"))
+
+
+class Unknown(Exception):
+    """Could not be determined. Never an answer, never a 'no'."""
+
+
+def read_db():
+    """(total_weight, pruned, span_hours). Raises Unknown."""
+    try:
+        con = sqlite3.connect("file:%s?mode=ro" % DB, uri=True, timeout=30)
+        try:
+            cur = con.cursor()
+
+            def one(sql):
+                cur.execute(sql)
+                return cur.fetchone()[0]
+            # The only O(table) query here, and the reason this has its own
+            # timer. It rides shares_at_miner(at, miner, weight), which covers
+            # it, so it is an index scan rather than a table scan.
+            total = one("SELECT IFNULL(SUM(weight),0) FROM shares;")
+            # Separate single-aggregate statements: SQLite's MIN/MAX
+            # optimisation applies only to a query with exactly one aggregate,
+            # so combining these would turn three seeks into a full scan.
+            lo_id = one("SELECT MIN(id) FROM shares;")
+            oldest = one("SELECT MIN(at) FROM shares;")
+            newest = one("SELECT MAX(at) FROM shares;")
+        finally:
+            con.close()
+    except Exception as e:
+        raise Unknown("cannot read the share ledger (%s)" % str(e)[:120])
+    if lo_id is None or not total:
+        raise Unknown("the share ledger holds no shares at all")
+    # ROWS HAVE BEEN DELETED. This is what separates "a young pool that has
+    # not earned N yet" from "the prune has cut into the payout window", and
+    # the pool's own code cannot make that distinction.
+    pruned = int(lo_id) > 1
+    span_h = (int(newest) - int(oldest)) / 3600_000.0 if newest and oldest else 0.0
+    return int(total), pruned, span_h
+
+
+def read_window_n():
+    """(N, blockWork, multiplier). Raises Unknown.
+
+    nBits comes from the pool's OWN least-privilege RPC identity, the one
+    already whitelisted for getblockchaininfo -- this adds no privilege
+    anywhere, and asks the same node the pool builds templates against.
+    """
+    try:
+        with open(CONFIG, encoding="utf-8") as f:
+            cfg = json.load(f)
+        mult = int((cfg.get("pplns") or {})["windowMultiplier"])
+        cli = cfg["cliCommand"]
+        cli = cli if isinstance(cli, list) else cli.split()
+    except Exception as e:
+        raise Unknown("cannot read %s (%s)" % (CONFIG, str(e)[:100]))
+    try:
+        out = subprocess.run(cli + ["getblockchaininfo"], capture_output=True,
+                             timeout=30, encoding="utf-8", errors="replace")
+        if out.returncode != 0:
+            raise RuntimeError((out.stderr or "").strip()[:120] or "non-zero exit")
+        bits = json.loads(out.stdout)["bits"]
+    except Exception as e:
+        raise Unknown("cannot read the network target from the node (%s)"
+                      % str(e)[:120])
+    return window_from_bits(bits, mult)
+
+
+def window_from_bits(bits, mult):
+    """Compact nBits -> (N, blockWork, multiplier). Pure, so --selftest can use it."""
+    b = int(bits, 16)
+    exp, mant = b >> 24, b & 0xffffff
+    target = mant * (1 << (8 * (exp - 3))) if exp > 3 else mant >> (8 * (3 - exp))
+    if target <= 0:
+        raise Unknown("the node reported a zero network target")
+    # The same arithmetic as targetWeight() in store.mjs: weight = 2^256/target.
+    work = (1 << 256) // target
+    return work * mult, work, mult
+
+
+def decide(total, pruned, span_h, N, work, mult, db_err, node_err):
+    """(verdict, subject, body). Pure -- everything it needs is passed in, which
+    is what lets --selftest force every branch without a pool or a node."""
+    if db_err:
+        return ("unknown-db", "pool window watch: CANNOT CHECK (%s)" % POOL_NAME,
+                "The share ledger could not be read, so whether the pool still holds "
+                "enough shares to pay the next block correctly is UNKNOWN. This is "
+                "not a report that it does, and not a report that it does not."
+                "\n\n%s" % db_err)
+    if node_err:
+        return ("unknown-node", "pool window watch: CANNOT CHECK (%s)" % POOL_NAME,
+                "The PPLNS window is a multiple of ONE BLOCK'S WORK, so it cannot be "
+                "computed without the network target. That could not be read, so "
+                "coverage is UNKNOWN.\n\n%s" % node_err)
+
+    cov = total / float(N)
+    # Hours of shares the window actually needs, at the rate the retained span
+    # was accumulated. Approximate by construction -- it assumes the last span
+    # is representative -- so it is offered as guidance, never as the trigger.
+    need_h = (span_h / cov) if cov > 0 else 0.0
+    facts = ("coverage %.2fx  (holding %s of weight against a window of %s)\n"
+             "window   = %d x one block's work (%s)\n"
+             "retained %.1f h, of which the window needs about %.1f h"
+             % (cov, f"{total:,}", f"{N:,}", mult, f"{work:,}", span_h, need_h))
+
+    if cov < 1.0 and pruned:
+        return ("truncated", "POOL IS PAYING FROM A TRUNCATED WINDOW (%s)" % POOL_NAME,
+                "Every share the pool holds weighs LESS than one PPLNS window, and "
+                "rows have been deleted -- so the next block will be split over a "
+                "window that has had its oldest end cut off. The miners whose shares "
+                "were pruned get nothing for them.\n\n%s\n\n"
+                "Nothing will log this. store.mjs handles a too-small table by paying "
+                "over whatever is left, which is correct for a new pool and silent "
+                "either way.\n\n"
+                "FIX: raise RETAIN_HOURS on pcoin-pool-prune-shares to at least "
+                "%.0f h and restart nothing -- the next prune simply keeps more."
+                % (facts, max(need_h * 2, span_h * 2)))
+    if cov < 1.0:
+        # Same arithmetic, no deletions: a young pool owes nobody the shares it
+        # never had. Worth saying once, never an alarm.
+        return ("young", "", "")
+    if cov < COVERAGE_WARN:
+        return ("thin", "pool payout window is getting thin (%s)" % POOL_NAME,
+                "The pool holds %.2fx the shares its PPLNS window needs. Below 1.00x "
+                "the window is cut short and miners are underpaid with nothing "
+                "logging it, so this is the early warning.\n\n%s\n\n"
+                "Coverage falls when the pool's share of network hashrate falls or "
+                "difficulty rises -- neither is under anyone's control, which is why "
+                "a retention set in HOURS against a window set in WORK needs watching."
+                "\n\nFIX: raise RETAIN_HOURS on pcoin-pool-prune-shares to about "
+                "%.0f h." % (cov, facts, max(need_h * 3, span_h * 1.5)))
+    return ("ok", "", "")
+
+
+def describe(total, pruned, span_h, N, db_err, node_err):
+    if db_err:
+        return "%s -- ledger: UNREADABLE (%s)" % (POOL_NAME, db_err)
+    if node_err:
+        return "%s -- node: UNREADABLE (%s)" % (POOL_NAME, node_err)
+    return ("%s -- coverage %.2fx, %.1f h retained, %s"
+            % (POOL_NAME, total / float(N), span_h,
+               "prune has deleted rows" if pruned else "nothing pruned yet"))
+
+
+def load():
+    try:
+        with open(STATE, encoding="utf-8") as f:
+            s = json.load(f)
+    except Exception:
+        s = {}
+    # Normalise rather than merely survive an unreadable file: a state file
+    # that PARSES but lacks a key is what crashed pcoin-wrapdesk-watch on a
+    # fresh install (CLAUDE.md 7.14).
+    if not isinstance(s, dict):
+        s = {}
+    s.setdefault("verdict", "")
+    s.setdefault("coverage", 0.0)
+    return s
+
+
+def save(s):
+    d = os.path.dirname(STATE)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    tmp = STATE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(s, f, indent=1)
+    os.replace(tmp, STATE)
+
+
+def send(subject, body, dry):
+    if dry:
+        print("[would send] %s\n%s" % (subject, body))
+        return
+    try:
+        subprocess.run([NOTIFY, subject, body], timeout=30)
+    except Exception as e:
+        print("  (notify failed: %s)" % e)
+
+
+def selftest():
+    """Prove every branch FIRES against known-bad input.
+
+    A check that cannot fire is indistinguishable from a check that passes.
+    This project has shipped two of those, so a new alarm asserts that it
+    SPEAKS UP, not merely that it stays quiet.
+    """
+    W = 1_000_000          # pretend one block's work
+    N = W * 2
+    cases = [
+        # coverage 0.5 WITH deletions -> the real alarm
+        ("truncated",    (N // 2, True,  24.0, N, W, 2, None, None)),
+        # the same coverage with NOTHING deleted is a young pool, not an alarm
+        ("young",        (N // 2, False, 24.0, N, W, 2, None, None)),
+        # 1.5x -> under the 2.0 warning line
+        ("thin",         (int(N * 1.5), True, 24.0, N, W, 2, None, None)),
+        ("ok",           (int(N * 3.0), True, 24.0, N, W, 2, None, None)),
+        ("unknown-db",   (0, False, 0.0, N, W, 2, "forced: ledger unreadable", None)),
+        ("unknown-node", (0, False, 0.0, N, W, 2, None, "forced: node unreadable")),
+    ]
+    bad = 0
+    for want, args in cases:
+        got, subject, body = decide(*args)
+        ok = got == want
+        # An alerting verdict that produced no subject would never reach anyone.
+        if ok and want not in ("ok", "young") and not subject:
+            ok, got = False, got + " (no subject -- would alert nobody)"
+        print("  %s  %-13s -> %s" % ("OK " if ok else "BAD", want, got))
+        if not ok:
+            bad += 1
+
+    # The compact-bits arithmetic, against the value measured by hand on
+    # 2026-09-22: nBits 1d0ae495 gave blockWork 394,290,580.
+    n, work, _ = window_from_bits("1d0ae495", 2)
+    ok = work == 394_290_580 and n == 788_581_160
+    print("  %s  %-13s -> blockWork %s" % ("OK " if ok else "BAD", "bits maths",
+                                           f"{work:,}"))
+    if not ok:
+        bad += 1
+    print("\n%d failure(s)" % bad)
+    return 1 if bad else 0
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--selftest", action="store_true")
+    a = ap.parse_args()
+    if a.selftest:
+        return selftest()
+
+    total = pruned = span_h = None
+    N = work = mult = None
+    db_err = node_err = None
+    try:
+        total, pruned, span_h = read_db()
+    except Unknown as e:
+        db_err = str(e)
+    if db_err is None:
+        try:
+            N, work, mult = read_window_n()
+        except Unknown as e:
+            node_err = str(e)
+
+    verdict, subject, body = decide(total, pruned, span_h, N, work, mult,
+                                    db_err, node_err)
+    print(describe(total, pruned, span_h, N, db_err, node_err))
+    print("verdict: %s" % verdict)
+
+    st = load()
+    cov = (total / float(N)) if (N and total is not None) else 0.0
+    # GATED ON CHANGE, NOT TIME. A verdict that has not changed, and a coverage
+    # that has not moved materially, is not news -- the concentration watch
+    # once sent the same figure twenty-four times in eight hours and taught
+    # everyone to ignore it.
+    changed = (verdict != st["verdict"]
+               or abs(cov - float(st.get("coverage") or 0)) >= COVERAGE_STEP)
+    if subject and changed:
+        send(subject, body, a.dry_run)
+    elif subject:
+        print("  (unchanged since the last alert; not re-sending)")
+
+    if not a.dry_run:
+        save({"verdict": verdict, "coverage": round(cov, 4)})
+    # Non-zero only for the states that need a person. `young` is a fact about
+    # a new pool, not a fault.
+    return 1 if verdict in ("truncated", "thin", "unknown-db", "unknown-node") else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
