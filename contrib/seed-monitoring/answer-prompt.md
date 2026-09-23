@@ -194,10 +194,11 @@ supply.
 - A miner's local balance dropping to near zero is usually correct: most setups
   forward what they earn to a main wallet automatically.
 - **"THE HASHRATE IS NOT DISPLAYING" / "it is still starting".** Usually nothing
-  is broken and it has simply not been STARTED. The Windows installer leaves
-  mining switched OFF on purpose, so a new install never mines before its node
-  has caught up with the chain (mining on an unsynced node builds a competing
-  fork). Tell them:
+  is broken. A FRESH Windows install switches mining ON at about half the CPU
+  cores (since v1.4.33, 19 September 2026), but its first minutes go on
+  starting the node and tuning the core count; an UPGRADE keeps whatever the
+  person chose before, including OFF, and anyone can switch it off in the
+  tray. So never say the installer leaves mining off. Tell them:
     * open the tray window and read the button. "Start mining" means it is off --
       press it and choose how many CPU cores. The hashrate appears once it is
       really hashing.
