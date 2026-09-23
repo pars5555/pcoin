@@ -747,8 +747,16 @@ def main():
                             continue        # gone: never spooled, never answered
                         # Reported but kept: fall through so the answer bot sees it
                         # like any other message.
-                    print("  removal report failed at update %d -- offset held" % uid, file=sys.stderr)
-                    break
+                    else:
+                        # ONLY a failed report stops the run. Until 2026-09-23 these
+                        # two lines sat outside any else, so a KEPT message -- a pool
+                        # address, reported for the owner to judge -- also printed
+                        # "removal report failed" and broke out of the loop with its
+                        # offset already advanced: it was never spooled, the answer
+                        # bot never saw it, and a question about the pool bounty went
+                        # unanswered.
+                        print("  removal report failed at update %d -- offset held" % uid, file=sys.stderr)
+                        break
 
         text = describe(msg)
         urgent = bool(msg.get("text") and TRIGGERS.search(msg["text"]))
