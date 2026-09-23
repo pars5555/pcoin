@@ -14,12 +14,12 @@
 // about whether anything is wrong -- which is worse than either being wrong on
 // its own, because now nobody knows which to believe. One source, two renderings.
 //
-// WHAT IT WILL NOT DO. It sends nothing when the list is empty. A monitor that
-// posts "all clear" every ten minutes is a monitor people mute, and a muted
-// channel takes the one message that mattered with it. Silence here means the
-// previous message still stands -- and because the LIST ITSELF is re-sent
-// whenever it changes, a resolved item disappears by the list shrinking, which
-// is visible.
+// WHAT IT WILL NOT DO. It never repeats "all clear". A monitor that posts
+// "all clear" every ten minutes is a monitor people mute, and a muted channel
+// takes the one message that mattered with it. The list is re-sent whenever it
+// changes, so a resolved item disappears by the list shrinking -- and when the
+// LAST item resolves, one short message says so, once. (Before 2026-09-23 that
+// case sent nothing, and the last alarm stood in the channel as if still true.)
 //
 // SENDING IS VIA pcoin-notify, never a raw API call: that is where the token
 // lives, where the ops-vs-announce channel is decided, and where the length and
@@ -111,8 +111,16 @@ function instruction(item) {
   if (t.includes('deposit addresses left')) {
     return 'Refill the address pool from the offline vault before it empties — new users cannot be given an address without it.';
   }
-  if (t.includes('reconcile')) {
-    return 'On-chain and recorded balances disagree. This is the check that catches real loss.';
+  if (t.includes('do not match the chain')) {
+    return 'PCN received at the deposit addresses and the deposits recorded disagree. This is the check '
+         + 'that catches real loss. Open the exchange page and find the deposit that differs before paying anything.';
+  }
+  if (t.includes('could not read the chain')) {
+    return 'The balance check failed on two runs a quarter of an hour apart, so a real mismatch could go unseen. '
+         + 'Check that the exchange server can reach explorer.pc.am.';
+  }
+  if (t.includes('stopped running')) {
+    return 'The exchange has stopped refreshing its balance check. Look at its tick loop and its log.';
   }
   return item.detail;
 }
@@ -158,8 +166,9 @@ function loadState() {
   try { return JSON.parse(readFileSync(STATE, 'utf8')); } catch { return {}; }
 }
 function saveState(s) {
-  try { mkdirSync(dirname(STATE), { recursive: true }); writeFileSync(STATE, JSON.stringify(s, null, 2)); }
-  catch (e) { console.error('could not save state:', e.message); }
+  if (DRY) return true;            // a dry run must not change what the next real run sees
+  try { mkdirSync(dirname(STATE), { recursive: true }); writeFileSync(STATE, JSON.stringify(s, null, 2)); return true; }
+  catch (e) { console.error('could not save state:', e.message); return false; }
 }
 
 function notify(subject, body) {
@@ -182,14 +191,55 @@ async function main() {
     catch (e) { exOver = { readable: false, status: 0, json: null, reason: e.message }; }
   }
 
-  const items = needsYou({ svcs, tasks: [], exOver, wrap: wrapdeskState(), reports: [], base: '' });
+  const found = needsYou({ svcs, tasks: [], exOver, wrap: wrapdeskState(), reports: [], base: '' });
+  const st = loadState();
+  const now = Math.floor(Date.now() / 1000);
+
+  // SETTLE. An item that says "could not read" is often a blip that is gone by
+  // the next check. Such items carry `settle: n` and are pushed only once n
+  // runs in a row have seen them; a real outage survives that, a network
+  // hiccup does not. The dashboard is not delayed -- it shows every item at
+  // once -- only the page to the owner's phone is.
+  const streak = {};
+  for (const i of found) {
+    if (i.settle > 1) streak[i.title] = ((st.streak || {})[i.title] || 0) + 1;
+  }
+  const items = found.filter(i => !(i.settle > 1) || streak[i.title] >= i.settle);
+  for (const i of found.filter(x => !items.includes(x))) {
+    console.log(`holding "${i.title}": seen ${streak[i.title]} of ${i.settle} runs in a row`);
+  }
 
   if (!items.length) {
-    console.log('nothing open — sending nothing');
+    // THE LIST EMPTIED. Until 2026-09-23 this sent nothing, so the last
+    // message -- "1 thing(s) need you to act" -- stood in the channel as if
+    // still true, and the only way to learn otherwise was to go and look. One
+    // short message on the way to empty, never again until something new
+    // appears: that is not the every-ten-minutes all-clear warned about above.
+    if (st.sig) {
+      const was = Array.isArray(st.titles) && st.titles.length
+        ? st.titles.map(t => `• ${t}`).join('\n')
+        : `the ${st.count || ''} item(s) in the message sent at `
+          + `${st.at ? new Date(st.at * 1000).toISOString().slice(11, 16) + ' UTC' : 'the last run'}`;
+      const subject = 'PCoin: nothing needs you now';
+      const body = `Cleared since the last message:\n${was}\n\n—\n`
+        + 'The next message comes when something new needs you.';
+      if (DRY) {
+        console.log('--- DRY RUN, nothing sent ---');
+        console.log(subject);
+        console.log(body);
+        return 0;
+      }
+      if (!(await notify(subject, body))) {
+        saveState({ ...st, streak });          // sig kept, so the all-clear is retried next run
+        return 1;
+      }
+      console.log('list emptied — sent the all-clear once');
+    } else {
+      console.log('nothing open — sending nothing');
+    }
     // Clear the signature so the NEXT thing that appears is sent immediately
     // rather than being mistaken for an unchanged list.
-    saveState({ sig: '', at: Math.floor(Date.now() / 1000) });
-    return 0;
+    return saveState({ sig: '', at: now, streak }) ? 0 : 1;
   }
 
   // The signature is built from severities and TITLES only, never from the
@@ -199,11 +249,10 @@ async function main() {
   const sig = createHash('sha256')
     .update(items.map(i => `${i.sev}|${i.title}`).sort().join('\n')).digest('hex').slice(0, 32);
 
-  const st = loadState();
-  const ageH = st.at ? (Date.now() / 1000 - st.at) / 3600 : 1e9;
+  const ageH = st.at ? (now - st.at) / 3600 : 1e9;
   if (st.sig === sig && ageH < REMIND_HOURS) {
     console.log(`unchanged (${items.length} item(s), last sent ${ageH.toFixed(1)}h ago) — sending nothing`);
-    return 0;
+    return saveState({ ...st, streak }) ? 0 : 1;
   }
 
   const nAct = items.filter(i => i.sev === 'action').length;
@@ -220,8 +269,12 @@ async function main() {
   }
 
   const ok = await notify(subject, body);
-  if (ok) saveState({ sig, at: Math.floor(Date.now() / 1000), count: items.length });
-  return ok ? 0 : 1;
+  // The titles are kept so the all-clear can say WHAT cleared. A failed send
+  // still records the streaks, so a settling item does not start over.
+  const saved = ok
+    ? saveState({ sig, at: now, count: items.length, titles: items.map(i => i.title), streak })
+    : saveState({ ...st, streak });
+  return ok && saved ? 0 : 1;
 }
 
 main().then(c => process.exit(c)).catch(e => { console.error(e); process.exit(1); });

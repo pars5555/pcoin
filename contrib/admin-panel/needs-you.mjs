@@ -32,6 +32,17 @@ const n2 = (x, d = 2) => (typeof x === 'number' && isFinite(x))
   ? x.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })
   : null;
 
+// The exchange stores its amounts as integer satoshi STRINGS (a BigInt through
+// JSON), so this never goes through a float.
+const satPcn = (v) => {
+  const s = String(v ?? '');
+  if (!/^-?\d+$/.test(s)) return '? PCN';
+  const neg = s.startsWith('-');
+  const d = (neg ? s.slice(1) : s).padStart(9, '0');
+  const whole = d.slice(0, -8).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return `${neg ? '-' : ''}${whole}.${d.slice(-8)} PCN`;
+};
+
 const hours = (s) => (typeof s === 'number' && isFinite(s))
   ? (s < 3600 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`)
   : '?';
@@ -49,7 +60,11 @@ const hours = (s) => (typeof s === 'number' && isFinite(s))
 export function needsYou({ svcs = [], tasks = [], exOver = null, wrap = null,
                            reports = [], answeredIds = new Set(), base = '' } = {}) {
   const items = [];
-  const add = (sev, title, detail, href) => items.push({ sev, title, detail, href });
+  // `extra` carries optional fields for the consumers, e.g. `settle`: how many
+  // owner-actions runs in a row must see an item before it is pushed to
+  // Telegram. The dashboard shows every item at once regardless.
+  const add = (sev, title, detail, href, extra = {}) =>
+    items.push({ sev, title, detail, href, ...extra });
 
   // ── market ───────────────────────────────────────────────────────────────
   const mkt = svcs.find(x => x.slug === 'market');
@@ -145,11 +160,49 @@ export function needsYou({ svcs = [], tasks = [], exOver = null, wrap = null,
         'A credit may rest on a block that was unwound. Credits are never auto-reversed, '
         + 'by design — so this needs a person.', `${base}/exchange?view=deposits`);
     }
+    // THE BALANCE CHECK. Every 5 minutes the exchange compares the PCN that
+    // arrived at its deposit addresses with the deposits it recorded, and keeps
+    // the last result. Four states, and only ONE of them is a disagreement:
+    //
+    //   balanced    they match.
+    //   mismatch    they do not. The real alarm; the exchange halts itself when
+    //               two checks in a row agree, which raises its own item above.
+    //   unreadable  the check could not read the chain, so it has NO answer.
+    //   in_flight   a deposit is still waiting for its block and the check waits
+    //               for it. That is the design working, so it raises nothing.
+    //
+    // Until 2026-09-23 every state but `balanced` became an ACTION, and
+    // owner-actions explained it as "on-chain and recorded balances disagree".
+    // A three-minute network blip on the exchange host (16:46-16:49 UTC) paged
+    // the owner that the books did not balance; the next check matched to the
+    // satoshi. The detail also compared the wrong pair: `onchain` is what is
+    // still UNSPENT at the addresses, informational only, while the check is
+    // `received` against `recorded`. Unknown is its own state -- it must not
+    // read as a mismatch, and it must not read as fine either.
     const rec = o.lastReconcile || {};
-    if (rec.state && rec.state !== 'balanced') {
-      add('action', `Exchange reconcile is ${rec.state}`,
-        `on-chain ${rec.onchain} vs recorded ${rec.recorded} (diff ${rec.diff}).`,
-        `${base}/exchange`);
+    const recAt = Number(rec.at);           // unix seconds, stored as a string
+    const recAge = Number.isFinite(recAt) && recAt > 0
+      ? Math.floor(Date.now() / 1000) - recAt : null;
+    if (rec.state === 'mismatch') {
+      add('action', 'Exchange PCN deposits do not match the chain',
+        `Received at the deposit addresses ${satPcn(rec.received)}; recorded as deposits `
+        + `${satPcn(rec.recorded)}; difference ${satPcn(rec.diff)}. The exchange halts `
+        + 'itself if the next check agrees.', `${base}/exchange`);
+    } else if (rec.state === 'unreadable') {
+      // settle 2: pushed only when two owner-actions runs in a row, a quarter of
+      // an hour apart, both see it -- a blip clears long before that.
+      add('warn', 'Exchange balance check could not read the chain',
+        `${String(rec.reason || 'no reason recorded').slice(0, 160)}. Last attempt `
+        + `${hours(recAge)} ago; it retries every 5 minutes. This is no answer, `
+        + 'not a mismatch.', `${base}/exchange`, { settle: 2 });
+    }
+    // A result that has stopped being refreshed is a stale read, not a current
+    // one. The check runs every 5 minutes, so 20 minutes without a new result
+    // means it has stopped, and a `balanced` from before then proves nothing.
+    if (recAge !== null && recAge > 20 * 60) {
+      add('warn', 'Exchange balance check has stopped running',
+        `Its last result (${rec.state || 'none'}) is ${hours(recAge)} old; a new one `
+        + 'should appear every 5 minutes.', `${base}/exchange`);
     }
     const pool = o.pool || {};
     if (typeof pool.free === 'number' && pool.free < 50) {
