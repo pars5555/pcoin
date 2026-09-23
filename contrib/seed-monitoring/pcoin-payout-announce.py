@@ -38,6 +38,7 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+from decimal import Decimal, InvalidOperation
 
 FEED = os.environ.get("PAYOUT_FEED", "https://exchange.pc.am/api/payouts")
 STATE = os.environ.get("PAYOUT_ANNOUNCE_STATE", "/var/lib/pcoin-payout-announce/state.json")
@@ -92,6 +93,23 @@ EXPLORER = {
 }
 
 
+def _total(x, places):
+    """A running total for the tally line, or None when it is absent or zero.
+
+    Decimal, never float: these are money, and 633.9 must print as 633.90.
+    """
+    try:
+        d = Decimal(str(x))
+    except (InvalidOperation, ValueError):
+        return None
+    if d <= 0:
+        return None
+    if places == 2:
+        return "{:,.2f}".format(d)
+    out = "{:,f}".format(d.normalize())
+    return out.rstrip("0").rstrip(".") if "." in out else out
+
+
 def post_text(p, total):
     """The post. Plain facts, no adjectives doing work the numbers should do."""
     amount = ("$%s" % p["sent"].rstrip("0").rstrip(".")) if p["asset"] == "USD" else ("%s PCN" % p["sent"].rstrip("0").rstrip("."))
@@ -118,12 +136,16 @@ def post_text(p, total):
     tally = []
     if total.get("count"):
         tally.append("%d payout%s so far" % (total["count"], "" if total["count"] == 1 else "s"))
-    usd_sent = str(total.get("usdSent", "0")).rstrip("0").rstrip(".")
-    pcn_sent = str(total.get("pcnSent", "0")).rstrip("0").rstrip(".")
-    if usd_sent and usd_sent != "0":
-        tally.append("$%s" % usd_sent)
-    if pcn_sent and pcn_sent != "0":
-        tally.append("%s PCN" % pcn_sent)
+    # Each total says what it counts. A bare "6200 PCN" beside a dollar
+    # figure read as a price or a pending order: three people asked the group
+    # what it meant on 2026-09-22, and it only moves when somebody withdraws
+    # PCN itself, so it sat still through every USDT payout.
+    usd_sent = _total(total.get("usdSent"), 2)
+    pcn_sent = _total(total.get("pcnSent"), 8)
+    if usd_sent:
+        tally.append("$%s paid out in USDT" % usd_sent)
+    if pcn_sent:
+        tally.append("%s PCN paid out as PCN" % pcn_sent)
     if tally:
         lines += ["", "%s." % " \u00b7 ".join(tally)]
     return "\n".join(lines)
