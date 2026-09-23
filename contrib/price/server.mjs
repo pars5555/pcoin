@@ -616,7 +616,16 @@ function retuneTarget() {
   ];
   // min() against the ladder is what makes this one-directional: a pool
   // trading ABOVE the ladder changes nothing at all.
-  return Math.max(Math.min(ladder, pool), ...brakes);
+  //
+  // And the OUTER min() is the rule the brakes must never break: they may
+  // slow how far the POOL drags the rate, but never lift it above the
+  // LADDER -- the price the project SELLS PCN at. Until 2026-09-23 the ladder
+  // could not fall fast, so a brake above it never arose; since the ask
+  // follows the pool down hourly it can, and the day's-drop brake held the
+  // rate at $0.0306 over a $0.0292 ask. Buy PCN on market.pc.am, spend it at
+  // a rail: 4.7% for nothing, paid by the project. A rail must never credit
+  // more for a PCN than the project charges for one.
+  return Math.min(ladder, Math.max(Math.min(ladder, pool), ...brakes));
 }
 
 /** What the pool says, and what is stopping the rate reaching it. Used by
