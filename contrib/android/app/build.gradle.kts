@@ -133,8 +133,8 @@ android {
             // as a downgrade. The three phones report 0.2.0; nothing in that era
             // went past versionCode 2, so 10 clears it with room and stays well
             // clear of the miner flavour's own numbering.
-            versionCode = 16
-            versionName = "0.4.5-legacy"
+            versionCode = 17
+            versionName = "0.4.6-legacy"
 
             buildConfigField("boolean", "MINING", "true")
             buildConfigField("int", "RPC_PORT", "9443")
