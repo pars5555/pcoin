@@ -44,7 +44,7 @@ import net from 'node:net';
 import { spawn, execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import {
-  addressToScript, buildCoinbase, merkleRoot, buildHeader,
+  addressToScript, assertBech32Checksum, buildCoinbase, merkleRoot, buildHeader,
   serializeBlock, bitsToTarget, scaleTarget, sha256d, nextDiffFactor, maxFactorForWeight,
 } from './block.mjs';
 import { Store, loadConfig, pcn, buildPayoutOutputs } from './store.mjs';
@@ -773,7 +773,12 @@ const server = net.createServer((sock) => {
           sock.end();
           return;
         }
-        try { addressToScript(login, CFG.hrp); }
+        // The checksum is checked HERE, at the door, and not inside
+        // addressToScript: that function is also the payout path, and an
+        // address already in the PPLNS window must not be able to freeze
+        // payouts by throwing there. See assertBech32Checksum in block.mjs --
+        // a typo'd login had already been paid 712 PCN it could never spend.
+        try { assertBech32Checksum(login); addressToScript(login, CFG.hrp); }
         catch (e) { send(sock, { id: msg.id, error: { code: -1, message: `bad payout address: ${e.message}` } }); sock.end(); return; }
 
         miner = {
@@ -826,6 +831,10 @@ const server = net.createServer((sock) => {
   await validator.ready;
   log('validator warm');
   await store.open();
+  // The pool's own address pays the fee on every block, so a typo here burns
+  // the fee for ever. Fail at startup instead -- a pool that will not start is
+  // noticed within a minute; one quietly paying a dead script is not.
+  assertBech32Checksum(CFG.poolAddress);
   state.script = addressToScript(CFG.poolAddress, CFG.hrp);
   log(`pool pays ${CFG.poolAddress}, fee ${CFG.feeBasisPoints / 100}% off the block reward`);
   log(`PPLNS window N = ${CFG.pplns.windowMultiplier}x one block's work; maturity ${CFG.pplns.maturity} blocks`);

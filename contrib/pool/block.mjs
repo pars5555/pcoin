@@ -59,6 +59,66 @@ function pushInt(n) {
  * and silently accepting a taproot or a decode error would send a block reward
  * to a script nobody can spend.
  */
+/**
+ * Refuse an address whose bech32 CHECKSUM is wrong. Throws; returns nothing.
+ *
+ * addressToScript() below checks the hrp and the witness version but has always
+ * DROPPED the checksum unread (`data.slice(0, -6)`). A one-character typo in
+ * the program part therefore decoded to a DIFFERENT 20-byte program -- a valid
+ * P2WPKH script whose key nobody holds -- and the pool paid it. Found
+ * 2026-09-23: a miner logged in as
+ *   pc1qrgase7g8zvvrepxmh8kgnmf09freyquakka8ej   (checksum FAILS)
+ * one character off their real address ...09fr3yqu..., and the pool had paid
+ *   pc1qrgase7g8zvvrepxmh8kgnmf09freyqual7y7c6
+ * 712.15 PCN over 1,110 coinbases from height 7494, all of it unspendable.
+ * The hrp check above exists precisely because "the reward would be
+ * unspendable"; a bad checksum is the same failure and was not covered.
+ *
+ * WHY THIS IS A SEPARATE FUNCTION AND NOT A CHANGE TO addressToScript:
+ * addressToScript is ALSO the payout path (pool.mjs, scriptOf in
+ * buildPayoutOutputs). Addresses already in the PPLNS window were accepted
+ * before this check existed. Throwing there makes buildPayoutOutputs fail, the
+ * pool then keeps REUSING its previous payout set -- a silent freeze for as long
+ * as the bad address stays in the window. So the check goes at the DOOR (login,
+ * and the pool's own address at startup), and shares already recorded age out
+ * of the window on their own.
+ *
+ * Witness v0 only (the pool pays P2WPKH only), so the constant is bech32's 1,
+ * not bech32m's 0x2bc830a3.
+ */
+export function assertBech32Checksum(addr) {
+  const CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+  const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+  // Mixed case is invalid bech32 (BIP173), and silently lowercasing it would
+  // accept a string the user never typed.
+  if (addr !== addr.toLowerCase() && addr !== addr.toUpperCase()) {
+    throw new Error('mixed-case bech32 address');
+  }
+  const a = addr.toLowerCase();
+  const pos = a.lastIndexOf('1');
+  if (pos < 1 || pos + 7 > a.length) throw new Error(`not a bech32 address: ${addr}`);
+  const hrp = a.slice(0, pos);
+  const values = [];
+  for (const c of hrp) values.push(c.charCodeAt(0) >> 5);
+  values.push(0);
+  for (const c of hrp) values.push(c.charCodeAt(0) & 31);
+  for (const ch of a.slice(pos + 1)) {
+    const v = CHARSET.indexOf(ch);
+    if (v < 0) throw new Error(`bad bech32 character '${ch}'`);
+    values.push(v);
+  }
+  let chk = 1;
+  for (const v of values) {
+    const top = chk >>> 25;
+    chk = (((chk & 0x1ffffff) << 5) ^ v) >>> 0;
+    for (let i = 0; i < 5; i++) if ((top >>> i) & 1) chk = (chk ^ GEN[i]) >>> 0;
+  }
+  if (chk !== 1) {
+    throw new Error('the address checksum is wrong -- it has a typo. Coins sent to it could '
+      + 'never be spent, so the pool refuses it. Copy the address again from your wallet.');
+  }
+}
+
 export function addressToScript(addr, expectHrp = 'pc') {
   const CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
   const lower = addr.toLowerCase();
