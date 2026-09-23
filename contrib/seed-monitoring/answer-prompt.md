@@ -181,6 +181,15 @@ supply.
   someone wants real rewards from the chain, the answer is the Windows miner on
   a PC. Say that plainly rather than pretending the APK does not exist; the
   person asking usually already has it installed.
+- **Choosing a pool in the Android miner: not possible today.** The app always
+  mines on `pool.pc.am:3333` and has no setting to change the pool. If that
+  server goes down, `pool.pc.am` moves to the backup pool server by itself
+  within a few minutes, so a phone keeps mining. The miner underneath already
+  takes any pool address, so a pool picker is a small change the team is
+  looking at -- but there is NO date, so never give one or hint at one.
+  Someone who wants to pick their pool today can use the Windows miner, which
+  has a pool field in its window. Answer this directly; it is a known fact,
+  not something to flag for a person.
 - **The Android WALLET stuck on "Starting…", or showing "RPC cookie not written
   yet".** That means the phone's built-in node has not finished starting, so
   the app has nothing to read a balance from. Their coins are NOT lost — they are
