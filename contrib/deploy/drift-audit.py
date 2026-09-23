@@ -223,6 +223,119 @@ def audit(name, target, pull=False):
     return len(differ) + len(only_remote)
 
 
+# ── /usr/local/bin: the scripts that WATCH the money ────────────────────────
+#
+# Everything above audits a directory under /opt. The monitors do not live
+# there: they are installed one file at a time into /usr/local/bin, on four
+# hosts, by hand. 198 of them were installed against 60 tracked candidates and
+# NOTHING had ever compared the two -- so a monitor edited on a server to
+# silence a false alarm would stay edited, invisibly, while the repo copy that
+# looks authoritative is a different program.
+#
+# A script MISSING from a host is not a finding: pcoin-pool-* belongs on the
+# pool hosts and nowhere else. Two things are findings -- a file that DIFFERS
+# from the repo, and a file installed that the repo does not have at all. The
+# second is operational code with exactly one copy, which is the class this
+# project has now found four times.
+BIN_DIR = "/usr/local/bin"
+
+# Units, docs and configs share the pcoin- prefix and are not installed as
+# scripts; comparing them would report drift that cannot exist.
+NOT_A_SCRIPT = ("service", "timer", "md", "json", "conf", "example",
+                "socket", "target", "sql", "html", "css")
+
+
+def repo_scripts():
+    """basename -> normalised bytes, for every tracked script under contrib/."""
+    rc, out, _ = sh('git -C "%s" ls-files contrib' % ROOT)
+    found = {}
+    for rel in out.splitlines():
+        rel = rel.strip()
+        if not rel:
+            continue
+        name = rel.rsplit("/", 1)[-1]
+        if not (name.startswith("pcoin-") or name.startswith("ipv4-")):
+            continue
+        if name.rsplit(".", 1)[-1] in NOT_A_SCRIPT:
+            continue
+        try:
+            found[name] = norm((ROOT / rel).read_bytes())
+        except OSError:
+            pass
+    return found
+
+
+def audit_bin(hosts):
+    import hashlib
+    repo = repo_scripts()
+    print("  %d tracked script(s) in the repo" % len(repo))
+    print("")
+    problems = 0
+    unknown_all = {}
+    for label, spec in hosts.items():
+        target, key = spec["ssh"], spec["key"]
+        cmd = ("ls %s 2>/dev/null | grep -E '^(pcoin-|ipv4-)' | "
+               "while read -r f; do sha256sum %s/$f; done" % (BIN_DIR, BIN_DIR))
+        rc, out, err = sh("ssh -o ConnectTimeout=20 -o BatchMode=yes -i %s %s \"%s\""
+                          % (key, target, cmd))
+        if rc != 0 or not out.strip():
+            # An unreachable host is UNKNOWN, never clean (CLAUDE.md 7.1).
+            print("  == %-24s COULD NOT LIST %s -- UNKNOWN, not clean"
+                  % (label, BIN_DIR))
+            problems += 1
+            continue
+
+        installed = {}
+        for line in out.splitlines():
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                continue
+            name = parts[1].strip().rsplit("/", 1)[-1]
+            # BACKUPS ARE NOT DEPLOYMENTS. Every careful install leaves a
+            # .bak-<something> beside the file it replaced, and the first run
+            # of this reported 100+ of them as "not in the repo" -- burying
+            # the handful of real findings in a list nobody would read twice.
+            # Two backup conventions are in use: name.bak-<when> and
+            # name.pre-<change>. Both are snapshots a careful install left
+            # behind, neither is a deployment, and the first run of this
+            # reported 100+ of them and buried the six real findings.
+            if ".bak" in name or ".pre-" in name or name.endswith(".discord-pending"):
+                continue
+            installed[name] = parts[0]
+
+        differ, unknown = [], []
+        for name, h in sorted(installed.items()):
+            # Some scripts are TRACKED with an extension and INSTALLED without
+            # one (pcoin-payout-announce.py -> pcoin-payout-announce). Same
+            # file, two names; reporting it as untracked is a false finding.
+            key = (name if name in repo else
+                   next((c for c in (name + ".py", name + ".sh", name + ".mjs")
+                         if c in repo), name))
+            if key in repo:
+                if hashlib.sha256(repo[key]).hexdigest() != h:
+                    differ.append(name)
+                continue
+            if name not in repo:
+                unknown.append(name)
+                unknown_all.setdefault(name, []).append(label)
+
+        ok = len(installed) - len(differ) - len(unknown)
+        print("  == %-24s %3d installed, %3d match, %d DIFFER, %d not in the repo"
+              % (label, len(installed), ok, len(differ), len(unknown)))
+        for n in differ:
+            print("       DIFFERS  %s" % n)
+            problems += 1
+
+    if unknown_all:
+        print("")
+        print("  installed but NOT IN THE REPO (%d) -- one copy each, on the host only:"
+              % len(unknown_all))
+        for n, where in sorted(unknown_all.items()):
+            print("       %-36s %s" % (n, ", ".join(where)))
+        problems += len(unknown_all)
+    return problems
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("which", nargs="*", help="deployment names; default all")
@@ -239,6 +352,20 @@ def main():
               f"It lives off-repo because this repository is public and SSH "
               f"usernames are not (CLAUDE.md 5).", file=sys.stderr)
         return 2
+
+    # "bin" is not a directory deployment: it is every installed monitor
+    # script across every host, compared by basename. See audit_bin().
+    if a.which == ["bin"]:
+        hosts = targets.get("_bin_hosts") or {}
+        if not hosts:
+            print("no _bin_hosts in " + TARGETS_FILE.name, file=sys.stderr)
+            return 2
+        print("")
+        print("== /usr/local/bin across %d host(s)" % len(hosts))
+        n = audit_bin(hosts)
+        print("")
+        print("%d problem(s)" % n)
+        return 1 if n else 0
 
     names = a.which or list(DEPLOYMENTS)
     total, skipped = 0, []
