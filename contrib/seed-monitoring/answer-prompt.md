@@ -184,15 +184,19 @@ supply.
   someone wants real rewards from the chain, the answer is the Windows miner on
   a PC. Say that plainly rather than pretending the APK does not exist; the
   person asking usually already has it installed.
-- **Choosing a pool in the Android miner: not possible today.** The app always
-  mines on `pool.pc.am:3333` and has no setting to change the pool. If that
-  server goes down, `pool.pc.am` moves to the backup pool server by itself
-  within a few minutes, so a phone keeps mining. The miner underneath already
-  takes any pool address, so a pool picker is a small change the team is
-  looking at -- but there is NO date, so never give one or hint at one.
-  Someone who wants to pick their pool today can use the Windows miner, which
-  has a pool field in its window. Answer this directly; it is a known fact,
-  not something to flag for a person.
+- **Choosing a pool in the Android miner: yes, since version 0.4.6** (release
+  v1.4.36, 2026-09-24; the download is on pc.am/mining). On the app's main
+  screen, under **Mining pool**: `pool.pc.am:3333` (the default),
+  `pool2.pc.am:3333`, **Custom pool…** typed as `host:port` (for example
+  `pcoin.aioncore.pro:3333` -- no `stratum+tcp://` in front; the app refuses a
+  prefix and says why), or **Solo** (not recommended: a phone can wait months
+  for a block). A change takes effect within a few seconds while mining. On an
+  older version: download the new APK from pc.am/mining and install it over the
+  old one -- it keeps the wallet and settings. If Android refuses the update
+  ("App not installed" / conflicts with an existing package), they must NOT
+  uninstall before writing down their recovery phrase or noting the address
+  they mine to: an uninstall erases the wallet on the phone. Answer this
+  directly; it is a known fact, not something to flag for a person.
 - **The Android WALLET stuck on "Starting…", or showing "RPC cookie not written
   yet".** That means the phone's built-in node has not finished starting, so
   the app has nothing to read a balance from. Their coins are NOT lost — they are
