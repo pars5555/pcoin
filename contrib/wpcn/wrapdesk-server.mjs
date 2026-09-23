@@ -846,7 +846,11 @@ nobody can. Redeeming by <a href="/redeem">return</a> instead of burn keeps that
 inventory in existence; it does not remove the limit.</p></div>`;
 
 // ── pages ───────────────────────────────────────────────────────────────────
-const home = (msg = '', acct = null, leftPcn = null) => page('PCoin wrap desk — wPCN and PCN, both directions', '/', `
+// acct: an e-mail when signed in, null when the caller CHECKED and nobody is,
+// undefined when the caller did not look. Every error path re-renders this page
+// with home(msg) alone -- including for signed-in customers who typed a bad
+// amount -- so undefined must never read as "signed out": it keeps the form.
+const home = (msg = '', acct = undefined, leftPcn = null) => page('PCoin wrap desk — wPCN and PCN, both directions', '/', `
 ${intakeClosed() !== null ? `<div class="card">
 <h1 style="margin-top:0">One direction is open</h1>
 <p class="lead">Only one way round the desk is working at the moment. Which one
@@ -885,9 +889,11 @@ trade on PancakeSwap. Backed 1:1 by the PCN you send.</p>
 <div class="card">
 <div class="dir">
  <span class="tag open">open</span>
- <div><b>PCN &rarr; wPCN.</b> What this page does. ${PER_PERSON} PCN per person,
+ <div><b>PCN &rarr; wPCN.</b> What this page does. ${REQUIRE_ACCOUNT
+   ? `A market.pc.am sign-in, then up to ${PER_PERSON} PCN per deposit address,`
+   : `${PER_PERSON} PCN per person,`}
  ${FEE_PCT}% fee, ${CONFIRMATIONS} confirmations before the wPCN is sent.
- <span class="muted">Use the form below.</span></div>
+ <span class="muted">${REQUIRE_ACCOUNT && acct === null ? 'Sign in below.' : 'Use the form below.'}</span></div>
 </div>
 <div class="dir">
  <span class="tag open">open</span>
@@ -896,7 +902,14 @@ trade on PancakeSwap. Backed 1:1 by the PCN you send.</p>
 </div>
 </div>`}
 ${msg}
-${intakeClosed() !== null ? CLOSED_FORM_NOTE : `<div class="card"><form method="POST" action="/request">
+${intakeClosed() !== null ? CLOSED_FORM_NOTE : REQUIRE_ACCOUNT && acct === null ? `<div class="card">
+<p><b>Wrapping needs a market.pc.am account</b> &mdash; the same one you use for
+the market and the exchange. Once you are signed in, this form appears here, and
+<a href="/my">your wraps</a> shows every wrap you have made.</p>
+<p><a class="golink" href="${SSO_START}?return=https%3A%2F%2Fwrapdesk.pc.am%2Fsso">Sign in with market.pc.am &rarr;</a></p>
+<p class="muted" style="margin:.6rem 0 0">Redeeming wPCN &rarr; PCN needs no account:
+it is done from your own wallet on the <a href="/redeem">redeem page</a>.</p></div>`
+: `<div class="card"><form method="POST" action="/request">
 <label>Your BSC address — where the wPCN will be sent. Use a wallet <b>you</b>
 control (MetaMask, or any wallet that lets you add a custom BEP-20 token).
 <b>Never an exchange deposit address</b> — no exchange lists wPCN, so it could
@@ -911,9 +924,10 @@ ${HCAPTCHA_ON ? `<div class="h-captcha" data-sitekey="${HCAPTCHA_SITEKEY}" data-
 </form></div>`}
 
 <h2>How it works</h2><div class="card"><ol class="steps">
+${REQUIRE_ACCOUNT ? '<li>You sign in with your market.pc.am account.</li>' : ''}
 <li>You give your BSC address and an amount.</li>
 <li>You get a PCoin deposit address that is <b>yours alone</b>.</li>
-<li>You send PCN to it — any amount up to ${PER_PERSON}, any number of times.${intakeClosed() !== null ? ' <b>Not while the desk is closed: an address that receives PCN now has it returned, not wrapped.</b>' : ''}</li>
+<li>You send PCN to it — up to ${PER_PERSON} PCN in total, in one payment or several.${intakeClosed() !== null ? ' <b>Not while the desk is closed: an address that receives PCN now has it returned, not wrapped.</b>' : ''}</li>
 <li>After <b>${CONFIRMATIONS} confirmations</b> (~${WAIT_H}&nbsp;h) a person sends your wPCN.</li>
 </ol><p class="muted" style="margin:.6rem 0 0">Track it at any point on the
 <a href="/track">track page</a> using your deposit address.</p>
@@ -924,8 +938,12 @@ rel="noopener">PancakeSwap</a>. Want PCN back later? The
 <a href="/redeem">redeem page</a> is the same door in the other direction.</p>${ADD_TOKEN}</div>
 
 <h2>The terms</h2><div class="card"><table>
-<tr><th>Limit</th><td>${PER_PERSON} PCN per person · ${TOTAL_ALLOC} wPCN total while the desk is new</td></tr>
-<tr><th>More</th><td>${acct ? `Signed in as <b>${esc(acct)}</b> &mdash; <b>${n2(leftPcn)} PCN</b> of your ${ACCOUNT_MONTHLY_PCN} PCN monthly allowance left. <a href="/signout">Sign out</a>` : `Sign in with a <a href="${SSO_START}?return=https%3A%2F%2Fwrapdesk.pc.am%2Fsso">market.pc.am account</a> and your limit becomes ${ACCOUNT_MONTHLY_PCN} PCN a month.`}</td></tr>
+<tr><th>Limit</th><td>${REQUIRE_ACCOUNT
+  ? `${PER_PERSON} PCN per deposit address, ${ACCOUNT_MONTHLY_PCN} PCN a month per account`
+  : `${PER_PERSON} PCN per person`} · ${TOTAL_ALLOC} wPCN total while the desk is new</td></tr>
+<tr><th>More</th><td>${acct ? `Signed in as <b>${esc(acct)}</b> &mdash; <b>${n2(leftPcn)} PCN</b> of your ${ACCOUNT_MONTHLY_PCN} PCN monthly allowance left. <a href="/signout">Sign out</a>` : REQUIRE_ACCOUNT
+  ? `Wrapping needs a <a href="${SSO_START}?return=https%3A%2F%2Fwrapdesk.pc.am%2Fsso">market.pc.am account</a> &mdash; the same one you use for the market and the exchange.`
+  : `Sign in with a <a href="${SSO_START}?return=https%3A%2F%2Fwrapdesk.pc.am%2Fsso">market.pc.am account</a> and your limit becomes ${ACCOUNT_MONTHLY_PCN} PCN a month.`}</td></tr>
 <tr><th>Fee</th><td>${FEE_PCT}% — send 100 PCN, receive ${100 - FEE_PCT} wPCN</td></tr>
 <tr><th>Wait</th><td>${CONFIRMATIONS} confirmations, about ${WAIT_H} hours</td></tr>
 <tr><th>Backing</th><td>1:1, <a href="/proof">verifiable</a></td></tr>
@@ -1591,8 +1609,9 @@ against a chain reorganisation — if we released wPCN after two confirmations a
 the deposit were later reversed, the wPCN would exist with nothing behind it.
 The wait is the defence.</p></div>
 
-<h2>Why is there a limit?</h2><div class="card"><p class="muted">${PER_PERSON} PCN
-per person, ${TOTAL_ALLOC} wPCN in total. The PancakeSwap pool is small, so a
+<h2>Why is there a limit?</h2><div class="card"><p class="muted">${REQUIRE_ACCOUNT
+  ? `${PER_PERSON} PCN per deposit address and ${ACCOUNT_MONTHLY_PCN} PCN a month per account`
+  : `${PER_PERSON} PCN per person`}, ${TOTAL_ALLOC} wPCN in total. The PancakeSwap pool is small, so a
 large amount of new wPCN arriving at once would move the price hard against
 whoever sold second. The limit protects the people using it, and it will rise as
 the pool deepens.</p></div>
@@ -1603,7 +1622,7 @@ ${FEE_TOTAL} PCN. It exists to slow a rush of people wrapping purely to sell.</p
 
 <h2>Can I send more than once to the same address?</h2><div class="card">
 <p class="muted">Yes. Your deposit address is permanent and reusable. Each deposit
-is handled separately, and the per-person limit applies across all of them.</p></div>
+is handled separately, and the ${PER_PERSON} PCN limit applies across all of them.</p></div>
 
 <h2>I sent the wrong amount / to the wrong place</h2><div class="card">
 <p class="muted">If you sent more than ${PER_PERSON} PCN, the excess is returned.
@@ -1726,7 +1745,7 @@ createServer(async (req, res) => {
     const isGet = req.method === 'GET' || req.method === 'HEAD';
     if (isGet && p === '/') {
       const who = accountOf(req);
-      if (!who) return send(200, home());
+      if (!who) return send(200, home('', null));
       const usedW = accountUsedWpcn(load(), who);
       const capW = ACCOUNT_MONTHLY_PCN * (1 - FEE_PCT / 100);
       return send(200, home('', who, Math.max(0, (capW - usedW) / (1 - FEE_PCT / 100))));
