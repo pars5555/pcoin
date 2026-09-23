@@ -1,0 +1,18 @@
+[Unit]
+Description=PCoin — watch the SHARED wPCN verifier (wpcnpay.pc.am)
+Documentation=https://github.com/pars5555/pcoin
+After=network-online.target
+Wants=network-online.target
+# A non-zero exit means THIS WATCHER broke, not that the verifier is down — the
+# script exits 0 whatever verdict it reaches and delivers the verdict by alert.
+# That separation is the whole point: a monitor that has silently stopped is
+# indistinguishable from a monitor reporting all-clear, and this estate has been
+# caught by exactly that more than once.
+OnFailure=pcoin-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pcoin-wpcnpay-watch
+TimeoutStartSec=120
+Nice=10
+MemoryMax=64M

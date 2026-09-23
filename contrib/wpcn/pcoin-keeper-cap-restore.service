@@ -1,0 +1,7 @@
+[Unit]
+Description=Restore the wPCN keeper's daily USDT cap to its steady-state value
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pcoin-keeper-cap-restore

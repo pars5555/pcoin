@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the PCoin disk headroom check hourly
+
+[Timer]
+OnBootSec=8min
+OnUnitActiveSec=1h
+# Disk fills over days, not seconds. Hourly is ample and keeps the alert budget
+# for things that move fast; the check is change-gated so a quiet disk is silent.
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+"""Track which community bug reports have been dealt with.
+
+WHY THIS EXISTS. People report real bugs in @PCoinPCNChat -- a community member's "the files in
+bin folder always has to copy and paste where miner exe is" was a genuine,
+reproducible defect in the published zip. The ops sweep finds those by reading
+`pcoin-group-watch`'s relay log and labelling each one `tg-<message_id>`.
+
+But nothing recorded what happened next. So every sweep re-derived the same list
+from the same log, re-reported the same items, and aged them ("tg-104 is 27 hours
+old") with no way to ever say "fixed in v1.4.29". Two failure modes, both seen:
+a fixed report keeps being raised, which trains the reader to skip the list; and
+a real one gets lost among them.
+
+This is deliberately a LEDGER, not a bug tracker. It holds the message id, what
+was decided, and when -- no titles, no severities, no workflow. The report itself
+already exists in the relay log and that stays the source of truth; this only
+answers "have we dealt with this one".
+
+    pcoin-report list                 open reports, oldest first
+    pcoin-report list --all           including resolved
+    pcoin-report resolve 104 -m "fixed in v1.4.29"
+    pcoin-report ignore  110 -m "not a bug -- a question about timing"
+    pcoin-report reopen  104 -m "came back"
+    pcoin-report show    104
+
+`list` reads the relay log directly, so a report does not have to be filed before
+it can be seen -- anything in the log that is not marked is open by definition.
+That is the property that makes this hard to forget to use: there is no step
+where somebody must remember to CREATE a record.
+
+State: /var/lib/pcoin-report/state.json, written atomically (temp + rename) so a
+kill mid-write cannot leave a truncated ledger. A damaged or missing file
+normalises to empty rather than raising -- the same rule as every other state
+file in this estate, after a fresh install once died on a KeyError.
+"""
+import argparse
+import json
+import os
+import sys
+import time
+
+STATE = os.environ.get("REPORT_STATE", "/var/lib/pcoin-report/state.json")
+RELAY = os.environ.get("GROUP_WATCH_LOG", "/var/lib/pcoin-group-watch/relay.log")
+ANSWERED = os.environ.get("GROUP_ANSWER_STATE",
+                          "/var/lib/pcoin-group-answer/state.json")
+
+VALID = ("resolved", "ignored", "open")
+
+
+def load():
+    """Missing or damaged state is EMPTY, never an exception.
+
+    A ledger that refuses to load is a ledger that makes the sweep fail, and the
+    sweep failing is how a real report goes unread. Corrupt is also empty: the
+    relay log still holds every report, so the worst case is re-reporting a
+    handful of already-handled items -- recoverable, unlike crashing.
+    """
+    try:
+        with open(STATE) as f:
+            d = json.load(f)
+        if not isinstance(d, dict):
+            return {}
+        items = d.get("items")
+        return items if isinstance(items, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save(items):
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    tmp = STATE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({"items": items}, f, indent=2, sort_keys=True)
+        f.write("\n")
+    os.replace(tmp, STATE)          # atomic: never a half-written ledger
+
+
+def relay_reports():
+    """Every message in the relay log, newest state per id.
+
+    The log is APPEND-ONLY BUT NOT TIME-ORDERED -- when a relay fails,
+    group-watch holds its offset and re-reads the batch, so an older line can
+    land after a newer one and the same id can appear twice with different text.
+    Keeping the LAST line for each id is right: a re-read is a correction.
+    (John's 104 is in there twice -- "b8n folder" then "bin folder".)
+    """
+    out = {}
+    try:
+        with open(RELAY, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) < 4:
+                    continue        # three-column lines pre-date message ids
+                ts, who, text, mid = parts[0], parts[1], parts[2], parts[3].strip()
+                if not mid.isdigit():
+                    continue
+                out[mid] = {"ts": ts, "who": who, "text": text}
+    except OSError as e:
+        print("cannot read the relay log %s (%s)" % (RELAY, e.__class__.__name__),
+              file=sys.stderr)
+    return out
+
+
+def answered_ids():
+    """Message ids the answer bot has already replied to.
+
+    Another service's state file, so read it defensively: anything unexpected
+    yields an empty set and every report stays open. Noisier is the safe
+    direction -- treating an unanswered report as answered hides it.
+    """
+    try:
+        with open(ANSWERED) as f:
+            d = json.load(f)
+        h = d.get("handled")
+        return set(map(str, h)) if isinstance(h, dict) else set()
+    except (OSError, ValueError, TypeError):
+        return set()
+
+
+def age_hours(ts):
+    try:
+        t = time.mktime(time.strptime(ts, "%Y-%m-%dT%H:%M:%SZ")) - time.timezone
+        return (time.time() - t) / 3600.0
+    except (ValueError, OverflowError):
+        return None
+
+
+def cmd_list(args):
+    items, reports = load(), relay_reports()
+    if not reports:
+        print("no reports in the relay log")
+        return 0
+    bot = answered_ids()
+    rows = []
+    for mid, r in reports.items():
+        # An explicit ledger entry always wins: a person who resolved, ignored or
+        # REOPENED something has overruled the bot, and reopening a report the
+        # bot answered is exactly the case that must not be hidden again.
+        rec = items.get(mid)
+        if rec:
+            st = rec.get("state", "open")
+        else:
+            st = "answered" if mid in bot else "open"
+        if st != "open" and not args.all:
+            continue
+        rows.append((age_hours(r["ts"]) or 0, mid, st, r))
+    if not rows:
+        print("nothing open -- everything in the relay log is answered, resolved or ignored")
+        return 0
+    rows.sort(reverse=True)         # oldest first: the ones going stale
+    for age, mid, st, r in rows:
+        note = items.get(mid, {}).get("note", "")
+        print("tg-%-5s %-8s %5.1fh  %-22s %s" % (mid, st, age, r["who"][:22], r["text"][:70]))
+        if note:
+            print("        -> %s" % note)
+    return 0
+
+
+def cmd_show(args):
+    items, reports = load(), relay_reports()
+    mid = str(args.id)
+    r = reports.get(mid)
+    if not r:
+        print("tg-%s is not in the relay log" % mid)
+        return 1
+    rec = items.get(mid, {})
+    state = rec.get("state") or ("answered" if mid in answered_ids() else "open")
+    print("tg-%s  %s  %s" % (mid, r["ts"], r["who"]))
+    print("  %s" % r["text"])
+    print("  state : %s%s" % (state,
+          "  (the answer bot replied; no human decision recorded)"
+          if state == "answered" else ""))
+    if rec.get("note"):
+        print("  note  : %s" % rec["note"])
+    if rec.get("at"):
+        print("  marked: %s" % time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(rec["at"])))
+    return 0
+
+
+def cmd_mark(args, state):
+    mid = str(args.id)
+    reports = relay_reports()
+    if mid not in reports and not args.force:
+        # Refuse rather than invent. A typo'd id would otherwise create a ledger
+        # entry for a report that does not exist and quietly mark nothing.
+        print("tg-%s is not in the relay log. Use --force if you mean it anyway." % mid,
+              file=sys.stderr)
+        return 1
+    if state != "open" and not args.message:
+        print("say WHY with -m. A resolution with no reason is not a record.",
+              file=sys.stderr)
+        return 1
+    items = load()
+    items[mid] = {"state": state, "note": args.message or "", "at": time.time()}
+    save(items)
+    print("tg-%s -> %s%s" % (mid, state, (": " + args.message) if args.message else ""))
+    return 0
+
+
+def main():
+    p = argparse.ArgumentParser(description="Track which community bug reports are dealt with.")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    pl = sub.add_parser("list", help="open reports, oldest first")
+    pl.add_argument("--all", action="store_true", help="include resolved and ignored")
+    pl.set_defaults(fn=cmd_list)
+
+    ps = sub.add_parser("show", help="one report and its state")
+    ps.add_argument("id")
+    ps.set_defaults(fn=cmd_show)
+
+    for name, state, helptext in (("resolve", "resolved", "fixed, shipped, or answered"),
+                                  ("ignore", "ignored", "not a bug, or nothing to do"),
+                                  ("reopen", "open", "it came back")):
+        sp = sub.add_parser(name, help=helptext)
+        sp.add_argument("id")
+        sp.add_argument("-m", "--message", default="", help="why")
+        sp.add_argument("--force", action="store_true",
+                        help="mark it even if the id is not in the relay log")
+        sp.set_defaults(fn=lambda a, s=state: cmd_mark(a, s))
+
+    args = p.parse_args()
+    return args.fn(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

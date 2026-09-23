@@ -1,0 +1,161 @@
+#!/bin/bash
+# Is any filesystem on this host about to fill up?
+#
+#   pcoin-disk-watch              check, alert on a CHANGE of state
+#   pcoin-disk-watch --dry-run    print the verdict, send nothing, write no state
+#   pcoin-disk-watch --force      alert even if the state has not changed
+#
+# WHY THIS EXISTS. Nothing in this estate watched disk at all. Audited
+# 2026-09-12 across five hosts: no df, no statvfs, no Use% check in any monitor,
+# unit or cron entry, and pcoin-seed-watch's own header lists its five checks
+# (rpc, peers, progress, listening, supply) with no disk among them. What that
+# cost, all found by hand on the same day and none of it alerted:
+#
+#   * 143.9 GB of Docker build cache on 152.53.171.190, 2,772 records, zero
+#     active, 100% reclaimable.
+#   * /var/tmp/vault-pool.4vgiOB on 178.105.178.27 -- 1.3 GB, a leaked temp from
+#     a VACUUM INTO whose cleanup trap was registered AFTER the thing that could
+#     fail. Five days old, on a 38 GB disk.
+#   * /var/log/pcoin-pool.log at 139 MB with no logrotate config at all.
+#
+# None of those was urgent. That is exactly the point: a disk gets to 100% via a
+# long stretch of nobody looking, and the first symptom is a service that cannot
+# write. This is the cheap instrument that makes the stretch visible.
+#
+# ALERTS ARE GATED ON CHANGE, NOT ON TIME. The concentration watcher once sent
+# the same figure 54 times in seven days and people learned to ignore it, which
+# is worse than not having sent it. This alerts when a filesystem CROSSES a
+# threshold in either direction, and stays silent while it sits still.
+#
+# "I COULD NOT CHECK" IS ITS OWN STATE. An unreadable df is not a healthy disk.
+# It resolves to `unknown`, which alerts once on entry and never collapses into
+# ok -- the CLAUDE.md 7.1 rule applied to the one number that decides whether
+# anything can write at all.
+set -u
+
+WARN_PCT="${DISK_WARN_PCT:-85}"
+CRIT_PCT="${DISK_CRIT_PCT:-92}"
+INODE_WARN_PCT="${DISK_INODE_WARN_PCT:-85}"
+STATE="${DISK_STATE:-/var/lib/pcoin-disk-watch/state}"
+NOTIFY="${PCOIN_NOTIFY:-/usr/local/bin/pcoin-notify}"
+HOST="$(hostname -s 2>/dev/null || echo unknown)"
+
+# CRIT at 92% leaves 8% of headroom. On the smallest filesystem in this estate
+# (38 GB) that is ~3 GB -- enough to absorb the 1.3 GB leaked temp above plus a
+# log burst while somebody reacts. WARN at 85% is the number the hourly ops
+# sweep already applies by hand, so the script and the human agree.
+
+DRY=0; FORCE=0
+for a in "$@"; do
+  case "$a" in
+    --dry-run) DRY=1 ;;
+    --force)   FORCE=1 ;;
+    *) echo "pcoin-disk-watch: unknown argument '$a'" >&2; exit 2 ;;
+  esac
+done
+
+log() { logger -t pcoin-disk-watch -- "$*" 2>/dev/null || printf '%s\n' "$*"; }
+
+mkdir -p "$(dirname "$STATE")" 2>/dev/null || true
+[ -f "$STATE" ] || : > "$STATE" 2>/dev/null || true
+
+prev_level() { grep -- "^$1 " "$STATE" 2>/dev/null | tail -1 | awk '{print $2}'; }
+
+# Skip pseudo-filesystems: they are either RAM (tmpfs) or read-only images
+# (squashfs from snap), and neither can fill in a way anyone can act on.
+read_df() {
+  df -P -h -x tmpfs -x devtmpfs -x squashfs -x overlay -x fuse.gvfsd-fuse 2>/dev/null \
+    | awk 'NR>1 && $1 ~ /^\/dev\// {print $6" "$5" "$2" "$4}' | tr -d '%'
+}
+read_di() {
+  df -P -i -x tmpfs -x devtmpfs -x squashfs -x overlay 2>/dev/null \
+    | awk 'NR>1 && $1 ~ /^\/dev\// {print $6" "$5}' | tr -d '%'
+}
+
+DF_OUT="$(read_df)"
+DI_OUT="$(read_di)"
+
+ALERTS=""; SUMMARY=""; NEWSTATE=""
+
+if [ -z "$DF_OUT" ]; then
+  # Not "everything is fine" -- we asked and got no answer.
+  lvl=unknown
+  prev="$(prev_level "__host__")"
+  SUMMARY="df returned nothing on $HOST -- disk usage is UNKNOWN, not ok."
+  NEWSTATE="__host__ unknown"
+  [ "$prev" != "unknown" ] && ALERTS="$SUMMARY"
+else
+  while read -r mnt pct size avail; do
+    [ -n "${mnt:-}" ] || continue
+    case "$pct" in ''|*[!0-9]*) continue ;; esac
+    ipct="$(printf '%s\n' "$DI_OUT" | awk -v m="$mnt" '$1==m {print $2}' | head -1)"
+    case "${ipct:-}" in ''|*[!0-9]*) ipct=0 ;; esac
+
+    lvl=ok
+    [ "$pct" -ge "$WARN_PCT" ] && lvl=warn
+    [ "$pct" -ge "$CRIT_PCT" ] && lvl=crit
+    [ "$ipct" -ge "$INODE_WARN_PCT" ] && [ "$lvl" = ok ] && lvl=warn
+
+    SUMMARY="$SUMMARY
+  $mnt  ${pct}% of $size ($avail free, inodes ${ipct}%)  [$lvl]"
+    NEWSTATE="$NEWSTATE
+$mnt $lvl"
+
+    prev="$(prev_level "$mnt")"
+    [ -z "$prev" ] && prev=ok
+    if [ "$lvl" != "$prev" ] || [ "$FORCE" = 1 ]; then
+      if [ "$lvl" = ok ]; then
+        ALERTS="$ALERTS
+RECOVERED $mnt is back to ${pct}% (was $prev)."
+      else
+        # Name the biggest consumers, so the alert is actionable rather than
+        # merely true. Bounded depth and a timeout: a du that walks a huge tree
+        # must never be the reason a disk alert does not arrive.
+        top="$(timeout 25 du -xh --max-depth=2 "$mnt" 2>/dev/null \
+               | sort -rh | grep -v "^[^	]*	$mnt\$" | head -3 \
+               | awk '{printf "      %s  %s\n", $1, $2}')"
+        ALERTS="$ALERTS
+$(echo "$lvl" | tr '[:lower:]' '[:upper:]') $mnt at ${pct}% of $size, only $avail free (inodes ${ipct}%).
+${top:-      (could not measure the largest directories)}"
+      fi
+    fi
+  done <<EOF
+$DF_OUT
+EOF
+fi
+
+if [ "$DRY" = 1 ]; then
+  echo "pcoin-disk-watch on $HOST  (warn ${WARN_PCT}%, crit ${CRIT_PCT}%, inodes ${INODE_WARN_PCT}%)"
+  echo "filesystems:$SUMMARY"
+  if [ -n "$ALERTS" ]; then
+    echo ""
+    echo "WOULD ALERT:$ALERTS"
+  else
+    echo ""
+    echo "no state change -- would send nothing"
+  fi
+  echo ""
+  echo "DRY RUN -- nothing sent, no state written."
+  exit 0
+fi
+
+if [ -n "$ALERTS" ]; then
+  # The figures go in the BODY. pcoin-notify dedupes on the message text for
+  # REPEAT_HOURS, so a body that is byte-identical day to day gets swallowed --
+  # the percentages are what make a genuine change distinguishable from a repeat.
+  if [ -x "$NOTIFY" ]; then
+    "$NOTIFY" "PCoin disk: $HOST" "Disk state changed on $HOST:
+$ALERTS
+
+All filesystems:$SUMMARY" || log "notifier failed; alert not delivered"
+  else
+    log "no notifier at $NOTIFY -- alert NOT delivered:$ALERTS"
+  fi
+  log "alerted:$(echo "$ALERTS" | tr '\n' ' ')"
+else
+  log "all filesystems within thresholds ($(echo "$SUMMARY" | grep -c '\[') checked)"
+fi
+
+printf '%s\n' "$NEWSTATE" | grep -v '^$' > "$STATE.tmp" 2>/dev/null \
+  && mv "$STATE.tmp" "$STATE" 2>/dev/null || log "could not persist state to $STATE"
+exit 0

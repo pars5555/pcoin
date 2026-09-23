@@ -1,0 +1,35 @@
+#!/bin/bash
+set -uo pipefail
+TARGET=50
+DROPIN=/etc/systemd/system/pcoin-wpcn-keeper.service.d/override.conf
+STATE=/var/lib/pcoin-wrapdesk/keeper.json
+
+cur=$(grep -oE '^Environment=KEEPER_DAILY_USDT_CAP=[0-9.]+' "$DROPIN" 2>/dev/null | cut -d= -f3)
+if [ -z "${cur:-}" ]; then
+  echo "cap line not found in $DROPIN -- refusing to guess"; exit 1
+fi
+if [ "$cur" = "$TARGET" ]; then
+  echo "cap already $TARGET, nothing to do"; exit 0
+fi
+
+spent=$(python3 - "$STATE" <<'PY' 2>/dev/null
+import json, sys, datetime
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+print(d.get("usdt_spent", 0) if d.get("day") == today else 0)
+PY
+)
+if [ -z "${spent:-}" ]; then
+  echo "cannot read $STATE -- unknown resolves nothing; leaving cap at $cur"; exit 0
+fi
+
+if awk -v s="$spent" -v t="$TARGET" 'BEGIN{exit !(s+0 < t+0)}'; then
+  sed -i -E "s/^Environment=KEEPER_DAILY_USDT_CAP=.*/Environment=KEEPER_DAILY_USDT_CAP=$TARGET/" "$DROPIN"
+  systemctl daemon-reload
+  echo "cap $cur -> $TARGET (spent today: $spent)"
+else
+  echo "spent today is $spent (>= $TARGET) -- refusing to lower the cap below the day's spend; retrying after the next UTC rollover"
+fi

@@ -1,0 +1,7 @@
+[Unit]
+Description=PCoin disk headroom check
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pcoin-disk-watch

@@ -1,0 +1,13 @@
+[Unit]
+Description=Check the shared wPCN verifier every 2 minutes
+
+[Timer]
+OnBootSec=2min
+# Two minutes because this is a single point of failure for every wPCN payment
+# on the estate: all six rails go through it. The check is one HTTPS GET.
+OnUnitActiveSec=2min
+RandomizedDelaySec=15
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+"""Watch the shared wPCN verifier at wpcnpay.pc.am — the one service every wPCN
+payment on this estate goes through.
+
+    pcoin-wpcnpay-watch              one pass; run it from a timer
+    pcoin-wpcnpay-watch --dry-run    check and print, notify NOBODY, save nothing
+    pcoin-wpcnpay-watch --selftest   prove the check FIRES against known-bad input
+    pcoin-wpcnpay-watch --status     what it knows, touching nothing
+
+WHY IT EXISTS. wpcnpay is a single point of failure for ALL six payment rails:
+while it is down, not one of them can accept a wPCN payment. On 2026-09-12 it
+returned Cloudflare 521 for a spell and NOTHING alerted, because it was the only
+money path on the estate with no monitor of its own.
+
+IT DOES NOT RUN ON THE HOST IT WATCHES. The verifier lives on 178.105.3.51; this
+runs from 178.105.178.27. A monitor that shares a host with its subject goes
+silent in exactly the outage it exists to report, and this estate already has one
+watcher (pcoin-bootstrap-watch) placed off-seed for that reason.
+
+IT CHECKS THE PUBLIC URL, THROUGH CLOUDFLARE, because that is what a rail sees.
+An origin that is perfectly healthy behind a proxy that cannot reach it is still
+an outage for every customer, and 521 is precisely that case -- so the 52x family
+is named explicitly in the alert rather than collapsed into "down".
+
+THREE STATES, NOT TWO. up / DOWN / UNREACHABLE are distinct: "it answered and
+said it is unwell" and "I could not reach it to ask" are different facts and lead
+to different first moves. Collapsing them is the mistake this project has paid
+for more than once.
+"""
+import json
+import os
+import re
+import ssl
+import sys
+import time
+import urllib.error
+import urllib.request
+
+CONF = os.environ.get("WPCNPAY_WATCH_CONF", "/etc/pcoin/wpcnpay-watch.conf")
+STATE = os.environ.get("WPCNPAY_WATCH_STATE", "/var/lib/pcoin-wpcnpay-watch/state.json")
+NOTIFY = os.environ.get("PCOIN_NOTIFY", "/usr/local/bin/pcoin-notify")
+URL = os.environ.get("WPCNPAY_HEALTH_URL", "https://wpcnpay.pc.am/health")
+TIMEOUT = int(os.environ.get("WPCNPAY_TIMEOUT", 20))
+
+DRY = "--dry-run" in sys.argv
+
+# Cloudflare's own origin-side failures. Naming them matters: a 521 means the
+# edge is fine and the ORIGIN is refusing connections, which is a different first
+# move from a 500 the application itself produced.
+CF_ORIGIN = {
+    520: "Cloudflare got an empty or invalid response from the origin",
+    521: "the ORIGIN is refusing connections — the service or its host is down",
+    522: "the connection to the origin TIMED OUT",
+    523: "Cloudflare cannot route to the origin",
+    524: "the origin accepted the connection but never answered",
+}
+
+
+def conf():
+    out = {}
+    try:
+        with open(CONF, encoding="utf-8") as fh:
+            for line in fh:
+                m = re.match(r"^\s*([A-Z_]+)\s*=\s*(.*?)\s*$", line)
+                if m:
+                    out[m.group(1)] = m.group(2).strip().strip('"').strip("'")
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def load_state():
+    try:
+        with open(STATE, encoding="utf-8") as fh:
+            st = json.load(fh)
+    except Exception:
+        st = {}
+    # Normalise rather than only handling "unreadable". A state file that PARSES
+    # but lacks a key crashed a sibling script on its first real run.
+    st.setdefault("state", "unknown")
+    st.setdefault("since", 0)
+    st.setdefault("last_run", 0)
+    st.setdefault("checks", 0)
+    st.setdefault("failures", 0)
+    return st
+
+
+def save_state(st):
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    tmp = STATE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(st, fh, indent=2)
+    os.replace(tmp, STATE)          # atomic; a torn state file loses the history
+
+
+def notify(subject, body):
+    if DRY:
+        print("  [dry-run] WOULD NOTIFY: %s" % subject)
+        return
+    if not os.path.exists(NOTIFY):
+        # A missing notifier must never turn into a failing check. The check
+        # already produced its verdict; burying it under a delivery problem is
+        # how the original failure gets lost.
+        print("  notifier absent at %s -- alert NOT sent: %s" % (NOTIFY, subject),
+              file=sys.stderr)
+        return
+    import subprocess
+    subprocess.run([NOTIFY, subject, body], timeout=60)
+
+
+def probe(url, timeout=TIMEOUT):
+    """Return (state, code, detail). state is one of up / down / unreachable."""
+    req = urllib.request.Request(url, headers={"User-Agent": "pcoin-wpcnpay-watch"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            code = r.getcode()
+            raw = r.read(65536).decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        code = e.code
+        try:
+            raw = e.read(65536).decode("utf-8", "replace")
+        except Exception:
+            raw = ""
+        if code in CF_ORIGIN:
+            return "down", code, "Cloudflare %d: %s" % (code, CF_ORIGIN[code])
+        return "down", code, "HTTP %d from /health" % code
+    except (urllib.error.URLError, ssl.SSLError, OSError) as e:
+        # Report the TYPE, never the exception object: a URL error can carry the
+        # request URL, and a URL can carry a credential.
+        return "unreachable", 0, "could not reach it (%s)" % type(e).__name__
+    except Exception as e:
+        return "unreachable", 0, "could not reach it (%s)" % type(e).__name__
+
+    if code != 200:
+        return "down", code, "HTTP %d from /health" % code
+    try:
+        d = json.loads(raw)
+    except Exception:
+        return "down", code, "/health returned 200 but the body was not JSON"
+    if d.get("ok") is not True:
+        return "down", code, "/health answered 200 but ok=%r" % (d.get("ok"),)
+    return "up", code, "ok"
+
+
+def selftest():
+    """Prove the check FIRES. A check only ever observed saying 'healthy' has not
+    been tested -- this estate once shipped a holding check whose threshold was
+    arithmetically unreachable, so it could never fire and was indistinguishable
+    from a check that passed."""
+    print("  selftest -- every one of these must NOT come back 'up'\n")
+    cases = [
+        ("a route that does not exist", "https://wpcnpay.pc.am/health-does-not-exist"),
+        ("a host that does not resolve", "https://wpcnpay-nonexistent.pc.am/health"),
+        ("a 200 that is not our JSON", "https://pc.am/"),
+    ]
+    bad = 0
+    for label, u in cases:
+        state, code, detail = probe(u, timeout=15)
+        ok = state != "up"
+        print("   %-32s -> %-11s code=%-3s  %s  %s"
+              % (label, state, code, "PASS" if ok else "*** FAILED TO FIRE ***", detail))
+        if not ok:
+            bad += 1
+    print()
+    state, code, detail = probe(URL)
+    print("   %-32s -> %-11s code=%-3s  %s" % ("the real endpoint", state, code, detail))
+    if state != "up":
+        print("   (the real endpoint is not up right now -- that is a finding, not a test failure)")
+    return 1 if bad else 0
+
+
+def main():
+    c = conf()
+    globals()["URL"] = os.environ.get("WPCNPAY_HEALTH_URL", c.get("WPCNPAY_HEALTH_URL", URL))
+    st = load_state()
+
+    if "--selftest" in sys.argv:
+        return selftest()
+
+    if "--status" in sys.argv:
+        print("  url        : %s" % URL)
+        print("  state      : %s" % st["state"])
+        print("  since      : %s" % (time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime(st["since"]))
+                                     if st["since"] else "never"))
+        print("  checks     : %d, %d failure(s)" % (st["checks"], st["failures"]))
+        print("  last run   : %s" % (time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime(st["last_run"]))
+                                     if st["last_run"] else "never"))
+        return 0
+
+    state, code, detail = probe(URL)
+    # CONFIRM BEFORE CRYING. A single transient 502 or a dropped packet would
+    # otherwise produce an outage alert and a recovery alert for a blip nobody
+    # experienced, and an alert people learn to discount is worse than none.
+    # Two failures ten seconds apart is still well inside a two-minute cadence.
+    if state != "up":
+        time.sleep(10)
+        state2, code2, detail2 = probe(URL)
+        if state2 == "up":
+            print("  first probe said %s (%s); the confirming probe says up -- "
+                  "treating it as a blip, not an outage" % (state, detail))
+            state, code, detail = state2, code2, detail2
+        else:
+            state, code, detail = state2, code2, detail2
+    now = int(time.time())
+    was = st["state"]
+    st["checks"] += 1
+    if state != "up":
+        st["failures"] += 1
+
+    print("  %s -> %s (%s)" % (URL, state, detail))
+
+    # ALERT ON CHANGE, not on every tick. A condition that persists would
+    # otherwise post 288 identical messages a day, and a channel that does that
+    # gets muted -- taking the one message that mattered with it. pcoin-notify
+    # dedupes identical text as a second line of defence.
+    if state != "up" and was != state:
+        notify(
+            "wPCN verifier %s" % ("UNREACHABLE" if state == "unreachable" else "DOWN"),
+            "wpcnpay.pc.am is the SHARED wPCN verifier. While it is not serving, "
+            "NONE of the six payment rails can accept a wPCN payment.\n\n"
+            "  endpoint : %s\n"
+            "  result   : %s\n\n"
+            "It runs as pcoin-wpcn-pay.service on 178.105.3.51. Check that host "
+            "first; a 52x is Cloudflare reporting that the ORIGIN is unreachable, "
+            "not an edge problem.\n\n"
+            "This watcher runs on a DIFFERENT host on purpose, so it can still "
+            "speak when the verifier's own box cannot." % (URL, detail))
+    elif state == "up" and was in ("down", "unreachable"):
+        down_for = now - st["since"] if st["since"] else 0
+        notify("wPCN verifier is back",
+               "wpcnpay.pc.am /health is answering ok again after %d minute(s). "
+               "Rails can take wPCN payments.\n\n  endpoint : %s"
+               % (max(1, down_for // 60), URL))
+
+    if state != was:
+        st["since"] = now
+    st["state"] = state
+    st["last_run"] = now
+    if not DRY:
+        save_state(st)
+    else:
+        print("  (dry run -- nothing saved, nothing sent)")
+
+    # EXIT 0 EVEN WHEN THE SERVICE IS DOWN. The verdict is delivered by the
+    # alert, not by the exit code, and that separation is deliberate: it leaves
+    # a non-zero exit to mean "this WATCHER is broken", which is what
+    # OnFailure= in the unit is armed for. Conflating the two makes a crashed
+    # monitor indistinguishable from a detected outage -- and a monitor that
+    # has silently stopped is this estate's most expensive failure mode.
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

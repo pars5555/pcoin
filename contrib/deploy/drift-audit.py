@@ -245,6 +245,15 @@ NOT_A_SCRIPT = ("service", "timer", "md", "json", "conf", "example",
                 "socket", "target", "sql", "html", "css")
 
 
+# Installed under a different name from the file in the repo. Named here one
+# at a time rather than guessed: a guess would compare against the wrong file,
+# and both of these were reported as drift while being byte-identical.
+INSTALLED_AS = {
+    "pcoin-deploy": "contrib/deploy/deploy.sh",
+    "pcoin-electrumx-check": "contrib/electrumx/check-electrumx.py",
+}
+
+
 def repo_scripts():
     """basename -> normalised bytes, for every tracked script under contrib/."""
     rc, out, _ = sh('git -C "%s" ls-files contrib' % ROOT)
@@ -258,6 +267,18 @@ def repo_scripts():
             continue
         if name.rsplit(".", 1)[-1] in NOT_A_SCRIPT:
             continue
+        try:
+            body = norm((ROOT / rel).read_bytes())
+        except OSError:
+            continue
+        # Two tracked files with one basename: whichever sorted last used to
+        # win SILENTLY. It happened -- a stale ops-dashboard copy of
+        # pcoin-pool-collect was only right by the accident of path order.
+        if name in found and found[name] != body:
+            print("  WARNING: two different tracked files are named %s; "
+                  "comparing against %s" % (name, rel))
+        found[name] = body
+    for name, rel in INSTALLED_AS.items():
         try:
             found[name] = norm((ROOT / rel).read_bytes())
         except OSError:

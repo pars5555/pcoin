@@ -73,7 +73,9 @@ never make a dead peer collector look alive.
   seed's RPC is loopback-bound inside its container and deliberately
   unreachable from anywhere else — the seed pushes a summary out rather than
   letting anything in.
-* `collector/pcoin-pool-collect` — the pool's real workers, shares and found
+* `pcoin-pool-collect` — **the copy is `contrib/pool/pcoin-pool-collect`**, not
+  this folder (a stale 2026-08-19 duplicate lived here until 2026-09-23 and
+  would have regressed the collector if deployed). The pool's real workers, shares and found
   blocks, runs **on the pool host** from root's crontab every 4 minutes. Same
   reasoning: the pool API is loopback-bound and the SQLite share log is
   root-only.
