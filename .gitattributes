@@ -72,3 +72,14 @@ contrib/wpcn/pcoin-price-watch   text eol=lf
 contrib/ops/pcoin-caddy-watchdog  text eol=lf
 contrib/ops/pcoin-cf-firewall     text eol=lf
 contrib/ops/*.conf                text eol=lf
+
+# The Move PCN page's crypto bundle is pinned by SHA-256 in
+# contrib/admin-panel/transfer.mjs and loaded with Subresource Integrity, so it
+# has to arrive byte-for-byte identical on every platform -- the same reasoning
+# as the BIP39 wordlist at the top of this file. A Windows checkout rewriting
+# its line endings would make the panel refuse to serve it.
+contrib/admin-panel/transfer-crypto.bundle.js   -text
+# Its two companion scripts and the example config: LF everywhere, like *.mjs.
+contrib/admin-panel/transfer-core.js            text eol=lf
+contrib/admin-panel/transfer-ui.js              text eol=lf
+contrib/admin-panel/transfer-destinations.example.json  text eol=lf

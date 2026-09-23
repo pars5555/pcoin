@@ -1,0 +1,6 @@
+{
+  "_comment": "Named destinations for the admin panel's Move PCN page (transfer.mjs). Copy this file to /opt/pcoin-admin/transfer-destinations.json on the panel host (or point ADMIN_TRANSFER_DESTINATIONS at it) and replace every value with a real pc1q address. Each entry is \"name\": \"pc1q...\". Keys starting with _ are ignored. The values below are PLACEHOLDERS and are deliberately not valid addresses: the page checks every entry with the bech32 checksum and shows an invalid one as unusable, so a placeholder left in can never be chosen. The real file holds only public addresses, but it names which one is whose; keep it off the public repo (contrib/admin-panel/transfer-destinations.json is in .gitignore).",
+  "treasury (the owner's phone wallet)": "pc1q-REPLACE-WITH-THE-TREASURY-ADDRESS",
+  "market-hot (the market float)": "pc1q-REPLACE-WITH-THE-MARKET-HOT-RECEIVE-ADDRESS",
+  "cold storage": "pc1q-REPLACE-WITH-A-COLD-WALLET-ADDRESS"
+}

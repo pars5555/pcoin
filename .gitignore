@@ -146,3 +146,8 @@ contrib/pcnaibot/node_modules/
 # drift-audit.py --pull writes the SERVER copy of a file here for diffing.
 # It must never be committed: it is what the server has, not what we decided.
 contrib/deploy/_drift/
+
+# The admin panel's Move PCN page reads its named destinations from this file
+# (transfer.mjs). Only public addresses, but it says which address is whose,
+# and this repo is public. The example beside it is tracked.
+contrib/admin-panel/transfer-destinations.json

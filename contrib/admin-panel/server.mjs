@@ -40,6 +40,7 @@ import { keeperPage, keeperData, validate as keeperValidate, writeTuning } from 
 import { minersPage, minersData } from './miners.mjs';
 import { pricingPage, pricingData } from './pricing.mjs';
 import { vaultPage } from './vault.mjs';
+import { transferRoute } from './transfer.mjs';
 import { exchangeSection, exchangeCall } from './exchange.mjs';
 import { needsYou, needsYouCard } from './needs-you.mjs';
 import { programsPage, programsData, programsAction } from './programs.mjs';
@@ -192,7 +193,8 @@ const NAV = [
                 ['tasks', '\u{1F4CB} Tasks'],
                 ['user-reports', '\u{1F41E} User reports']]],
   ['Config',   [['security', '\u{1F512} Security (2FA)'],
-                ['vault', '\u{1F511} Vault commands']]],
+                ['vault', '\u{1F511} Vault commands'],
+                ['transfer', '\u{1F4B8} Move PCN']]],
 ];
 
 // The watcher is an external process. If it hangs or throws, the page must
@@ -933,6 +935,13 @@ async function handle(req, res) {
   // commands use exist only on the owner's machine, which is the whole point.
   if (sub === '/vault') {
     return send(res, 200, shell2('vault', 'Vault commands', vaultPage()));
+  }
+
+  // Move PCN: the one page that signs, and it signs IN THE OWNER'S BROWSER.
+  // Every route under /transfer is GET-only and never reads a request body, so
+  // no passphrase, phrase, key or seed file can arrive here -- see transfer.mjs.
+  if (sub === '/transfer' || sub.startsWith('/transfer/')) {
+    return transferRoute(sub, req, res, { base: BASE, shell: shell2 });
   }
 
   if (sub === '/pricing') {
