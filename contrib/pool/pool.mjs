@@ -778,7 +778,10 @@ const server = net.createServer((sock) => {
         // address already in the PPLNS window must not be able to freeze
         // payouts by throwing there. See assertBech32Checksum in block.mjs --
         // a typo'd login had already been paid 712 PCN it could never spend.
-        try { assertBech32Checksum(login); addressToScript(login, CFG.hrp); }
+        // addressToScript goes FIRST so a wrong network or a taproot pc1p
+        // address is refused with its real reason; checked first, the
+        // bech32 constant would reject a pc1p as "a typo", which it is not.
+        try { addressToScript(login, CFG.hrp); assertBech32Checksum(login); }
         catch (e) { send(sock, { id: msg.id, error: { code: -1, message: `bad payout address: ${e.message}` } }); sock.end(); return; }
 
         miner = {
