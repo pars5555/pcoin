@@ -49,6 +49,7 @@ import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, statSync } from 'node:fs';
 import { createHmac, timingSafeEqual, randomBytes } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { dirname } from 'node:path';
 
 const PORT       = Number(process.env.WRAPDESK_PORT || 8791);
@@ -678,222 +679,205 @@ const esc = (s) => String(s).replace(/[&<>"']/g,
 const n8 = (x) => Number(x).toFixed(8);
 const n2 = (x) => Number(x).toFixed(2);
 
+// WHO IS LOOKING, for the whole of one request. The handler records the
+// viewer once (`viewer.run` at the bottom of this file) and page() reads it,
+// so every page's header shows the right account without every renderer
+// being handed it -- and without a module-level variable that two
+// overlapping requests could overwrite between their awaits.
+const viewer = new AsyncLocalStorage();
+const viewerAcct = () => { const v = viewer.getStore(); return v ? v.acct : null; };
+const viewerIp = () => { const v = viewer.getStore(); return v ? v.ip : null; };
+const clientIp = (req) => (req.headers['x-forwarded-for'] || '').split(',')[0].trim()
+  || req.socket.remoteAddress || '?';
+
 // ── chrome ──────────────────────────────────────────────────────────────────
+//
+// THE DESK IS AN APP NOW, NOT A LEAFLET (owner, 2026-09-23: "wrapdesk should be
+// separate nice webapp like exchange, user should login and see everything
+// inside it"). It had grown one notice at a time: two OPEN badges, a five-step
+// list, a terms table and five coloured warnings, all ABOVE the form -- and a
+// signed-in customer's wraps lived on another page. Now a signed-out visitor
+// sees what the desk does and one Sign in button; a signed-in one sees their
+// limits, the form, where to send, and every wrap they have made, on one page.
+// The explanations are still all here, folded away where they cannot bury the
+// thing the visitor came to do.
 const CSS = `
-:root{color-scheme:dark;--bg:#0d1117;--fg:#e6edf3;--mut:#8b949e;--card:#161b22;
- --line:#30363d;--blue:#58a6ff;--green:#3fb950;--amber:#d29922;--red:#f85149}
+:root{color-scheme:dark;--bg:#0d1117;--bg2:#0b0f14;--fg:#e6edf3;--mut:#8b949e;
+ --card:#161b22;--card2:#1c2330;--line:#2a313c;--blue:#58a6ff;--btn:#2f81f7;--btnh:#1f6feb;
+ --teal:#2dd4bf;--green:#3fb950;--amber:#d29922;--red:#f85149}
 *{box-sizing:border-box}
 body{background:var(--bg);color:var(--fg);margin:0;
- font:16px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif}
-.wrap{max-width:47rem;margin:0 auto;padding:0 1.25rem 5rem}
-header{border-bottom:1px solid var(--line);background:#0b0f14;position:sticky;top:0;z-index:9}
-header .wrap{display:flex;align-items:center;gap:1.25rem;padding:.85rem 1.25rem;flex-wrap:wrap}
-header b{font-size:1.02rem;letter-spacing:.01em}
-nav{display:flex;gap:1.1rem;flex-wrap:wrap}
-nav a{color:var(--mut);text-decoration:none;font-size:.94rem}
-nav a:hover,nav a.on{color:var(--fg)}
-nav a.on{border-bottom:2px solid var(--blue);padding-bottom:2px}
-h1{font-size:1.55rem;margin:1.8rem 0 .35rem}
-h2{font-size:.86rem;margin:2.1rem 0 .5rem;color:var(--mut);font-weight:600;
- text-transform:uppercase;letter-spacing:.06em}
+ font:15.5px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
 a{color:var(--blue)}
-code{background:var(--card);padding:.15rem .42rem;border-radius:5px;color:var(--blue);
- font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.92em;word-break:break-all}
-.card{background:var(--card);border:1px solid var(--line);border-radius:11px;
- padding:1.1rem 1.25rem;margin:1rem 0}
-.lead{color:var(--mut);font-size:1.03rem}
-label{display:block;margin:.9rem 0 .3rem;color:var(--mut);font-size:.9rem}
-input{width:100%;padding:.62rem .7rem;background:var(--bg);border:1px solid var(--line);
- border-radius:8px;color:var(--fg);font:15px ui-monospace,Menlo,Consolas,monospace}
-input:focus{outline:2px solid var(--blue);outline-offset:-1px}
-button{margin-top:1.1rem;padding:.62rem 1.25rem;background:#238636;border:0;
- border-radius:8px;color:#fff;font-size:15px;font-weight:600;cursor:pointer}
-button:hover{background:#2ea043}
-.muted{color:var(--mut);font-size:.92rem}
-button.ghost{background:#21262d;border:1px solid var(--line);color:var(--fg);font-weight:500;margin-top:0}
-button.ghost:hover{background:#30363d}
-button.ghost[disabled]{opacity:.55;cursor:default}
-/* A LINK that looks like a button. The open direction on a page whose headline
-   says "closed" needs to be the most clickable thing on it, or a visitor who
-   came to redeem reads the red banner and leaves. */
-.golink{display:inline-block;background:#238636;color:#fff;text-decoration:none;
- padding:.7rem 1.4rem;border-radius:8px;font-weight:700;font-size:1rem;margin-top:.2rem}
-.golink:hover{background:#2ea043}
-.dir{display:flex;gap:.9rem;align-items:flex-start;padding:.85rem 0;border-bottom:1px solid #21262d}
-.dir:last-child{border-bottom:none}
-.dir .tag{flex:0 0 5.4rem;font-size:.72rem;font-weight:700;letter-spacing:.06em;
- text-transform:uppercase;padding:.28rem 0;text-align:center;border-radius:999px}
-.tag.open{background:rgba(63,185,80,.16);color:var(--green)}
-.tag.shut{background:rgba(248,81,73,.16);color:var(--red)}
-@media (max-width:420px){.dir{flex-direction:column;gap:.35rem}.dir .tag{flex:none;width:5.4rem;text-align:left;padding-left:.6rem}}
+.wrap{max-width:58rem;margin:0 auto;padding:0 1.25rem}
+main.wrap{padding-bottom:3rem}
+/* app bar */
+.appbar{background:var(--bg2);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:9}
+.bar-in{max-width:58rem;margin:0 auto;padding:.6rem 1.25rem;display:flex;align-items:center;gap:1.4rem}
+.brand{display:flex;align-items:center;gap:.55rem;color:var(--fg);text-decoration:none;font-size:1.02rem;white-space:nowrap}
+.brand b{color:var(--teal);font-weight:700}
+.tabs{display:flex;gap:.3rem;flex:1;overflow-x:auto;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tabs a{color:var(--mut);text-decoration:none;padding:.4rem .75rem;border-radius:8px;font-size:.93rem;white-space:nowrap}
+.tabs a:hover{color:var(--fg);background:#161b22}
+.tabs a.on{color:var(--fg);background:var(--card2)}
+.acct{display:flex;align-items:center;gap:.6rem;white-space:nowrap}
+.acct .who{color:var(--mut);font-size:.88rem;max-width:14rem;overflow:hidden;text-overflow:ellipsis}
+/* type */
+h1{font-size:1.6rem;line-height:1.25;margin:2rem 0 .4rem}
+h2{font-size:1.08rem;margin:0 0 .8rem}
+h3{font-size:1.05rem;margin:.5rem 0 .35rem}
+.lead{color:var(--mut);font-size:1.02rem;margin:.2rem 0 1.4rem;max-width:44rem}
+.muted,.hint{color:var(--mut);font-size:.9rem}
+.hint{font-size:.86rem}
+code{background:var(--bg);border:1px solid var(--line);padding:.1rem .4rem;border-radius:6px;
+ color:var(--fg);font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.9em;word-break:break-all}
+/* surfaces */
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:1.2rem 1.3rem;margin:1rem 0}
+.card-head{display:flex;justify-content:space-between;align-items:center;gap:1rem;margin-bottom:.4rem}
+.card-head h2{margin:0}
+.choices{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin:1rem 0}
+.choice{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:1.3rem;display:flex;flex-direction:column;align-items:flex-start}
+.choice p{color:var(--mut);margin:.2rem 0 1rem;flex:1}
+.facts,.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:.8rem;margin:1rem 0}
+.fact,.stat{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:.85rem 1rem}
+.k{color:var(--mut);font-size:.78rem;text-transform:uppercase;letter-spacing:.05em}
+.v{font-size:1.35rem;font-weight:700;margin:.15rem 0 .1rem}
+.s{color:var(--mut);font-size:.82rem}
+/* controls */
+label{display:block;margin:1rem 0 .35rem;font-size:.9rem;color:var(--fg);font-weight:600}
+input{width:100%;min-width:0;padding:.65rem .75rem;background:var(--bg);border:1px solid var(--line);
+ border-radius:9px;color:var(--fg);font:15px ui-monospace,Menlo,Consolas,monospace}
+input:focus{outline:2px solid var(--btn);outline-offset:-1px}
+.btn,button{display:inline-block;margin-top:1rem;padding:.65rem 1.3rem;background:var(--btn);border:0;
+ border-radius:9px;color:#fff;font:600 15px system-ui,-apple-system,"Segoe UI",sans-serif;
+ cursor:pointer;text-decoration:none;text-align:center}
+.btn:hover,button:hover{background:var(--btnh)}
+.btn.ghost,button.ghost{background:transparent;border:1px solid var(--line);color:var(--fg);font-weight:500}
+.btn.ghost:hover,button.ghost:hover{background:#21262d}
+.btn.small,button.small{margin-top:0;padding:.3rem .75rem;font-size:.84rem}
+button[disabled],.btn[disabled]{opacity:.5;cursor:default}
+.golink{display:inline-block;background:var(--btn);color:#fff;text-decoration:none;padding:.65rem 1.3rem;border-radius:9px;font-weight:600;margin-top:.3rem}
+.golink:hover{background:var(--btnh)}
+/* chips and notices */
+.chip{display:inline-block;padding:.12rem .6rem;border-radius:999px;font-size:.8rem;font-weight:600;
+ background:#21262d;color:var(--fg);white-space:nowrap}
+.chip.ok{background:rgba(63,185,80,.16);color:#56d364}
+.chip.info{background:rgba(88,166,255,.14);color:#79c0ff}
+.chip.warn{background:rgba(210,153,34,.16);color:#e3b341}
+.chip.bad{background:rgba(248,81,73,.16);color:#ff7b72}
+.notice{border-radius:10px;padding:.75rem 1rem;margin:.8rem 0;background:var(--card2);border-left:3px solid var(--blue)}
+.notice.ok{border-left-color:var(--green)}.notice.warn{border-left-color:var(--amber)}.notice.bad{border-left-color:var(--red)}
 .good{color:var(--green)}
 .warn{border-left:3px solid var(--amber);padding-left:.9rem;color:#e3b341}
 .err{border-left:3px solid var(--red);padding-left:.9rem;color:#ff7b72}
 .ok{border-left:3px solid var(--green);padding-left:.9rem;color:#56d364}
+p.notice.warn,p.notice.bad,p.notice.ok{color:var(--fg)}
+.chip.ok,.chip.warn,.chip.info,.chip.bad{border-left:0;padding-left:.6rem}
+.used{color:#e3b341;font-size:.86rem;margin:.5rem 0 0}
+code.nowrap{white-space:nowrap;word-break:normal}
+/* the "send here" card */
+.focus{border-color:var(--btn);background:linear-gradient(180deg,rgba(47,129,247,.08),var(--card) 60%)}
+.send-grid{display:grid;grid-template-columns:auto 1fr;gap:1.3rem;align-items:start}
+.qr{background:#fff;border-radius:10px;padding:.5rem;line-height:0}
+.qr svg{width:9.5rem;height:9.5rem}
+.addr{font:600 1.02rem ui-monospace,Menlo,Consolas,monospace;word-break:break-all;margin:.25rem 0 .5rem}
+.kv{width:100%;border-collapse:collapse;margin:.6rem 0 0}
+.kv td,.kv th{text-align:left;padding:.35rem .4rem;border-bottom:1px solid #21262d;font-size:.92rem;vertical-align:top}
+.kv th{color:var(--mut);font-weight:500;width:9rem;white-space:nowrap}
+/* history */
+.wrapitem{border:1px solid var(--line);border-radius:10px;padding:.85rem 1rem;margin:.7rem 0;background:var(--bg2)}
+.wi-head{display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap}
+.wi-addr{margin:.45rem 0 .2rem;display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+.deps{list-style:none;padding:0;margin:.5rem 0 0}
+.deps li{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;padding:.4rem 0;border-top:1px solid #21262d}
+.deps .amt{font-weight:600;min-width:7.5rem}
+.bar{height:6px;background:#21262d;border-radius:99px;overflow:hidden;flex:1 1 6rem;min-width:5rem}
+.bar>i{display:block;height:100%;background:linear-gradient(90deg,var(--btn),var(--teal))}
+/* folded explanations */
+details.more{background:var(--card);border:1px solid var(--line);border-radius:12px;margin:.8rem 0}
+details.more>summary{cursor:pointer;padding:.9rem 1.2rem;font-weight:600;list-style:none}
+details.more>summary::-webkit-details-marker{display:none}
+details.more>summary::before{content:"\\25B8";color:var(--mut);display:inline-block;width:1.1rem;transition:transform .15s}
+details.more[open]>summary::before{transform:rotate(90deg)}
+details.more>div{padding:0 1.2rem 1rem}
+details.more .card{background:var(--bg2)}
+/* legacy pieces still used by redeem, proof, status and FAQ */
 table{width:100%;border-collapse:collapse;margin:.4rem 0}
-td,th{text-align:left;padding:.42rem .5rem;border-bottom:1px solid #21262d;font-size:.93rem}
-th{color:var(--mut);font-weight:600}
-.big{font-size:1.5rem;font-weight:700}
+td,th{text-align:left;padding:.42rem .5rem;border-bottom:1px solid #21262d;font-size:.92rem}
+th{color:var(--mut);font-weight:600;white-space:nowrap;vertical-align:top}
+.big{font-size:1.45rem;font-weight:700}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(9.5rem,1fr));gap:1rem}
-.bar{height:9px;background:#21262d;border-radius:99px;overflow:hidden;margin:.55rem 0}
-.bar>i{display:block;height:100%;background:linear-gradient(90deg,var(--blue),#a371f7)}
 .steps{counter-reset:s;padding:0;list-style:none;margin:0}
 .steps li{counter-increment:s;position:relative;padding:.42rem 0 .42rem 2.4rem}
-.steps li::before{content:counter(s);position:absolute;left:0;top:.42rem;width:1.6rem;
- height:1.6rem;border-radius:99px;background:#21262d;color:var(--fg);font-size:.85rem;
- display:grid;place-items:center;font-weight:700}
-.pill{display:inline-block;padding:.1rem .55rem;border-radius:99px;font-size:.8rem;
- border:1px solid var(--line);color:var(--mut)}
+.steps li::before{content:counter(s);position:absolute;left:0;top:.42rem;width:1.6rem;height:1.6rem;
+ border-radius:99px;background:#21262d;color:var(--fg);font-size:.85rem;display:grid;place-items:center;font-weight:700}
+.pill{display:inline-block;padding:.1rem .55rem;border-radius:99px;font-size:.8rem;border:1px solid var(--line);color:var(--mut)}
+.dir{display:flex;gap:.9rem;align-items:flex-start;padding:.85rem 0;border-bottom:1px solid #21262d}
+.dir:last-child{border-bottom:none}
+.dir .tag{flex:0 0 5.4rem;font-size:.72rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+ padding:.28rem 0;text-align:center;border-radius:999px}
+.tag.open{background:rgba(63,185,80,.16);color:var(--green)}
+.tag.shut{background:rgba(248,81,73,.16);color:var(--red)}
 a,td,li,.lead{overflow-wrap:anywhere}
-th{white-space:nowrap;vertical-align:top}
-input{min-width:0}
-nav a{display:inline-block;padding:.35rem 0}
-.help{margin-top:3.5rem;border-top:1px solid var(--line);padding-top:1rem}
+/* footer */
+.foot{border-top:1px solid var(--line);color:var(--mut);font-size:.88rem;padding:1.2rem 0 2.5rem}
+.foot a{color:var(--mut)}
+@media (max-width:760px){
+ .facts,.stats{grid-template-columns:1fr 1fr}
+ .choices{grid-template-columns:1fr}
+}
+@media (max-width:560px){
+ .bar-in{flex-wrap:wrap;gap:.35rem .8rem;padding:.55rem 1rem}
+ .brand{order:1}.acct{order:2;margin-left:auto}.tabs{order:3;flex-basis:100%}
+ .acct .who{max-width:9rem}
+}
 @media (max-width:420px){
- .wrap{padding:0 1rem 4rem}
- header .wrap{gap:.5rem .9rem;padding:.6rem 1rem}
- nav{gap:.7rem}
- nav a{font-size:.9rem}
- h1{font-size:1.35rem}
- .card{padding:.9rem 1rem}
- .big{font-size:1.3rem}
- /* every table here is label/value: on a phone stack each row instead of squeezing two columns */
+ .acct .who{display:none}
+ .wrap{padding:0 1rem}
+ h1{font-size:1.35rem;margin-top:1.4rem}
+ .card{padding:1rem}
+ .send-grid{grid-template-columns:1fr}
+ .qr{justify-self:center}
+ .v{font-size:1.15rem}
+ .kv th{width:auto}
  table,tbody,tr,td,th{display:block}
  tr{padding:.5rem 0;border-bottom:1px solid #21262d}
  tr:last-child{border-bottom:none}
- td,th{padding:0;border-bottom:none;font-size:.93rem}
+ td,th{padding:0;border-bottom:none}
  th{white-space:normal;font-size:.78rem;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.15rem}
- #connectBtn,#reviewBtn,#sendBtn,#backBtn,form>button{width:100%}
- #backBtn{margin-left:0!important;margin-top:.6rem}
+ #connectBtn,#reviewBtn,#sendBtn,#backBtn,#rconnectBtn,#rreviewBtn,#rsendBtn,#rbackBtn,#cclaimBtn,form>button,.choice .btn{width:100%}
+ #backBtn,#rbackBtn{margin-left:0!important;margin-top:.6rem}
 }
 `;
 
-const NAV = [['/', 'Wrap'], ['/my', 'My wraps'], ['/track', 'Track'], ['/redeem', 'Redeem'],
-             ['/proof', 'Proof of backing'], ['/faq', 'FAQ']];
+// Four tabs. "My wraps" and "Track" are gone from the bar: a signed-in customer's
+// wraps are ON the Wrap page, and /track stays reachable from Help for anyone
+// holding only a deposit address from before accounts.
+const NAV = [['/', 'Wrap'], ['/redeem', 'Redeem'], ['/proof', 'Proof'], ['/faq', 'Help']];
 
+const LOGO = `<svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#161b22"/><path d="M16 5 L18.4 13.6 L27 16 L18.4 18.4 L16 27 L13.6 18.4 L5 16 L13.6 13.6 Z" fill="#2dd4bf"/></svg>`;
 
-// ── "my wraps": everything ONE signed-in account has ever wrapped ───────────
-//
-// Until now a customer could see a single deposit address on /track and
-// nothing else -- no history, no total, no way to tell what had been paid.
-// Anyone with several wraps had to keep their own notes, and the desk knew
-// more about them than they could see.
-//
-// It shows ONLY the signed-in account's own rows. Not a filter on a full list:
-// the loop reads `r.account !== who` and skips, so a bug that breaks the
-// comparison shows an EMPTY page rather than somebody else's wraps. The IP is
-// never rendered; it exists for abuse investigation, not for display.
-//
-// The paid/owed figures come from the WATCHER's ledger, which reads the chain,
-// not from the request row -- `released` on the row is written null and never
-// updated (see the allocation note in accountUsedWpcn). Reading the wrong one
-// of those two is the mistake the comment there exists to stop.
-const myWraps = async (who) => {
-  const st = load();
-  let seen = null;
-  try { seen = JSON.parse(readFileSync(WATCH_STATE, 'utf8')).seen || {}; } catch { seen = null; }
+// Sign-in goes through market.pc.am, which owns the accounts and the captcha.
+const SIGNIN = `${SSO_START}?return=${encodeURIComponent('https://wrapdesk.pc.am/sso')}`;
 
-  const mine = Object.values(st.requests || {})
-    .filter((r) => r && r.account && who && r.account === who)
-    .sort((a, b) => (b.created || 0) - (a.created || 0));
+const short = (s) => (s && s.length > 14 ? `${s.slice(0, 6)}…${s.slice(-4)}` : String(s || ''));
 
-  if (!mine.length) {
-    return page('My wraps — PCoin wrap desk', '/my', `
-<h1>My wraps</h1>
-<div class="card"><p class="muted">Signed in as <b>${esc(who)}</b>, and this account
-has not wrapped anything yet. Start on the <a href="/">wrap page</a>.</p></div>`);
-  }
-
-  // EVERY DEPOSIT, with what became of it. The page used to show one line per
-  // ADDRESS and never a transaction: a paid wrap had no link to its wPCN, a
-  // refund had no link to its PCN, and an address that had already taken its
-  // 250 PCN still said "send to it again any time" -- the one sentence that
-  // makes a customer lose money to a refund.
-  let paidW = 0, returnedPcn = 0, cards = '';
-  for (const r of mine) {
-    const items = await deposits(r.address);
-    const outcomes = seen ? (outcomesAt(r.address, seen) || {}) : {};
-    let body = '', full = false;
-    if (items === null) {
-      body = `<p class="muted">We could not reach the explorer just now, so what arrived here
-        is <b>unknown</b> &mdash; not missing. Reload in a minute.</p>`;
-    } else if (!items.length) {
-      body = `<p class="muted">Nothing received yet. This address takes up to
-        <b>${PER_PERSON} PCN in total</b>.</p>`;
-    } else {
-      const { left } = settleAt(items, outcomes);
-      full = left <= 0;
-      body = `<table><tr><th>Deposit</th><th>Received</th><th>Result</th></tr>${items.map((i) => {
-        const o = i.outcome;
-        let res;
-        if (o && o.state === 'paid') {
-          const w = Number(o.amount || i.wpcn) || 0;
-          paidW += w;
-          res = `<b style="color:var(--green)">paid</b> ${n8(w)} wPCN${o.tx
-            ? ` &mdash; <a href="https://bscscan.com/tx/${esc(o.tx)}" rel="noopener">${esc(o.tx.slice(0, 14))}…</a>` : ''}`;
-        } else if (o && o.state === 'refunded') {
-          const back = Number(o.amount || i.pcn) || 0;
-          returnedPcn += back;
-          res = `<b style="color:var(--amber)">returned</b> ${n8(back)} PCN${o.tx
-            ? ` &mdash; <a href="https://explorer.pc.am/tx/${esc(o.tx)}">${esc(o.tx.slice(0, 14))}…</a>` : ''}`;
-        } else if (i.eligiblePcn <= 0) {
-          res = '<b style="color:var(--amber)">over this address\'s limit &mdash; it will be returned, not wrapped</b>';
-        } else if (i.pending) {
-          res = 'in the mempool, waiting for a block';
-        } else if (i.confirmations >= CONFIRMATIONS) {
-          res = `confirmed &mdash; ${n8(i.wpcn)} wPCN will be sent by a person`;
-        } else {
-          res = `${i.confirmations} of ${CONFIRMATIONS} confirmations &mdash; ${n8(i.wpcn)} wPCN due`;
-        }
-        return `<tr><td><a href="https://explorer.pc.am/tx/${esc(i.txid)}">${esc(i.txid.slice(0, 12))}…</a></td>
-          <td>${n8(i.pcn)} PCN</td><td>${res}</td></tr>`;
-      }).join('')}</table>`;
-    }
-    cards += `<div class="card">
-  <div style="display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap">
-    <div><div class="muted">Deposit address</div><code>${esc(r.address)}</code></div>
-    <div><div class="muted">wPCN goes to</div><code>${esc(r.bsc)}</code></div>
-    <div><div class="muted">Asked on (UTC)</div>${new Date(r.created || 0).toISOString().slice(0, 16).replace('T', ' ')}</div>
-  </div>
-  ${full ? `<p class="warn" style="margin:.6rem 0"><b>This address is full.</b> Anything more
-    you send to it is <b>returned, not wrapped</b>. Please do not send to it again.</p>` : ''}
-  ${body}
-  <p class="muted" style="margin:.4rem 0 0"><a href="/status?addr=${esc(r.address)}">Track this address</a></p>
-</div>`;
-  }
-
-  const usedW = accountUsedWpcn(st, who);
-  const capW = ACCOUNT_MONTHLY_PCN * (1 - FEE_PCT / 100);
-  const leftMonth = Math.max(0, (capW - usedW) / (1 - FEE_PCT / 100));
-  const today = askedSince(st, (x) => x.account === who, Date.now() - 864e5);
-  const leftToday = Math.max(0, Math.min(ACCOUNT_DAILY_PCN - today.total, leftMonth));
-
-  return page('My wraps — PCoin wrap desk', '/my', `
-<h1>My wraps</h1>
-<div class="card"><p class="muted" style="margin:0">Signed in as <b>${esc(who)}</b> &mdash;
-the same account as <a href="https://market.pc.am">market.pc.am</a> and
-<a href="https://exchange.pc.am">exchange.pc.am</a>. <a href="/signout">Sign out</a></p>
-${seen === null ? '<p class="warn" style="margin:.6rem 0 0">The payout record could not be read just now, so paid and returned deposits may show as still due. Reload in a minute.</p>' : ''}</div>
-
-<div class="grid">
-  <div class="card"><div class="k">wPCN received</div><div class="v">${n2(paidW)}</div></div>
-  <div class="card"><div class="k">PCN returned</div><div class="v">${n2(returnedPcn)}</div></div>
-  <div class="card"><div class="k">Left today</div><div class="v">${n2(leftToday)} PCN</div>
-    <div class="muted" style="font-size:.8rem">of ${ACCOUNT_DAILY_PCN} PCN a day</div></div>
-  <div class="card"><div class="k">Left this month</div><div class="v">${n2(leftMonth)} PCN</div>
-    <div class="muted" style="font-size:.8rem">of ${ACCOUNT_MONTHLY_PCN} PCN, rolling 30 days</div></div>
-</div>
-
-${cards}
-
-<div class="card"><p class="muted" style="margin:0"><b>How the limits work.</b> One request
-is at most ${PER_PERSON} PCN. Each deposit address takes at most <b>${PER_PERSON} PCN in its
-whole life</b> &mdash; counting anything that was returned &mdash; and whatever is sent to it
-beyond that is <b>returned, not wrapped</b>. An account may ask for ${ACCOUNT_DAILY_PCN} PCN a
-day and ${ACCOUNT_MONTHLY_PCN} PCN a month, and one connection ${IP_DAILY_PCN} PCN a day,
-whichever account asks. Results are read from the chain and from the desk's payout record,
-so a deposit shows as soon as it is seen, and as paid or returned once that has happened.</p></div>`);
+// A deposit address as a QR code, so a phone wallet can scan it instead of the
+// customer retyping 42 characters. qr.mjs is the market's own dependency-free
+// encoder, deployed beside this file; without it the address is shown as text
+// only, which is exactly what the page did before.
+let qrSvg = null;
+try { ({ toSvg: qrSvg } = await import('./qr.mjs')); }
+catch { console.warn('[wrapdesk] qr.mjs not found beside server.mjs: deposit QR codes are off'); }
+const qrFor = (text) => {
+  if (!qrSvg) return '';
+  try { return `<div class="qr">${qrSvg(text, { scale: 5, margin: 2 })}</div>`; } catch { return ''; }
 };
+
+// Copy buttons: any element with data-copy. Falls back to a prompt the reader can
+// copy from, because a clipboard API that is refused must not lose the address.
+const COPY_JS = `document.addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('[data-copy]');if(!b)return;var t=b.getAttribute('data-copy');var done=function(){var o=b.textContent;b.textContent='Copied';setTimeout(function(){b.textContent=o;},1400);};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(done,function(){window.prompt('Copy this:',t);});}else{window.prompt('Copy this:',t);}});`;
 
 // ── one-click "add wPCN to my wallet" (EIP-747) ──────────────────────────────
 // wPCN is on no token list, so every wallet treats it as unknown and every user
@@ -907,7 +891,7 @@ so a deposit shows as soon as it is seen, and as paid or returned once that has 
 // page underneath. Most mobile browsers have no provider at all, and a button
 // that does nothing is worse than no button.
 const ADD_TOKEN = `<p id="addtok" hidden style="margin:.75rem 0 0">
-<button type="button" id="addtokbtn" class="ghost">Add wPCN to my wallet</button>
+<button type="button" id="addtokbtn" class="ghost small">Add wPCN to my wallet</button>
 <span id="addtokmsg" class="muted"></span></p>
 <script>
 (function () {
@@ -948,155 +932,277 @@ const ADD_TOKEN = `<p id="addtok" hidden style="margin:.75rem 0 0">
 })();
 </script>`;
 
-const page = (title, active, body) => `<!doctype html><html lang="en"><head>
+// The header knows who is looking without every renderer being told: the request
+// handler records the viewer once (see `viewer.run` below) and this reads it.
+const page = (title, active, body, { captcha = false } = {}) => {
+  const who = viewerAcct();
+  const acct = who
+    ? `<span class="who" title="${esc(who)}">${esc(who)}</span><a class="btn ghost small" href="/signout">Sign out</a>`
+    : (SSO_ON ? `<a class="btn small" href="${SIGNIN}">Sign in</a>` : '');
+  return `<!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230d1117'/><path d='M16 5 L18.4 13.6 L27 16 L18.4 18.4 L16 27 L13.6 18.4 L5 16 L13.6 13.6 Z' fill='%232dd4bf'/></svg>">
-<title>${esc(title)}</title><style>${CSS}</style>${HCAPTCHA_ON ? '<script src="https://js.hcaptcha.com/1/api.js" async defer></script>' : ''}</head><body>
-<header><div class="wrap"><b>PCoin wrap desk</b><nav>${
- NAV.map(([h, l]) => `<a href="${h}"${h === active ? ' class="on"' : ''}>${l}</a>`).join('')
-}</nav></div></header>
-<div class="wrap">${body}
-<p class="muted help">Help: <a href="https://t.me/PCoinPCN" rel="noopener">Telegram @PCoinPCN</a> ·
-<a href="https://github.com/pars5555/pcoin/issues" rel="noopener">report a problem</a><br>
-<a href="https://pc.am">pc.am</a> · <a href="https://explorer.pc.am">explorer</a> ·
-<a href="https://price.pc.am">price feed (JSON)</a> · <a href="https://docs.pc.am">docs</a></p></div></body></html>`;
+<title>${esc(title)}</title><style>${CSS}</style>${captcha && HCAPTCHA_ON ? '<script src="https://js.hcaptcha.com/1/api.js" async defer></script>' : ''}</head><body>
+<header class="appbar"><div class="bar-in">
+<a class="brand" href="/">${LOGO}<span>PCoin <b>Wrap</b></span></a>
+<nav class="tabs">${NAV.map(([h, l]) => `<a href="${h}"${h === active ? ' class="on"' : ''}>${l}</a>`).join('')}</nav>
+<div class="acct">${acct}</div>
+</div></header>
+<main class="wrap">${body}</main>
+<footer class="foot"><div class="wrap">Help: <a href="https://t.me/PCoinPCN" rel="noopener">Telegram @PCoinPCN</a> ·
+<a href="https://github.com/pars5555/pcoin/issues" rel="noopener">report a problem</a> ·
+<a href="/track">track a deposit address</a><br>
+<a href="https://pc.am">pc.am</a> · <a href="https://market.pc.am">market</a> · <a href="https://exchange.pc.am">exchange</a> ·
+<a href="https://explorer.pc.am">explorer</a> · <a href="https://price.pc.am">price feed</a> · <a href="https://docs.pc.am">docs</a></div></footer>
+<script>${COPY_JS}</script></body></html>`;
+};
 
-// ── the honest block, shown wherever someone might be about to commit ────────
-const RISKS = `<h2>Before you send anything</h2><div class="card">
-<p class="warn"><b>wPCN is not PCN.</b> It is a claim on PCN held in a public
+// ── the honest block, folded but always one click away ───────────────────────
+const RISKS = `<details class="more"><summary>Before you wrap — the risks</summary><div>
+<p class="notice warn"><b>wPCN is not PCN.</b> It is a claim on PCN held in a public
 reserve, on a different chain. You can check that reserve yourself on the
 <a href="/proof">proof page</a>.</p>
-<p class="warn"><b>This is manual.</b> A person releases your wPCN after checking.
+<p class="notice warn"><b>This is manual.</b> A person releases your wPCN after checking.
 It is not instant and it is not automated.</p>
-<p class="warn"><b>Completed wraps are announced publicly.</b> When your wPCN
+<p class="notice warn"><b>Completed wraps are announced publicly.</b> When your wPCN
 is sent — or your PCN is paid back on a return — a post goes to
 <a href="https://t.me/PCoinPCN" rel="noopener">@PCoinPCN</a> with the amount and a
 link to both transactions. No name is published, but those transactions are public
 on their chains and the wallet each one paid is one click from the post. Treat a
 wrap as public, not private.</p>
-<p class="err"><b>The market for wPCN is small.</b> The PancakeSwap pool holds
+<p class="notice bad"><b>The market for wPCN is small.</b> The PancakeSwap pool holds
 only a few hundred dollars of liquidity, so even a small trade moves its price
 sharply; <b>we trade that pool ourselves</b> (a bot buys wPCN when the pool falls
 well below the rate posted at price.pc.am, within a small daily budget), and the
 <b>liquidity is not locked</b> — the project holds the LP tokens. Only send what
 you can afford to lose.</p>
-<p class="warn"><b>wPCN can trade above PCN, and nothing can pull it back.</b> The
+<p class="notice warn"><b>wPCN can trade above PCN, and nothing can pull it back.</b> The
 supply is fixed at 50,000 and cannot be minted. Arbitrage can always push wPCN
 <i>up</i> to PCN (buy wPCN, redeem, sell PCN), but it can only push wPCN <i>down</i>
 to PCN by wrapping more PCN — and once the desk's inventory of wPCN is gone,
 nobody can. Redeeming by <a href="/redeem">return</a> instead of burn keeps that
-inventory in existence; it does not remove the limit.</p></div>`;
+inventory in existence; it does not remove the limit.</p></div></details>`;
 
-// ── pages ───────────────────────────────────────────────────────────────────
-// acct: an e-mail when signed in, null when the caller CHECKED and nobody is,
-// undefined when the caller did not look. Every error path re-renders this page
-// with home(msg) alone -- including for signed-in customers who typed a bad
-// amount -- so undefined must never read as "signed out": it keeps the form.
-const home = (msg = '', acct = undefined, leftPcn = null) => page('PCoin wrap desk — wPCN and PCN, both directions', '/', `
-${intakeClosed() !== null ? `<div class="card">
-<h1 style="margin-top:0">One direction is open</h1>
-<p class="lead">Only one way round the desk is working at the moment. Which one
-you need decides everything on this page, so it is the first thing here.</p>
+const HOW = (signedIn) => `<details class="more"><summary>How it works</summary><div><ol class="steps">
+${signedIn ? '' : '<li>Sign in with your market.pc.am account — the same one as the market and the exchange. No account? Create one on the sign-in page.</li>'}
+<li>Enter your BSC address and how much PCN to wrap. You get a PCoin deposit address that is <b>yours alone</b>.</li>
+<li>Send PCN to it — up to ${PER_PERSON} PCN in total, from any wallet.</li>
+<li>After <b>${CONFIRMATIONS} confirmations</b> (about ${WAIT_H} hours) a person sends your wPCN. Every step shows under <b>Your wraps</b>.</li>
+</ol>
+<p class="hint" style="margin:.8rem 0 0">To see wPCN in your wallet, add it as a custom token on BNB Smart Chain:
+contract <code>${TOKEN}</code>, symbol wPCN, 8 decimals. It trades on
+<a href="https://pancakeswap.finance/swap?chain=bsc&amp;outputCurrency=${TOKEN}" rel="noopener">PancakeSwap</a>,
+and the <a href="/redeem">Redeem</a> tab is the same door in the other direction.
+The ${FEE_PCT}% fee exists to slow a rush of wrapping-to-sell, not to make money.</p>${ADD_TOKEN}</div></details>`;
 
-<div class="dir">
- <span class="tag open">open</span>
- <div><b>wPCN &rarr; PCN.</b> Hand your wPCN back and the PCN is sent to you,
- 1 for 1, no fee on this side. A person pays it, so allow hours rather than
- minutes.<br><a class="golink" href="/redeem">Redeem wPCN &rarr; PCN</a></div>
-</div>
+const CLOSED_NOTE = `<p class="notice warn" style="margin-top:0"><b>Wrapping is paused right now.</b>
+New wrap requests are not being taken, and there is no reopening date. <b>Nothing you
+have already sent is affected</b> — it is still paid or returned exactly as shown
+under your wraps. Do not send more PCN to a deposit address while wrapping is paused:
+it is returned, not wrapped. <a href="/redeem">Redeeming wPCN &rarr; PCN</a> still works.</p>`;
 
-<div class="dir">
- <span class="tag shut">closed</span>
- <div><b>PCN &rarr; wPCN.</b> New wrap requests are not being accepted. This is
- temporary, and there is no reopening date.</div>
-</div>
-</div>
+// ── one account's wraps, read the way /status reads them ─────────────────────
+// Only the signed-in account's own rows: the loop skips anything whose account is
+// not exactly `who`, so a broken comparison shows NOTHING rather than somebody
+// else's wraps. The IP is never rendered.
+async function accountWraps(who) {
+  const st = load();
+  let seen = null;
+  try { seen = JSON.parse(readFileSync(WATCH_STATE, 'utf8')).seen || {}; } catch { seen = null; }
+  const mine = Object.values(st.requests || {})
+    .filter((r) => r && r.account && who && r.account === who)
+    .sort((a, b) => (b.created || 0) - (a.created || 0));
+  const list = [];
+  for (const r of mine) {
+    const items = await deposits(r.address);
+    let full = false;
+    if (items && items.length) {
+      // settleAt fills in each deposit's outcome and share of the allowance.
+      full = settleAt(items, seen ? (outcomesAt(r.address, seen) || {}) : {}).left <= 0;
+    }
+    list.push({ r, items, full });
+  }
+  return { list, ledgerOk: seen !== null, st };
+}
 
-<div class="card" style="border-left:4px solid #e5484d">
-<p><b>Nothing you are already owed is affected.</b> Every wrap that reached 100
-confirmations has been paid, and anything still confirming will be paid the same
-way.</p>
-<p><b>Do not send any more PCN to your deposit address.</b> Those addresses
-are no longer wrapped. PCN that arrives at one now is <b>returned, not
-converted</b> &mdash; by a person, which takes time. This applies even though the
-address still belongs to you and still works on the chain.</p>
+function depositState(i) {
+  const o = i.outcome;
+  if (o && o.state === 'paid') {
+    return `<span class="chip ok">Sent ${n2(o.amount || i.wpcn)} wPCN</span>${o.tx
+      ? ` <a class="hint" href="https://bscscan.com/tx/${esc(o.tx)}" rel="noopener">BscScan ↗</a>` : ''}`;
+  }
+  if (o && o.state === 'refunded') {
+    return `<span class="chip warn">Returned ${n2(o.amount || i.pcn)} PCN</span>${o.tx
+      ? ` <a class="hint" href="https://explorer.pc.am/tx/${esc(o.tx)}">explorer ↗</a>` : ''}`;
+  }
+  if (i.eligiblePcn <= 0) return '<span class="chip warn">Over the limit — will be returned</span>';
+  if (i.pending) return '<span class="chip info">Waiting for a block</span>';
+  if (i.confirmations >= CONFIRMATIONS) return '<span class="chip info">Confirmed — a person is sending your wPCN</span>';
+  const pct = Math.max(2, Math.min(100, i.confirmations / CONFIRMATIONS * 100));
+  const hoursLeft = Math.max(1, Math.round((CONFIRMATIONS - i.confirmations) * 10 / 60));
+  return `<span class="chip info">Confirming ${i.confirmations}/${CONFIRMATIONS}</span>
+    <span class="bar"><i style="width:${pct.toFixed(0)}%"></i></span><span class="hint">about ${hoursLeft} h to go</span>`;
+}
 
-<p>You can still buy and sell wPCN on PancakeSwap (wPCN/USDT), and buy PCN
-directly at <a href="https://market.pc.am">market.pc.am</a>.</p>
-</div>` : ''}
-${intakeClosed() !== null ? '' : `<h1>Turn PCN into wPCN</h1>
-<p class="lead">wPCN is PCoin wrapped as a BEP-20 on BNB Smart Chain, so it can
-trade on PancakeSwap. Backed 1:1 by the PCN you send.</p>
+function wrapItem({ r, items, full }) {
+  const when = new Date(r.created || 0).toISOString().slice(0, 16).replace('T', ' ');
+  const asked = Math.min(Number(r.amount) || 0, PER_PERSON);
+  let body;
+  if (items === null) {
+    body = `<p class="hint" style="margin:.4rem 0 0">The chain could not be read just now, so what
+      arrived here is <b>unknown</b> — not missing. Refresh in a minute.</p>`;
+  } else if (!items.length) {
+    body = `<p style="margin:.4rem 0 0"><span class="chip">Waiting for your PCN</span>
+      <span class="hint">send up to ${PER_PERSON} PCN to this address</span></p>`;
+  } else {
+    body = `<ul class="deps">${items.map((i) => `<li><span class="amt">${n2(i.pcn)} PCN</span>${depositState(i)}
+      <a class="hint" href="https://explorer.pc.am/tx/${esc(i.txid)}">tx ↗</a></li>`).join('')}</ul>`;
+  }
+  return `<div class="wrapitem">
+<div class="wi-head"><div><b>${n2(asked)} PCN</b> <span class="hint">asked · wPCN to</span> <code class="nowrap" title="${esc(r.bsc)}">${esc(short(r.bsc))}</code></div>
+<div class="hint">${when} UTC</div></div>
+<div class="wi-addr"><span class="hint">Deposit address</span> <code>${esc(r.address)}</code>
+<button type="button" class="ghost small" data-copy="${esc(r.address)}">Copy</button></div>
+${body}
+${full ? `<p class="used">This address has had its ${PER_PERSON} PCN — do not send more to it. For another wrap, ask for a new address above.</p>` : ''}
+</div>`;
+}
 
-<div class="card">
-<div class="dir">
- <span class="tag open">open</span>
- <div><b>PCN &rarr; wPCN.</b> What this page does. ${REQUIRE_ACCOUNT
-   ? `A market.pc.am sign-in, then up to ${PER_PERSON} PCN per deposit address,`
-   : `${PER_PERSON} PCN per person,`}
- ${FEE_PCT}% fee, ${CONFIRMATIONS} confirmations before the wPCN is sent.
- <span class="muted">${REQUIRE_ACCOUNT && acct === null ? 'Sign in below.' : 'Use the form below.'}</span></div>
-</div>
-<div class="dir">
- <span class="tag open">open</span>
- <div><b>wPCN &rarr; PCN.</b> The other way round: 1 for 1, no fee on that side.
- <br><a class="golink" href="/redeem">Redeem wPCN &rarr; PCN</a></div>
-</div>
-</div>`}
+// The "send here" card: shown right after a request, and whenever ?wrap= names
+// one of the viewer's own deposit addresses.
+function sendCard(r) {
+  const eligible = Math.min(Number(r.amount) || 0, PER_PERSON);
+  const net = eligible * (1 - FEE_PCT / 100);
+  return `<div class="card focus" id="send">
+<h2>Send your PCN to this address</h2>
+<div class="send-grid">${qrFor(r.address)}<div>
+<div class="k">Your deposit address — yours alone</div>
+<div class="addr">${esc(r.address)}</div>
+<button type="button" class="small" data-copy="${esc(r.address)}">Copy address</button>
+<table class="kv">
+<tr><th>Send</th><td><b>${n2(eligible)} PCN</b> <span class="hint">— up to ${PER_PERSON} PCN in total to this address, in one payment or several</span></td></tr>
+<tr><th>You receive</th><td><b>${n2(net)} wPCN</b> <span class="hint">(${FEE_PCT}% fee)</span></td></tr>
+<tr><th>Sent to</th><td><code>${esc(r.bsc)}</code> <span class="hint">on BNB Smart Chain</span></td></tr>
+<tr><th>When</th><td>About ${WAIT_H} hours after your payment is in a block (${CONFIRMATIONS} confirmations), then a person sends it.</td></tr>
+</table></div></div>
+<p class="hint" style="margin:.9rem 0 0">Any wallet can pay it — the address alone identifies you. Anything above
+${PER_PERSON} PCN in total is <b>returned, not wrapped</b>. Progress shows under <b>Your wraps</b> below.</p>
+</div>`;
+}
+
+// ── the Wrap tab ────────────────────────────────────────────────────────────
+// Signed out: what the desk does and one way in. Signed in: everything.
+// `msg` is a notice from a refused request; `focus` names a deposit address.
+const home = async (msg = '', _unused = undefined, { focus = '' } = {}) => {
+  const who = viewerAcct();
+  const closed = intakeClosed() !== null;
+
+  if (!who && REQUIRE_ACCOUNT) {
+    return page('PCoin Wrap — PCN and wPCN, both directions', '/', `
+<h1>Move PCN to BNB Smart Chain — and back</h1>
+<p class="lead">wPCN is PCoin as a BEP-20 token, backed 1:1 by PCN held in a public
+reserve. Trade it on PancakeSwap, and bring it back to PCN whenever you like.</p>
 ${msg}
-${intakeClosed() !== null ? CLOSED_FORM_NOTE : REQUIRE_ACCOUNT && acct === null ? `<div class="card">
-<p><b>Wrapping needs a market.pc.am account</b> &mdash; the same one you use for
-the market and the exchange. Once you are signed in, this form appears here, and
-<a href="/my">your wraps</a> shows every wrap you have made.</p>
-<p><a class="golink" href="${SSO_START}?return=https%3A%2F%2Fwrapdesk.pc.am%2Fsso">Sign in with market.pc.am &rarr;</a></p>
-<p class="muted" style="margin:.6rem 0 0">Redeeming wPCN &rarr; PCN needs no account:
-it is done from your own wallet on the <a href="/redeem">redeem page</a>.</p></div>`
-: `<div class="card"><form method="POST" action="/request">
-<label>Your BSC address — where the wPCN will be sent. Use a wallet <b>you</b>
-control (MetaMask, or any wallet that lets you add a custom BEP-20 token).
-<b>Never an exchange deposit address</b> — no exchange lists wPCN, so it could
-not credit you.</label>
-<input name="bsc" placeholder="0x…" pattern="0x[0-9a-fA-F]{40}"
- title="0x followed by 40 hex characters" autocomplete="off" spellcheck="false" required>
-<label>How much PCN do you want to wrap? (max ${PER_PERSON})</label>
-<input name="amount" type="number" step="0.00000001" min="0.00000001"
- max="${PER_PERSON}" placeholder="e.g. 100" required>
-${HCAPTCHA_ON ? `<div class="h-captcha" data-sitekey="${HCAPTCHA_SITEKEY}" data-theme="dark" style="margin:.9rem 0"></div>` : ''}
-<button type="submit">Get my deposit address</button>
-</form></div>`}
-
-<h2>How it works</h2><div class="card"><ol class="steps">
-${REQUIRE_ACCOUNT ? '<li>You sign in with your market.pc.am account.</li>' : ''}
-<li>You give your BSC address and an amount.</li>
-<li>You get a PCoin deposit address that is <b>yours alone</b>.</li>
-<li>You send PCN to it — up to ${PER_PERSON} PCN in total, in one payment or several.${intakeClosed() !== null ? ' <b>Not while the desk is closed: an address that receives PCN now has it returned, not wrapped.</b>' : ''}</li>
-<li>After <b>${CONFIRMATIONS} confirmations</b> (~${WAIT_H}&nbsp;h) a person sends your wPCN.</li>
-</ol><p class="muted" style="margin:.6rem 0 0">Track it at any point on the
-<a href="/track">track page</a> using your deposit address.</p>
-<p class="muted" style="margin:.6rem 0 0">To see the wPCN in your wallet, add it
-as a custom token: contract <code>${TOKEN}</code>, symbol wPCN, 8 decimals. It
-trades on <a href="https://pancakeswap.finance/swap?chain=bsc&amp;outputCurrency=${TOKEN}"
-rel="noopener">PancakeSwap</a>. Want PCN back later? The
-<a href="/redeem">redeem page</a> is the same door in the other direction.</p>${ADD_TOKEN}</div>
-
-<h2>The terms</h2><div class="card"><table>
-<tr><th>Limit</th><td>${REQUIRE_ACCOUNT
-  ? `${PER_PERSON} PCN per deposit address, ${ACCOUNT_MONTHLY_PCN} PCN a month per account`
-  : `${PER_PERSON} PCN per person`} · ${TOTAL_ALLOC} wPCN total while the desk is new</td></tr>
-<tr><th>More</th><td>${acct ? `Signed in as <b>${esc(acct)}</b> &mdash; <b>${n2(leftPcn)} PCN</b> of your ${ACCOUNT_MONTHLY_PCN} PCN monthly allowance left. <a href="/signout">Sign out</a>` : REQUIRE_ACCOUNT
-  ? `Wrapping needs a <a href="${SSO_START}?return=https%3A%2F%2Fwrapdesk.pc.am%2Fsso">market.pc.am account</a> &mdash; the same one you use for the market and the exchange.`
-  : `Sign in with a <a href="${SSO_START}?return=https%3A%2F%2Fwrapdesk.pc.am%2Fsso">market.pc.am account</a> and your limit becomes ${ACCOUNT_MONTHLY_PCN} PCN a month.`}</td></tr>
-<tr><th>Fee</th><td>${FEE_PCT}% — send 100 PCN, receive ${100 - FEE_PCT} wPCN</td></tr>
-<tr><th>Wait</th><td>${CONFIRMATIONS} confirmations, about ${WAIT_H} hours</td></tr>
-<tr><th>Backing</th><td>1:1, <a href="/proof">verifiable</a></td></tr>
-</table><p class="muted" style="margin:.7rem 0 0">The limit and the fee exist to
-slow a rush of wrapping-to-sell, not to make money — ${FEE_PCT}% of the entire
-allocation comes to ${FEE_TOTAL} PCN.</p></div>
+<div class="choices">
+ <div class="choice">
+  <span class="chip ${closed ? 'bad' : 'ok'}">${closed ? 'Paused' : 'Open'}</span>
+  <h3>PCN &rarr; wPCN</h3>
+  <p>${closed ? 'New wrap requests are paused right now. Anything already sent is still paid or returned.'
+    : `Sign in, send PCN to your own deposit address, and receive wPCN in your wallet on BNB Smart Chain.`}</p>
+  ${closed ? '' : `<a class="btn" href="${SIGNIN}">Sign in to wrap</a>
+  <span class="hint" style="margin-top:.5rem">Same account as market.pc.am and the exchange. No account? Create one there.</span>`}
+ </div>
+ <div class="choice">
+  <span class="chip ok">Open</span>
+  <h3>wPCN &rarr; PCN</h3>
+  <p>Send wPCN back from your wallet and receive PCN, 1 for 1. No fee on this side, and no account needed.</p>
+  <a class="btn ghost" href="/redeem">Redeem wPCN</a>
+ </div>
+</div>
+<div class="facts">
+ <div class="fact"><div class="k">Fee</div><div class="v">${FEE_PCT}%</div><div class="s">100 PCN &rarr; ${100 - FEE_PCT} wPCN</div></div>
+ <div class="fact"><div class="k">Limit</div><div class="v">${ACCOUNT_DAILY_PCN} PCN</div><div class="s">a day per account · ${ACCOUNT_MONTHLY_PCN} a month</div></div>
+ <div class="fact"><div class="k">Wait</div><div class="v">~${WAIT_H} h</div><div class="s">${CONFIRMATIONS} confirmations, then a person sends it</div></div>
+ <div class="fact"><div class="k">Backing</div><div class="v">1 : 1</div><div class="s"><a href="/proof">check the reserve</a></div></div>
+</div>
+${HOW(false)}
 ${RISKS}`);
+  }
+
+  // ── signed in (or the anonymous desk, when accounts are not required) ──
+  const acctView = Boolean(who);
+  const data = acctView ? await accountWraps(who) : { list: [], ledgerOk: true, st: load() };
+  const st = data.st;
+  let paidW = 0, inProgress = 0;
+  for (const { items } of data.list) {
+    for (const i of items || []) {
+      const o = i.outcome;
+      if (o && o.state === 'paid') paidW += Number(o.amount || i.wpcn) || 0;
+      else if (!(o && o.state === 'refunded') && i.eligiblePcn > 0) inProgress += 1;
+    }
+  }
+  let leftToday = PER_PERSON, leftMonth = ACCOUNT_MONTHLY_PCN, freeAt = null;
+  if (acctView) {
+    const capW = ACCOUNT_MONTHLY_PCN * (1 - FEE_PCT / 100);
+    leftMonth = Math.max(0, (capW - accountUsedWpcn(st, who)) / (1 - FEE_PCT / 100));
+    const today = askedSince(st, (x) => x.account === who, Date.now() - 864e5);
+    leftToday = Math.max(0, Math.min(ACCOUNT_DAILY_PCN - today.total, leftMonth));
+    freeAt = today.oldest;
+  }
+  const canAsk = Math.floor(Math.min(PER_PERSON, leftToday) * 1e8) / 1e8;
+  const lastBsc = acctView && data.list.length ? data.list[0].r.bsc : '';
+  const blocked = acctView ? blockedFor(who, viewerIp()) : null;
+  const focusReq = focus && acctView ? data.list.map((x) => x.r).find((r) => r.address === focus) : null;
+
+  let form;
+  if (closed) form = CLOSED_NOTE;
+  else if (blocked === 'unreadable') form = '<p class="notice warn" style="margin-top:0">New wraps are paused for a moment. Please try again a little later.</p>';
+  else if (blocked) form = `<p class="notice bad" style="margin-top:0">This ${blocked} cannot open new wraps. Wraps already made are not affected.</p>`;
+  else if (acctView && canAsk <= 0) {
+    form = `<p class="notice" style="margin-top:0">You have used today's ${ACCOUNT_DAILY_PCN} PCN${
+      leftMonth <= 0 ? ` and this month's ${ACCOUNT_MONTHLY_PCN} PCN` : ''}. You can wrap again after
+      <b>${esc(freesAt(freeAt))}</b>.</p>`;
+  } else {
+    form = `<form method="POST" action="/request">
+<label for="bsc">Your BSC address — where the wPCN goes</label>
+<input id="bsc" name="bsc" placeholder="0x…" pattern="0x[0-9a-fA-F]{40}" value="${esc(lastBsc)}"
+ title="0x followed by 40 hex characters" autocomplete="off" spellcheck="false" required>
+<div class="hint" style="margin-top:.35rem">A wallet <b>you</b> control, such as MetaMask. Never an exchange deposit address — no exchange lists wPCN.</div>
+<label for="amount">PCN to wrap <span class="hint">(up to ${n2(canAsk)})</span></label>
+<input id="amount" name="amount" type="number" step="0.00000001" min="0.00000001" max="${canAsk}"
+ placeholder="e.g. 100" required>
+${!acctView && HCAPTCHA_ON ? `<div class="h-captcha" data-sitekey="${HCAPTCHA_SITEKEY}" data-theme="dark" style="margin:.9rem 0"></div>` : ''}
+<button type="submit">Get my deposit address</button>
+</form>`;
+  }
+
+  const history = !acctView ? '' : `<div class="card" id="history">
+<div class="card-head"><h2>Your wraps</h2><a class="btn ghost small" href="/#history">Refresh</a></div>
+${data.ledgerOk ? '' : '<p class="notice warn">The payout record could not be read just now, so a paid or returned deposit may still show as in progress. Refresh in a minute.</p>'}
+${data.list.length ? data.list.map(wrapItem).join('') : '<p class="hint" style="margin:.2rem 0 0">Nothing yet. Your first wrap will show here, with every deposit and what became of it.</p>'}
+</div>`;
+
+  return page('PCoin Wrap — your wraps', '/', `
+<h1>Wrap PCN into wPCN</h1>
+<p class="lead">Send PCN, receive wPCN on BNB Smart Chain. Want PCN back? Use the <a href="/redeem">Redeem</a> tab.</p>
+${msg}
+${focusReq ? sendCard(focusReq) : ''}
+${acctView ? `<div class="stats">
+ <div class="stat"><div class="k">Left today</div><div class="v">${n2(leftToday)}</div><div class="s">PCN, of ${ACCOUNT_DAILY_PCN} a day</div></div>
+ <div class="stat"><div class="k">Left this month</div><div class="v">${n2(leftMonth)}</div><div class="s">PCN, of ${ACCOUNT_MONTHLY_PCN} · rolling 30 days</div></div>
+ <div class="stat"><div class="k">wPCN received</div><div class="v">${n2(paidW)}</div><div class="s">all your wraps</div></div>
+ <div class="stat"><div class="k">In progress</div><div class="v">${inProgress}</div><div class="s">deposit${inProgress === 1 ? '' : 's'} on the way</div></div>
+</div>` : ''}
+<div class="card" id="new"><h2>${focusReq ? 'Another wrap' : 'New wrap'}</h2>${form}</div>
+${history}
+${HOW(true)}
+${RISKS}`, { captcha: !acctView && HCAPTCHA_ON && !closed });
+};
 
 const track = (msg = '') => page('Track a wrap', '/track', `
 <h1>Track a wrap</h1>
 <p class="lead">Enter the PCoin deposit address the desk gave you. This page
 reads the chain live.</p>${msg}
+<p class="notice">Signed in? Every wrap you have made, and what became of it, is on the <a href="/">Wrap</a> tab.</p>
 <div class="card"><form method="GET" action="/status">
 <label>Your deposit address</label>
 <input name="addr" placeholder="pc1…" autocomplete="off" spellcheck="false" required>
@@ -1502,7 +1608,7 @@ burn permanently shrinks what can ever be wrapped — and once that runs out wPC
 can trade above PCN with nothing able to pull it back. Returning keeps the two
 prices linkable. Both pay you the same PCN.</p></div>
 
-<h2>Return — recommended</h2><div class="card" id="retcard">
+<div class="card" id="retcard"><h2>Return your wPCN <span class="chip ok">recommended</span></h2>
 <ol class="steps" style="margin-bottom:.8rem">
 <li>Open this page <b>inside your wallet's browser</b> (MetaMask &rarr; Browser
  &rarr; <code>wrapdesk.pc.am/redeem</code>), or on a computer with the MetaMask
@@ -1555,7 +1661,7 @@ PCoin address you gave; nothing else needs to be done on your side.</p></div>
 <noscript><p class="err">This helper needs JavaScript. See "Already sent?" below for the route without it.</p></noscript>
 </div>
 
-<h2>Already sent? Claim it here</h2><div class="card">
+<details class="more"><summary>Already sent wPCN by hand? Claim it here</summary><div>
 <p class="muted" style="margin-top:0">If you transferred wPCN to
 <code>${INVENTORY}</code> by hand, or the page closed before the signature step,
 give the transaction hash and your PCoin address here and sign with the <b>same
@@ -1566,9 +1672,9 @@ yours, and will not pay it out to a stranger who found the hash first.</p>
 <label for="caddr">PCoin address to receive the PCN (pc1q…)</label>
 <input id="caddr" autocomplete="off" spellcheck="false" placeholder="pc1q…">
 <button id="cclaimBtn" type="button">Sign and claim</button>
-<p id="cmsg" hidden></p></div>
+<p id="cmsg" hidden></p></div></details>
 
-<h2>Burn — the contract route</h2><div class="card">
+<details class="more"><summary>Burn instead — the contract route</summary><div><div class="card">
 <p class="muted" style="margin-top:0">Also valid, also paid 1:1. The contract burns
 your wPCN and logs your PCoin address; the burn cannot be undone and shrinks the
 supply for ever. Use it if you prefer not to trust the desk's ledger with your
@@ -1636,7 +1742,7 @@ valid to send the PCN — we will have to contact you to fix it.</p>
 send PCN by itself: no contract on BNB Smart Chain can move a coin on the PCoin
 chain. A person does it. Allow hours, not minutes.</p></div>
 
-<h2>Manual route</h2><div class="card"><ol class="steps">
+<h3>Manual route</h3><div class="card"><ol class="steps">
 <li>Open the wPCN contract on
  <a href="https://bscscan.com/address/${TOKEN}#writeContract">BscScan</a> and
  connect the wallet holding your wPCN.</li>
@@ -1650,12 +1756,13 @@ chain. A person does it. Allow hours, not minutes.</p></div>
 MetaMask for Android with <i>"Invalid params … maxFeePerGas … received:
 null"</i>. That is BscScan's page, not your wallet — use the button above.</p></div>
 
-<h2>Why it matters</h2><div class="card"><p class="muted">A wrapped token nobody
+</div></details>
+<details class="more"><summary>Why redeeming matters</summary><div><p class="muted">A wrapped token nobody
 can redeem is an IOU resting on trust. A redeemable one is checkable — and it is
 what lets arbitrage hold the PCN and wPCN prices together. A <b>return</b> leaves
 the supply and the reserve exactly as they were and refills the desk's inventory;
 a <b>burn</b> lowers the supply the reserve has to cover, which shows on the
-<a href="/proof">proof page</a>. Either way you are paid the same.</p></div>
+<a href="/proof">proof page</a>. Either way you are paid the same.</p></div></details>
 <script>var TOKEN=${JSON.stringify(TOKEN)}, INVENTORY=${JSON.stringify(INVENTORY)}, RETURN_MSG=${JSON.stringify(returnMessage('%TX%', '%ADDR%'))};</script>
 <script>${REDEEM_JS}</script>
 <script>${RETURN_JS}</script>`);
@@ -1751,7 +1858,7 @@ the deposit were later reversed, the wPCN would exist with nothing behind it.
 The wait is the defence.</p></div>
 
 <h2>Why is there a limit?</h2><div class="card"><p class="muted">${REQUIRE_ACCOUNT
-  ? `${PER_PERSON} PCN per deposit address and ${ACCOUNT_MONTHLY_PCN} PCN a month per account`
+  ? `${PER_PERSON} PCN per deposit address, ${ACCOUNT_DAILY_PCN} PCN a day and ${ACCOUNT_MONTHLY_PCN} PCN a month per account`
   : `${PER_PERSON} PCN per person`}, ${TOTAL_ALLOC} wPCN in total. The PancakeSwap pool is small, so a
 large amount of new wPCN arriving at once would move the price hard against
 whoever sold second. The limit protects the people using it, and it will rise as
@@ -1762,8 +1869,10 @@ is friction rather than income — ${FEE_PCT}% of the entire allocation comes to
 ${FEE_TOTAL} PCN. It exists to slow a rush of people wrapping purely to sell.</p></div>
 
 <h2>Can I send more than once to the same address?</h2><div class="card">
-<p class="muted">Yes. Your deposit address is permanent and reusable. Each deposit
-is handled separately, and the ${PER_PERSON} PCN limit applies across all of them.</p></div>
+<p class="muted">Yes, up to <b>${PER_PERSON} PCN in total</b>: a deposit address takes at most
+${PER_PERSON} PCN in its whole life, counting anything that was returned, and anything
+beyond that is returned rather than wrapped. For another wrap, ask for a new
+address on the <a href="/">Wrap</a> tab — you can use the same BSC address again.</p></div>
 
 <h2>I sent the wrong amount / to the wrong place</h2><div class="card">
 <p class="muted">If you sent more than ${PER_PERSON} PCN, the excess is returned.
@@ -1869,10 +1978,9 @@ const body = (req) => new Promise((res, rej) => {
   req.on('error', rej);
 });
 
-createServer(async (req, res) => {
+createServer((req, res) => viewer.run({ acct: accountOf(req), ip: clientIp(req) }, async () => {
   const url = new URL(req.url, 'http://x');
-  const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim()
-           || req.socket.remoteAddress || '?';
+  const ip = clientIp(req);
   const send = (code, html) => {
     res.writeHead(code, { 'content-type': 'text/html; charset=utf-8',
       'referrer-policy': 'no-referrer', 'x-content-type-options': 'nosniff' });
@@ -1885,23 +1993,21 @@ createServer(async (req, res) => {
     // monitors and social-card fetchers all probe with HEAD and read 404 as "dead".
     const isGet = req.method === 'GET' || req.method === 'HEAD';
     if (isGet && p === '/') {
-      const who = accountOf(req);
-      if (!who) return send(200, home('', null));
-      const usedW = accountUsedWpcn(load(), who);
-      const capW = ACCOUNT_MONTHLY_PCN * (1 - FEE_PCT / 100);
-      return send(200, home('', who, Math.max(0, (capW - usedW) / (1 - FEE_PCT / 100))));
+      return send(200, await home('', undefined, { focus: url.searchParams.get('wrap') || '' }));
     }
     if (isGet && p === '/my') {
       const who = accountOf(req);
       // Not an error: a signed-out visitor is sent to sign in, which is the
       // thing they need to do, rather than being told they are unauthorised.
       if (!who) {
-        if (!SSO_ON) return send(503, home('<p class="err">Sign-in is not configured on this desk.</p>'));
+        if (!SSO_ON) return send(503, await home('<p class="err">Sign-in is not configured on this desk.</p>'));
         res.writeHead(302, { Location: SSO_START + '?return=' +
           encodeURIComponent('https://wrapdesk.pc.am/sso?next=/my') });
         return res.end();
       }
-      return send(200, await myWraps(who));
+      // Everything an account has wrapped now lives on the Wrap tab.
+      res.writeHead(302, { Location: '/#history' });
+      return res.end();
     }
     if (isGet && p === '/track')  return send(200, track());
     if (isGet && p === '/redeem') return send(200, redeem());
@@ -1911,13 +2017,13 @@ createServer(async (req, res) => {
     // ── allocate (or return) a deposit address ──────────────────────────────
     // ---- sign in / out via market.pc.am ----
     if (p === '/sso') {
-      if (!SSO_ON) return send(503, home('<p class="err">Sign-in is not configured on this desk.</p>'));
+      if (!SSO_ON) return send(503, await home('<p class="err">Sign-in is not configured on this desk.</p>'));
       const who = verifySigned(url.searchParams.get('sso') || '', SSO_SECRET);
       if (!who) {
         // Expired is the common case (the token lives 120 seconds) and is
         // deliberately indistinguishable from forged here. Say what to do, not
         // which of the two it was.
-        return send(400, home('<p class="err">That sign-in link is no longer valid. Please start again from market.pc.am.</p>'));
+        return send(400, await home('<p class="err">That sign-in link is no longer valid. Please start again from market.pc.am.</p>'));
       }
       // Where to land. An ALLOW-LIST of three literal paths, not "any path
       // starting with /" and certainly not the raw parameter: a redirect
@@ -2015,7 +2121,7 @@ createServer(async (req, res) => {
       // FIRST, before anything is parsed or validated. A closed desk must not
       // reach the allocation, the account cap or the state file at all.
       if (intakeClosed() !== null) {
-        return send(503, home(`<p class="err"><b>Wrapping is closed &mdash; but <a href="/redeem">redeeming wPCN &rarr; PCN still works</a>.</b>
+        return send(503, await home(`<p class="err"><b>Wrapping is closed &mdash; but <a href="/redeem">redeeming wPCN &rarr; PCN still works</a>.</b>
           New wrap requests are not being accepted. Nothing you are already owed
           is affected &mdash; every wrap that reached 100 confirmations has been
           paid and anything still confirming will be.<br><br>
@@ -2027,10 +2133,10 @@ createServer(async (req, res) => {
       const amount = Number(f.get('amount'));
 
       if (!isBsc(bsc))
-        return send(400, home(`<p class="err">That is not a BSC address. It must
+        return send(400, await home(`<p class="err">That is not a BSC address. It must
           be <code>0x</code> followed by 40 hex characters.</p>`));
       if (!(amount > 0))
-        return send(400, home(`<p class="err">Enter how much PCN you want to wrap.</p>`));
+        return send(400, await home(`<p class="err">Enter how much PCN you want to wrap.</p>`));
         // An amount over the cap used to be ACCEPTED, clamped in silence, and then
         // echoed back as "You send 9999 PCN / You receive 237.50 wPCN" -- an
         // instruction to send ten times what the desk will wrap, with no mention that
@@ -2047,11 +2153,11 @@ createServer(async (req, res) => {
         const blocked = blockedFor(acct, ip);
         if (blocked === 'unreadable') {
           console.error(`wrapdesk: ${BLOCK_FILE} exists but cannot be read or parsed; refusing new requests`);
-          return send(503, home(`<p class="err">New wraps are paused for a moment. Please
+          return send(503, await home(`<p class="err">New wraps are paused for a moment. Please
             try again a little later.</p>`));
         }
         if (blocked) {
-          return send(403, home(`<p class="err">This ${blocked} cannot open new wraps.
+          return send(403, await home(`<p class="err">This ${blocked} cannot open new wraps.
             Wraps you have already made are not affected &mdash; see
             <a href="/my">My wraps</a>.</p>`));
         }
@@ -2059,7 +2165,7 @@ createServer(async (req, res) => {
         // from "your amount is wrong" and a customer should not have to fix the
         // second to discover the first.
         if (REQUIRE_ACCOUNT && !acct) {
-          return send(403, home(`<p class="err">This desk now needs a
+          return send(403, await home(`<p class="err">This desk now needs a
             <a href="${SSO_START}?return=https%3A%2F%2Fwrapdesk.pc.am%2Fsso">market.pc.am
             account</a> &mdash; the same one you use for the market and the exchange.
             Signing in gives you <b>${ACCOUNT_MONTHLY_PCN} PCN a month</b> instead of
@@ -2071,7 +2177,7 @@ createServer(async (req, res) => {
           const capW = ACCOUNT_MONTHLY_PCN * (1 - FEE_PCT / 100);
           const leftPcn = Math.max(0, (capW - usedW) / (1 - FEE_PCT / 100));
           if (amount > leftPcn + 1e-8) {
-            return send(400, home(`<p class="err">Your account has <b>${n2(leftPcn)} PCN</b> of its
+            return send(400, await home(`<p class="err">Your account has <b>${n2(leftPcn)} PCN</b> of its
               ${ACCOUNT_MONTHLY_PCN} PCN monthly allowance left. Enter ${n2(leftPcn)} or less.</p>`));
           }
         }
@@ -2090,7 +2196,7 @@ createServer(async (req, res) => {
         // too. That sentence was drafted for this very message and caught before
         // it shipped; it is recorded here so nobody writes it again.
         if (amount > PER_PERSON)
-          return send(400, home(acct
+          return send(400, await home(acct
             ? `<p class="err">${n2(amount)} PCN is more than one request may wrap.
               Your account may wrap ${ACCOUNT_MONTHLY_PCN} PCN a month, but a single
               request is capped at <b>${PER_PERSON} PCN</b> &mdash; that is the most
@@ -2100,10 +2206,13 @@ createServer(async (req, res) => {
             may wrap. The limit is <b>${PER_PERSON} PCN</b>, across every deposit you
             make &mdash; not per deposit. Enter ${PER_PERSON} or less.</p>`));
 
-      if (HCAPTCHA_ON) {
+      // The captcha is at SIGN-IN now (market.pc.am asks for it), so a signed-in
+      // account is not asked again on every wrap (owner, 2026-09-23). It still
+      // guards the anonymous desk, if accounts are ever made optional again.
+      if (HCAPTCHA_ON && !acct) {
         const v = await hcaptchaVerdict(f.get('h-captcha-response'), ip);
         if (!v.ok) {
-          return send(v.why === 'unreachable' ? 503 : 400, home(v.why === 'unreachable'
+          return send(v.why === 'unreachable' ? 503 : 400, await home(v.why === 'unreachable'
             ? `<p class="err">We could not reach the anti-bot check just now, so this
                request was not accepted. Nothing is wrong with your details &mdash;
                please try again in a minute.</p>`
@@ -2113,7 +2222,39 @@ createServer(async (req, res) => {
       }
 
       const st = load();
-      const key = bsc.toLowerCase();
+      const bscKey = bsc.toLowerCase();
+      // ONE BSC ADDRESS, MANY WRAPS (owner, 2026-09-23). A request used to be
+      // keyed by the BSC address alone, for ever. Since a deposit address takes
+      // at most PER_PERSON PCN in its whole life, a returning customer with the
+      // same wallet could only be handed an address that was already full --
+      // or, if the old request predated accounts, be refused outright ("that
+      // pairing is private"). The owner hit that trying to wrap himself.
+      //
+      // So for a signed-in account: reuse its own request for this BSC address
+      // only while that deposit address has received NOTHING (a repeated
+      // submit, or a changed amount); otherwise open a fresh request under
+      // `<bsc>#<n>`, with its own deposit address, subject to every limit below.
+      // Nothing about another person's request is revealed or touched. An
+      // unreadable chain is not "nothing received": it opens a fresh address
+      // rather than risk pointing someone at a full one. The watcher, the panel
+      // and the ops dashboard read request VALUES, never these keys.
+      let key = bscKey;
+      if (acct) {
+        let reuse = null;
+        const mineHere = Object.entries(st.requests)
+          .filter(([k, x]) => (k === bscKey || k.startsWith(bscKey + '#')) && x && x.account === acct)
+          .sort((a, b) => (b[1].created || 0) - (a[1].created || 0));
+        for (const [k, x] of mineHere) {
+          const got = await deposits(x.address);
+          if (got !== null && got.length === 0) { reuse = k; break; }
+        }
+        if (reuse) key = reuse;
+        else if (st.requests[bscKey]) {
+          let n = 2;
+          while (st.requests[`${bscKey}#${n}`]) n++;
+          key = `${bscKey}#${n}`;
+        }
+      }
 
       // ── the total allocation has to REFUSE, not just appear on the page ──
       //
@@ -2209,7 +2350,7 @@ createServer(async (req, res) => {
       const headroom = TOTAL_ALLOC - committed;
       if (wpcnFor(amount) > headroom + 1e-8) {
         const maxPcn = Math.floor(headroom / (1 - FEE_PCT / 100) * 100) / 100;
-        return send(503, home(headroom <= 0
+        return send(503, await home(headroom <= 0
           ? `<p class="err">The desk has allocated its full <b>${TOTAL_ALLOC} wPCN</b>
              and is not taking new wrap requests right now. Nothing is wrong with
              your request — the limit exists because the PancakeSwap pool is
@@ -2229,7 +2370,7 @@ createServer(async (req, res) => {
         if (acct) {
           const a = askedSince(st, (x) => x.account === acct, dayAgo);
           if (a.total + want > ACCOUNT_DAILY_PCN + 1e-8) {
-            return send(429, home(`<p class="err">Your account has already asked to wrap
+            return send(429, await home(`<p class="err">Your account has already asked to wrap
               <b>${n2(a.total)} PCN</b> in the last 24 hours. The limit is
               <b>${ACCOUNT_DAILY_PCN} PCN a day</b> per account (and ${ACCOUNT_MONTHLY_PCN} PCN a
               month), so nothing new was created. You can ask again after ${freesAt(a.oldest)}.
@@ -2240,17 +2381,17 @@ createServer(async (req, res) => {
         if (ip) {
           const b = askedSince(st, (x) => x.ip === ip, dayAgo);
           if (b.total + want > IP_DAILY_PCN + 1e-8) {
-            return send(429, home(`<p class="err"><b>${n2(b.total)} PCN</b> has already been asked
+            return send(429, await home(`<p class="err"><b>${n2(b.total)} PCN</b> has already been asked
               for from your connection in the last 24 hours. The limit is <b>${IP_DAILY_PCN} PCN a
               day per connection</b>, whichever account asks, so nothing new was created. You can
               ask again after ${freesAt(b.oldest)}.</p>`));
           }
         }
         if (tooMany(ip))
-          return send(429, home(`<p class="err">Too many new requests from your
+          return send(429, await home(`<p class="err">Too many new requests from your
             connection. Please try again later.</p>`));
         if (st.nextIndex >= pool.length)
-          return send(503, home(`<p class="err">The desk has run out of deposit
+          return send(503, await home(`<p class="err">The desk has run out of deposit
             addresses. That is our problem, not yours — please get in touch.</p>`));
         const slot = pool.find((x) => x.i === st.nextIndex);
         // THE IP IS RECORDED. It was not, and working out who had taken the
@@ -2269,7 +2410,7 @@ createServer(async (req, res) => {
         // See the note above claimCookieName().
         const owns = holdsClaim(req, key) || (acct && r.account && r.account === acct);
         if (!owns) {
-          return send(403, home(`<p class="err">A wrap request already exists for that
+          return send(403, await home(`<p class="err">A wrap request already exists for that
             BSC address, and its deposit address is not shown to a visitor we cannot
             recognise — that pairing is private to whoever created it.</p>
             <p class="muted">If it was you: open this page in the browser you used the
@@ -2288,6 +2429,12 @@ createServer(async (req, res) => {
       const eligible = Math.min(amount, PER_PERSON);
       const net = eligible * (1 - FEE_PCT / 100);
       if (setCookie) res.setHeader('Set-Cookie', setCookie);
+      // Post/redirect/get: a reload of the answer must not resubmit the form.
+      if (acct) {
+        res.writeHead(303, { Location: `/?wrap=${encodeURIComponent(r.address)}#send` });
+        return res.end();
+      }
+      // The anonymous desk (accounts not required) keeps its one-page answer.
       return send(200, page('Your deposit address', '/', `
 <h1>Send PCN to this address</h1>
 <div class="card"><p class="muted">Your deposit address — <b>yours alone</b>. It takes
@@ -2472,7 +2619,7 @@ Times are estimates: PCoin blocks average ten minutes but vary a lot.</p>`));
       <p class="err">That is our fault, not yours. Nothing is lost — your deposit
       address stays valid. Please try again shortly.</p>`));
   }
-}).listen(PORT, '127.0.0.1', () => {
+})).listen(PORT, '127.0.0.1', () => {
   console.log(`wrapdesk on 127.0.0.1:${PORT}, ${pool.length} addresses, ` +
               `fee ${FEE_PCT}%, cap ${PER_PERSON}/person`);
   console.log(`  allocation ${TOTAL_ALLOC} wPCN total, enforced`);

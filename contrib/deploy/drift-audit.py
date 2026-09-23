@@ -62,7 +62,9 @@ DEPLOYMENTS = {
     # that renames its entrypoint looks like "one file only on the server and a
     # different one only in the repo", which reads as two problems and is none.
     "wrapdesk": ("contrib/wpcn", "/opt/wrapdesk", "~/.ssh/id_ed25519",
-                 ["*.mjs"], {"server.mjs": "wrapdesk-server.mjs"}),
+                 ["*.mjs"], {"server.mjs": "wrapdesk-server.mjs"},
+                 # the desk imports the market's QR encoder; ONE source, no copy
+                 {"qr.mjs": "contrib/market/qr.mjs"}),
     # NOT /opt/pcoin-explorer/src -- that is a checkout of this whole repo. The
     # units run from contrib/explorer inside it, which is the directory that
     # actually has to match.
@@ -111,6 +113,10 @@ def audit(name, target, pull=False):
     spec = DEPLOYMENTS[name]
     sub, remote, key, globs = spec[:4]
     renames = spec[4] if len(spec) > 4 else {}   # remote name -> repo name
+    # Deployed here, but their one source lives elsewhere in the repo. Compared
+    # against that source rather than a copy, because a copy is a second thing
+    # to go stale.
+    borrowed = spec[5] if len(spec) > 5 else {}  # remote name -> repo path
 
     repo_dir = ROOT / sub
     if not repo_dir.is_dir():
@@ -129,6 +135,10 @@ def audit(name, target, pull=False):
             rel = f.relative_to(repo_dir).as_posix()
             if f.name not in IGNORE:
                 local[rel] = norm(f.read_bytes())
+    for remote_name, repo_path in borrowed.items():
+        f = ROOT / repo_path
+        if f.is_file():
+            local[remote_name] = norm(f.read_bytes())
 
     # LISTED WITH find, NOT A SHELL GLOB. In POSIX sh "**" is just "*", so
     # "**/*.py" matches exactly one level deep and silently skips the top level
