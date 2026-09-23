@@ -724,6 +724,23 @@ def _tg_call(tg_token, method, fields):
         return {"ok": False, "description": type(e).__name__}
 
 
+def _discord_gone(e):
+    """True when a DELETE failed because the message no longer exists.
+
+    Discord answers 404 with code 10008 (Unknown Message) once the author,
+    another moderator or Discord's own filter has removed it first. That is
+    the outcome a removal wanted -- reporting it as "It is still visible."
+    sent a false alarm on 2026-09-20. Any OTHER 404 (a wrong channel, say)
+    still counts as a failure.
+    """
+    if getattr(e, "code", None) != 404:
+        return False
+    try:
+        return json.loads(e.read().decode("utf-8", "replace")).get("code") == 10008
+    except Exception:
+        return False
+
+
 def remove_advert(tg_token, row, author, text, model):
     """Report to the private channel FIRST, then delete.
 
@@ -763,7 +780,7 @@ def remove_advert(tg_token, row, author, text, model):
               % (mid, rep.get("description")), file=sys.stderr)
         return None
 
-    deleted, why_not = False, ""
+    deleted, gone, why_not = False, False, ""
     try:
         if discord:
             tok = ""
@@ -788,6 +805,8 @@ def remove_advert(tg_token, row, author, text, model):
             why_not = "" if deleted else (d.get("description") or "not ok")
     except urllib.error.HTTPError as e:
         why_not = "HTTP %d" % e.code
+        if discord and _discord_gone(e):
+            gone, why_not = True, "already gone (HTTP 404, Unknown Message)"
     except Exception as e:
         why_not = type(e).__name__
 
@@ -795,10 +814,13 @@ def remove_advert(tg_token, row, author, text, model):
                  "chat": chat, "message_id": mid, "sent": when, "who": author, "user_id": user_id,
                  "reason": "advert (AI)", "model": model, "text": text, "forwarded": forwarded,
                  "deleted": deleted, "delete_error": why_not})
-    if not deleted:
+    if not deleted and not gone:
         _tg_call(tg_token, "sendMessage", {"chat_id": alert, "text":
                  "⚠️ Could NOT delete message %s in %s (%s). It is still visible." % (mid, where, why_not or "unknown")})
-    return deleted
+    # Not visible is what the caller asks about: gone counts, and removed.jsonl
+    # still records deleted=False with the reason, so nobody is credited with
+    # a delete that somebody else did.
+    return deleted or gone
 
 
 def reply(token, message_id, text, dest="group"):

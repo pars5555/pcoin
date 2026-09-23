@@ -398,6 +398,23 @@ def removed_log(entry):
         print("  removal log write failed: %s" % e, file=sys.stderr)
 
 
+def _discord_gone(e):
+    """True when a DELETE failed because the message no longer exists.
+
+    Discord answers 404 with code 10008 (Unknown Message) once the author,
+    another moderator or Discord's own filter has removed it first. That is
+    the outcome a removal wanted -- reporting it as "It is still visible."
+    sent a false alarm on 2026-09-20. Any OTHER 404 (a wrong channel, say)
+    still counts as a failure.
+    """
+    if getattr(e, "code", None) != 404:
+        return False
+    try:
+        return json.loads(e.read().decode("utf-8", "replace")).get("code") == 10008
+    except Exception:
+        return False
+
+
 def remove_and_report(token, tg_token, alert_chat, guild, channel, m, reason, do_delete=True):
     """Report WHO and WHY to the private channel first, then delete.
     Returns True once the report is delivered (deleted or not); False means
@@ -440,7 +457,7 @@ def remove_and_report(token, tg_token, alert_chat, guild, channel, m, reason, do
                      "kept": "pool/mining link reported to the owner"})
         print("  reported (kept) %s: %s" % (m["id"], reason))
         return True
-    deleted, why_not = False, ""
+    deleted, gone, why_not = False, False, ""
     req = urllib.request.Request(API + "/channels/%s/messages/%s" % (channel, m["id"]), method="DELETE",
                                  headers={"Authorization": "Bot " + token,
                                           "User-Agent": "DiscordBot (https://pc.am, 1.0) pcoin-discord-watch"})
@@ -449,13 +466,15 @@ def remove_and_report(token, tg_token, alert_chat, guild, channel, m, reason, do
             deleted = r.status in (200, 204)
     except urllib.error.HTTPError as e:
         why_not = "HTTP %d" % e.code
+        if _discord_gone(e):
+            gone, why_not = True, "already gone (HTTP 404, Unknown Message)"
     except urllib.error.URLError as e:
         why_not = type(e.reason).__name__
     removed_log({"at": int(time.time()), "by": "pcoin-discord-watch", "platform": "discord", "channel": channel,
                  "message_id": m["id"], "sent": when, "display_name": a.get("global_name"),
                  "username": a.get("username"), "user_id": uid, "account_created": created,
                  "reason": reason, "text": describe(m), "deleted": deleted, "delete_error": why_not})
-    if not deleted:
+    if not deleted and not gone:
         data = urllib.parse.urlencode({"chat_id": alert_chat,
                                        "text": "⚠️ Could NOT delete Discord message %s (%s). It is still visible." % (m["id"], why_not)}).encode()
         try:
