@@ -19,7 +19,7 @@ panel; every listing has numbered pagination (25 rows/page):
 | `./census` | who won each block (window selectable 100/200/500). A split coinbase is counted ONCE as the pool, not once per participant |
 | `./pool` | the pool's REAL workers from its share log: 24 h share, ≈hashrate, last share, blocks found, paid |
 | `./peers` | the collector's peer snapshot, with a loud staleness banner when the snapshot is old |
-| `./fleet` / `./payments` | fleet balances split by the `PAYMENT - ` label prefix, with totals rows |
+| `./fleet` / `./payments` | fleet balances split by the `PAYMENT - ` label prefix, with totals rows; `./fleet` also lists your machines, one row per machine, when `machines` is configured |
 | `./address?a=…` | detail for one address: balance cards, mempool state, paginated confirmed history |
 
 Detail pages use **query strings, not path segments** (`./address?a=…`), so
@@ -128,6 +128,16 @@ is owned by it and is the only writable path.
 flag in the miner census, and the balances table. Prefix a label with
 `PAYMENT - ` to mark an integration's deposit address rather than one of your
 own miners.
+
+`machines` (optional) is a list with one entry per computer — `name`, `alias`,
+`os`, `mode` (`solo` / `pool`), `pool`, `pays_to`, `forward_to` (`null` = paid
+directly) and `note` — because `fleet` is keyed by address and several machines
+pay one address. `./fleet` shows it above the balances, with each `pays_to`
+balance taken from the same single explorer request. There is **no live column,
+on purpose**: the node logs in to a pool with the bare payout address, so
+neither the pool's share log nor the chain can tell machines that share an
+address apart, and a per-machine "last seen" would be a guess. Put each
+`pays_to` in `fleet` too, or the census will not count its blocks as yours.
 
 ## Why it is in git now
 

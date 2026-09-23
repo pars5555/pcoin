@@ -9,8 +9,20 @@
 
   "fleet": {
     "pc1q…": "DESKTOP-EXAMPLE",
-    "pc1q…": "PAYMENT - example.pc.am"
+    "pc1q…": "PAYMENT - example.pc.am",
+    "pc1q…treasury": "treasury"
   },
+  "machines": [
+    { "name": "DESKTOP-EXAMPLE1", "os": "windows", "mode": "solo", "pool": null,
+      "pays_to": "pc1q…treasury", "forward_to": null, "note": "PCoinTray, large pages" },
+    { "name": "DESKTOP-EXAMPLE2", "alias": "office01", "os": "windows", "mode": "pool", "pool": "pool2.pc.am",
+      "pays_to": "pc1q…treasury", "forward_to": null },
+    { "name": "linux-desktop", "os": "linux", "mode": "pool", "pool": "pool2.pc.am",
+      "pays_to": "pc1q…family", "forward_to": null, "note": "systemd pcoin-miner, 4 threads" },
+    { "name": "DESKTOP-EXAMPLE3", "os": "windows", "mode": "solo", "pool": null,
+      "pays_to": "pc1q…its-own-wallet", "forward_to": "pc1q…treasury",
+      "note": "mines to its own wallet; the tray sweeps it on to the treasury" }
+  ],
   "peerLabels": {
     "203.0.113.4": "home site"
   }

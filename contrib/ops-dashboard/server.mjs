@@ -74,6 +74,16 @@ if (!cfg.totpSecret) {
 const FLEET = cfg.fleet || {};
 const isPayment = label => String(label || '').startsWith('PAYMENT - ');
 
+// The machines themselves, one entry each: what FLEET cannot say, because it
+// is keyed by ADDRESS and several machines pay one address. Optional -- with no
+// "machines" in config.json the fleet page renders exactly as it always has.
+// Typed in by hand, so it is the owner's list, not a discovery: nothing here
+// proves that a listed machine exists or is running.
+const MACHINES = Array.isArray(cfg.machines) ? cfg.machines.filter(m => m && typeof m === 'object') : [];
+if (cfg.machines != null && !Array.isArray(cfg.machines)) {
+  console.warn('[ops] WARNING: "machines" in config.json is not a list -- ignored, the fleet page shows no machine table.');
+}
+
 // ── auth ───────────────────────────────────────────────────────────────────
 function hashPw(pw) {
   return scryptSync(pw, cfg.salt, 64, { ...cfg.scrypt }).toString('hex');
@@ -307,8 +317,19 @@ async function chain() {
   };
 }
 
-async function fleetBalances() {
-  const addrs = Object.keys(FLEET);
+// The explorer's own test for an address string (pcoin_api/service.py,
+// ADDRESS_RE). It refuses the WHOLE batch with a 400 when any one entry fails,
+// so a typo in one machine's pays_to has to be stopped here: sent along, it
+// would blank every balance on the fleet page, not just its own row.
+const usableAddr = a => typeof a === 'string' && /^[0-9A-Za-z]{6,128}$/.test(a);
+
+async function fleetBalances(extra = []) {
+  // `extra` is for addresses a page needs that the fleet map does not name --
+  // a machine's pays-to. They ride in the SAME request and the Set collapses
+  // repeats, so seven machines paying one address cost one lookup, not seven.
+  // Rows come back for every address asked about, so a caller that passes
+  // `extra` gets more than the fleet and must filter (moneyPage does).
+  const addrs = [...new Set([...Object.keys(FLEET), ...extra.filter(usableAddr)])];
   if (!addrs.length) return [];
   const r = await fetch(`${EXPLORER}/addresses`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -862,8 +883,95 @@ async function poolPage(url) {
   </div>`);
 }
 
+/** "Your miners — one row per machine", from cfg.machines. The fleet map
+ *  cannot answer this: it is keyed by ADDRESS, so seven machines paying the
+ *  treasury are one of its rows.
+ *
+ *  `bal` maps address -> the balance row moneyPage already fetched; nothing is
+ *  fetched here. The figure is the PAYS-TO ADDRESS's balance, not what that
+ *  machine earned: machines sharing an address all show the same number, so
+ *  each says "shared by N" and there is deliberately no totals row -- a sum
+ *  would count one balance seven times.
+ *
+ *  NO LIVE COLUMN, AND THAT IS A FINDING, NOT A GAP TO FILL IN. Nothing this
+ *  dashboard receives can be tied to one machine without guessing. The node
+ *  logs in to a pool with the bare payout address (src/node/poolclient.cpp:
+ *  login = the address, pass "x", agent "pcoind" -- the same on every
+ *  machine); the pool keys each share on that address plus a random
+ *  per-connection session (contrib/pool/pool.mjs login handler, store.mjs
+ *  `shares`); the pool collector groups by address. So seven machines on pool2
+ *  paying the treasury are ONE row in the pool's log, and two solo machines
+ *  paying it are one winner on chain. A per-machine "last seen" built from
+ *  that would print the same number on seven rows while six might be off. */
+function machinesPanel(bal) {
+  if (!MACHINES.length) return '';
+  const OS = { windows: 'Windows', linux: 'Linux' };
+  const sharing = new Map();
+  for (const m of MACHINES) sharing.set(m.pays_to, (sharing.get(m.pays_to) || 0) + 1);
+  const labelTag = a => FLEET[a]
+    ? ` <span class="tag ${isPayment(FLEET[a]) ? 'pay' : 'you'}">${esc(FLEET[a])}</span>`
+    : ' <span class="tag other" title="not in &quot;fleet&quot; in config.json, so the census does not count this address\'s blocks as yours">not in fleet list</span>';
+  const addr = a => usableAddr(a) ? addrCell(a) + labelTag(a)
+    : `<span class="bad">not a usable address</span> <span class="mono muted">${esc(short(String(a ?? '')))}</span>`;
+
+  const rows = MACHINES.map(m => {
+    const host = String(m.pool || '').replace(/:\d+$/, '');   // "pool2.pc.am:3333" names the same pool
+    const how = m.mode === 'solo' ? 'solo'
+      : m.mode === 'pool'
+        ? (host ? `pool · <a href="${host === 'pool.pc.am' ? './pool' : `./pool?pool=${encodeURIComponent(host)}`}">${esc(m.pool)}</a>`
+                : 'pool · <span class="warn">no pool named</span>')
+      : `<span class="warn">${esc(m.mode || 'not stated')}</span>`;
+    // null is a statement ("paid directly"); a missing key is not one.
+    const fwd = m.forward_to === null ? '<span class="muted">paid directly</span>'
+      : m.forward_to === undefined ? '<span class="muted">not stated</span>'
+      : `→ ${addr(m.forward_to)}`;
+    // Unknown-shaped: an address the answer did not cover, or a null total, is
+    // "unread" -- never 0.00, which would read as "this machine earned nothing".
+    const b = usableAddr(m.pays_to) ? bal.get(m.pays_to) : null;
+    const n = sharing.get(m.pays_to) || 1;
+    const balance = !usableAddr(m.pays_to) ? '—'
+      : !b || b.total == null ? '<span class="muted">unread</span>'
+      : `${pcn(b.total)}${b.lifetime != null && Number(b.lifetime) === 0 ? '<br><span class="warn" style="font-size:12px">nothing received yet</span>' : ''}${n > 1 ? `<br><span class="muted" style="font-size:12px">shared by ${n}</span>` : ''}`;
+    return `<tr>
+      <td><b>${esc(m.name || '—')}</b>${m.alias ? ` <span class="muted">${esc(m.alias)}</span>` : ''}${m.note ? `<br><span class="muted">${esc(m.note)}</span>` : ''}</td>
+      <td>${esc(OS[m.os] || m.os || '—')}</td>
+      <td>${how}</td>
+      <td>${addr(m.pays_to)}</td>
+      <td>${fwd}</td>
+      <td class="num">${balance}</td>
+    </tr>`;
+  }).join('');
+
+  const solo = MACHINES.filter(m => m.mode === 'solo').length;
+  const pooled = MACHINES.filter(m => m.mode === 'pool').length;
+  const payees = new Set(MACHINES.map(m => m.pays_to)).size;
+  return `<div class="panel">
+    <h2>Your miners — one row per machine</h2>
+    <p class="muted" style="margin:-4px 0 10px">${MACHINES.length} machine${MACHINES.length === 1 ? '' : 's'} · ${solo} solo · ${pooled} through a pool · paying ${payees} address${payees === 1 ? '' : 'es'}</p>
+    <table><thead><tr><th>Machine</th><th>OS</th><th>Mines</th><th>Pays to</th><th>Forwarding</th><th class="num">Pays-to balance</th></tr></thead>
+    <tbody>${rows}</tbody></table>
+    <div class="note"><b>Typed into <code>config.json</code> by hand</b> (<code>machines</code>) — this is your list, not a
+    discovery, and nothing here checks that a machine exists or is running.<br>
+    <b>Pays-to balance</b> is the balance of the ADDRESS, not what that machine earned: machines that share an
+    address show the same figure (<i>shared by N</i>), so never add this column up. Click an address for its
+    mature / immature split and history.<br>
+    <b>Why there is no hashrate or "last seen" column:</b> the pool credits a payout address, not a machine. Every
+    machine logs in with the bare address, so the pool's own log shows machines that share one as a single miner,
+    and the chain shows solo machines paying one address as one winner. Per-address activity is on the pool page
+    (linked in <i>Mines</i>); per-machine activity is visible only on the machine itself.<br>
+    An address tagged <i>not in fleet list</i> is missing from <code>fleet</code>, so the census does not count its
+    blocks as yours.</div>
+  </div>`;
+}
+
 async function moneyPage(url, wantPayments) {
-  const fl = await fleetBalances();
+  // The fleet page also shows each machine's pays-to balance, from this SAME
+  // request: a pays-to the fleet map does not name is asked about too, and is
+  // taken back out below so the balances table stays exactly the fleet map.
+  const payTo = wantPayments ? [] : MACHINES.map(m => m.pays_to);
+  const all = await fleetBalances(payTo);
+  const notFleet = new Set(payTo.filter(a => !Object.hasOwn(FLEET, a)));
+  const fl = all.filter(f => !notFleet.has(f.address));
   const rows0 = fl.filter(f => isPayment(f.label) === wantPayments);
   const pages = Math.max(1, Math.ceil(rows0.length / PER));
   const p = Math.min(intp(url.searchParams.get('p'), 1), pages);
@@ -888,6 +996,7 @@ async function moneyPage(url, wantPayments) {
        'Balances only. Whether a miner is <i>running</i> is not visible from the chain — a machine that is on but unlucky looks identical to one that is off. Use the peers page as a liveness hint: if a site’s IP is not connected, nothing there is mining. A LOW balance on a forwarding device usually means it is <b>working</b> — it sweeps to the treasury by design.'];
 
   return shell(key, title, `${rows0.length} address${rows0.length === 1 ? '' : 'es'} on record`, `
+  ${wantPayments ? '' : machinesPanel(new Map(all.map(f => [f.address, f])))}
   <div class="panel">
     <h2>On-chain balances</h2>
     <table><thead><tr><th>Address</th><th>${head}</th><th class="num">Mature</th><th class="num">Immature</th><th class="num">Total PCN</th><th class="num">Lifetime in</th></tr></thead>
