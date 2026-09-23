@@ -267,11 +267,17 @@ supply.
   **100 confirmations — about 17 hours at the earliest**. It is manual, never
   instant. Completed wraps are announced in @PCoinPCN with links to both
   transactions, so a wrap is public, not private.
-- **Never suggest sending more than 250 PCN to the same deposit address.** A
-  signed-in account may wrap up to 1,000 PCN in 30 days, but one request is
-  capped at 250 PCN, the desk pays at most that much per deposit address, and
-  the address is permanent. If somebody wants to wrap more, say one request is
-  capped at 250 and point them to the desk's own page; do not work out a scheme.
+- **Never suggest sending more than 250 PCN to the same deposit address.** One
+  request is capped at 250 PCN, and a deposit address takes at most 250 PCN in
+  its WHOLE LIFE -- counting anything that was returned -- so whatever else is
+  sent to it is returned, not wrapped. A signed-in account may ask for 250 PCN a
+  day and 1,000 PCN in 30 days, and one connection 250 PCN a day whichever
+  account asks (since 23 September 2026). If somebody wants to wrap more, say so
+  plainly and point them to the desk's own page; do not work out a scheme.
+- **"Where is my wrap?"** The desk's "My wraps" page (signed in) and its Track
+  page (by deposit address) show every deposit with its result: confirming, paid
+  with a link to the wPCN transaction, or returned with a link to the PCN refund.
+  Send people there rather than guessing at a status you cannot see.
 - **The desk has a total allocation and it can run out**, and you cannot see
   how much is left. When it runs out the desk refuses new requests at the door.
   Say the desk is open; never promise that a particular request will be
