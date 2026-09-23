@@ -65,7 +65,15 @@ import('/opt/pcoin-market/settings.mjs').then(async m=>{
 POOL=${POOL:-0.027679}    # the pool after a 2,000 wPCN dump
 P=${START:-0.03364477}    # what the ladder charges today
 HOURS=${HOURS:-6}
-TARGET=$(node -e "process.stdout.write(($POOL*1.05).toFixed(8))")
+# The premium is READ FROM THE FILE UNDER TEST, never restated here. This line
+# used to hardcode 1.05; when the owner moved the ask to parity (PREMIUM_PCT 0,
+# 2026-09-23) the policy converged correctly in three runs, but the harness was
+# still waiting for a 5%-higher target it would never reach, so it walked past
+# convergence and died on the empty "proposed" line of a correct "no drop
+# needed". A test that restates a constant tests its own copy of it.
+PREMIUM=$(grep -oE '^const PREMIUM_PCT *= *[0-9.]+' "$SRC" | grep -oE '[0-9.]+$')
+[ -n "$PREMIUM" ] || { echo "cannot read PREMIUM_PCT from $SRC -- refusing to guess it"; exit 1; }
+TARGET=$(node -e "process.stdout.write(($POOL*(1+$PREMIUM/100)).toFixed(8))")
 
 # The median is set to the dumped pool outright -- the WORST case. In reality it
 # takes >12 h to follow, so the demanded drop arrives smaller and later than this.

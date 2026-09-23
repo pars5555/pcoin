@@ -55,14 +55,15 @@
 // the market closes to EVERYBODY -- the honest buyers included.
 //
 // --- the rule --------------------------------------------------------------
-//     target  = median(pool over 24h) x (1 + PREMIUM_PCT)
+//     target  = median(pool over WINDOW_H, 6h) x (1 + PREMIUM_PCT)
 //     ceiling = worst public serviceRate x (1 + MAX_DIVERGENCE_PCT)
 //     cap     = max(min(target, ceiling), ladderMinPriceUsd)
 //
 // The MEDIAN is the anti-manipulation half. A flash dump is a handful of samples
-// against 1,440 and barely moves a 24h median; to drag the cap down an attacker
-// must hold the pool depressed for more than twelve hours, in the open, where it
-// is visible and where this tool's own output records it. That converts a
+// against ~360 and barely moves a 6h median; to drag the cap down an attacker
+// must hold the pool depressed for more than THREE hours (it was twelve with a
+// 24h window -- see WINDOW_H for why that changed), in the open, where it is
+// visible and where this tool's own output records it. That converts a
 // one-shot reversible trade into a sustained, observable campaign.
 //
 // The CEILING is the keep-the-market-open half. It binds only when the pool has
@@ -82,10 +83,42 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import mysql from 'mysql2/promise';
 import { makeSettings } from '/opt/pcoin-market/settings.mjs';
 
-const PREMIUM_PCT        = 5;      // owner's rule: PCN sits this far above wPCN
+// PARITY -- owner's decision, 2026-09-23, replacing his own earlier rule
+// ("PCN sits 5% above wPCN"). With the 6h window live, the ask still sat at
+// $0.03213 against a pool at $0.02922, and he asked for the two to MATCH:
+// "it should do work on parity every hour or periodically to match them".
+// The 5% premium was the larger half of that gap.
+//
+// Safe against the wrap desk: buying PCN here at the ask, wrapping it (5% fee)
+// and selling the wPCN only pays if the pool trades 5%+ ABOVE the ask; at
+// parity it does not, so the wrap fee alone keeps that loop shut. What still
+// governs how FAST the ask can fall is unchanged: MAX_DROP_PCT per run,
+// MAX_DROP_24H_PCT per 24h, and the ladderMinPriceUsd floor.
+const PREMIUM_PCT        = 0;      // owner's rule since 2026-09-23: the ask matches the pool median
 const MAX_DIVERGENCE_PCT = 10;     // ceiling. The sale gate closes at 20.
-const WINDOW_H           = 24;     // the median window
-const MIN_SAMPLES        = 1000;   // of a possible ~1440. Below this: refuse.
+// SIX HOURS, NOT TWENTY-FOUR -- owner's decision, 2026-09-23.
+//
+// The 24h median made the ask follow the pool a day late. That morning the
+// pool had sat at exactly $0.03284129 for 13 straight hours (55% of the
+// window), then fell to $0.0292 -- and every hourly run for six hours logged
+// the SAME median, $0.03284129, and "No drop needed", because a 24h median
+// cannot move until the new price has held for more than twelve hours. The
+// data was fresh (newest sample 2 s old); the arithmetic was right; the owner
+// asked for the price to follow "after a few hours", not the next day.
+//
+// What that trades away, stated plainly: an attacker now has to hold the pool
+// down for more than THREE hours rather than twelve before the ask moves. What
+// still bounds it, unchanged: MAX_DROP_PCT per run, MAX_DROP_24H_PCT per day,
+// and ladderMinPriceUsd. So a sustained campaign moves the ask at most 12% a
+// day and never below the floor. "Minutes" was NOT done and must not be: that
+// is the design rejected on 2026-09-11, which wrote the price down 98.6% for
+// a $0.97 dump. The CREDIT rate already follows a 6h median, so the ask and
+// the credit now move on the same clock.
+const WINDOW_H           = 6;      // the median window
+// Scaled WITH the window, never left behind: 1000 was "of a possible ~1440"
+// at 24h; a 6h window holds ~360, and leaving 1000 here would refuse every
+// single run. ~70% coverage, the same proportion as before.
+const MIN_SAMPLES        = 250;    // of a possible ~360. Below this: refuse.
 const MAX_DROP_PCT       = 8;      // most the price may fall IN ONE RUN
 const MAX_DROP_24H_PCT   = 12;     // ...and this much in a DAY, however many runs it takes
 // In CURVE mode both are CLAMPS: the ask falls this far and the rest follows on
@@ -494,7 +527,7 @@ if (curveMode) {
     await tg('<b>market.pc.am</b>\nPCN ask followed the wPCN pool <b>down</b>.\n' +
              'charged $' + f(nowP, 6) + ' \u2192 $' + f(gotP, 6) +
              '  (' + cAppliedPct.toFixed(2) + '%)\n' +
-             'pool median 24h $' + f(median, 6) + ', floor $' + f(floor, 6) +
+             'pool median ' + WINDOW_H + 'h $' + f(median, 6) + ', floor $' + f(floor, 6) +
              (cHitFloor ? ' <b>(the floor is binding)</b>' : '') + '\n' +
              'ammK ' + k.toFixed(0) + ' \u2192 ' + newK.toFixed(0) +
              // A clamped run is the signal the old refusal used to send. It means
