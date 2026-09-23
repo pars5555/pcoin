@@ -326,7 +326,9 @@ export function refundWrap(key, pcn, to) {
   // money has already moved and the ledger has not caught up.
   try {
     const out = execFileSync(ctx.argv[0],
-      [...ctx.argv.slice(1), '--refunded', key, r.txid],
+      // The amount goes in too: the watcher charges a refund against its
+      // address's lifetime allowance, and without it assumes the whole one.
+      [...ctx.argv.slice(1), '--refunded', key, r.txid, String(amount)],
       { encoding: 'utf8', timeout: 120000, env: ctx.env });
     return { ok: true, out: `${r.already ? 'Already refunded earlier' : 'Refunded'} `
       + `${amount} PCN to ${dest}, tx ${r.txid}. ${String(out).trim()}` };

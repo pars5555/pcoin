@@ -1260,6 +1260,15 @@ if __name__ == "__main__":
         s["seen"][key]["refunded"] = True
         s["seen"][key]["at"] = int(time.time())
         s["seen"][key]["refund_txid"] = sys.argv[3] if len(sys.argv) > 3 else None
+        # The PCN given back, when the caller knows it (the panel's Refund does).
+        # The Send ceiling charges a refund against its address; without the
+        # amount it has to assume the whole allowance, which is the safe side.
+        if len(sys.argv) > 4:
+            try:
+                s["seen"][key]["refund_pcn"] = round(float(sys.argv[4]), 8)
+            except ValueError:
+                print(f"REFUSED: {sys.argv[4]!r} is not an amount of PCN; nothing recorded.")
+                sys.exit(2)
         save_state(s)
         print(f"marked refunded: {key}")
         if len(sys.argv) <= 3:
@@ -1508,17 +1517,35 @@ if __name__ == "__main__":
         # one pass and absent across time -- that is how one deposit address
         # was paid 475.00, twice its ceiling, in two releases six days apart.
         # A button that can repeat that on a click is worse than the bug.
+        #
+        # AND A REFUND USES THE ADDRESS UP TOO (owner, 2026-09-23: one allowance
+        # per person, and no wrapping past a limit). Counting only releases let a
+        # fully refunded address read as empty: the farmers whose extra wraps were
+        # returned that day could have sent 250 PCN to the same addresses again
+        # and been paid for it. An address takes PER_PERSON PCN in its whole life,
+        # paid or returned. A refund with no recorded amount is charged the whole
+        # allowance -- unknown is the maximum, the same rule as a release with no
+        # send_wpcn above. `not_a_deposit` is our own money and counts for nothing.
         prior = 0.0
         for k, rec in (s.get("seen") or {}).items():
-            if rec.get("released") and k.endswith(":" + str(addr)):
+            if not k.endswith(":" + str(addr)) or not isinstance(rec, dict):
+                continue
+            if rec.get("released"):
                 try:
                     prior += float(rec.get("send_wpcn") or 0)
                 except (TypeError, ValueError):
                     pass
+            elif rec.get("refunded") and not rec.get("not_a_deposit"):
+                try:
+                    back = float(rec.get("refund_pcn"))
+                    prior += min(back, PER_PERSON) * (1 - FEE_PCT / 100.0)
+                except (TypeError, ValueError):
+                    prior += PER_ADDRESS_CEILING
         if prior + amount > PER_ADDRESS_CEILING + 1e-9:
-            print(f"REFUSED: {addr} has already been paid {prior:,.8f} wPCN; another "
-                  f"{amount:,.8f} would total {prior + amount:,.8f}, over the "
-                  f"{PER_ADDRESS_CEILING:,.2f} ceiling. Nothing sent.")
+            print(f"REFUSED: {addr} has already used {prior:,.8f} wPCN of its allowance "
+                  f"(paid, or refunded); another {amount:,.8f} would total "
+                  f"{prior + amount:,.8f}, over the {PER_ADDRESS_CEILING:,.2f} ceiling. "
+                  f"Nothing sent -- refund this deposit instead.")
             sys.exit(2)
 
         already = sent_today(s)

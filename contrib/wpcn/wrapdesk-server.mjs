@@ -151,6 +151,13 @@ const REQUIRE_ACCOUNT = Boolean(process.env.WRAP_REQUIRE_ACCOUNT) && SSO_ON;
 const SSO_START = process.env.WRAP_SSO_START || 'https://market.pc.am/sso/wrapdesk';
 // Per ACCOUNT, per rolling 30 days, in PCN.
 const ACCOUNT_MONTHLY_PCN = Number(process.env.WRAP_ACCOUNT_MONTHLY_PCN || 1000);
+// A DAY'S LIMIT, per account AND per connection (owner, 2026-09-23). The farming
+// that day came from several accounts opened on one IP, each taking exactly its
+// monthly 1000 PCN within minutes; a per-account check never sees the others.
+// Counted on what was ASKED FOR in the last 24 hours, like the monthly check's
+// fallback, so asking and not paying still uses the day.
+const ACCOUNT_DAILY_PCN = Number(process.env.WRAP_ACCOUNT_DAILY_PCN || 250);
+const IP_DAILY_PCN = Number(process.env.WRAP_IP_DAILY_PCN || 250);
 
 // This desk's own cookie is signed with a key DERIVED from the shared secret,
 // never the shared secret itself: one secret to provision, but a stolen desk
@@ -288,6 +295,68 @@ function accountUsedWpcn(st, email) {
   }
   return used;
 }
+// PCN asked for in requests matching `match` since `sinceMs`, and when the oldest
+// of them was made (so a refusal can say when room frees up).
+function askedSince(st, match, sinceMs) {
+  let total = 0, oldest = null;
+  for (const r of Object.values(st.requests || {})) {
+    if (!r || !match(r) || !(Number(r.created) >= sinceMs)) continue;
+    total += Math.min(Number(r.amount) || 0, PER_PERSON);
+    if (oldest === null || r.created < oldest) oldest = r.created;
+  }
+  return { total, oldest };
+}
+const freesAt = (oldest) => oldest
+  ? new Date(Number(oldest) + 864e5).toISOString().slice(0, 16).replace('T', ' ') + ' UTC'
+  : 'tomorrow';
+
+// WHAT HAPPENED TO EACH DEPOSIT at one address, from the watcher's ledger -- the
+// only record of outcomes (the request row's `released` is written null and never
+// updated). txid -> { state: 'paid' | 'refunded', tx, amount }. null when the
+// ledger cannot be read: unknown is not "nothing happened".
+function outcomesAt(addr, seenIn) {
+  let seen = seenIn;
+  if (!seen) {
+    try { seen = JSON.parse(readFileSync(WATCH_STATE, 'utf8')).seen || {}; }
+    catch { return null; }
+  }
+  const out = {};
+  for (const [k, v] of Object.entries(seen)) {
+    if (!v || typeof v !== 'object' || v.not_a_deposit || !k.endsWith(':' + addr)) continue;
+    const txid = k.split(':')[1];                  // wrap:<txid>:<address>
+    if (v.released) out[txid] = { state: 'paid', tx: v.bsc_txhash || null, amount: Number(v.send_wpcn) || null };
+    else if (v.refunded) out[txid] = { state: 'refunded', tx: v.refund_txid || null, amount: Number(v.refund_pcn) || null };
+  }
+  return out;
+}
+
+// One address's allowance, shared by /status and /my so they can never disagree,
+// and matching the watcher's Send ceiling: an address takes PER_PERSON PCN in its
+// whole life, paid OR returned. A refund uses its recorded amount, or the whole
+// allowance when none was recorded -- unknown is the maximum. Oldest deposit first:
+// the fair order, and the one a customer can predict.
+function settleAt(items, outcomes) {
+  const ordered = items.slice().sort((a, b) =>
+    (a.pending ? 1 : 0) - (b.pending ? 1 : 0) || (b.confirmations - a.confirmations));
+  let used = 0;
+  for (const it of ordered) {
+    const o = (outcomes && outcomes[it.txid]) || null;
+    it.outcome = o;
+    if (o && o.state === 'refunded') {
+      it.eligiblePcn = 0; it.wpcn = 0; it.refundPcn = it.pcn;
+      used += o.amount ? Math.min(o.amount, PER_PERSON) : PER_PERSON;
+    } else {
+      const room = Math.max(0, PER_PERSON - used);
+      it.eligiblePcn = Math.min(it.pcn, room);
+      it.refundPcn = it.pcn - it.eligiblePcn;
+      it.wpcn = it.eligiblePcn * (1 - FEE_PCT / 100);
+      used += it.eligiblePcn;
+    }
+  }
+  used = Math.min(used, PER_PERSON);
+  return { used, left: Math.max(0, PER_PERSON - used) };
+}
+
 const EXPLORER   = process.env.WRAPDESK_EXPLORER || 'https://explorer.pc.am';
 
 const FEE_PCT       = Number(process.env.WRAP_FEE_PCT || 5);
@@ -679,23 +748,10 @@ const NAV = [['/', 'Wrap'], ['/my', 'My wraps'], ['/track', 'Track'], ['/redeem'
 // not from the request row -- `released` on the row is written null and never
 // updated (see the allocation note in accountUsedWpcn). Reading the wrong one
 // of those two is the mistake the comment there exists to stop.
-const myWraps = (who) => {
+const myWraps = async (who) => {
   const st = load();
-  let per = {}, seen = {};
-  try {
-    const w = JSON.parse(readFileSync(WATCH_STATE, 'utf8'));
-    per = ((w.allocation || {}).per_address) || {};
-    seen = w.seen || {};
-  } catch { per = {}; seen = {}; }
-
-  // deposit address -> was it paid out, and with which BSC transaction
-  const paidFor = {};
-  for (const [k, v] of Object.entries(seen)) {
-    const addr = k.split(':')[2];                 // wrap:<txid>:<address>
-    if (!addr || !v) continue;
-    if (v.released) paidFor[addr] = { state: 'paid', tx: v.released_tx || v.bsc_tx || null };
-    else if (v.refunded && !paidFor[addr]) paidFor[addr] = { state: 'refunded', tx: null };
-  }
+  let seen = null;
+  try { seen = JSON.parse(readFileSync(WATCH_STATE, 'utf8')).seen || {}; } catch { seen = null; }
 
   const mine = Object.values(st.requests || {})
     .filter((r) => r && r.account && who && r.account === who)
@@ -708,50 +764,95 @@ const myWraps = (who) => {
 has not wrapped anything yet. Start on the <a href="/">wrap page</a>.</p></div>`);
   }
 
-  let credited = 0, rows = '';
+  // EVERY DEPOSIT, with what became of it. The page used to show one line per
+  // ADDRESS and never a transaction: a paid wrap had no link to its wPCN, a
+  // refund had no link to its PCN, and an address that had already taken its
+  // 250 PCN still said "send to it again any time" -- the one sentence that
+  // makes a customer lose money to a refund.
+  let paidW = 0, returnedPcn = 0, cards = '';
   for (const r of mine) {
-    const w = Number(per[r.address] || 0);
-    credited += w;
-    const st2 = paidFor[r.address];
-    const badge = st2 && st2.state === 'paid'
-      ? '<b style="color:var(--green)">paid</b>'
-      : st2 && st2.state === 'refunded'
-        ? '<b style="color:var(--amber)">refunded</b>'
-        : w > 0 ? '<b style="color:var(--amber)">confirming</b>'
-                : '<span class="muted">awaiting your deposit</span>';
-    rows += `<tr><td><code>${esc(r.address)}</code></td>
-      <td>${n2(r.amount)} PCN</td>
-      <td>${w > 0 ? n8(w) + ' wPCN' : '&mdash;'}</td>
-      <td>${badge}</td>
-      <td class="muted">${new Date(r.created || 0).toISOString().slice(0, 16).replace('T', ' ')}</td></tr>`;
+    const items = await deposits(r.address);
+    const outcomes = seen ? (outcomesAt(r.address, seen) || {}) : {};
+    let body = '', full = false;
+    if (items === null) {
+      body = `<p class="muted">We could not reach the explorer just now, so what arrived here
+        is <b>unknown</b> &mdash; not missing. Reload in a minute.</p>`;
+    } else if (!items.length) {
+      body = `<p class="muted">Nothing received yet. This address takes up to
+        <b>${PER_PERSON} PCN in total</b>.</p>`;
+    } else {
+      const { left } = settleAt(items, outcomes);
+      full = left <= 0;
+      body = `<table><tr><th>Deposit</th><th>Received</th><th>Result</th></tr>${items.map((i) => {
+        const o = i.outcome;
+        let res;
+        if (o && o.state === 'paid') {
+          const w = Number(o.amount || i.wpcn) || 0;
+          paidW += w;
+          res = `<b style="color:var(--green)">paid</b> ${n8(w)} wPCN${o.tx
+            ? ` &mdash; <a href="https://bscscan.com/tx/${esc(o.tx)}" rel="noopener">${esc(o.tx.slice(0, 14))}…</a>` : ''}`;
+        } else if (o && o.state === 'refunded') {
+          const back = Number(o.amount || i.pcn) || 0;
+          returnedPcn += back;
+          res = `<b style="color:var(--amber)">returned</b> ${n8(back)} PCN${o.tx
+            ? ` &mdash; <a href="https://explorer.pc.am/tx/${esc(o.tx)}">${esc(o.tx.slice(0, 14))}…</a>` : ''}`;
+        } else if (i.eligiblePcn <= 0) {
+          res = '<b style="color:var(--amber)">over this address\'s limit &mdash; it will be returned, not wrapped</b>';
+        } else if (i.pending) {
+          res = 'in the mempool, waiting for a block';
+        } else if (i.confirmations >= CONFIRMATIONS) {
+          res = `confirmed &mdash; ${n8(i.wpcn)} wPCN will be sent by a person`;
+        } else {
+          res = `${i.confirmations} of ${CONFIRMATIONS} confirmations &mdash; ${n8(i.wpcn)} wPCN due`;
+        }
+        return `<tr><td><a href="https://explorer.pc.am/tx/${esc(i.txid)}">${esc(i.txid.slice(0, 12))}…</a></td>
+          <td>${n8(i.pcn)} PCN</td><td>${res}</td></tr>`;
+      }).join('')}</table>`;
+    }
+    cards += `<div class="card">
+  <div style="display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+    <div><div class="muted">Deposit address</div><code>${esc(r.address)}</code></div>
+    <div><div class="muted">wPCN goes to</div><code>${esc(r.bsc)}</code></div>
+    <div><div class="muted">Asked on (UTC)</div>${new Date(r.created || 0).toISOString().slice(0, 16).replace('T', ' ')}</div>
+  </div>
+  ${full ? `<p class="warn" style="margin:.6rem 0"><b>This address is full.</b> Anything more
+    you send to it is <b>returned, not wrapped</b>. Please do not send to it again.</p>` : ''}
+  ${body}
+  <p class="muted" style="margin:.4rem 0 0"><a href="/status?addr=${esc(r.address)}">Track this address</a></p>
+</div>`;
   }
 
   const usedW = accountUsedWpcn(st, who);
   const capW = ACCOUNT_MONTHLY_PCN * (1 - FEE_PCT / 100);
-  const leftPcn = Math.max(0, (capW - usedW) / (1 - FEE_PCT / 100));
+  const leftMonth = Math.max(0, (capW - usedW) / (1 - FEE_PCT / 100));
+  const today = askedSince(st, (x) => x.account === who, Date.now() - 864e5);
+  const leftToday = Math.max(0, Math.min(ACCOUNT_DAILY_PCN - today.total, leftMonth));
 
   return page('My wraps — PCoin wrap desk', '/my', `
 <h1>My wraps</h1>
 <div class="card"><p class="muted" style="margin:0">Signed in as <b>${esc(who)}</b> &mdash;
 the same account as <a href="https://market.pc.am">market.pc.am</a> and
-<a href="https://exchange.pc.am">exchange.pc.am</a>. <a href="/signout">Sign out</a></p></div>
+<a href="https://exchange.pc.am">exchange.pc.am</a>. <a href="/signout">Sign out</a></p>
+${seen === null ? '<p class="warn" style="margin:.6rem 0 0">The payout record could not be read just now, so paid and returned deposits may show as still due. Reload in a minute.</p>' : ''}</div>
 
 <div class="grid">
-  <div class="card"><div class="k">Wraps</div><div class="v">${mine.length}</div></div>
-  <div class="card"><div class="k">wPCN credited</div><div class="v">${n2(credited)}</div></div>
-  <div class="card"><div class="k">Left this month</div><div class="v">${n2(leftPcn)} PCN</div>
+  <div class="card"><div class="k">wPCN received</div><div class="v">${n2(paidW)}</div></div>
+  <div class="card"><div class="k">PCN returned</div><div class="v">${n2(returnedPcn)}</div></div>
+  <div class="card"><div class="k">Left today</div><div class="v">${n2(leftToday)} PCN</div>
+    <div class="muted" style="font-size:.8rem">of ${ACCOUNT_DAILY_PCN} PCN a day</div></div>
+  <div class="card"><div class="k">Left this month</div><div class="v">${n2(leftMonth)} PCN</div>
     <div class="muted" style="font-size:.8rem">of ${ACCOUNT_MONTHLY_PCN} PCN, rolling 30 days</div></div>
 </div>
 
-<div class="card"><table>
-<tr><th>Deposit address</th><th>Requested</th><th>Credited</th><th>State</th><th>Asked on (UTC)</th></tr>
-${rows}
-</table>
-<p class="muted" style="margin:.7rem 0 0">Each deposit address is <b>permanent and
-reusable</b> &mdash; send to it again any time, up to ${PER_PERSON} PCN per address.
-"Credited" is read from the chain, so it appears once your deposit is seen, and
-"paid" once the wPCN has gone out. Follow a single one on the
-<a href="/track">track page</a>.</p></div>`);
+${cards}
+
+<div class="card"><p class="muted" style="margin:0"><b>How the limits work.</b> One request
+is at most ${PER_PERSON} PCN. Each deposit address takes at most <b>${PER_PERSON} PCN in its
+whole life</b> &mdash; counting anything that was returned &mdash; and whatever is sent to it
+beyond that is <b>returned, not wrapped</b>. An account may ask for ${ACCOUNT_DAILY_PCN} PCN a
+day and ${ACCOUNT_MONTHLY_PCN} PCN a month, and one connection ${IP_DAILY_PCN} PCN a day,
+whichever account asks. Results are read from the chain and from the desk's payout record,
+so a deposit shows as soon as it is seen, and as paid or returned once that has happened.</p></div>`);
 };
 
 // ── one-click "add wPCN to my wallet" (EIP-747) ──────────────────────────────
@@ -1760,7 +1861,7 @@ createServer(async (req, res) => {
           encodeURIComponent('https://wrapdesk.pc.am/sso?next=/my') });
         return res.end();
       }
-      return send(200, myWraps(who));
+      return send(200, await myWraps(who));
     }
     if (isGet && p === '/track')  return send(200, track());
     if (isGet && p === '/redeem') return send(200, redeem());
@@ -2069,6 +2170,29 @@ createServer(async (req, res) => {
       let r = st.requests[key];
       let setCookie = null;
       if (!r) {
+        // DAILY LIMITS, per account and per connection (owner, 2026-09-23).
+        const want = Math.min(amount, PER_PERSON);
+        const dayAgo = Date.now() - 864e5;
+        if (acct) {
+          const a = askedSince(st, (x) => x.account === acct, dayAgo);
+          if (a.total + want > ACCOUNT_DAILY_PCN + 1e-8) {
+            return send(429, home(`<p class="err">Your account has already asked to wrap
+              <b>${n2(a.total)} PCN</b> in the last 24 hours. The limit is
+              <b>${ACCOUNT_DAILY_PCN} PCN a day</b> per account (and ${ACCOUNT_MONTHLY_PCN} PCN a
+              month), so nothing new was created. You can ask again after ${freesAt(a.oldest)}.
+              Do not send more to an address that has already taken ${PER_PERSON} PCN &mdash;
+              that is returned, not wrapped.</p>`));
+          }
+        }
+        if (ip) {
+          const b = askedSince(st, (x) => x.ip === ip, dayAgo);
+          if (b.total + want > IP_DAILY_PCN + 1e-8) {
+            return send(429, home(`<p class="err"><b>${n2(b.total)} PCN</b> has already been asked
+              for from your connection in the last 24 hours. The limit is <b>${IP_DAILY_PCN} PCN a
+              day per connection</b>, whichever account asks, so nothing new was created. You can
+              ask again after ${freesAt(b.oldest)}.</p>`));
+          }
+        }
         if (tooMany(ip))
           return send(429, home(`<p class="err">Too many new requests from your
             connection. Please try again later.</p>`));
@@ -2113,8 +2237,9 @@ createServer(async (req, res) => {
       if (setCookie) res.setHeader('Set-Cookie', setCookie);
       return send(200, page('Your deposit address', '/', `
 <h1>Send PCN to this address</h1>
-<div class="card"><p class="muted">Your deposit address — <b>yours alone</b>, and
-reusable. Send to it any time.${intakeClosed() !== null ? ' <b style="color:#e5484d">The desk is closed: PCN sent now is returned, not wrapped.</b>' : ''}</p>
+<div class="card"><p class="muted">Your deposit address — <b>yours alone</b>. It takes
+at most <b>${PER_PERSON} PCN in total</b>, in one payment or several; anything sent to it
+beyond that is <b>returned, not wrapped</b>.${intakeClosed() !== null ? ' <b style="color:#e5484d">The desk is closed: PCN sent now is returned, not wrapped.</b>' : ''}</p>
 <p><code style="font-size:1.06rem">${esc(r.address)}</code></p></div>
 <div class="card"><table>
 <tr><th>You send</th><td>${esc(String(amount))} PCN</td></tr>
@@ -2172,33 +2297,42 @@ sent it, it can take a few minutes to appear.</p>
       // Allocation is oldest-first, which is both the fair order and the one a
       // customer can predict: the deposit that arrived first is the one that counts.
       const capPcn = PER_PERSON;
-      const ordered = items.slice().sort((a, b) =>
-        (a.pending ? 1 : 0) - (b.pending ? 1 : 0) || (b.confirmations - a.confirmations));
-      let allowanceUsed = 0;
-      for (const it of ordered) {
-        const room = Math.max(0, capPcn - allowanceUsed);
-        it.eligiblePcn = Math.min(it.pcn, room);
-        it.refundPcn = it.pcn - it.eligiblePcn;
-        it.wpcn = it.eligiblePcn * (1 - FEE_PCT / 100);
-        allowanceUsed += it.eligiblePcn;
-      }
+      // Paid and returned come from the payout record. Before 2026-09-23 this page
+      // never read it, so a wrap already paid said "waiting for a person to release
+      // it" for ever, and a returned deposit still promised its wPCN.
+      const outcomes = outcomesAt(addr);
+      const { used: allowanceUsed } = settleAt(items, outcomes || {});
       const totalIn = items.reduce((a, b) => a + b.pcn, 0);
       const totalWpcn = items.reduce((a, b) => a + b.wpcn, 0);
       const totalRefund = items.reduce((a, b) => a + b.refundPcn, 0);
       const roomLeft = Math.max(0, capPcn - allowanceUsed);
+      const ledgerNote = outcomes === null
+        ? '<p class="warn">The payout record could not be read just now, so a paid or returned deposit may still show as due. Reload in a minute.</p>'
+        : '';
 
       const rows = items.map((i) => {
         const pct = i.pending ? 0
           : Math.max(0, Math.min(100, i.confirmations / CONFIRMATIONS * 100));
         const ready = !i.pending && i.confirmations >= CONFIRMATIONS;
         const left = Math.max(0, CONFIRMATIONS - (i.pending ? 0 : i.confirmations));
-        const eta = ready ? 'ready now'
+        const o = i.outcome;
+        const eta = o && o.state === 'paid' ? 'paid'
+          : o && o.state === 'refunded' ? 'returned'
+          : ready ? 'ready now'
           : `about ${Math.max(1, Math.round(left * 10 / 60))} h left`;
         // A customer watching "in the mempool" for half an hour will assume
         // something is broken. Block finding is a Poisson process: at a ~9 min
         // mean, gaps over 25 min happen roughly one block in eighteen. Saying so
         // costs a sentence and prevents a support message.
-        const state = i.pending
+        const state = o && o.state === 'paid'
+          ? `<b style="color:var(--green)">Paid</b> &mdash; ${n8(o.amount || i.wpcn)} wPCN sent${o.tx
+            ? ` in <a href="https://bscscan.com/tx/${esc(o.tx)}" rel="noopener">${esc(o.tx.slice(0, 18))}…</a>` : ''}.`
+          : o && o.state === 'refunded'
+          ? `<b style="color:var(--amber)">Returned</b> &mdash; ${n8(o.amount || i.pcn)} PCN sent back${o.tx
+            ? ` in <a href="https://explorer.pc.am/tx/${esc(o.tx)}">${esc(o.tx.slice(0, 18))}…</a>` : ''}. It was not wrapped.`
+          : i.eligiblePcn <= 0
+          ? '<b>Over this address\'s limit &mdash; this deposit is returned, not wrapped.</b>'
+          : i.pending
           ? 'In the mempool — waiting to be included in a block. Blocks average '
             + 'about ten minutes but are random: a gap of half an hour is '
             + 'uncommon and not a problem.'
@@ -2208,23 +2342,25 @@ sent it, it can take a few minutes to appear.</p>
           <div style="display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap">
             <div><div class="muted">Received</div><div class="big">${n8(i.pcn)} PCN</div></div>
             <div><div class="muted">You get</div><div class="big">${
-              n8(i.wpcn)} wPCN</div></div>
+              o && o.state === 'refunded' ? '&mdash;' : n8(i.wpcn) + ' wPCN'}</div></div>
             <div><div class="muted">Status</div><div style="padding-top:.35rem">
               <span class="pill">${eta}</span></div></div>
           </div>
           <div class="bar"><i style="width:${pct}%"></i></div>
           <p class="muted" style="margin:.2rem 0 0">${state}</p>
-          ${i.refundPcn > 0 ? `<p class="warn">Over your ${PER_PERSON} PCN limit by
+          ${i.refundPcn > 0 && !(o && o.state === 'refunded') && i.eligiblePcn > 0 ? `<p class="warn">Over your ${PER_PERSON} PCN limit by
             ${n2(i.refundPcn)} PCN — that part is returned, not wrapped.</p>` : ''}
           <p class="muted" style="margin:.45rem 0 0">
             <a href="https://explorer.pc.am/tx/${esc(i.txid)}">${esc(i.txid.slice(0, 24))}…</a></p>
         </div>`;
       }).join('');
 
-      const anyReady = items.some((i) => !i.pending && i.confirmations >= CONFIRMATIONS);
+      const anyReady = items.some((i) => !i.outcome && i.eligiblePcn > 0
+        && !i.pending && i.confirmations >= CONFIRMATIONS);
       return send(200, page('Your wrap status', '/track', `
 <h1>Your wrap</h1>
 <p class="lead">Deposits to <code>${esc(addr)}</code></p>
+${ledgerNote}
 <div class="card">
   <h2 style="margin:0 0 .6rem">Your allowance</h2>
   <div style="display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap">
@@ -2252,10 +2388,15 @@ sent it, it can take a few minutes to appear.</p>
   <p class="muted" style="margin:.6rem 0 0">${items.length} deposit${
     items.length === 1 ? '' : 's'} to this address. The ${FEE_PCT}% fee is taken in
   wPCN not sent, never in PCN kept back — so the reserve always holds at least
-  what the tokens claim.${totalRefund > 0
-    ? ` <b>${n2(totalRefund)} PCN is over your limit and will be returned to the
-      wallet it came from.</b>`
-    : ''}</p>
+  what the tokens claim.${(() => {
+    // Returned already, or still to be returned: two different facts.
+    const done = items.filter((i) => i.outcome && i.outcome.state === 'refunded')
+      .reduce((a, i) => a + i.pcn, 0);
+    const due = Math.max(0, totalRefund - done);
+    return (done > 0 ? ` <b>${n2(done)} PCN was returned to the wallet it came from.</b>` : '')
+      + (due > 0 ? ` <b>${n2(due)} PCN is over your limit and will be returned to the
+      wallet it came from.</b>` : '');
+  })()}</p>
 </div>
 ${rows}
 ${anyReady
