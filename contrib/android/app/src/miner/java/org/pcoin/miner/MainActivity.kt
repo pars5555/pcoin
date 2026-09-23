@@ -6,6 +6,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
 import android.net.Uri
@@ -15,8 +16,13 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.view.View
 import android.view.WindowManager
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.CheckBox
+import android.widget.EditText
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
@@ -78,6 +84,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var forwardLast: TextView
     private lateinit var forwardManage: Button
     private lateinit var forwardCopyTxid: Button
+    private lateinit var poolCurrent: TextView
+    private lateinit var poolChoice: RadioGroup
+    private lateinit var poolCustomRow: View
+    private lateinit var poolCustomInput: EditText
+    private lateinit var poolCustomSave: Button
+    private lateinit var poolError: TextView
 
     private lateinit var seedStore: SeedStore
 
@@ -107,6 +119,11 @@ class MainActivity : AppCompatActivity() {
         // phrases. Purely additive; nothing the user can observe changes.
         prefs.migrateLegacyWalletRecord()
         setContentView(R.layout.activity_main)
+        // Every other screen already does this; this one had no text field
+        // until the custom pool, so nothing showed the gap. At targetSdk 35+
+        // Android no longer resizes the window for the keyboard, and without it
+        // the keyboard opens OVER the pool field being typed into.
+        padForSystemBars()
 
         gateStatus = findViewById(R.id.gate_status)
         hashrate = findViewById(R.id.hashrate)
@@ -149,6 +166,12 @@ class MainActivity : AppCompatActivity() {
         forwardLast = findViewById(R.id.forward_last)
         forwardManage = findViewById(R.id.forward_manage)
         forwardCopyTxid = findViewById(R.id.forward_copy_txid)
+        poolCurrent = findViewById(R.id.pool_current)
+        poolChoice = findViewById(R.id.pool_choice)
+        poolCustomRow = findViewById(R.id.pool_custom_row)
+        poolCustomInput = findViewById(R.id.pool_custom_input)
+        poolCustomSave = findViewById(R.id.pool_custom_save)
+        poolError = findViewById(R.id.pool_error)
         setUpForwardButtons()
         setUpWalletButtons()
         setUpPermissionButtons()
@@ -156,6 +179,7 @@ class MainActivity : AppCompatActivity() {
 
         setUpSlider()
         setUpThermalSlider()
+        setUpPoolPicker()
         hideMiningControlsIfWallet()
 
         // Allows a deployment or automation tool to switch mining on without
@@ -211,7 +235,7 @@ class MainActivity : AppCompatActivity() {
                 startActivity(SetupActivity.intent(this))
                 return@setOnClickListener
             }
-            if (isRunning(MinerState.snapshot)) {
+            if (switchedOn(MinerState.snapshot)) {
                 MinerService.stop(this)
             } else if (!askForNotificationsFirst()) {
                 // Permission dialog is up; the service starts from
@@ -368,13 +392,14 @@ class MainActivity : AppCompatActivity() {
             }
             // A payout address with no wallet behind it is a CHOICE, not a gap.
             //
-            // This app only pool-mines, and a pool pays each miner directly in
-            // the coinbase, so someone can point us at a wallet they hold
-            // elsewhere and keep every key off this phone. There is then no
-            // phrase here by design, nothing on the device to lose, and nothing
-            // a phrase could recover. Telling that user to create one would be
-            // nagging them to undo the safer setup, forever, since the banner
-            // reappears until a wallet exists.
+            // Whichever way this app mines -- a pool by default, solo if the
+            // owner picked it -- the reward is paid straight to the payout
+            // address in a block's coinbase, so someone can point us at a
+            // wallet they hold elsewhere and keep every key off this phone.
+            // There is then no phrase here by design, nothing on the device to
+            // lose, and nothing a phrase could recover. Telling that user to
+            // create one would be nagging them to undo the safer setup,
+            // forever, since the banner reappears until a wallet exists.
             prefs.payoutIsExternal -> {
                 walletBanner.visibility = View.GONE
                 walletBannerActions.visibility = View.GONE
@@ -604,6 +629,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<View>(R.id.always_on_warning)?.visibility = View.GONE
         findViewById<View>(R.id.blocks_found)?.visibility = View.GONE
         findViewById<View>(R.id.threads)?.visibility = View.GONE
+        findViewById<View>(R.id.pool_section)?.visibility = View.GONE
         hashrate.visibility = View.GONE
     }
 
@@ -645,9 +671,164 @@ class MainActivity : AppCompatActivity() {
         ((Prefs.clampPercent(percent) - Prefs.MIN_PERCENT) / Prefs.PERCENT_STEP)
             .coerceIn(0, performance.max)
 
+    // ----------------------------------------------------------- mining pool
+
+    /**
+     * The pool picker. [Prefs.poolUrl] says what the stored value means and
+     * [PoolAddress] says what a typed one must look like.
+     *
+     * Every choice is a CLICK listener, not a RadioGroup change listener. A
+     * change listener also fires when the group is set from prefs and when
+     * Android restores it after a rotation, and a handler that saved on those
+     * would be writing the owner's intent from a redraw. Only the owner clicks.
+     *
+     * Nothing here pokes MinerService. It reads the setting on every tick (3 s)
+     * while the miner may run and restarts it when the node is mining for
+     * anything else (`poolWrong` in reconcileMiner) -- the same way the heat
+     * cutoff above is picked up. While mining is paused or off, the new setting
+     * simply applies at the next start.
+     */
+    private fun setUpPoolPicker() {
+        findViewById<RadioButton>(R.id.pool_pcoin).setOnClickListener { choosePool(PoolAddress.PCOIN_POOL) }
+        findViewById<RadioButton>(R.id.pool_pcoin2).setOnClickListener { choosePool(PoolAddress.PCOIN_POOL_2) }
+        findViewById<RadioButton>(R.id.pool_solo).setOnClickListener { choosePool("") }
+        findViewById<RadioButton>(R.id.pool_custom).setOnClickListener { openCustomPool() }
+        poolCustomSave.setOnClickListener { saveCustomPool() }
+        poolCustomInput.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_DONE) {
+                saveCustomPool()
+                true
+            } else {
+                false
+            }
+        }
+        // Never restored from saved state: after a rotation or a process
+        // restart the picker shows what is STORED, not a half-made choice
+        // that was never saved.
+        poolChoice.isSaveFromParentEnabled = false
+        // Synced here and after each save, deliberately NOT in onResume: the
+        // natural way to fill in a custom pool is to leave the app, copy the
+        // host:port from somewhere else and come back, and a resync on the way
+        // back in would throw the half-made choice away.
+        syncPoolFromPrefs()
+    }
+
+    /** A preset, a validated custom pool, or "" for solo. Saved at once. */
+    private fun choosePool(value: String) {
+        poolError.visibility = View.GONE
+        hideKeyboard()
+        if (value != prefs.poolUrl()) prefs.setPoolUrl(value)
+        Toast.makeText(
+            this,
+            if (value.isBlank()) getString(R.string.pool_saved_solo) else getString(R.string.pool_saved, value),
+            Toast.LENGTH_SHORT,
+        ).show()
+        syncPoolFromPrefs()
+    }
+
+    /**
+     * "Custom pool…" only opens the field. Nothing is saved until a typed pool
+     * passes [PoolAddress.parse]; until then the old setting stays in force
+     * and "Set to" keeps saying which one that is.
+     */
+    private fun openCustomPool() {
+        poolError.visibility = View.GONE
+        poolCustomRow.visibility = View.VISIBLE
+        val stored = prefs.poolUrl()
+        if (poolCustomInput.text.isNullOrBlank() && PoolAddress.choiceFor(stored) == PoolAddress.Choice.CUSTOM) {
+            poolCustomInput.setText(stored)
+        }
+        poolCustomInput.requestFocus()
+        // Posted: the field became visible a moment ago and has not been laid
+        // out yet, and the keyboard is refused for a view that is not ready.
+        poolCustomInput.post {
+            inputMethods()?.showSoftInput(poolCustomInput, InputMethodManager.SHOW_IMPLICIT)
+        }
+    }
+
+    private fun saveCustomPool() {
+        when (val result = PoolAddress.parse(poolCustomInput.text?.toString().orEmpty())) {
+            is PoolAddress.Result.Valid -> choosePool(result.hostPort)
+            is PoolAddress.Result.Invalid -> {
+                // Refused. The stored pool is untouched, and the message says
+                // which one is still in force rather than leaving it implied.
+                val stored = prefs.poolUrl()
+                poolError.text = getString(
+                    R.string.pool_error_kept,
+                    getString(poolProblemText(result.problem)),
+                    stored.ifBlank { getString(R.string.pool_setting_solo) },
+                )
+                poolError.visibility = View.VISIBLE
+                // The keyboard stays up so the pool can be corrected, and the
+                // ScrollView only keeps the FIELD in view -- this message sits
+                // under it and would otherwise open off-screen, unread.
+                poolError.post {
+                    poolError.requestRectangleOnScreen(Rect(0, 0, poolError.width, poolError.height), false)
+                }
+            }
+        }
+    }
+
+    /** Puts the picker in line with the STORED setting. Never writes it. */
+    private fun syncPoolFromPrefs() {
+        val stored = prefs.poolUrl()
+        val choice = PoolAddress.choiceFor(stored)
+        poolChoice.check(
+            when (choice) {
+                PoolAddress.Choice.PCOIN -> R.id.pool_pcoin
+                PoolAddress.Choice.PCOIN_2 -> R.id.pool_pcoin2
+                PoolAddress.Choice.CUSTOM -> R.id.pool_custom
+                PoolAddress.Choice.SOLO -> R.id.pool_solo
+            },
+        )
+        poolCurrent.text = if (stored.isBlank()) {
+            getString(R.string.pool_current_solo)
+        } else {
+            getString(R.string.pool_current, stored)
+        }
+        if (choice == PoolAddress.Choice.CUSTOM) {
+            poolCustomInput.setText(stored)
+            poolCustomRow.visibility = View.VISIBLE
+        } else {
+            poolCustomRow.visibility = View.GONE
+        }
+    }
+
+    /** Exhaustive on purpose: a new [PoolAddress.Problem] without words does not compile. */
+    private fun poolProblemText(problem: PoolAddress.Problem): Int = when (problem) {
+        PoolAddress.Problem.EMPTY -> R.string.pool_error_empty
+        PoolAddress.Problem.SCHEME -> R.string.pool_error_scheme
+        PoolAddress.Problem.NO_PORT -> R.string.pool_error_no_port
+        PoolAddress.Problem.TOO_MANY_COLONS -> R.string.pool_error_too_many_colons
+        PoolAddress.Problem.BAD_HOST -> R.string.pool_error_bad_host
+        PoolAddress.Problem.BAD_PORT -> R.string.pool_error_bad_port
+    }
+
+    private fun inputMethods(): InputMethodManager? =
+        getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+
+    private fun hideKeyboard() {
+        inputMethods()?.hideSoftInputFromWindow(poolCustomInput.windowToken, 0)
+    }
+
     // ----------------------------------------------------------------- render
 
     private fun isRunning(s: MinerState.Snapshot): Boolean = s.gate != Gate.STOPPED
+
+    /**
+     * What the Start/Stop button shows and does -- deliberately NOT [isRunning].
+     *
+     * After setup the service is up (ACTION_PREPARE brought the node up so
+     * setup could talk to it) but mining was never switched on, and the screen
+     * says "Paused: switched off". Keyed on isRunning, the button under that
+     * line said "Stop mining", and the only way to start was Stop, wait for the
+     * node to shut down, then Start -- and pressed quickly, Start found the old
+     * node still holding the RPC port and reported "another PCoin node". Seen
+     * on the Z Flip 5, 2026-09-24. ACTION_START on a service that is already up
+     * only flips the switch, so Start is the right button there.
+     */
+    private fun switchedOn(s: MinerState.Snapshot): Boolean =
+        s.gate != Gate.STOPPED && s.gate != Gate.PAUSED_BY_USER
 
     private fun render(s: MinerState.Snapshot) {
         renderWalletState(s)
@@ -657,7 +838,7 @@ class MainActivity : AppCompatActivity() {
         gateStatus.text = s.gateText()
         hashrate.text = if (s.gate == Gate.MINING) Fmt.hashrate(s.hashesPerSec) else getString(R.string.dash)
 
-        toggle.setText(if (isRunning(s)) R.string.stop_mining else R.string.start_mining)
+        toggle.setText(if (switchedOn(s)) R.string.stop_mining else R.string.start_mining)
 
         notificationBanner.visibility = if (notificationsAllowed) View.GONE else View.VISIBLE
 

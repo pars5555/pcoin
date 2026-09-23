@@ -101,11 +101,12 @@ class Prefs(context: Context) {
     /**
      * True when [payoutAddress] belongs to a wallet this phone does not have.
      *
-     * The app only pool-mines, and a pool pays each miner directly in the
-     * coinbase of the blocks it finds, so the payout address is an identity at
-     * the pool rather than a key we hold. A miner who already has a wallet
-     * elsewhere can therefore give us just the address and keep every key off
-     * this device.
+     * Whichever way this phone mines, the reward is paid straight to this
+     * address in a block's coinbase: the pool's blocks when pooled (the
+     * default), this node's own when the owner has picked solo. So the payout
+     * address is an identity rather than a key we hold. A miner who already
+     * has a wallet elsewhere can therefore give us just the address and keep
+     * every key off this device.
      *
      * Nothing may ask a local wallet about such an address. getaddressinfo is
      * wallet-scoped and would answer a confident "not mine" (7.1), and the
@@ -131,12 +132,14 @@ class Prefs(context: Context) {
      * existed and wrong after, and the difference is where a phone's work
      * goes: at ~614 kH/s network a phone doing ~38 H/s averages MONTHS per
      * solo block and earns nothing in between, while the pool pays it a
-     * proportional slice of every block the pool finds. Nothing in the app
-     * can currently write blank -- setPoolUrl has no callers and there is no
-     * solo/pool UI -- so every install is pooled in practice. Keep the setter
-     * anyway: the pool is ~90% of network hashrate, and removing the only
-     * escape hatch from it is not a decision to make by deleting an unused
-     * function.
+     * proportional slice of every block the pool finds.
+     *
+     * The ONLY writer is the pool picker on the miner's dashboard
+     * (MainActivity, 0.4.6). It stores one of three things: a preset from
+     * [PoolAddress], a custom host:port that has passed [PoolAddress.parse] and
+     * is stored in its canonical form, or blank for solo. Nothing else may
+     * call setPoolUrl. An install that has never touched the picker has no key
+     * at all and is therefore pooled.
      *
      * This is authoritative INTENT, not a derived display value, so it is
      * written with commit() like the payout address: it decides where a phone's
@@ -485,8 +488,9 @@ class Prefs(context: Context) {
         private const val KEY_PAYOUT_WALLET = "payout_wallet"
         private const val KEY_PAYOUT_EXTERNAL = "payout_is_external"
         private const val KEY_POOL_URL = "pool_url"
-        // New installs mine to the pool by default (see poolUrl()).
-        const val DEFAULT_POOL = "pool.pc.am:3333"
+        // New installs mine to the pool by default (see poolUrl()). The same
+        // constant as the picker's recommended preset, so the two cannot drift.
+        const val DEFAULT_POOL = PoolAddress.PCOIN_POOL
         private const val KEY_SEED_WALLET = "seed_wallet_name"
         private const val KEY_PHRASE_CONFIRMED = "phrase_confirmed"
         private const val KEY_PHRASE_DISMISSED = "phrase_prompt_dismissed"

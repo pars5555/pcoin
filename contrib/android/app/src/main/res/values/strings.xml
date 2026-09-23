@@ -27,6 +27,31 @@
     <string name="label_thermal">Stop when hot</string>
     <string name="thermal_hint" formatted="false">Mining pauses automatically once Android reports this heat level, and resumes when the phone cools. Choose Moderate for older phones.</string>
 
+    <!-- ============================ mining pool ============================ -->
+    <!-- The host names in the two preset labels are display text. The values
+         actually stored are PoolAddress.PCOIN_POOL and PCOIN_POOL_2: change
+         them together. -->
+    <string name="label_pool">Mining pool</string>
+    <string name="pool_choice_pcoin">PCoin pool — pool.pc.am:3333 (recommended)</string>
+    <string name="pool_choice_pcoin2">PCoin pool 2 — pool2.pc.am:3333</string>
+    <string name="pool_choice_custom">Custom pool…</string>
+    <string name="pool_choice_solo">Solo — not recommended (a phone can wait months for a block)</string>
+    <string name="pool_current">Set to %1$s</string>
+    <string name="pool_current_solo">Set to solo mining</string>
+    <string name="pool_setting_solo">solo mining</string>
+    <string name="pool_custom_hint">host:port</string>
+    <string name="pool_custom_save">Use this pool</string>
+    <string name="pool_saved">Mining pool saved: %1$s</string>
+    <string name="pool_saved_solo">Solo mining saved</string>
+    <string name="pool_hint">A pool pays this phone a share of every block the pool finds. Solo pays only for a block this phone finds by itself. A change takes effect within a few seconds while mining, or otherwise the next time mining starts.</string>
+    <string name="pool_error_kept">%1$s\n\nNothing was saved. The setting is still: %2$s</string>
+    <string name="pool_error_empty">Type the pool as host:port, for example pool.pc.am:3333.</string>
+    <string name="pool_error_scheme">Leave out http://, stratum+tcp:// or any other prefix. Type only host:port, for example pool.pc.am:3333.</string>
+    <string name="pool_error_no_port">The port is missing. Type a colon and the port after the host, for example pool.pc.am:3333.</string>
+    <string name="pool_error_too_many_colons">Type exactly one colon, between the host and the port. IPv6 addresses cannot be used.</string>
+    <string name="pool_error_bad_host">Before the colon there must be a host name (letters, digits, hyphens and dots) or an IPv4 address such as 198.51.100.7.</string>
+    <string name="pool_error_bad_port">After the colon there must be a port: a whole number from 1 to 65535.</string>
+
     <string name="start_mining">Start mining</string>
     <string name="stop_mining">Stop mining</string>
 

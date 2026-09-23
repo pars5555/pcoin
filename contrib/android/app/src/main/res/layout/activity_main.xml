@@ -302,6 +302,129 @@
             android:text="@string/thermal_hint"
             android:textSize="12sp" />
 
+        <!-- ========================== mining pool ========================== -->
+
+        <!--
+          Where this phone's work goes. A preset or Solo is saved the moment it
+          is tapped, like the battery checkbox above. A custom pool is saved only
+          once it passes PoolAddress.parse, and a refused one leaves the old
+          setting in place and says so. MinerService re-reads the setting on
+          every tick, so nothing here has to tell it.
+
+          "Set to" is the STORED setting, deliberately separate from the radio
+          buttons: while someone is typing a custom pool, "Custom pool…" is
+          ticked but nothing has been saved yet, and the screen must not imply
+          otherwise.
+        -->
+        <LinearLayout
+            android:id="@+id/pool_section"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/label_pool"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/pool_current"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:textSize="13sp" />
+
+            <RadioGroup
+                android:id="@+id/pool_choice"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:orientation="vertical">
+
+                <RadioButton
+                    android:id="@+id/pool_pcoin"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/pool_choice_pcoin" />
+
+                <RadioButton
+                    android:id="@+id/pool_pcoin2"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/pool_choice_pcoin2" />
+
+                <RadioButton
+                    android:id="@+id/pool_custom"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/pool_choice_custom" />
+
+                <!--
+                  Shown only while "Custom pool…" is ticked, directly under it.
+                  RadioGroup only manages its RadioButton children, so a plain
+                  layout can sit between them.
+                -->
+                <LinearLayout
+                    android:id="@+id/pool_custom_row"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="32dp"
+                    android:orientation="vertical"
+                    android:visibility="gone">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal">
+
+                        <EditText
+                            android:id="@+id/pool_custom_input"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:autofillHints=""
+                            android:hint="@string/pool_custom_hint"
+                            android:imeOptions="actionDone"
+                            android:importantForAutofill="no"
+                            android:inputType="textNoSuggestions|textVisiblePassword"
+                            android:maxLines="1"
+                            android:textSize="14sp"
+                            android:typeface="monospace" />
+
+                        <Button
+                            android:id="@+id/pool_custom_save"
+                            style="?android:attr/buttonStyleSmall"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/pool_custom_save" />
+                    </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/pool_error"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:background="#33FF4444"
+                        android:padding="8dp"
+                        android:textSize="12sp"
+                        android:visibility="gone" />
+                </LinearLayout>
+
+                <RadioButton
+                    android:id="@+id/pool_solo"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/pool_choice_solo" />
+            </RadioGroup>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/pool_hint"
+                android:textSize="12sp" />
+        </LinearLayout>
+
         <View
             android:layout_width="match_parent"
             android:layout_height="1dp"

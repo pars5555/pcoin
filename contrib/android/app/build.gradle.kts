@@ -95,8 +95,13 @@ android {
             // 0.4.2: new installs default to POOL mining (Prefs.poolUrl()), so a
             // phone earns a steady share instead of showing 0 while it waits
             // months for a solo block.
-            versionCode = 9
-            versionName = "0.4.5"
+            // 0.4.6: a pool picker on the dashboard -- pool.pc.am (default),
+            // pool2.pc.am, a validated custom host:port, or solo. Bumped on the
+            // miner ONLY, on instruction; `legacy` compiles this same source
+            // set, so bump it before building it or its 0.4.5-legacy number
+            // will name two different binaries.
+            versionCode = 10
+            versionName = "0.4.6"
 
             buildConfigField("boolean", "MINING", "true")
             // The miner keeps 9443. This half of the change is a provable no-op
