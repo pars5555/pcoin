@@ -4,6 +4,12 @@
   cursor:pointer;line-height:1.6}
 .btn-sm[disabled]{opacity:.5;cursor:default}
 .btn-quiet{background:transparent;color:var(--dim,#9aa2b8)}
+/* Signing in for ANOTHER PCoin app (the wrap desk, the exchange): show only the
+   sign-in, not the whole market. A visitor who clicked "Sign in" on the wrap
+   desk used to land on "Buy PCoin with crypto" with the form at the bottom. */
+#ssoNote{display:none;color:var(--dim,#9aa2b8);margin:.2rem 0 1.2rem}
+body.sso #lede,body.sso .grid,body.sso #calcPanel,body.sso #app,body.sso footer{display:none}
+body.sso #ssoNote{display:block}
 </style>
 <div class="wrap">
   <header>
@@ -14,7 +20,8 @@
     </div>
   </header>
 
-  <h1>Buy PCoin with crypto</h1>
+  <h1 id="title">Buy PCoin with crypto</h1>
+  <p id="ssoNote"></p>
   <p class="lede" id="lede">Pay in USDT or any coin NOWPayments accepts. PCN is sold
   from a fixed ladder of coins in steps, each dearer than the one below it. Nothing is
   held back and nothing is added: when the ladder is empty there is no more to sell
@@ -33,7 +40,7 @@
   <!-- Public on purpose: the whole point of a ladder is that the average price
        of a big order differs from the posted one, so anybody can check it
        before signing in, not after paying. -->
-  <div class="panel">
+  <div class="panel" id="calcPanel">
     <h2>What would it cost?</h2>
     <label for="calcPcn">Number of PCN</label>
     <input id="calcPcn" type="number" min="1" step="100" placeholder="50000" oninput="calc()">
@@ -119,6 +126,27 @@ let LIMITS = { minOrderUsd: 20, maxOrderUsd: 2000, maxOrderPcn: 12000,
 const $ = id => document.getElementById(id);
 const show = (el, cls, text) => { el.className = 'msg ' + cls; el.textContent = text; };
 
+// SIGNING IN FOR ANOTHER PCoin APP. ?next= names where to go afterwards, and it
+// is honoured only for two known destinations -- never an arbitrary URL.
+// Both continue THROUGH this market's own /sso/<app> route, which mints the
+// short-lived token the app exchanges for its session. The wrap desk used to be
+// sent straight to https://wrapdesk.pc.am/sso with NO token, so every first-time
+// sign-in there ended on "That sign-in link is no longer valid" (found
+// 2026-09-23; the exchange was always routed correctly).
+const NEXT = new URL(location.href).searchParams.get('next') || '';
+const SSO_APP = NEXT.startsWith('https://wrapdesk.pc.am/')
+  ? { name: 'the PCoin Wrap Desk', go: '/sso/wrapdesk?return=' + encodeURIComponent(NEXT) }
+  : NEXT === '/sso/exchange?return=https%3A%2F%2Fexchange.pc.am%2Fsso'
+  ? { name: 'the PCoin Exchange', go: NEXT }
+  : null;
+if (SSO_APP) {
+  document.body.classList.add('sso');
+  $('title').textContent = 'Sign in to continue to ' + SSO_APP.name;
+  $('ssoNote').textContent = 'Use your market.pc.am account — the same one works for the market, '
+    + 'the exchange and the wrap desk. No account yet? Choose “Create account”.';
+  document.title = 'Sign in — PCoin';
+}
+
 function showTab(m) {
   mode = m;
   $('t-in').setAttribute('aria-selected', m === 'in');
@@ -155,10 +183,7 @@ async function doAuth() {
       }),
     });
     await refresh();
-    const next = new URL(location.href).searchParams.get('next') || '';
-    if (next.startsWith('https://wrapdesk.pc.am/')) { location.href = next; return; }
-    // exchange.pc.am sign-in: an exact same-origin path, never an arbitrary URL.
-    if (next === '/sso/exchange?return=https%3A%2F%2Fexchange.pc.am%2Fsso') { location.href = next; return; }
+    if (SSO_APP) { location.href = SSO_APP.go; return; }
   } catch (e) {
     show($('authMsg'), 'err', e.message);
     if (window.hcaptcha) try { hcaptcha.reset(); } catch (_) { /* widget not rendered */ }
@@ -196,6 +221,8 @@ function ensureCaptcha() {
 async function refresh() {
   try {
     const me = await api('/api/me');
+    // Already signed in here: carry straight on to the app that asked.
+    if (SSO_APP) { location.href = SSO_APP.go; return; }
     $('authPanel').hidden = true;
     $('app').hidden = false;
     $('who').textContent = me.email;
