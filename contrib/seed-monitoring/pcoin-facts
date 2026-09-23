@@ -325,9 +325,16 @@ def block(c):
                    % ("OPEN" if x.get("exchangeOpen") else "CLOSED",
                       f.get("tradePercentEachSide"), n(lim.get("minOrderUsd"), 2),
                       n(lim.get("maxOrderUsd"), 2), n(lim.get("maxOrderPcn"), 0)))
-        out.append("WITHDRAWALS: minimum $%s, paid by hand within %s hours. Fees: USDT on TRON "
+        # Two floors since 2026-09-23 -- BNB Smart Chain's is lower. An exchange
+        # that does not send the second one has only the first.
+        mins = "$%s" % n(w.get("minimumUsd"), 2)
+        if (w.get("minimumBep20Usd") is not None
+                and n(w.get("minimumBep20Usd"), 2) != n(w.get("minimumUsd"), 2)):
+            mins = "$%s for USDT on BNB Smart Chain, $%s for USDT on TRON and for PCN" % (
+                n(w.get("minimumBep20Usd"), 2), n(w.get("minimumUsd"), 2))
+        out.append("WITHDRAWALS: minimum %s, paid by hand within %s hours. Fees: USDT on TRON "
                    "$%s, USDT on BNB Smart Chain $%s, PCN %s. Two-factor is required first."
-                   % (n(w.get("minimumUsd"), 2), w.get("turnaroundHours"),
+                   % (mins, w.get("turnaroundHours"),
                       n(w.get("feeTrc20Usd"), 2), n(w.get("feeBep20Usd"), 2),
                       "free" if str(w.get("feePcn")) in ("0", "0.0") else w.get("feePcn")))
         out.append("ORDER BOOK NOW: best bid $%s, best ask $%s, last trade $%s, 24h volume %s PCN "

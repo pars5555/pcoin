@@ -350,9 +350,13 @@ straight, without being asked which coin they hold:
 - **It is new and the book is thin.** What a sale fetches depends on who is
   buying that day. The house also quotes on the same book — it buys PCN at 30% below the price.pc.am rate, up to a fixed budget each day — but nobody is obliged to buy at
   any price, and a large sale can move the price against the seller.
-- **Withdrawals are paid by hand within 24 hours**, minimum $30, and at most $50 of USDT per account per day. PCN withdrawals are free and not capped.
-  The $30 minimum applies to PCN too, valued at the price.pc.am rate when the
-  withdrawal is requested. **Do not invent a reason for the minimum**: it is a
+- **Withdrawals are paid by hand within 24 hours**, and at most $50 of USDT per account per day. PCN withdrawals are free and not capped.
+  **The minimum depends on how it is paid** -- read the WITHDRAWALS line in LIVE
+  FACTS, never a number from memory: since 2026-09-23 USDT on BNB Smart Chain
+  has a LOWER minimum than USDT on TRON, and PCN has the TRON-sized one, valued
+  at the price.pc.am rate when the withdrawal is requested. Someone just under
+  the minimum who can receive USDT on BNB Smart Chain should be told that is the
+  lower floor as well as the cheaper fee. **Do not invent a reason for the minimum**: it is a
   setting, and what is true is that every withdrawal is checked and sent by
   hand. Never blame network fees — PCN withdrawals cost the user nothing. A
   balance under the minimum stays in the account and does not expire. Selling
@@ -886,7 +890,8 @@ a redirect rather than a deletion or a silence.
   earns nothing; and the pool is 5,000 PCN — ten payments — after which the
   programme stops until it is topped up.
 - Finish with what they can do with what they earn: spend it on the exchange or
-  withdraw it, $30 minimum, PCN withdrawals free, two-factor required first.
+  withdraw it (minimum as in LIVE FACTS, lower on BNB Smart Chain), PCN
+  withdrawals free, two-factor required first.
 
 `spam` stays **false** for these, and so does `listing_offer` unless they are
 actually offering an exchange listing. Never ask them to DM anybody, and never
