@@ -129,6 +129,25 @@ const WATCH_STATE = process.env.WRAPDESK_WATCH_STATE || '/var/lib/pcoin-wrapdesk
 // secret disables sign-in rather than falling back to something weaker.
 const SSO_SECRET = process.env.WRAP_SSO_SECRET || '';
 const SSO_ON = Boolean(SSO_SECRET);
+// REQUIRE an account, rather than merely rewarding one.
+//
+// The incentive was inverted and it cost 57% of the allocation. Signing in
+// RAISES the cap to 1000 PCN a month; staying anonymous caps you at 250 PCN
+// per BSC address -- and BSC addresses are free and infinite, so an anonymous
+// farmer with ten of them took 2,500 PCN while the honest signed-in customer
+// was held to 1,000. Measured 2026-09-23: two networks took 30 addresses and
+// 6,951 of 12,000 wPCN, one of them eight fresh addresses in under seven
+// minutes.
+//
+// With this on, the monthly per-account allowance becomes the binding limit
+// rather than a courtesy, because there is no longer an anonymous path around
+// it. It is a SWITCH and not the default: turning it on stops anonymous
+// wrapping, which is a product decision, not a bug fix.
+//
+// It can only be honoured when SSO is configured -- requiring an account the
+// desk cannot issue would close the desk to everybody, so this refuses to
+// come on without it and says so at startup.
+const REQUIRE_ACCOUNT = Boolean(process.env.WRAP_REQUIRE_ACCOUNT) && SSO_ON;
 const SSO_START = process.env.WRAP_SSO_START || 'https://market.pc.am/sso/wrapdesk';
 // Per ACCOUNT, per rolling 30 days, in PCN.
 const ACCOUNT_MONTHLY_PCN = Number(process.env.WRAP_ACCOUNT_MONTHLY_PCN || 1000);
@@ -640,8 +659,100 @@ nav a{display:inline-block;padding:.35rem 0}
 }
 `;
 
-const NAV = [['/', 'Wrap'], ['/track', 'Track'], ['/redeem', 'Redeem'],
+const NAV = [['/', 'Wrap'], ['/my', 'My wraps'], ['/track', 'Track'], ['/redeem', 'Redeem'],
              ['/proof', 'Proof of backing'], ['/faq', 'FAQ']];
+
+
+// ── "my wraps": everything ONE signed-in account has ever wrapped ───────────
+//
+// Until now a customer could see a single deposit address on /track and
+// nothing else -- no history, no total, no way to tell what had been paid.
+// Anyone with several wraps had to keep their own notes, and the desk knew
+// more about them than they could see.
+//
+// It shows ONLY the signed-in account's own rows. Not a filter on a full list:
+// the loop reads `r.account !== who` and skips, so a bug that breaks the
+// comparison shows an EMPTY page rather than somebody else's wraps. The IP is
+// never rendered; it exists for abuse investigation, not for display.
+//
+// The paid/owed figures come from the WATCHER's ledger, which reads the chain,
+// not from the request row -- `released` on the row is written null and never
+// updated (see the allocation note in accountUsedWpcn). Reading the wrong one
+// of those two is the mistake the comment there exists to stop.
+const myWraps = (who) => {
+  const st = load();
+  let per = {}, seen = {};
+  try {
+    const w = JSON.parse(readFileSync(WATCH_STATE, 'utf8'));
+    per = ((w.allocation || {}).per_address) || {};
+    seen = w.seen || {};
+  } catch { per = {}; seen = {}; }
+
+  // deposit address -> was it paid out, and with which BSC transaction
+  const paidFor = {};
+  for (const [k, v] of Object.entries(seen)) {
+    const addr = k.split(':')[2];                 // wrap:<txid>:<address>
+    if (!addr || !v) continue;
+    if (v.released) paidFor[addr] = { state: 'paid', tx: v.released_tx || v.bsc_tx || null };
+    else if (v.refunded && !paidFor[addr]) paidFor[addr] = { state: 'refunded', tx: null };
+  }
+
+  const mine = Object.values(st.requests || {})
+    .filter((r) => r && r.account && who && r.account === who)
+    .sort((a, b) => (b.created || 0) - (a.created || 0));
+
+  if (!mine.length) {
+    return page('My wraps — PCoin wrap desk', '/my', `
+<h1>My wraps</h1>
+<div class="card"><p class="muted">Signed in as <b>${esc(who)}</b>, and this account
+has not wrapped anything yet. Start on the <a href="/">wrap page</a>.</p></div>`);
+  }
+
+  let credited = 0, rows = '';
+  for (const r of mine) {
+    const w = Number(per[r.address] || 0);
+    credited += w;
+    const st2 = paidFor[r.address];
+    const badge = st2 && st2.state === 'paid'
+      ? '<b style="color:var(--green)">paid</b>'
+      : st2 && st2.state === 'refunded'
+        ? '<b style="color:var(--amber)">refunded</b>'
+        : w > 0 ? '<b style="color:var(--amber)">confirming</b>'
+                : '<span class="muted">awaiting your deposit</span>';
+    rows += `<tr><td><code>${esc(r.address)}</code></td>
+      <td>${n2(r.amount)} PCN</td>
+      <td>${w > 0 ? n8(w) + ' wPCN' : '&mdash;'}</td>
+      <td>${badge}</td>
+      <td class="muted">${new Date(r.created || 0).toISOString().slice(0, 16).replace('T', ' ')}</td></tr>`;
+  }
+
+  const usedW = accountUsedWpcn(st, who);
+  const capW = ACCOUNT_MONTHLY_PCN * (1 - FEE_PCT / 100);
+  const leftPcn = Math.max(0, (capW - usedW) / (1 - FEE_PCT / 100));
+
+  return page('My wraps — PCoin wrap desk', '/my', `
+<h1>My wraps</h1>
+<div class="card"><p class="muted" style="margin:0">Signed in as <b>${esc(who)}</b> &mdash;
+the same account as <a href="https://market.pc.am">market.pc.am</a> and
+<a href="https://exchange.pc.am">exchange.pc.am</a>. <a href="/signout">Sign out</a></p></div>
+
+<div class="grid">
+  <div class="card"><div class="k">Wraps</div><div class="v">${mine.length}</div></div>
+  <div class="card"><div class="k">wPCN credited</div><div class="v">${n2(credited)}</div></div>
+  <div class="card"><div class="k">Left this month</div><div class="v">${n2(leftPcn)} PCN</div>
+    <div class="muted" style="font-size:.8rem">of ${ACCOUNT_MONTHLY_PCN} PCN, rolling 30 days</div></div>
+</div>
+
+<div class="card"><table>
+<tr><th>Deposit address</th><th>Requested</th><th>Credited</th><th>State</th><th>Asked on (UTC)</th></tr>
+${rows}
+</table>
+<p class="muted" style="margin:.7rem 0 0">Each deposit address is <b>permanent and
+reusable</b> &mdash; send to it again any time, up to ${PER_PERSON} PCN per address.
+"Credited" is read from the chain, so it appears once your deposit is seen, and
+"paid" once the wPCN has gone out. Follow a single one on the
+<a href="/track">track page</a>.</p></div>`);
+};
 
 // ── one-click "add wPCN to my wallet" (EIP-747) ──────────────────────────────
 // wPCN is on no token list, so every wallet treats it as unknown and every user
@@ -1620,6 +1731,18 @@ createServer(async (req, res) => {
       const capW = ACCOUNT_MONTHLY_PCN * (1 - FEE_PCT / 100);
       return send(200, home('', who, Math.max(0, (capW - usedW) / (1 - FEE_PCT / 100))));
     }
+    if (isGet && p === '/my') {
+      const who = accountOf(req);
+      // Not an error: a signed-out visitor is sent to sign in, which is the
+      // thing they need to do, rather than being told they are unauthorised.
+      if (!who) {
+        if (!SSO_ON) return send(503, home('<p class="err">Sign-in is not configured on this desk.</p>'));
+        res.writeHead(302, { Location: SSO_START + '?return=' +
+          encodeURIComponent('https://wrapdesk.pc.am/sso?next=/my') });
+        return res.end();
+      }
+      return send(200, myWraps(who));
+    }
     if (isGet && p === '/track')  return send(200, track());
     if (isGet && p === '/redeem') return send(200, redeem());
     if (isGet && p === '/faq')    return send(200, faq());
@@ -1636,8 +1759,17 @@ createServer(async (req, res) => {
         // which of the two it was.
         return send(400, home('<p class="err">That sign-in link is no longer valid. Please start again from market.pc.am.</p>'));
       }
+      // Where to land. An ALLOW-LIST of three literal paths, not "any path
+      // starting with /" and certainly not the raw parameter: a redirect
+      // target taken from a query string is an open redirect the moment
+      // somebody finds a parser difference, and this one is reached with a
+      // freshly minted session cookie attached. Three strings cannot be
+      // tricked.
+      const NEXT_OK = ['/my', '/track', '/'];
+      const nxt = url.searchParams.get('next') || '/';
+      const dest = NEXT_OK.includes(nxt) ? nxt : '/';
       res.writeHead(302, {
-        Location: '/',
+        Location: dest,
         'Set-Cookie': `wd=${encodeURIComponent(signSession(who))}; Path=/; Max-Age=${7 * 86400}; HttpOnly; Secure; SameSite=Lax`,
       });
       return res.end();
@@ -1750,6 +1882,17 @@ createServer(async (req, res) => {
         // four requests of 250 cannot walk past it the way per-deposit checks
         // have been walked past on this desk before.
         const acct = accountOf(req);
+        // Before the caps, because "you need an account" is a different answer
+        // from "your amount is wrong" and a customer should not have to fix the
+        // second to discover the first.
+        if (REQUIRE_ACCOUNT && !acct) {
+          return send(403, home(`<p class="err">This desk now needs a
+            <a href="${SSO_START}?return=https%3A%2F%2Fwrapdesk.pc.am%2Fsso">market.pc.am
+            account</a> &mdash; the same one you use for the market and the exchange.
+            Signing in gives you <b>${ACCOUNT_MONTHLY_PCN} PCN a month</b> instead of
+            ${PER_PERSON} PCN, and lets you see every wrap you have ever made
+            on <a href="/my">your wraps</a>.</p>`));
+        }
         if (acct) {
           const usedW = accountUsedWpcn(load(), acct);
           const capW = ACCOUNT_MONTHLY_PCN * (1 - FEE_PCT / 100);
@@ -1914,8 +2057,14 @@ createServer(async (req, res) => {
           return send(503, home(`<p class="err">The desk has run out of deposit
             addresses. That is our problem, not yours — please get in touch.</p>`));
         const slot = pool.find((x) => x.i === st.nextIndex);
+        // THE IP IS RECORDED. It was not, and working out who had taken the
+        // allocation on 2026-09-23 meant joining the Caddy access log to this
+        // file by timestamp -- and that log rotates, so the evidence had a
+        // shelf life. A deposit address is money; who asked for it is worth
+        // one field. Kept for abuse investigation only, never shown publicly.
         r = { bsc, index: slot.i, address: slot.a, amount,
-              created: Date.now(), released: null, account: acct || null };
+              created: Date.now(), released: null, account: acct || null,
+              ip: ip || null };
         st.requests[key] = r; st.nextIndex = slot.i + 1; save(st);
         // The creator, and only the creator, leaves holding the claim.
         setCookie = claimCookieFor(key);
