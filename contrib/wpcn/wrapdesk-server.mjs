@@ -47,7 +47,7 @@
  */
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
-import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, statSync } from 'node:fs';
 import { createHmac, timingSafeEqual, randomBytes } from 'node:crypto';
 import { dirname } from 'node:path';
 
@@ -95,7 +95,20 @@ function closedBy() {
     // the desk. An unreadable safety flag is UNKNOWN, and unknown must fail
     // closed, not open. This is CLAUDE.md 7.1 on the one switch that decides
     // whether money can arrive.
-    if (!existsSync(path)) continue;
+    //
+    // AND existsSync WAS NOT A DECISION EITHER. It answers false for "cannot
+    // tell" exactly as for "not there". Until 2026-09-23 this desk ran as a
+    // user that could not enter /etc/pcoin (0750), every lookup here failed with
+    // EACCES, existsSync said false -- and the Close switch in the admin panel
+    // could never have closed anything. Only ENOENT means "no flag". Any other
+    // error is unknown, and unknown closes, loudly.
+    try { statSync(path); }
+    catch (e) {
+      if (e && e.code === 'ENOENT') continue;
+      console.error(`[wrapdesk] cannot check the close flag ${path} (${e && e.code}); CLOSED until it can be read`);
+      out.push({ path, note: '(a close flag could not be checked, so the desk is closed until it can be)' });
+      continue;
+    }
     let note = '';
     try { note = readFileSync(path, 'utf8'); }
     catch (e) { note = `(this flag exists but could not be read: ${e.message})`; }
@@ -270,6 +283,33 @@ function accountOf(req) {
   if (!SSO_ON) return null;
   const c = (req.headers.cookie || '').split(/;\s*/).find((x) => x.startsWith('wd='));
   return c ? verifySigned(decodeURIComponent(c.slice(3)), COOKIE_KEY) : null;
+}
+
+// ACCOUNTS AND CONNECTIONS THAT MAY NOT OPEN WRAPS (owner, 2026-09-23: "prevent
+// that user to wrap again with his account or ip"). One person opened 20 wraps
+// in a day -- 8 without an account before sign-in was required, then 4 from each
+// of three fresh accounts on two connections -- and every guard of the time
+// allowed it. The daily limits cap the next attempt; this refuses a known one.
+//
+//   { "accounts": ["a@b.c"], "ips": ["1.2.3.4"], "ip_prefixes": ["5.6.7."] }
+//
+// Read on every request, so an edit needs no restart. A MISSING file blocks
+// nobody. A file that exists but cannot be read or parsed refuses every new
+// request instead: a guard that quietly stops guarding is the one failure it
+// must not have, and the fix -- repair the file -- takes a minute.
+const BLOCK_FILE = process.env.WRAP_BLOCKLIST || '/etc/pcoin/control/wrapdesk-blocked.json';
+function blockedFor(acct, ip) {
+  let raw;
+  try { raw = readFileSync(BLOCK_FILE, 'utf8'); }
+  catch (e) { return e && e.code === 'ENOENT' ? null : 'unreadable'; }
+  let b;
+  try { b = JSON.parse(raw); } catch { return 'unreadable'; }
+  if (!b || typeof b !== 'object') return 'unreadable';
+  const lc = (x) => String(x || '').trim().toLowerCase();
+  if (acct && (b.accounts || []).map(lc).includes(lc(acct))) return 'account';
+  if (ip && (b.ips || []).map((x) => String(x).trim()).includes(ip)) return 'connection';
+  if (ip && (b.ip_prefixes || []).some((x) => x && ip.startsWith(String(x).trim()))) return 'connection';
+  return null;
 }
 
 // What this account has consumed in the last 30 days, in wPCN.
@@ -2002,6 +2042,19 @@ createServer(async (req, res) => {
         // four requests of 250 cannot walk past it the way per-deposit checks
         // have been walked past on this desk before.
         const acct = accountOf(req);
+        // Blocked people are refused before anything else, and before an existing
+        // request could hand its deposit address back to them.
+        const blocked = blockedFor(acct, ip);
+        if (blocked === 'unreadable') {
+          console.error(`wrapdesk: ${BLOCK_FILE} exists but cannot be read or parsed; refusing new requests`);
+          return send(503, home(`<p class="err">New wraps are paused for a moment. Please
+            try again a little later.</p>`));
+        }
+        if (blocked) {
+          return send(403, home(`<p class="err">This ${blocked} cannot open new wraps.
+            Wraps you have already made are not affected &mdash; see
+            <a href="/my">My wraps</a>.</p>`));
+        }
         // Before the caps, because "you need an account" is a different answer
         // from "your amount is wrong" and a customer should not have to fix the
         // second to discover the first.
