@@ -226,7 +226,30 @@ if (curveMode) {
 
   const k    = Number(S.get('ammK'));
   const virt = Number(S.get('ammVirtualPcn'));
-  const rem  = Number(live && live.ladderRemainingPcn);
+  // RESERVATIONS ARE ADDED BACK, and this is the whole of the 02:04 incident.
+  //
+  // ladder.mjs publishes two figures that look interchangeable and are not:
+  //
+  //   remainingPcn  = tot - sold - resv - retd      (reservations SUBTRACTED)
+  //   marginalPrice = k/X^2 where X = (tot - sold - retd) + v   (resv IGNORED)
+  //
+  // Ignoring reservations in the price is deliberate -- ladder.mjs says so:
+  // "an unpaid order must never be able to move the published price". So the
+  // two disagree by exactly the reserved amount whenever an order is in
+  // flight, and this tool was comparing k/X^2 built from the reservation-
+  // INCLUSIVE remaining against the reservation-EXCLUSIVE price.
+  //
+  // On 2026-09-23 02:04 an unpaid $20 order held 584.08758174 PCN for its
+  // thirty-minute life. The model check fired MODEL MISMATCH, refused to
+  // write, failed the unit and paged the owner -- correctly refusing, on a
+  // comparison that could never have matched. 61735.4649998 + 584.0875817 =
+  // 62319.5525815, which is exactly the X that yields the charged price.
+  //
+  // So X is rebuilt the way marginalPrice builds it. This does not weaken the
+  // guard: a server that has genuinely fallen back to rung pricing still
+  // disagrees, because that disagreement is not the reserved amount.
+  const resv = Number((live && live.reservedPcn) || 0);
+  const rem  = Number(live && live.ladderRemainingPcn) + (Number.isFinite(resv) ? resv : 0);
   const nowP = Number(live && live.marginalPrice);
   if (!(Number.isFinite(k) && k > 0)) {
     await refuse('ammK is ' + S.get('ammK') + ', so the curve is OFF and the ladder is pricing ' +
@@ -452,7 +475,12 @@ if (curveMode) {
   try {
     const res = await fetch(LIVE_STATE, { signal: AbortSignal.timeout(20000) });
     const after = await res.json();
-    const remNow = Number(after.ladderRemainingPcn);
+    // Same correction as above: the expectation must be built from the X that
+    // marginalPrice actually uses, or an order arriving during the 35s wait
+    // turns a correct write into "DOES NOT MATCH".
+    const resvNow = Number(after.reservedPcn || 0);
+    const remNow = Number(after.ladderRemainingPcn) +
+                   (Number.isFinite(resvNow) ? resvNow : 0);
     const gotP   = Number(after.marginalPrice);
     const expect = Math.max(newK / (remNow + virt) / (remNow + virt), floor);
     const ok = Number.isFinite(gotP) && Number.isFinite(expect) &&
@@ -461,7 +489,7 @@ if (curveMode) {
                 '  ' + (ok ? 'MATCHES' : '*** DOES NOT MATCH ***'));
     if (remNow !== rem) {
       console.log('  (inventory moved during the run: ' + rem + ' -> ' + remNow +
-                  ' PCN, which is why the expectation is recomputed)');
+                  ' PCN unreserved, which is why the expectation is recomputed)');
     }
     await tg('<b>market.pc.am</b>\nPCN ask followed the wPCN pool <b>down</b>.\n' +
              'charged $' + f(nowP, 6) + ' \u2192 $' + f(gotP, 6) +
