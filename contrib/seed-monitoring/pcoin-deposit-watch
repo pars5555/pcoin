@@ -74,6 +74,48 @@ alert() {   # alert <subject> <body>
     [ -x "$NOTIFY" ] && "$NOTIFY" "$1" "$2" >/dev/null 2>&1
 }
 
+# ------------------------------------------------- transient tolerance ----
+#
+# "The rail threw on this tick" is usually the explorer being briefly
+# unreachable, not the rail being broken. Caddy on the explorer host is
+# restarted ~11x/day by another project's watchdog, and each bounce produces
+# one HTTP 521 for anything polling at that instant.
+#
+# So an ERRORING alert must survive ERR_MIN_TICKS consecutive checks before it
+# is worth waking anybody. The check itself is unchanged: a genuinely broken
+# rail still alerts, one tick (~5 min) later than before.
+ERR_MIN_TICKS="${ERR_MIN_TICKS:-2}"
+
+_err_file() {   # _err_file <key>
+    d="${STATE_DIR:-/var/lib/pcoin-deposit-watch}/errstreak"
+    mkdir -p "$d" 2>/dev/null || true
+    printf '%s/%s' "$d" "$1"
+}
+
+# Every alert_persistent key needs an err_clear on its rail's SUCCESS branch --
+# an explicit ok == True, never "not False": an unreadable heartbeat is not a
+# success. Until 2026-09-23 only webai had one, so aicontrol's and pcnaibot's
+# streaks never reset and, after their first blip, every later single error
+# alerted at once -- the tolerance silently gone for good.
+err_clear() {   # a tick succeeded: the run of failures, if any, is over
+    rm -f "$(_err_file "$1")" 2>/dev/null || true
+}
+
+alert_persistent() {   # alert_persistent <key> <subject> <body>
+    f=$(_err_file "$1")
+    n=$(cat "$f" 2>/dev/null)
+    case "$n" in ''|*[!0-9]*) n=0 ;; esac
+    n=$((n + 1))
+    printf '%s' "$n" > "$f" 2>/dev/null || true
+    if [ "$n" -ge "$ERR_MIN_TICKS" ]; then
+        alert "$2" "$3 (failing for $n consecutive checks)"
+    else
+        # Logged, never silent -- the journal carries it and the next tick
+        # decides again with a longer streak.
+        log "transient (check $n of $ERR_MIN_TICKS, staying quiet): $2 -- $3"
+    fi
+}
+
 # ---------------------------------------------------- coverage manifest ----
 #
 # EVERY RAIL THAT TAKES PCN IS NAMED HERE, and the run is not complete until
@@ -343,8 +385,10 @@ if [ -r "$AIC" ]; then
         age=""; [ -n "$last" ] && age=$((now - last))
         check_heartbeat "aicontrol" "$age" "In-process setInterval in pm2 'ai-control-server' -- pm2 restart revives it."
         if [ "$okflag" = "False" ]; then
-            alert "PCN watcher ERRORING: aicontrol" \
+            alert_persistent "aicontrol-erroring" "PCN watcher ERRORING: aicontrol" \
                   "aicontrol's watcher is ticking but its last tick threw: $err. Running-and-failing is a different fault from stopped."
+        elif [ "$okflag" = "True" ]; then
+            err_clear "aicontrol-erroring"
         fi
         check_deposits "aicontrol" "$u" "$p" "$db" pcn_deposits first_seen_at
     fi
@@ -383,8 +427,10 @@ if [ -r "$WEBAI" ]; then
         fi
 
         if [ "$okflag" = "False" ]; then
-            alert "PCN watcher ERRORING: webai" \
+            alert_persistent "webai-erroring" "PCN watcher ERRORING: webai" \
                   "webai's watcher is ticking but its last tick threw: $err. Running-and-failing is a different fault from stopped."
+        elif [ "$okflag" = "True" ]; then
+            err_clear "webai-erroring"
         fi
 
         # A deliberately-off rail is not a crash, but it is also not fine once
@@ -678,7 +724,9 @@ if [ -r "$PCNAI_CONF" ] || [ -r "$PCNAI_DB" ]; then
     fi
 
     if [ "$okflag" = "False" ]; then
-        alert "PCN watcher ERRORING: pcnaibot"               "pcnaibot's watcher is ticking but its last tick threw: $err. Running-and-failing is a different fault from stopped."
+        alert_persistent "pcnaibot-erroring" "PCN watcher ERRORING: pcnaibot" "pcnaibot's watcher is ticking but its last tick threw: $err. Running-and-failing is a different fault from stopped."
+    elif [ "$okflag" = "True" ]; then
+        err_clear "pcnaibot-erroring"
     fi
 
     # A deliberately-off rail is not a crash, but it is also not fine once users
