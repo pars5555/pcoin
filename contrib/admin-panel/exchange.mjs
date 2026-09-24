@@ -478,7 +478,50 @@ Fund it below; the balance is the whole budget and cannot go negative, so a bug 
   // works and sends them to Telegram from its tick loop, so this page and the
   // channel show the same thing — and a Telegram outage delays the channel, never
   // the exchange.
+  // EVERY DETAIL OF A FILL (owner, 2026-09-24: "I should see every detail, who
+  // and from whom bought and sold, which price and everything else"). The trade
+  // EVENT is one line of text ("bot:bid BOUGHT 392 PCN at $0.019134") that
+  // names only one side, so the trades view reads the fill itself: both
+  // accounts (a bot by its name), both orders -- what each side asked for, how
+  // much of it filled, when it was placed -- where each was placed from, who
+  // took whom, and the fees.
+  const whenS = (t) => (t === null || t === undefined ? '—' : new Date(Number(t) * 1000).toISOString().replace('T', ' ').slice(0, 19));
+  const party = (x, s) => {
+    const o = s === 'buyer' ? 'buy' : 'sell';
+    const name = x[`${s}_email`] ? esc(x[`${s}_email`])
+      : x[`${s}_name`] ? `<b>${esc(x[`${s}_name`])}</b>` : `<span class="dim">account ${esc(x[`${s}_id`])}</span>`;
+    const ord = x[`${o}_order_price_micro`] !== null && x[`${o}_order_price_micro`] !== undefined
+      ? `order #${esc(x[`${o}_order_id`])}: ${esc(pcn(x[`${o}_order_qty_sat`]))} at ${esc(usd(x[`${o}_order_price_micro`]))}, ${esc(pcn(x[`${o}_order_filled_sat`]))} filled, ${esc(x[`${o}_order_status`])}, placed ${esc(whenS(x[`${o}_order_at`]))}`
+      : `order #${esc(x[`${o}_order_id`])}`;
+    const city = x[`${s}_city`] ? ` <span class="dim" style="font-size:11px">${esc(x[`${s}_city`])}</span>` : '';
+    return `${name} <span class="dim">#${esc(x[`${s}_id`])}</span><br><span class="muted" style="font-size:12px">${ord}</span><br>${place(x[`${s}_country`], x[`${s}_ip`])}${city}`;
+  };
+  const TRADE_COLUMNS = [{ label: '# / time (UTC)', sort: 'id' }, { label: 'price', sort: 'price' }, { label: 'PCN', sort: 'qty' },
+    { label: 'value', sort: 'notional' }, { label: 'buyer' }, { label: 'seller' }, { label: 'who took whom' }, { label: 'fees' }];
+  const tradeRow = (x) => {
+    const took = x.taker_side === 'buy'
+      ? `buyer took the seller's resting order #${esc(x.maker_order_id)}`
+      : x.taker_side === 'sell' ? `seller took the buyer's resting order #${esc(x.maker_order_id)}` : esc(x.taker_side || '—');
+    return `<tr><td style="white-space:nowrap"><b>#${esc(x.id)}</b><br><span class="muted">${esc(whenS(x.at))}</span></td>
+      <td>${esc(usd(x.price_micro))}</td><td>${esc(pcn(x.qty_sat))}</td><td><b>${esc(usd(x.notional_micro))}</b></td>
+      <td>${party(x, 'buyer')}</td><td>${party(x, 'seller')}</td>
+      <td style="font-size:12px">${took}<br>${String(x.house_involved) === '1' ? pill('house bot') : pill('users only')}</td>
+      <td style="font-size:12px;white-space:nowrap">buyer ${esc(usd(x.buyer_fee_micro))}<br>seller ${esc(usd(x.seller_fee_micro))}</td></tr>`;
+  };
+
   async function activity(url) {
+    // "Activity, type = trade" shows the fills themselves in full, not their
+    // one-line events. The kind filter stays in every link (spec.sub), so paging
+    // and sorting keep showing trades.
+    if (url.searchParams.get('f_kind') === 'trade') {
+      const L = await listPage(url, {
+        view: 'activity', sub: { name: 'f_kind', value: 'trade' }, list: 'trades', title: 'trades',
+        searchHint: 'Search email, bot name, account id, order id, IP, country, city…', dateLabel: 'traded',
+        columns: TRADE_COLUMNS, row: tradeRow, empty: 'No trades match.',
+      });
+      return `<div class="card"><p class="muted">Every fill, both sides in full. <a href="${self}?view=activity">Back to all activity</a> ·
+        filter by buyer or seller (a user, <b>bot:bid</b>, <b>bot:ask</b>) with the selects below.</p></div>` + L.html;
+    }
     const KIND = { account: '🆕', signin: '🔑', order: '📋', trade: '💱', deposit: '💰', cancel: '✖', adjust: '⚖', check: '🔎', referral: '🎁' };
     const L = await listPage(url, {
       view: 'activity', list: 'events', title: 'the activity feed',
@@ -502,12 +545,9 @@ Fund it below; the balance is the whole budget and cannot go negative, so a bug 
     const level = (x) => `<tr><td>${esc(usd(x.price_micro))}</td><td>${esc(pcn(x.qty_sat))}</td><td>${esc(x.orders)}</td></tr>`;
     const L = await listPage(url, {
       view: 'book', list: 'trades', title: 'trades',
-      searchHint: 'Search buyer or seller email, account id, order id…', dateLabel: 'traded',
-      columns: [{ label: 'time', sort: 'at' }, { label: 'price', sort: 'price' }, { label: 'PCN', sort: 'qty' }, { label: 'value', sort: 'notional' },
-        { label: 'buyer' }, { label: 'seller' }, { label: 'taker' }, { label: 'house' }],
-      row: (x) => `<tr><td style="white-space:nowrap">${esc(when(x.at))}</td><td>${esc(usd(x.price_micro))}</td><td>${esc(pcn(x.qty_sat))}</td>
-        <td><b>${esc(usd(x.notional_micro))}</b></td><td>${who(x.buyer_email, x.buyer_id)}</td><td>${who(x.seller_email, x.seller_id)}</td>
-        <td>${esc(x.taker_side)}</td><td>${String(x.house_involved) === '1' ? pill('house bot') : pill('users only')}</td></tr>`,
+      searchHint: 'Search email, bot name, account id, order id, IP, country, city…', dateLabel: 'traded',
+      columns: TRADE_COLUMNS,
+      row: tradeRow,
       empty: 'No trades yet.',
     });
     return `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px">
