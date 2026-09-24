@@ -25,6 +25,7 @@ RELOADED (graceful), never restarted -- other sites live on this Caddy.
 """
 import ipaddress
 import json
+import re
 import os
 import subprocess
 import sys
@@ -109,14 +110,21 @@ def sync(j):
     # Straight to Caddy's admin API, the same command the unit's ExecReload
     # runs, with a timeout. A failed `systemctl reload` left the unit stuck in
     # "reloading" for minutes, and every later reload queued behind it.
+    # Some hosts run Caddy with `admin off` (the market's, on purpose: no local
+    # process can rewrite its config). There a reload is impossible and a
+    # RESTART is the only way to apply -- a second or two for that host's sites.
+    with open(CADDYFILE, encoding='utf-8') as f:
+        admin_off = re.search(r'^\s*admin\s+off\b', f.read(), re.M) is not None
+    cmd = (['systemctl', 'restart', 'caddy'] if admin_off
+           else ['caddy', 'reload', '--config', CADDYFILE, '--adapter', 'caddyfile', '--force'])
     try:
-        r = subprocess.run(['caddy', 'reload', '--config', CADDYFILE, '--adapter', 'caddyfile', '--force'],
-                           capture_output=True, text=True, timeout=60)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     except subprocess.TimeoutExpired:
         sys.exit('caddy reload timed out; the old list is still in force in Caddy (the panel reads the new one)')
     if r.returncode != 0:
         sys.exit('caddy reload failed (the old list is still in force in Caddy): ' + (r.stderr or r.stdout)[-500:])
-    print('caddy reloaded; allowed:', ', '.join(ips) or '(nobody)')
+    print('caddy %s; allowed:' % ('RESTARTED (admin API is off on this host)' if admin_off else 'reloaded'),
+          ', '.join(ips) or '(nobody)')
     print('REMEMBER: set the same list on every host that locks an admin screen: ' + HOSTS)
 
 
