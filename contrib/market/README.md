@@ -16,6 +16,8 @@ contrib/market/
   ipn.mjs           the NOWPayments callback: signature, what a payment is worth, the
                     one-payment-per-order tie, the hand-off to delivery (§5a)
   ipn-test.mjs      the callback against a throwaway database, fake wallet, no chain
+  ipn-e2e-test.mjs  a copy of the real server.mjs, run as a process: the /ipn and
+                    /api/buy wiring, before and after orders-payment.sql
   orders-payment.sql  the columns ipn.mjs needs. Run as root BEFORE deploying it
   ladder.mjs        the fill engine. Pure walk functions + transactional reserve/settle/release
   ladder-test.mjs   40 cases against a real database. Refuses to run on a dirty ladder
@@ -474,8 +476,12 @@ A change that needs a new column ships its `.sql`, run as root **first**
 
 ```bash
 # the payment callback, against a THROWAWAY database it creates and drops
-# (refuses any name not starting pcm_ipn_test; needs a root-capable MariaDB)
+# (refuses any name not starting pcm_ipn_test; needs a root-capable MariaDB).
+# On a development machine, never the production host.
 PCOIN_IPN_TEST_DB=pcm_ipn_test PCOIN_IPN_TEST_PORT=3306 node ipn-test.mjs
+# the same wiring through a copy of server.mjs (database pcm_ipn_test_e2e,
+# ports 38789-38790, alerts to stdout, nothing announced)
+PCOIN_IPN_TEST_PORT=3306 node ipn-e2e-test.mjs
 ```
 
 **Seeding the ladder is not idempotent and must never run twice.** `ladder.sql`

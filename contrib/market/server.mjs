@@ -1410,6 +1410,19 @@ createServer(async (req, res) => {
       if (!email) return json(res, 401, { error: 'sign in first' });
       const f = jsonBodyOr400(await body(req), res);
       if (f === null) return;
+
+      // No order the payment callback could not process (see checkIpnSchema).
+      // First, before anything is priced or reserved: nothing else matters
+      // while a payment for this order could not be handled.
+      if (!ipnSchemaOk) {
+        const missing = await checkIpnSchema();
+        if (missing) {
+          schemaAlert(missing);
+          return json(res, 503, { error: 'orders are paused: payments cannot be processed right ' +
+            'now. Nothing was reserved or charged. Try again shortly.', saleOpen: false });
+        }
+      }
+
       const usd = Number(f.usd);
       const addr = String(f.address || '').trim();
       if (!(usd >= S.get('minOrderUsd'))) return json(res, 400, { error: `minimum order is $${S.get('minOrderUsd')}` });
@@ -1421,16 +1434,6 @@ createServer(async (req, res) => {
       // when it cannot read the rate at all.
       const gate = await saleGate(usd, email);
       if (!gate.open) return json(res, 503, { error: gate.reason, saleOpen: false });
-
-      // No order the payment callback could not process (see checkIpnSchema).
-      if (!ipnSchemaOk) {
-        const missing = await checkIpnSchema();
-        if (missing) {
-          schemaAlert(missing);
-          return json(res, 503, { error: 'orders are paused: payments cannot be processed right ' +
-            'now. Nothing was reserved or charged. Try again shortly.', saleOpen: false });
-        }
-      }
 
       // Checked inside the transaction below as well; this is the cheap early
       // answer so a user with three unpaid orders gets a clear message instead
