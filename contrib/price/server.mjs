@@ -1183,7 +1183,10 @@ createServer(async (req, res) => {
         // Taken from the same field the response publishes, never retyped: this
         // sentence and rateFloorUsd disagreeing would be worse than either alone.
         note: 'Posted from a finite 100,000 PCN order-book ladder, not discovered on a market. ' +
-              'PCN is not exchange traded; its wrapped form wPCN trades in a small PancakeSwap ' +
+              // "not exchange traded" stood here until 2026-09-24, long after
+              // exchange.pc.am opened; the pc.am mini app shows this text to users.
+              'PCN also trades on exchange.pc.am, a small order book the project runs, and its ' +
+              'wrapped form wPCN trades in a small PancakeSwap ' +
               'pool. Until 2026-09-09 a keeper held that pool to THIS rate. It no longer ' +
               'defends parity: the pool is allowed to fall on real selling, and since ' +
               '2026-09-19 BOTH numbers here follow it down -- what services credit, and what ' +
@@ -1203,7 +1206,8 @@ createServer(async (req, res) => {
               (st.buybackOpen
                 ? 'Buying PCN back is a separate constant-product curve at a much lower price.'
                 : 'This service is not buying PCN back at present.') +
-              ' `index` is shadow data from exchange.pc.am; do not credit with it yet.',
+              // Plain words, no code formatting: the mini app renders this note.
+              ' The index block is shadow data from exchange.pc.am and must not be used for crediting yet.',
         role: ROLE,
         // A consumer can tell a fresh price from a remembered one. Both are
         // usable; only one is current, and pretending otherwise is how a stale
