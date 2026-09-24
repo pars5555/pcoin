@@ -412,6 +412,54 @@ createServer(async (req, res) => {
                          minConfirmations: MIN_CONF });
     }
 
+    // Read-only aggregate for the unified admin panel. Its own token, checked
+    // BEFORE projectFor(), so a project bearer cannot reach it and this token
+    // cannot reach /verify or /claims. Counts and sums only -- `payer` and
+    // `user_ref` identify real people and appear nowhere below.
+    if (url.pathname === '/stats' && req.method === 'GET') {
+      const want = cfg.readToken;
+      const m = (req.headers.authorization || '').match(/^Bearer\s+(.+)$/i);
+      if (!want || !m || m[1] !== want) {
+        return send(401, { ok: false, error: 'stats requires the read-only token' });
+      }
+      const today = new Date().toISOString().slice(0, 10);
+      const byProject = {};
+      let wpcn = 0, usd = 0, todayCount = 0, newest = null, unreadable = 0;
+      for (const f of readdirSync(DB_DIR)) {
+        if (!f.endsWith('.json')) continue;
+        let c;
+        try { c = JSON.parse(readFileSync(join(DB_DIR, f), 'utf8')); }
+        catch { unreadable += 1; continue; }   // a bad file is counted, never skipped silently
+        const p = c.project || 'unknown';
+        byProject[p] = byProject[p] || { claims: 0, wpcn: 0, usd: 0 };
+        byProject[p].claims += 1;
+        byProject[p].wpcn += Number(c.wpcn) || 0;
+        byProject[p].usd += Number(c.usd_credited) || 0;
+        wpcn += Number(c.wpcn) || 0;
+        usd += Number(c.usd_credited) || 0;
+        const iso = typeof c.at === 'number' ? new Date(c.at * 1000).toISOString()
+                  : typeof c.at === 'string' ? c.at : null;
+        if (iso) {
+          if (iso.slice(0, 10) === today) todayCount += 1;
+          if (!newest || iso > newest) newest = iso;
+        }
+      }
+      return send(200, {
+        ok: true,
+        claims: claimCount(),
+        claims_today: todayCount,
+        unreadable_records: unreadable,
+        wpcn_total: Number(wpcn.toFixed(8)),
+        usd_credited_total: Number(usd.toFixed(2)),
+        newest_claim_at: newest,
+        by_project: byProject,
+        projects_configured: Object.keys(CLIENTS).length,
+        pay_to: PAY_TO,
+        min_confirmations: MIN_CONF,
+        bonus_percent: BONUS_PCT,
+      });
+    }
+
     const project = projectFor(req);
     if (!project) return send(401, { ok: false, error: 'unknown or missing bearer token' });
 
