@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+"""The PCN index's shadow week, recorded -- price plan Phase 2.
+
+The exchange-anchored PCN index runs in SHADOW from 2026-09-24: computed on
+exchange.pc.am, relayed by price.pc.am (`index`, inUse:false), used by nothing.
+Switching the rails to it is judged on a week of evidence, and the owner reads
+that evidence as a daily digest. This script is both halves:
+
+    pcoin-index-shadow           every 15 min (timer): append one row to the CSV,
+                                 and at/after 08:00 UTC send the day's digest once
+    pcoin-index-shadow --digest     build the digest now, whatever the time
+    pcoin-index-shadow --dry-run    print instead of sending (combine with --digest)
+
+Rows go to /var/lib/pcoin-index-shadow/shadow.csv. Public sources only -- the
+same doctrine as pcoin-facts: price.pc.am and exchange.pc.am's public API.
+
+A source that cannot be read writes an EMPTY cell, never a zero, and the digest
+counts those gaps instead of averaging over them: "the index was unknown" and
+"the index was $0" must never look alike in the record the switch is judged on.
+
+What the digest does NOT do: replay individual rail credits. They live in three
+databases on three hosts that deliberately cannot reach each other. Every rail
+credits at creditRateUsd, so the comparison it states -- what 1,000 PCN credited
+that day was worth at the credit rate vs at the index -- is the same quantity.
+"""
+import csv
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.request
+
+DIR = os.environ.get("INDEX_SHADOW_DIR", "/var/lib/pcoin-index-shadow")
+CSV = os.path.join(DIR, "shadow.csv")
+STATE = os.path.join(DIR, "state.json")
+NOTIFY = os.environ.get("PCOIN_NOTIFY", "/usr/local/bin/pcoin-notify")
+PRICE = "https://price.pc.am/"
+EXCHANGE = "https://exchange.pc.am/api/public"
+HISTORY = "https://exchange.pc.am/api/index/history?hours=24"
+SHADOW_START = 1790248500      # 2026-09-24 ~11:15 UTC, index_enabled on the exchange
+DIGEST_HOUR = 8
+COLS = ["at", "index_usd", "index_state", "index_seq", "index_age_s", "index_stale", "index_refused",
+        "window_hours", "window_trades", "window_entities", "window_usd",
+        "credit_rate_usd", "sell_price_usd", "pool_spot_usd", "pool_median_usd",
+        "ex_bid_usd", "ex_ask_usd", "ex_last_usd", "gap_vs_credit_pct"]
+
+
+def get(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "pcoin-index-shadow"})
+    for attempt in (1, 2):
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return json.load(r)
+        except Exception:
+            if attempt == 1:
+                time.sleep(2)
+    return None
+
+
+def num(v):
+    try:
+        f = float(v)
+        return f if f == f else None
+    except (TypeError, ValueError):
+        return None
+
+
+def collect():
+    p, x = get(PRICE), get(EXCHANGE)
+    ix = (p or {}).get("index") or {}
+    w = ix.get("window") or {}
+    stx = ((x or {}).get("stats") or {})
+    credit = num((p or {}).get("creditRateUsd"))
+    iu = num(ix.get("usd"))
+    row = {
+        "at": int(time.time()),
+        "index_usd": iu, "index_state": ix.get("state") if p else None, "index_seq": ix.get("seq"),
+        "index_age_s": ix.get("ageSeconds"), "index_stale": ix.get("stale"),
+        "index_refused": (ix.get("refused") or {}).get("why") if ix.get("refused") else "",
+        "window_hours": w.get("hours"), "window_trades": w.get("trades"), "window_entities": w.get("entities"),
+        "window_usd": w.get("countedUsd"),
+        "credit_rate_usd": credit, "sell_price_usd": num((p or {}).get("sellPriceUsd")),
+        "pool_spot_usd": num(((p or {}).get("pool") or {}).get("spotUsd")),
+        "pool_median_usd": num(((p or {}).get("pool") or {}).get("medianUsd")),
+        "ex_bid_usd": num(stx.get("bestBidUsd")), "ex_ask_usd": num(stx.get("bestAskUsd")),
+        "ex_last_usd": num(stx.get("lastPriceUsd")),
+        "gap_vs_credit_pct": round((iu / credit - 1) * 100, 4) if iu and credit else None,
+    }
+    os.makedirs(DIR, exist_ok=True)
+    new = not os.path.exists(CSV)
+    with open(CSV, "a", newline="", encoding="utf-8") as f:
+        wr = csv.DictWriter(f, fieldnames=COLS)
+        if new:
+            wr.writeheader()
+        wr.writerow({k: ("" if row[k] is None else row[k]) for k in COLS})
+    return row
+
+
+def rows_since(t0):
+    out = []
+    try:
+        with open(CSV, newline="", encoding="utf-8") as f:
+            for r in csv.DictReader(f):
+                if int(r["at"]) >= t0:
+                    out.append(r)
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def usd(v, dp=6):
+    return "-" if v is None else "$%.*f" % (dp, v)
+
+
+def digest(now):
+    rows = rows_since(now - 86400)
+    day = int((now - SHADOW_START) // 86400) + 1
+    idx = [num(r["index_usd"]) for r in rows]
+    cr = [num(r["credit_rate_usd"]) for r in rows]
+    gaps = [num(r["gap_vs_credit_pct"]) for r in rows if num(r["gap_vs_credit_pct"]) is not None]
+    states = {}
+    for r in rows:
+        states[r["index_state"] or "unreadable"] = states.get(r["index_state"] or "unreadable", 0) + 1
+    known = [v for v in idx if v is not None]
+    known_cr = [v for v in cr if v is not None]
+    refused = sum(1 for r in rows if r["index_refused"])
+    hist = get(HISTORY) or {}
+    moves = [pt for pt in (hist.get("points") or []) if pt.get("seq") not in (None, 0)]
+    last = rows[-1] if rows else {}
+    lines = [
+        "PCN index -- shadow day %d of 7 (nothing uses it yet)" % day,
+        "",
+        "Index: %s -> %s, low %s, high %s" % (usd(known[0] if known else None), usd(known[-1] if known else None),
+                                              usd(min(known) if known else None), usd(max(known) if known else None)),
+        "Moves in 24 h: %d%s" % (len(moves), "" if hist else " (history unreadable)"),
+        "States seen (15-min samples): " + ", ".join("%s %d" % (k, v) for k, v in sorted(states.items())),
+        "Unknown: %d  Refused by price.pc.am: %d  Unreadable samples: %d  (all must be 0)"
+        % (states.get("unknown", 0), refused, sum(1 for v in idx if v is None) - states.get("unknown", 0) - states.get("disabled", 0)),
+        "Evidence now: %s fills, %s people, $%s in the %s h window (needs 5 / 4 / $25)"
+        % (last.get("window_trades") or "-", last.get("window_entities") or "-", last.get("window_usd") or "-",
+           last.get("window_hours") or "-"),
+        "",
+        "Credit rate (what rails pay): %s -> %s" % (usd(known_cr[0] if known_cr else None), usd(known_cr[-1] if known_cr else None)),
+        "Index vs credit rate: average %s%%, range %s%% to %s%%"
+        % (("%+.2f" % (sum(gaps) / len(gaps))) if gaps else "-", ("%+.2f" % min(gaps)) if gaps else "-",
+           ("%+.2f" % max(gaps)) if gaps else "-"),
+    ]
+    if known and known_cr:
+        a_idx, a_cr = sum(known) / len(known), sum(known_cr) / len(known_cr)
+        lines.append("1,000 PCN credited today: $%.2f at the credit rate, $%.2f at the index (%+.2f)"
+                     % (1000 * a_cr, 1000 * a_idx, 1000 * (a_idx - a_cr)))
+    lines += [
+        "Market sells at %s; exchange bid %s / ask %s / last %s"
+        % (usd(num(last.get("sell_price_usd"))), usd(num(last.get("ex_bid_usd"))), usd(num(last.get("ex_ask_usd"))),
+           usd(num(last.get("ex_last_usd")))),
+        "",
+        "Exit criteria: 7 days (day %d), >=15 new qualifying fills, zero unknown, every move explained "
+        "by fills (admin -> PCN index), then the owner's yes." % day,
+        "%d samples in the last 24 h. CSV: %s" % (len(rows), CSV),
+    ]
+    return "\n".join(lines)
+
+
+def load_state():
+    try:
+        s = json.load(open(STATE, encoding="utf-8"))
+        return s if isinstance(s, dict) else {}
+    except Exception:
+        return {}
+
+
+def main():
+    dry = "--dry-run" in sys.argv
+    now = int(time.time())
+    if "--digest" not in sys.argv:
+        r = collect()
+        print("row: index %s (%s), credit %s, gap %s%%" % (r["index_usd"], r["index_state"], r["credit_rate_usd"],
+                                                           r["gap_vs_credit_pct"]))
+    st = load_state()
+    today = time.strftime("%Y-%m-%d", time.gmtime(now))
+    due = time.gmtime(now).tm_hour >= DIGEST_HOUR and st.get("last_digest_day") != today
+    if "--digest" in sys.argv or due:
+        text = digest(now)
+        if dry:
+            print("--- DRY RUN: would send ---\n" + text)
+            return 0
+        subprocess.run([NOTIFY, "PCN index shadow: daily digest", text], timeout=60)
+        st["last_digest_day"] = today
+        tmp = STATE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(st, f)
+        os.replace(tmp, STATE)
+        print("digest sent")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,9 @@
+[Unit]
+Description=PCN index shadow week: record a sample; send the 08:00 UTC digest (price plan Phase 2)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pcoin-index-shadow
+Nice=10

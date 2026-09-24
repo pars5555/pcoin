@@ -1,0 +1,10 @@
+[Unit]
+Description=Sample the PCN index every 15 minutes (shadow week)
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
