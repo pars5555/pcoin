@@ -125,8 +125,15 @@ def post_text(p, total):
          if p["asset"] == "PCN" else
          "%s \u2014 %s, sent %s." % (amount, NETWORK.get(p["network"], p["network"]), waited(p["waitedSeconds"]))),
         "",
-        "Somebody mined PCN, sold it on exchange.pc.am, and took the money out. "
-        "Every payout is checked against the chain before it counts as paid.",
+        # WHAT HAPPENED DEPENDS ON THE ASSET. A USD payout is somebody who sold
+        # PCN and took the dollars out. A PCN payout is the opposite direction:
+        # on 2026-09-24 #19 and #20 were people who BOUGHT PCN with crypto and
+        # took the PCN out, and both went out publicly as "mined PCN, sold it
+        # and took the money out" -- the sentence written for the USD case.
+        ("Somebody took PCN out of exchange.pc.am to their own wallet. "
+         if p["asset"] == "PCN" else
+         "Somebody mined PCN, sold it on exchange.pc.am, and took the money out. ")
+        + "Every payout is checked against the chain before it counts as paid.",
     ]
     if WITH_TXID and p.get("txid"):
         # A bare hash is proof only to somebody who already knows what to do with
