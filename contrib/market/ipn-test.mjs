@@ -686,6 +686,31 @@ if (MOD.makeIpn({ pool, ladder: L, delivery: D, notify, secret: SECRET, log: qui
 } else skip('R4: stale-read race', 'this implementation exposes no _internals');
 
 if (MOD.makeIpn({ pool, ladder: L, delivery: D, notify, secret: SECRET, log: quiet })._internals) {
+  await test('R4: a raced accept undoes its own settle', async () => {
+    // accept() settles the ladder FIRST and finds the order already tied
+    // SECOND, inside one transaction. The order here is held for a human (a
+    // partial: tied, needs_review), and a held order keeps its rungs
+    // 'reserved'. A second payment decided on a read from before the hold
+    // must leave them exactly so: the race has to roll the settle back too.
+    const o = await newOrder();
+    const stale = (await q(`SELECT * FROM orders WHERE order_id = ?`, [o.id]))[0];
+    await pay(o, { status: 'partially_paid', due: 1, paid: 0.5 });   // payment A: held
+    const held = await fills(o.id);
+    const b = newPid();
+    const d = JSON.parse(callback(o, { pid: Number(b) }));
+    const r = await IPN._internals.accept(stale, d, MOD.classify(d), b, { id: 0, fresh: true }, 0);
+    const after = await fills(o.id);
+    ok('the held order\'s rungs are still reserved, none sold',
+       held.reserved > 0 && !held.sold && JSON.stringify(after) === JSON.stringify(held),
+       `${JSON.stringify(held)} -> ${JSON.stringify(after)}`);
+    const w = await row(o.id);
+    ok('still held for A, nothing sent, B to a human',
+       w.status === 'needs_review' && w.paid_payment_id === o.pid && sendsFor(o.id).length === 0 &&
+       r.body.outcome === 'needs_human', `${w.status} ${w.paid_payment_id} ${JSON.stringify(r.body)}`);
+  });
+} else skip('R4: a raced accept undoes its settle', 'this implementation exposes no _internals');
+
+if (MOD.makeIpn({ pool, ladder: L, delivery: D, notify, secret: SECRET, log: quiet })._internals) {
   await test('R8: the tie is the latch, whatever the status says', async () => {
     // A human put a tied order back into an unpaid-looking status by hand. The
     // status check alone would let another payment take it; the tie must not.
