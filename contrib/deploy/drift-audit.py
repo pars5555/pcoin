@@ -83,9 +83,9 @@ DEPLOYMENTS = {
     # month-old build for weeks while the other two were current. So each is its
     # own deployment here: an audit of "price" that looked at one box would be
     # the same blind spot again. state.json is per-origin state, never compared.
-    "price": ("contrib/price", "/opt/pcoin-price", "~/.ssh/id_ed25519", ["server.mjs"]),
-    "price-replica": ("contrib/price", "/opt/pcoin-price", "~/.ssh/id_ed25519", ["server.mjs"]),
-    "price-parsos": ("contrib/price", "/opt/pcoin-price", "~/.ssh/parsos_server", ["server.mjs"]),
+    "price": ("contrib/price", "/opt/pcoin-price", "~/.ssh/id_ed25519", ["server.mjs", "index-relay.mjs"]),
+    "price-replica": ("contrib/price", "/opt/pcoin-price", "~/.ssh/id_ed25519", ["server.mjs", "index-relay.mjs"]),
+    "price-parsos": ("contrib/price", "/opt/pcoin-price", "~/.ssh/parsos_server", ["server.mjs", "index-relay.mjs"]),
     # Its /stats endpoint lived only on the server for twelve days (2026-09-12
     # to 09-24) before this entry existed.
     "wpcn-pay": ("contrib/wpcn-pay", "/opt/pcoin-wpcn-pay", "~/.ssh/id_ed25519", ["server.mjs"]),

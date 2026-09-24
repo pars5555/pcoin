@@ -39,6 +39,7 @@ import { announceFeed, markAnnounced, BACKLOG_LOUD_AT } from './wrapdesk-announc
 import { keeperPage, keeperData, validate as keeperValidate, writeTuning } from './keeper.mjs';
 import { minersPage, minersData } from './miners.mjs';
 import { pricingPage, pricingData } from './pricing.mjs';
+import { pcnIndexPage, pcnIndexData } from './pcn-index.mjs';
 import { vaultPage } from './vault.mjs';
 import { sendPage, sendAction, readLog, hotBalance } from './send.mjs';
 import { transferRoute } from './transfer.mjs';
@@ -178,6 +179,7 @@ const NAV = [
   ['Services', [['services', '\u{1F5A7} All services'],
                 ['services/market',    '\u2022 market.pc.am', 'sub'],
                 ['pricing', '💲 How the PCN price works'],
+                ['pcn-index', '\u{1F4C8} PCN index (shadow)', 'sub'],
                 ['exchange', '\u{1F3E6} exchange.pc.am'],
                 ['services/wpcnpay',   '\u2022 wpcnpay.pc.am', 'sub'],
                 ['services/pcnearner', '\u2022 pcnearner.pc.am', 'sub'],
@@ -963,6 +965,10 @@ async function handle(req, res) {
   if (sub === '/pricing') {
     return send(res, 200, shell2('pricing', 'How the PCN price works',
                                  pricingPage(await pricingData())));
+  }
+  if (sub === '/pcn-index') {
+    return send(res, 200, shell2('pcn-index', 'PCN index (shadow)',
+                                 pcnIndexPage(await pcnIndexData({ creds: upstreamCreds() }))));
   }
   if (sub === '/miners') {
     return send(res, 200, shell2('miners', 'Miners', minersPage(await minersData())));

@@ -153,7 +153,7 @@ export function pricingPage(d) {
        ok('yes, via the same curve')],
       ['Buys wPCN on PancakeSwap',
        'raises the pool, so the credit rate and the ceiling follow',
-       ok('yes — slowly, via the 24h median')],
+       ok('yes — slowly, via the 6h median')],
       ['Sells wPCN on PancakeSwap',
        'lowers the pool; serviceRate = min(ladder, pool) follows it down',
        ok('yes — immediately')],
@@ -167,15 +167,16 @@ export function pricingPage(d) {
   const anchor = card('What still anchors the price to the outside world', kv([
     ['The wPCN pool', USD(pool, 8),
      'The only market with participants who are not us.'],
-    ['24-hour pool median', USD(median, 8),
-     'The ceiling is derived from the MEDIAN, never the spot. One trade is a single '
-     + 'sample against ~1,440, so nobody can drag the price with one cheap trade — it '
-     + 'takes a sustained, visible campaign of more than 12 hours.'],
+    ['6-hour pool median', USD(median, 8),
+     'The ask follows the MEDIAN down, never the spot: at most hourly, 8% a step and 12% a '
+     + 'day, and never below $0.015. One trade is one sample against ~360, so nobody can '
+     + 'drag the price with one cheap trade — it takes a sustained campaign of more than 3 '
+     + 'hours. (It was 24 hours and x1.05 until 2026-09-23.)'],
     ['serviceRate — what the rails credit', USD(credit, 8),
      'min(ladder, pool). The pool may only ever LOWER this, never raise it: a pool '
      + 'trading ABOVE the ladder changes nothing at all.'],
-    ['The sale gate', g && g.divergencePct !== undefined ? PCT(g.divergencePct, 2) + ' of 20%' : DASH,
-     'An order whose AVERAGE price sits more than 20% from serviceRate is REFUSED. '
+    ['The sale gate', g && g.divergencePct !== undefined ? PCT(g.divergencePct, 2) + ' (refused at maxDivergencePct, 1000% since 2026-09-14)' : DASH,
+     'An order whose AVERAGE price sits further than maxDivergencePct from serviceRate is REFUSED. '
      + 'Measured on |ask − rate| / rate, so it is symmetric. <b>This is the real limit '
      + 'on how far the curve may lead the pool</b>, and it is what stops the price '
      + 'running away from the only external market there is.'],
@@ -217,6 +218,11 @@ export function pricingPage(d) {
     + 'the pool, which is what makes it safe.</li>'
     + '</ul>'));
 
-  return top + sizeCard + curve + cases + anchor + limits + gotchas
+  const shadow = card('Coming: one price from real trades', note(
+    'A PCN index built from user-to-user fills on exchange.pc.am has run in <b>shadow</b> since '
+    + '2026-09-24: computed, relayed by price.pc.am, used by nothing. See <b>PCN index (shadow)</b> '
+    + 'in the menu for the number, the fills behind it and every move.'));
+
+  return top + shadow + sizeCard + curve + cases + anchor + limits + gotchas
     + note('Read live from price.pc.am and market.pc.am at page load.');
 }
