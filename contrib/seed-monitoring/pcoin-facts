@@ -184,6 +184,36 @@ def explorer_health(timeout=8):
     return "bad", "/ -> %s, /blocks -> %s" % tuple(codes + ["?"])[:2]
 
 
+# LAST BLOCK -- how long ago, and whether that is odd. Added 2026-09-24 after a
+# gap of 2 h 19 min (9378 -> 9379): a user asked twice whether something was
+# wrong, and the bot -- which knew the HEIGHT but not WHEN that block came --
+# answered "gaps happen, the chain corrects itself". The age of the tip is the
+# number that question needs, and at a 600 s target its odds are exact:
+# P(gap > t) = e^(-t / 10 min).
+LONG_GAP_MIN = 45   # e^-4.5: about one gap in 90
+STALL_MIN = 90      # e^-9:   about one gap in 8,100
+
+
+def last_block(c):
+    """{height, time, age_min, state, pool_height, agree} or None if unknown.
+
+    The explorer gives the tip and its timestamp; the pool's API reports the
+    height its OWN node is at -- a second, independent node. `agree` is None
+    when the pool could not be read: unknown, never "they agree"."""
+    d = c.get("data") or {}
+    ch = (d.get("chain") or {}).get("chain") or {}
+    bt, h = ch.get("block_time"), ch.get("height")
+    if not isinstance(bt, (int, float)) or bt <= 0:
+        return None
+    age = (time.time() - bt) / 60.0
+    pool = d.get("pool") or {}
+    ns = (pool.get("pool") or pool).get("networkStats") or {}
+    ph = ns.get("blockHeight")
+    return {"height": h, "time": int(bt), "age_min": round(age, 1),
+            "state": "stalled" if age >= STALL_MIN else "long" if age >= LONG_GAP_MIN else "normal",
+            "pool_height": ph, "agree": (ph == h) if isinstance(ph, int) and isinstance(h, int) else None}
+
+
 def block(c):
     d, bad = c["data"], c["unreadable"]
     out = []
@@ -198,6 +228,28 @@ def block(c):
         out.append("CHAIN: height %s, difficulty %s, %s transactions so far, node peers %s."
                    % (cc.get("height"), n(cc.get("difficulty")), cc.get("tx_count"),
                       ix.get("node_connections")))
+        lb = last_block(c)
+        if lb is None:
+            out.append("LAST BLOCK: its time could not be read -- do not say how long ago it was.")
+        else:
+            line = ("LAST BLOCK: height %s at %s, %d minutes ago."
+                    % (lb["height"], time.strftime("%H:%M UTC", time.gmtime(lb["time"])), round(lb["age_min"])))
+            if lb["agree"] is True:
+                line += " The pool's own node is at the same height, so two independent nodes agree."
+            elif lb["agree"] is False:
+                line += (" The pool's node reports height %s, which DIFFERS -- say a person is checking, "
+                         "and do not guess why." % lb["pool_height"])
+            if lb["state"] == "stalled":
+                line += (" THAT IS A STALL: at a 10-minute target a gap this long happens by chance about once "
+                         "in 8,000 blocks. Do NOT call it normal variance and do NOT say the chain corrects "
+                         "itself. Say exactly how long it has been, that it has been reported to the team and is "
+                         "being checked now, and give no cause you have not been given.")
+            elif lb["state"] == "long":
+                line += (" That is a LONG gap -- by chance about once in 90 blocks. Say so with these numbers "
+                         "and say it is being watched; do not wave it away as normal.")
+            else:
+                line += " That is within normal variation at a 10-minute target."
+            out.append(line)
 
     # The explorer as a WEBSITE, which is a different question from the chain.
     st, detail = explorer_health()
@@ -422,7 +474,10 @@ def main():
         return 0
     c = cached(refresh="--refresh" in sys.argv)
     if "--json" in sys.argv:
-        print(json.dumps(c, indent=1))
+        # `derived` is computed at print time, never cached: an age read from
+        # the cache would be up to a minute stale, and for "how long since the
+        # last block" that is the whole answer.
+        print(json.dumps(dict(c, derived={"last_block": last_block(c)}), indent=1))
     else:
         print(block(c))
     # Exit 1 when nothing at all could be read, so a caller that checks only the

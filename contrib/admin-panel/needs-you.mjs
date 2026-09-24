@@ -66,6 +66,23 @@ export function needsYou({ svcs = [], tasks = [], exOver = null, wrap = null,
   const add = (sev, title, detail, href, extra = {}) =>
     items.push({ sev, title, detail, href, ...extra });
 
+  // ── the chain ────────────────────────────────────────────────────────────
+  // 2026-09-24: 2 h 19 min without a block (9378 -> 9379) showed up only in the
+  // ops heartbeat and in a user's question in the group. The tip's age is
+  // already on the explorer row; at a 600 s target P(gap > t) = e^(-t/10 min),
+  // so 60 min is about 1 gap in 400 and 90 min about 1 in 8,000.
+  const exp = svcs.find(x => x.slug === 'explorer');
+  const tipRow = exp && (exp.rows || []).find(r => r[0] === 'Tip age');
+  const tipMin = tipRow ? parseFloat(String(tipRow[1]).replace(/,/g, '')) : NaN;
+  if (isFinite(tipMin) && tipMin >= 60) {
+    add(tipMin >= 90 ? 'action' : 'warn', `No new block for ${Math.round(tipMin)} minutes`,
+      tipMin >= 90
+        ? 'At a 10-minute target a gap this long happens by chance about once in 8,000 blocks. '
+          + 'Check that the pools are recording shares on the right height, and that the nodes agree on the tip.'
+        : 'Long for a 10-minute target (about once in 400 blocks). Keep an eye on it; at 90 minutes treat it as a fault.',
+      `${base}/services/explorer`, { settle: 2 });
+  }
+
   // ── market ───────────────────────────────────────────────────────────────
   const mkt = svcs.find(x => x.slug === 'market');
   if (!mkt || mkt.status === 'unreadable') {

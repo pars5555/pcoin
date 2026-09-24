@@ -408,6 +408,12 @@ FORBIDDEN = [
 # run. Empty means we could not read them -- and then no rate may be quoted.
 NL = chr(10)
 LIVE_RATES = []
+# The measured age of the chain tip (pcoin-facts --json, derived.last_block),
+# filled in at the start of a run; None when it could not be read.
+LAST_BLOCK = None
+# A message that is about the chain producing blocks. Deliberately broad: a
+# false match only matters during a real gap, and then it files one report.
+CHAIN_WORDS = re.compile(r"\b(blocks?|stuck|stall(ed)?|halt(ed)?|frozen|no new|not moving|since last|chain (is )?(down|dead))\b", re.I)
 
 
 def rate_is_live(found):
@@ -967,7 +973,10 @@ def main():
             system = system + NL + NL + facts.stdout.strip()
         blob = subprocess.run(["/usr/local/bin/pcoin-facts", "--json"],
                               capture_output=True, text=True, timeout=45)
-        d = json.loads(blob.stdout).get("data", {})
+        parsed = json.loads(blob.stdout)
+        d = parsed.get("data", {})
+        global LAST_BLOCK
+        LAST_BLOCK = (parsed.get("derived") or {}).get("last_block")
         p = d.get("price") or {}
         x = d.get("exchange") or {}
         stx = x.get("stats") or {}
@@ -1134,6 +1143,26 @@ def main():
         conf_level = str(out.get("confidence") or "low").lower()
         rep = out.get("report") or None
 
+        # A CHAIN PROBLEM IS CHECKED, AND FILED AS A BUG WITH THE MEASUREMENT.
+        # 2026-09-24: 2 h 19 min without a block, a user asked twice, and the
+        # reply was generic. When somebody raises the chain during a gap that
+        # pcoin-facts has MEASURED as long or a stall, the report goes to the
+        # admin as a bug with the numbers in it -- whatever the model decided --
+        # so the owner sees a confirmed problem, not an ordinary question.
+        chain_note = ""
+        if LAST_BLOCK and LAST_BLOCK.get("state") in ("long", "stalled") and CHAIN_WORDS.search(text or ""):
+            age = round(LAST_BLOCK.get("age_min") or 0)
+            rep = {"kind": "bug",
+                   "summary": "CHAIN %s -- confirmed by live check: no block since height %s, %d min ago (user report)"
+                              % (LAST_BLOCK["state"].upper(), LAST_BLOCK.get("height"), age)}
+            chain_note = ("LIVE CHECK when this was read: last block %s at %s UTC, %d minutes earlier; "
+                          "pool node height %s (%s).\n\n"
+                          % (LAST_BLOCK.get("height"),
+                             time.strftime("%H:%M", time.gmtime(LAST_BLOCK.get("time") or 0)), age,
+                             LAST_BLOCK.get("pool_height"),
+                             "agrees" if LAST_BLOCK.get("agree") is True
+                             else "DIFFERS" if LAST_BLOCK.get("agree") is False else "unreadable"))
+
         held_why = None
         if answer:
             held_why = guard(answer)
@@ -1206,7 +1235,7 @@ def main():
             # group yet and may never be; /approvals is where its fate is.
             posted_note = ("QUEUED FOR YOUR APPROVAL -- not yet public\n\n"
                            if (answer and not held_why) else "")
-            detail = posted_note + "They said:\n" + text[:1500]
+            detail = chain_note + posted_note + "They said:\n" + text[:1500]
             if answer:
                 detail += ("\n\nDraft reply (%s):\n%s"
                            % ("QUEUED for approval" if not held_why
