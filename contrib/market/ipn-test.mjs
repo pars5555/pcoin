@@ -1123,12 +1123,27 @@ await test('R8: a partial settled by hand, then the rest arrives: nothing more i
   await pay(o, { status: 'partially_paid', due: 1, paid: 0.6 });
   await D.markDelivered(o.id, 'a'.repeat(64));           // sent from the cold wallet, recorded
   alerts.length = 0;
-  await pay(o, { status: 'finished', due: 1, paid: 1 });
+  const r = await pay(o, { status: 'finished', due: 1, paid: 1 });
+  await pay(o, { status: 'finished', due: 1, paid: 1 });  // its retry
   await pay(o, { pid: Number(newPid()), parent: Number(o.pid), due: 0.4, paid: 0.4 });
   const w = await row(o.id);
   ok('nothing sent automatically', sendsFor(o.id).length === 0);
   ok('still delivered with the hand txid', w.status === 'delivered' && w.delivered_txid === 'a'.repeat(64));
-  ok('only the child is reported', alerts.length === 1 && /Another payment/.test(alerts[0]), alerts.join(' || '));
+  ok('the finished is a duplicate (R6)', r.body.outcome === 'duplicate', JSON.stringify(r.body));
+  const more = alertsLike(/reduced delivery already went out/);
+  ok('but the money it reports on top is told to a human, once, as a refund to make',
+     more.length === 1 && /Refund the difference/.test(more[0]) && /nothing more will be/.test(more[0]), alerts.join(' || '));
+  ok('never as a send to make', more.every(a => !/Send \(reviewed\)|send it|press/i.test(a)), more.join(' || '));
+  ok('and the child is reported', alertsLike(/Another payment/).length === 1 && alerts.length === 2, alerts.join(' || '));
+});
+
+await test('R6: more money on a payment delivered IN FULL tells nobody', async () => {
+  const o = await newOrder();
+  await pay(o, { status: 'confirmed' });
+  alerts.length = 0;
+  await pay(o, { status: 'finished', due: 0.19197548, paid: 0.2 });
+  ok('silent', alerts.length === 0, alerts.join(' || '));
+  ok('sent once', sendsFor(o.id).length === 1);
 });
 
 await test('R8: a held child released by hand is never sent again', async () => {

@@ -754,7 +754,31 @@ export function makeIpn({ pool, ladder, delivery, notify, secret,
 
   /** A callback for the payment this order is already tied to. */
   async function samePayment(order, d, c, pid, ev) {
-    if (order.delivered_txid) return answer('duplicate', 'the PCN for this payment already left');
+    if (order.delivered_txid) {
+      // R6: a duplicate, and nothing is sent. One case is still news: the
+      // order went out REDUCED (an underpayment released for what had arrived)
+      // and the payment now reports more money than it was released on. The
+      // customer has paid for coins they did not get, and only a human can
+      // settle that. The alert says so without inviting a second send: the
+      // market sends once per order, and this order's send is spent.
+      const paid = readNumber(d.actually_paid);
+      const had = readNumber(order.paid_amount);
+      const inv = cents(order.invoice_usd), got = cents(order.usd);
+      if (inv !== null && got !== null && got < inv && paid !== null && had !== null && paid - had > 1e-8) {
+        tell(`more-after-sent|${order.order_id}|${pid}|${d.actually_paid}`,
+          `🟡 <b>More money on a payment whose reduced delivery already went out</b>\n` +
+          `<code>${esc(order.order_id)}</code> · payment <code>${esc(pid)}</code> now reports ` +
+          `${esc(c.status)}: ${paidLine(d, c.ratio)}; the order was released on ${esc(order.paid_amount)}, ` +
+          `for $${(got / 100).toFixed(2)} of its $${(inv / 100).toFixed(2)} invoice, in ` +
+          `<code>${esc(order.delivered_txid)}</code>.\n<b>Nothing was sent, and nothing more will be</b>: ` +
+          `the market sends once per order and this order's send is spent. Refund the difference to the ` +
+          `customer in NOWPayments.`);
+        return answer('duplicate', `the PCN for this payment already left, reduced to $${(got / 100).toFixed(2)} ` +
+                      `of $${(inv / 100).toFixed(2)}; it now reports ${d.actually_paid} (was ${order.paid_amount}): ` +
+                      `a human was told to refund the difference`);
+      }
+      return answer('duplicate', 'the PCN for this payment already left');
+    }
     if (order.status === 'awaiting_delivery') {
       if (c.kind === 'pay') {
         // Accepted, and delivery never started: the process died between the
