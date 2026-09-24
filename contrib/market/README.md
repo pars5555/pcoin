@@ -19,6 +19,8 @@ contrib/market/
   ipn-e2e-test.mjs  a copy of the real server.mjs, run as a process: the /ipn and
                     /api/buy wiring, before and after orders-payment.sql
   orders-payment.sql  the columns ipn.mjs needs. Run as root BEFORE deploying it
+  ipn-deploy.sh     deploys exactly the reviewed callback change, and rolls it back (§7)
+  ipn-deploy-test.sh  ipn-deploy.sh against a fake host and a throwaway repository
   ladder.mjs        the fill engine. Pure walk functions + transactional reserve/settle/release
   ladder-test.mjs   40 cases against a real database. Refuses to run on a dirty ladder
   ladder-sim.mjs    simulate a sale to exercise the whole chain without spending money
@@ -474,14 +476,43 @@ Deploy is a file copy and `systemctl restart pcoin-market`. The service is
 A change that needs a new column ships its `.sql`, run as root **first**
 (`mysql pcoin_market < orders-payment.sql` for the payment callback, §5a).
 
+**The payment callback change (§5a) is deployed with `ipn-deploy.sh`, not by
+copying files from `main`.** Other work lands in this directory all the time,
+`server.mjs` included; copying from a checkout ships whatever of it has been
+merged, undeployed and possibly without the files it needs, and a server that
+will not start takes `/ipn` down with it. The script installs exactly the
+reviewed commit's `ipn.mjs`, `admin.mjs`, `delivery.mjs`, `server.mjs` and
+`orders-payment.sql` (`git show`, whatever is checked out), and only onto a host
+that still runs the versions that change was built on; its rollback only puts
+the backups back while every file is still exactly what it installed. Its
+header has the rules. With `<sha>` the reviewed branch tip, merged and pushed:
+
+```bash
+git fetch origin
+contrib/market/ipn-deploy.sh <sha> check      # read-only: host files vs. the change, DB state
+contrib/market/ipn-deploy.sh <sha> migrate    # orders-payment.sql as root; the old code keeps working
+contrib/market/ipn-deploy.sh <sha> install    # refuses before the migration or while an order is
+                                              # 'sending'; backs up, installs, restarts, waits for
+                                              # "pcoin-market on 127.0.0.1:8789", verifies md5s
+contrib/market/ipn-deploy.sh <sha> verify     # read-only, any time later
+contrib/market/ipn-deploy.sh <sha> rollback <tag>   # the tag install printed; the columns stay
+```
+
+A STOP from `check` or `install` naming a file means the host runs something
+this change was not built on: somebody deployed since. Nothing was changed. Put
+what is live into git, rebuild the change on it, review, then deploy.
+
 ```bash
 # the payment callback, against a THROWAWAY database it creates and drops
 # (refuses any name not starting pcm_ipn_test; needs a root-capable MariaDB).
-# On a development machine, never the production host.
+# On a development machine, never the production host. Sessions run
+# innodb_snapshot_isolation=ON where the server has it, as production does.
 PCOIN_IPN_TEST_DB=pcm_ipn_test PCOIN_IPN_TEST_PORT=3306 node ipn-test.mjs
 # the same wiring through a copy of server.mjs (database pcm_ipn_test_e2e,
 # ports 38789-38790, alerts to stdout, nothing announced)
 PCOIN_IPN_TEST_PORT=3306 node ipn-e2e-test.mjs
+# ipn-deploy.sh against a fake host and a throwaway repository (no network)
+bash ipn-deploy-test.sh
 ```
 
 **Seeding the ladder is not idempotent and must never run twice.** `ladder.sql`
