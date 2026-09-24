@@ -104,6 +104,35 @@ for p in (0.014, 0.010, 0.005, 0.001):
         cases.append((False, "below floor %.4f -> buy" % p, p, LADDER, FLOOR,
                       a, t, "buy", FLOOR, "selling below the floor would be perverse"))
 
+# ------------------------------------- the PCN price FALLS, the pool does not
+# Owner, 2026-09-24: "make sure keeper will do if pcn price reduced". The ladder
+# is what price.pc.am posts, read fresh every run, so a lower PCN price is a
+# lower SELL target: a pool left above it by more than the dead band is sold
+# down to it. Numbers are the live ones that day: pool == ladder == $0.027335.
+POOL_NOW = 0.027335
+case("PCN down 12%: pool left above it", POOL_NOW, 0.024, FLOOR, "sell", 0.024,
+     "price.pc.am fell to $0.024 and the pool did not -- sell wPCN down to it")
+case("PCN down 3.5%: just past the band", POOL_NOW, POOL_NOW / 1.035, FLOOR, "sell", POOL_NOW / 1.035,
+     "3.5% > 3% dead band -- sell")
+case("PCN down 2%: inside the band", POOL_NOW, POOL_NOW * 0.98, FLOOR, None, None,
+     "2% is inside the dead band -- hold, no churn on noise")
+case("PCN down to the floor", POOL_NOW, FLOOR, FLOOR, "sell", FLOOR,
+     "even at the floor the pool is sold down to it, never below")
+
+# How much does it sell, and does the daily cap bind? The real solver on the
+# day's real reserves (21,646.07 wPCN / 591.70 USDT).
+RW, RU = 21646.07, 591.70
+cap = k.DAILY_WPCN_CAP
+for target, label in ((0.024, "to $0.024"), (FLOOR, "to the $0.015 floor")):
+    need = k.solve_trade(RW, RU, target, False)
+    after = (RU - k.amount_out(need, RW, RU)) / (RW + need)
+    ok = abs(after - target) / target < 0.005
+    cases.append((ok, "sizing %s" % label, POOL_NOW, target, FLOOR, "sell", target, "sell", target,
+                  "needs %.0f wPCN (daily cap %.0f: %s)" % (need, cap,
+                  "one day" if need <= cap else "about %d days at the cap" % -(-need // cap))))
+    if not ok:
+        fails.append("sizing %s" % label)
+
 # --------------------------------------------------------------------- report
 w = max(len(c[1]) for c in cases)
 for ok, name, pool, ladder, floor, a, t, wa, wt, why in cases:
