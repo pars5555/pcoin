@@ -7,9 +7,9 @@
 //
 // ipn-test.mjs proves the decisions. This proves the wiring in server.mjs that
 // no unit test can see: the /ipn route hands ipn.mjs the body as BYTES; until
-// orders-payment.sql has run, callbacks answer 503 and /api/buy takes no
-// orders, and both open again without a restart once it has; a paid callback
-// goes all the way to one send.
+// orders-payment.sql has run, callbacks answer 503 (a signed one logged, an
+// unsigned one still 401) and /api/buy takes no orders, and both open again
+// without a restart once it has; a paid callback goes all the way to one send.
 //
 // The copy runs from a temporary directory beside the node_modules this test
 // loads mysql2 from (so the copy finds it too), removed at the end. Every
@@ -249,8 +249,13 @@ try {
   const a = await newOrder();
   const r0 = await post(cb(a));
   ok('a signed callback is answered 503 until it has run', r0.http === 503, JSON.stringify(r0));
-  ok('and nothing was recorded or sent',
-     Number((await q(`SELECT COUNT(*) n FROM ipn_events`))[0].n) === 0 && sends.length === 0);
+  const logged = await q(`SELECT payment_id, status, raw FROM ipn_events`);
+  ok('it is logged all the same (old columns), and nothing is sent',
+     logged.length === 1 && logged[0].payment_id === String(a.pid) && logged[0].raw === cb(a) && sends.length === 0,
+     JSON.stringify(logged));
+  const rBad = await post(cb(a, { status: 'confirmed' }), 'ab'.repeat(64));
+  ok('an unsigned callback is still a 401 while paused, and not logged',
+     rBad.http === 401 && Number((await q(`SELECT COUNT(*) n FROM ipn_events`))[0].n) === 1, JSON.stringify(rBad));
   const b0 = await buy({ usd: 0, address: 'pc1q' });
   ok('/api/buy takes no order until it has run', b0.http === 503 && /orders are paused/.test(b0.body?.error || ''),
      JSON.stringify(b0));
@@ -263,8 +268,8 @@ try {
   ok('delivered, tied to its payment, one send of the quote',
      ra.status === 'delivered' && ra.paid_payment_id === String(a.pid) && sends.length === 1 &&
      sends[0].comment === a.id && Math.abs(Number(sends[0].amount) - a.pcn) < 1e-8, JSON.stringify({ ra, sends }));
-  const [ea] = await q(`SELECT outcome FROM ipn_events WHERE order_id=?`, [a.id]);
-  ok('the event row says paid', ea?.outcome === 'paid', JSON.stringify(ea));
+  const ea = await q(`SELECT outcome FROM ipn_events WHERE order_id=?`, [a.id]);
+  ok('the row logged while paused now says paid', ea.length === 1 && ea[0].outcome === 'paid', JSON.stringify(ea));
 
   const r2 = await post(cb(a));
   ok('the retry is a duplicate', r2.http === 200 && r2.body?.outcome === 'duplicate' && sends.length === 1, JSON.stringify(r2));

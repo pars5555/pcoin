@@ -917,7 +917,9 @@ createServer(async (req, res) => {
         const missing = await checkIpnSchema();
         if (missing) {
           schemaAlert(missing);
-          return json(res, 503, { error: 'payment processing is paused: a database migration is missing' });
+          // Verified and logged (old columns only), then 503: see handlePaused.
+          const r = await IPN.handlePaused(raw, req.headers['x-nowpayments-sig']);
+          return json(res, r.http, r.body);
         }
       }
       const r = await IPN.handle(raw, req.headers['x-nowpayments-sig']);

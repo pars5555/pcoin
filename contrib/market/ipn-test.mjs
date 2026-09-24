@@ -1262,6 +1262,39 @@ await test('a money callback without a payment_id changes nothing', async () => 
   ok('a human is told', alerts.length === 1, alerts.join(' || '));
 });
 
+await test('money callbacks without a payment_id, on two orders, are each on record', async () => {
+  const a = await newOrder(), b = await newOrder();
+  await pay(a, { omit: ['payment_id'] });
+  await pay(b, { omit: ['payment_id'] });
+  const ea = await events(a.id), eb = await events(b.id);
+  ok('each order has its own row, with its outcome',
+     ea.length === 1 && eb.length === 1 && ea[0].outcome === 'needs_human' && eb[0].outcome === 'needs_human',
+     JSON.stringify([ea, eb]));
+  ok('logged under "(none) <order id>"', ea[0]?.payment_id === `(none) ${a.id}`, JSON.stringify(ea));
+  ok('both told, nothing sent', alertsLike(/without a payment_id/).length === 2 &&
+     sendsFor(a.id).length + sendsFor(b.id).length === 0, alerts.join(' || '));
+});
+
+if (typeof IPN.handlePaused === 'function') {
+  await test('paused (the migration missing): logged and answered 503; the retry is decided on the same row', async () => {
+    const o = await newOrder();
+    const raw = callback(o);
+    const r1 = await IPN.handlePaused(raw, sign(raw));
+    const e1 = await events(o.id);
+    ok('503', r1.http === 503, JSON.stringify(r1));
+    ok('logged, not decided, nothing sent, the order still pending',
+       e1.length === 1 && e1[0].outcome === null && sendsFor(o.id).length === 0 && (await row(o.id)).status === 'pending',
+       JSON.stringify(e1));
+    const bad = await IPN.handlePaused(raw, sign(raw, 'not-the-secret'));
+    ok('a wrongly signed one is a 401 as ever, and not logged', bad.http === 401 && (await events(o.id)).length === 1);
+    const r2 = await post(raw);
+    const e2 = await events(o.id);
+    ok('the retry pays, once', r2.body.outcome === 'paid' && sendsFor(o.id).length === 1, JSON.stringify(r2.body));
+    ok('and its outcome is written on the row logged while paused', e2.length === 1 && e2[0].outcome === 'paid',
+       JSON.stringify(e2));
+  });
+} else skip('paused: logged and answered 503', 'this implementation has no handlePaused');
+
 await test('a late payment on an expired order whose rungs are still reserved is paid', async () => {
   const o = await newOrder();
   await q(`UPDATE orders SET status='expired' WHERE order_id=?`, [o.id]);   // crash before the release

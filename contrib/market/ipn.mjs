@@ -508,41 +508,74 @@ export function makeIpn({ pool, ladder, delivery, notify, secret,
 
   // ── entry point ───────────────────────────────────────────────────────────
 
-  /** @param {Buffer|string} raw  the body exactly as received
-   *  @returns {Promise<{http: number, body: object, outcome?: string, note?: string}>} */
-  async function handle(raw, sigHeader) {
-    if (!signatureVariant(raw, sigHeader, secretNow())) return badSignature(raw, sigHeader);
+  /** The signature, then the body: `{ res }` to answer at once, or the callback. */
+  function verified(raw, sigHeader) {
+    if (!signatureVariant(raw, sigHeader, secretNow())) return { res: badSignature(raw, sigHeader) };
     const text = Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw);
-
     let d = null;
     try { d = JSON.parse(text); } catch { /* answered below */ }
     if (!d || typeof d !== 'object' || Array.isArray(d)) {
-      return { http: 400, body: { error: 'body must be a JSON object' } };
+      return { res: { http: 400, body: { error: 'body must be a JSON object' } } };
     }
-    const pid = d.payment_id === undefined || d.payment_id === null ? '' : String(d.payment_id);
-    const orderId = d.order_id === undefined || d.order_id === null ? null : String(d.order_id);
-    const status = String(d.payment_status ?? '');
+    return {
+      d, text,
+      pid: d.payment_id === undefined || d.payment_id === null ? '' : String(d.payment_id),
+      orderId: d.order_id === undefined || d.order_id === null ? null : String(d.order_id),
+      status: String(d.payment_status ?? ''),
+    };
+  }
 
-    // Record the event. UNIQUE(payment_id, status) stops the same callback being
-    // LOGGED twice. It must not skip the work: this row is written before any
-    // order or ladder change, so if the handler then died, the retry would hit
-    // the duplicate key and a paid order would never be applied. Every step
-    // below is idempotent, so a repeat simply runs again.
+  /** Record the event, with the columns every version of the table has.
+   *
+   *  UNIQUE(payment_id, status) stops the same callback being LOGGED twice. It
+   *  must not skip the work: this row is written before any order or ladder
+   *  change, so if the handler then died, the retry would hit the duplicate key
+   *  and a paid order would never be applied. Every step after it is
+   *  idempotent, so a repeat simply runs again.
+   *
+   *  A callback without a payment_id is logged under "(none) <order id>": under
+   *  a bare '' every such callback, for every order, would be the same row, and
+   *  only the first order's would ever be on record. */
+  async function logEvent(v) {
+    const key = v.pid || `(none) ${v.orderId ?? ''}`.slice(0, 64);
     const ev = { id: null, fresh: true };
     try {
       const r = await q(`INSERT INTO ipn_events (payment_id, order_id, status, raw) VALUES (?,?,?,?)`,
-                        [pid, orderId, status, text.slice(0, 60000)]);
+                        [key, v.orderId, v.status, v.text.slice(0, 60000)]);
       ev.id = r.insertId;
     } catch (e) {
       if (e.code !== 'ER_DUP_ENTRY') throw e;
       ev.fresh = false;
-      const [row] = await q(`SELECT id FROM ipn_events WHERE payment_id = ? AND status = ?`, [pid, status]);
+      const [row] = await q(`SELECT id FROM ipn_events WHERE payment_id = ? AND status = ?`, [key, v.status]);
       ev.id = row ? row.id : null;
     }
+    return ev;
+  }
 
-    const res = await decide(d, pid, orderId, ev);
+  /** @param {Buffer|string} raw  the body exactly as received
+   *  @returns {Promise<{http: number, body: object, outcome?: string, note?: string}>} */
+  async function handle(raw, sigHeader) {
+    const v = verified(raw, sigHeader);
+    if (v.res) return v.res;
+    const ev = await logEvent(v);
+    const res = await decide(v.d, v.pid, v.orderId, ev);
     await record(ev, res);
     return res;
+  }
+
+  /** While orders-payment.sql has not run (server.mjs checks), no callback can
+   *  be decided. It is still verified -- an unsigned request gets the same 401
+   *  as ever, not a 503 that reads like a paused shop -- and a signed one is
+   *  LOGGED, with the old columns only, before it is answered 503. NOWPayments
+   *  retries a 503; if it ever stopped, the callback would otherwise leave no
+   *  trace at all. The retry after the migration lands on the same row, is
+   *  decided then, and its outcome is written on it. */
+  async function handlePaused(raw, sigHeader) {
+    const v = verified(raw, sigHeader);
+    if (v.res) return v.res;
+    try { await logEvent(v); } catch (e) { log.error('[ipn] could not log a paused callback:', e.message); }
+    return { http: 503, body: { error: 'payment processing is paused: a database migration is missing' },
+             outcome: 'paused', note: 'migration missing; logged, not decided' };
   }
 
   async function decide(d, pid, orderId, ev) {
@@ -1026,5 +1059,5 @@ export function makeIpn({ pool, ladder, delivery, notify, secret,
   // read BEFORE a concurrent payment committed, which is the race the
   // re-check inside the transaction exists for and which cannot be timed
   // reliably from outside.
-  return { handle, _internals: { accept, holdForHuman, tiedPayment } };
+  return { handle, handlePaused, _internals: { accept, holdForHuman, tiedPayment } };
 }

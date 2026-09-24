@@ -364,6 +364,7 @@ has the full reasoning; in short:
 | another payment on an order that already has one, one payment naming two orders, a money callback without a `payment_id` | Telegram; no order changes, nothing sent |
 | `refunded` / `failed` / `expired` of the payment the order was paid with | unsent: **needs_review**; sent: nothing reversed; a human is told either way |
 | a repeat of anything already decided | duplicate, silent |
+| more money on a payment whose REDUCED delivery already went out | duplicate, nothing sent; Telegram once: refund the difference |
 
 `actually_paid_at_fiat` is never used (it is 0 on genuine callbacks).
 
@@ -376,12 +377,19 @@ itself stays keyed on the order (§ Never send twice), so the two keys meet.
 
 Every signed callback's decision is written on its `ipn_events` row (`outcome`,
 `note`); the admin IPN log filters on it. `held` and `needs_human` are the ones
-waiting on a person.
+waiting on a person. The row is one per (`payment_id`, status): a later callback
+with the same pair that decides something (a short `confirmed` ignored, then the
+same `confirmed` in full and paid) replaces the earlier decision, and the note
+keeps it as `[earlier: ...]`; a repeat that changes nothing never overwrites.
+A callback without a `payment_id` is logged under `(none) <order id>`.
 
 `orders-payment.sql` adds those columns, and the app user has no DDL rights, so
 it runs **as root before the code that needs it**. Deployed without it, the
 server says so at startup, answers every callback 503 (NOWPayments retries;
-nothing is lost) and refuses new orders.
+nothing is lost) and refuses new orders. The signature is still checked first
+(an unsigned request is a 401, as ever), and a signed callback is logged on
+`ipn_events` with the columns the table already had before it is answered; its
+retry after the migration is decided on that same row.
 
 ## 5b. Buying back is closed
 
