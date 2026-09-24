@@ -1,0 +1,11 @@
+[Unit]
+Description=PCoin -- check the explorer every 5 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+# Spread the two hosts so they do not probe in lockstep.
+RandomizedDelaySec=45
+
+[Install]
+WantedBy=timers.target

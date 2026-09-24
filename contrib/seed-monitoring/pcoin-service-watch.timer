@@ -1,0 +1,11 @@
+[Unit]
+Description=PCoin -- check every public service every 5 minutes
+
+[Timer]
+OnBootSec=4min
+OnUnitActiveSec=5min
+# Both hosts run this, so stagger them rather than probing in lockstep.
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

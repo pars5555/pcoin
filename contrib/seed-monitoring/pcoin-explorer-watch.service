@@ -1,0 +1,14 @@
+[Unit]
+OnFailure=pcoin-alert@%n.service
+Description=PCoin -- is explorer.pc.am actually answering?
+Documentation=https://github.com/pars5555/pcoin
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pcoin-explorer-watch
+TimeoutStartSec=180
+
+# The check failing IS the alert. Every PCN rail reads this explorer, so an
+# outage here is deposits not being credited, not a cosmetic problem.
