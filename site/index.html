@@ -597,21 +597,21 @@
             </li>
           </ul>
           <div class="honest-box">
-            <b>Measured numbers, not marketing.</b> RandomX light mode, JIT enabled, 4 threads, on real
+            <b>Measured numbers, not marketing.</b> RandomX with JIT on real hardware &mdash; the phones in light mode at 4 threads, the desktop in fast mode on large pages, as each one mines by default &mdash; on real
             hardware:
             <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;margin:12px 0 10px;font-size:.92rem">
               <tr style="color:var(--muted)">
                 <th style="text-align:left;padding:4px 8px 4px 0;font-weight:600">Device</th>
                 <th style="text-align:right;padding:4px 0;font-weight:600">Hashes / second</th>
               </tr>
-              <tr><td style="padding:3px 8px 3px 0">Desktop, 16 threads, 2&nbsp;GB fast mode</td><td style="text-align:right" class="mono">2,518</td></tr>
+              <tr><td style="padding:3px 8px 3px 0">Desktop, i9-10900X, 10 threads, fast mode</td><td style="text-align:right" class="mono">6,285</td></tr>
               <tr><td style="padding:3px 8px 3px 0">Galaxy Z Flip 5 (flagship)</td><td style="text-align:right" class="mono">144</td></tr>
               <tr><td style="padding:3px 8px 3px 0">Pixel 4a (2020 mid-range)</td><td style="text-align:right" class="mono">51</td></tr>
               <tr><td style="padding:3px 8px 3px 0">moto g play 2024 (budget)</td><td style="text-align:right" class="mono">43</td></tr>
               <tr><td style="padding:3px 8px 3px 0">Galaxy A03 (entry level)</td><td style="text-align:right" class="mono">15</td></tr>
             </table></div>
-            So a full-speed desktop out-mines a flagship phone about <b style="color:var(--text)">17×</b>,
-            and a cheap phone about <b style="color:var(--text)">170×</b>. That gap is real and we will not
+            So a full-speed desktop out-mines a flagship phone about <b style="color:var(--text)">44×</b>,
+            and a cheap phone about <b style="color:var(--text)">420×</b>. That gap is real and we will not
             hide it — but under SHA-256 an ASIC beats any CPU by millions to one. RandomX makes phones
             genuine minority participants instead of hopeless ones. Every one of those phones also produced
             <b style="color:var(--text)">bit-identical</b> results to the desktop, so a phone is a
@@ -629,8 +629,10 @@
       <h2>What real machines actually do</h2>
       <p class="lede">
         This page used to carry a calculator. It was removed, because it produced a number that
-        looked certain and was not. What follows instead is three machines whose hash rate we have
-        really measured, each with the thread count it was running at.
+        looked certain and was not. What follows instead is every computer of ours that was mining,
+        read off each one on 24&nbsp;September&nbsp;2026 with the thread count it was running at. All of
+        them run fast mode on large pages, which is what the miner uses by default when the machine
+        has the memory for it.
       </p>
 
       <div class="hw-wrap">
@@ -640,34 +642,66 @@
           </thead>
           <tbody>
             <tr>
-              <td class="hw-cpu">Intel Core i9-9900K<br><span style="font-weight:400;color:var(--dim)">8 cores / 16 threads</span></td>
-              <td>4</td>
-              <td class="hw-rate">~250 H/s</td>
-              <td class="hw-why">One of our own always-on PCs. It is held at four threads on purpose,
-                so that whoever is using the machine never notices it.</td>
+              <td class="hw-cpu">Intel Core i9-10900X<br><span style="font-weight:400;color:var(--dim)">10 cores / 20 threads, 6 memory sticks</span></td>
+              <td>10</td>
+              <td class="hw-rate">6,285 H/s</td>
+              <td class="hw-why">Our fastest. Its board has four memory channels, twice what an ordinary desktop has, and on RandomX that shows.</td>
             </tr>
             <tr>
-              <td class="hw-cpu">Intel Core i9-10900X<br><span style="font-weight:400;color:var(--dim)">10 cores / 20 threads</span></td>
+              <td class="hw-cpu">Intel Core i9-9900K<br><span style="font-weight:400;color:var(--dim)">8 cores / 16 threads, 4 memory sticks</span></td>
+              <td>7</td>
+              <td class="hw-rate">3,780 H/s</td>
+              <td class="hw-why">An always-on PC. Held at seven threads so it stays usable.</td>
+            </tr>
+            <tr>
+              <td class="hw-cpu">Intel Core i9-9900K<br><span style="font-weight:400;color:var(--dim)">8 cores / 16 threads, 2 memory sticks</span></td>
+              <td>6</td>
+              <td class="hw-rate">3,060 H/s</td>
+              <td class="hw-why">The same CPU as the row above, with slower memory and fewer sticks, and one thread fewer. About a fifth slower.</td>
+            </tr>
+            <tr>
+              <td class="hw-cpu">Intel Core i7-8700K<br><span style="font-weight:400;color:var(--dim)">6 cores / 12 threads</span></td>
+              <td>6</td>
+              <td class="hw-rate">2,500 H/s</td>
+              <td class="hw-why">An office PC, mining at all six physical cores.</td>
+            </tr>
+            <tr>
+              <td class="hw-cpu">Intel Core i5-9600K<br><span style="font-weight:400;color:var(--dim)">6 cores / 6 threads</span></td>
+              <td>5</td>
+              <td class="hw-rate">2,480 H/s</td>
+              <td class="hw-why">No hyper-threading, and it barely matters: within a few hashes of the i7 above.</td>
+            </tr>
+            <tr>
+              <td class="hw-cpu">Intel Core i7-8700K<br><span style="font-weight:400;color:var(--dim)">6 cores / 12 threads, Linux</span></td>
               <td>4</td>
-              <td class="hw-rate">~260 H/s</td>
-              <td class="hw-why">Two more cores than the machine above, held at the same four threads.
-                It earns about ten more hashes a second. That gap is the whole lesson on this page.</td>
+              <td class="hw-rate">2,170 H/s</td>
+              <td class="hw-why">The Linux desktop app on CachyOS. Four threads, chosen by its owner.</td>
+            </tr>
+            <tr>
+              <td class="hw-cpu">Intel Core i5-9600K<br><span style="font-weight:400;color:var(--dim)">6 cores / 6 threads, 8&nbsp;GB</span></td>
+              <td>3</td>
+              <td class="hw-rate">2,010 H/s</td>
+              <td class="hw-why">Half its cores, and still most of the speed of the full machine above.</td>
+            </tr>
+            <tr>
+              <td class="hw-cpu">Intel Core i7-8700K<br><span style="font-weight:400;color:var(--dim)">6 cores / 12 threads, 8&nbsp;GB, 1 memory stick</span></td>
+              <td>3</td>
+              <td class="hw-rate">1,890 H/s</td>
+              <td class="hw-why">Three threads on a single stick of memory.</td>
             </tr>
             <tr>
               <td class="hw-cpu">Dual Xeon E5-2697A v4<br><span style="font-weight:400;color:var(--dim)">32 cores / 64 threads, 64&nbsp;GB</span></td>
               <td>29</td>
               <td class="hw-rate">4,000&ndash;6,000 H/s</td>
-              <td class="hw-why">The largest machine we know of on our pool, reported by the miner who
-                runs it, using SRBMiner in fast mode. Fast mode builds a 2&nbsp;GB dataset and runs at
-                roughly twice light mode, which is what our own two PCs above use.</td>
+              <td class="hw-why">Not ours: the largest machine we know of on our pool, as reported by the miner who runs it, using SRBMiner in fast mode.</td>
             </tr>
           </tbody>
         </table>
       </div>
 
       <p class="hw-note">
-        <b>Do not read this as a ranking of CPUs.</b> RandomX spends its time reading a 256&nbsp;MB
-        cache, so what limits you is memory &mdash; its speed, how many channels your board actually
+        <b>Do not read this as a ranking of CPUs.</b> RandomX spends its time reading a 2&nbsp;GB
+        dataset (256&nbsp;MB in light mode), so what limits you is memory &mdash; its speed, how many channels your board actually
         fills, and how much of it fits inside your CPU&rsquo;s own cache. Core count decides far less
         than people expect. Two computers with the same CPU printed on the box and different memory
         will not give you the same answer, and one computer will not give you the same answer at four
