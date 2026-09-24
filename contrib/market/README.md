@@ -12,7 +12,11 @@ code is shaped the way it is, and why delivery is still manual.
 
 ```
 contrib/market/
-  server.mjs        the HTTP service — auth, quotes, orders, IPN, buyback
+  server.mjs        the HTTP service — auth, quotes, orders, buyback; mounts the IPN
+  ipn.mjs           the NOWPayments callback: signature, what a payment is worth, the
+                    one-payment-per-order tie, the hand-off to delivery (§5a)
+  ipn-test.mjs      the callback against a throwaway database, fake wallet, no chain
+  orders-payment.sql  the columns ipn.mjs needs. Run as root BEFORE deploying it
   ladder.mjs        the fill engine. Pure walk functions + transactional reserve/settle/release
   ladder-test.mjs   40 cases against a real database. Refuses to run on a dirty ladder
   ladder-sim.mjs    simulate a sale to exercise the whole chain without spending money
@@ -138,10 +142,10 @@ cannot overshoot.
 ### Lifecycle
 
 ```
-        /api/buy                    IPN: finished|confirmed
+        /api/buy                    IPN: paid in full (§5a)
   ─────────────────────►  reserved  ─────────────────────►  sold
                              │
-                             │  IPN: failed|expired|refunded
+                             │  IPN: failed|expired|refunded, unpaid order
                              │  invoice creation failed
                              │  24h sweeper
                              ▼
@@ -294,7 +298,10 @@ A double send is unrecoverable, so no step is optimistic:
 3. **Recovery never retries blind.** A claimed order with no recorded txid makes
    the reconciler search the wallet for that comment: found → record it; not
    found → the send never happened, hand it back. An order whose fate cannot be
-   established is escalated to a human and **never resent**.
+   established is escalated to a human and **never resent**. A send this process
+   is still waiting on is not "claimed with no txid" — the reconciler skips it,
+   so it cannot read the wallet mid-send and report a send in flight as one that
+   never happened.
 
 An RPC error is treated the same way — a timeout says nothing about whether the
 node broadcast, so the wallet is searched before concluding anything.
@@ -333,6 +340,45 @@ If the explorer cannot be read, the last good balance stands for 30 minutes — 
 wallet does not empty by surprise — and past that **the market stops accepting
 orders** rather than promise coins nobody has confirmed exist.
 
+## 5a. What a payment callback is worth
+
+`ipn.mjs` follows the policy every rail on the one NOWPayments account shares
+(reference: checker.pc.am `src/NowPaymentsIpn.php`, 3ee728c). This rail is the
+one whose payout cannot be undone, so where the others credit a balance a human
+can correct later, this one **holds the order for a human** instead. Its header
+has the full reasoning; in short:
+
+| callback | what happens |
+|---|---|
+| `confirmed`, `actually_paid >= pay_amount` (no tolerance) | paid: rungs settle, delivery |
+| `finished`, `actually_paid >= 99.5%` of `pay_amount` | paid in full |
+| `confirmed` short, or its amount unreadable | nothing — `finished` / `partially_paid` follows |
+| `partially_paid`, or `finished` below 99.5% | **needs_review**, set to what the money buys at the locked price; Send (reviewed) releases it |
+| a CHILD payment (`parent_payment_id` set; null/''/0/'0' = none) | **needs_review** — a child's ratio always reads 100% |
+| `price_amount` (whole cents), `price_currency` or `invoice_id` not the stored invoice's, or no invoice id recorded | **needs_review** (for `failed`/`expired`/`refunded`: the order is not closed) |
+| paid after its rungs were released | **needs_review**, UNBACKED |
+| another payment on an order that already has one, one payment naming two orders, a money callback without a `payment_id` | Telegram; no order changes, nothing sent |
+| `refunded` / `failed` / `expired` of the payment the order was paid with | unsent: **needs_review**; sent: nothing reversed; a human is told either way |
+| a repeat of anything already decided | duplicate, silent |
+
+`actually_paid_at_fiat` is never used (it is 0 on genuine callbacks).
+
+**One payment, one order, one send.** `orders.paid_payment_id` (UNIQUE) is
+written by the statement that takes an order out of the unpaid states, paid or
+held, and never moves back: a later callback for that payment is a duplicate
+before any alert is considered, any other payment on the order goes to a human,
+and once a human has the order nothing on it pays automatically again. The send
+itself stays keyed on the order (§ Never send twice), so the two keys meet.
+
+Every signed callback's decision is written on its `ipn_events` row (`outcome`,
+`note`); the admin IPN log filters on it. `held` and `needs_human` are the ones
+waiting on a person.
+
+`orders-payment.sql` adds those columns, and the app user has no DDL rights, so
+it runs **as root before the code that needs it**. Deployed without it, the
+server says so at startup, answers every callback 503 (NOWPayments retries;
+nothing is lost) and refuses new orders.
+
 ## 5b. Buying back is closed
 
 `buybackOpen` is **off**. `/api/sell` refuses at the door and the panel is off
@@ -362,11 +408,14 @@ Everything read-only is public. Nothing here needs a credential to consume.
 | `POST /api/sell` | request a buyback payout |
 | `POST /ipn` | NOWPayments callback. **HMAC-SHA512 verified before anything is touched** |
 
-The IPN signature is computed over the JSON re-serialised with keys sorted and
-**each value's original source text preserved**. `JSON.stringify` renders `10.0`
-as `10`, which would have produced a different string than the sender signed and
-rejected **every round-number payment** as a bad signature — silently, and
-looking exactly like an attack.
+The IPN signature is an HMAC-SHA512 over the **raw body bytes as received** —
+what NOWPayments was measured to sign (20/20 genuine callbacks, 2026-09-23). The
+old check, the JSON re-serialised with keys sorted and each value's source text
+preserved, stays as a fallback, as do the two other sorted forms the estate
+uses; each is a full HMAC under the secret, so trying several weakens nothing. A
+re-serialisation is only ever a guess at the sender's bytes: `JSON.stringify`
+renders `10.0` as `10`, and a wrong guess rejects a genuine payment as a bad
+signature — silently, looking exactly like an attack.
 
 ## 6b. The admin panel
 
@@ -420,6 +469,14 @@ node ladder-sim.mjs reset      # refuses if any non-TEST fill exists
 
 Deploy is a file copy and `systemctl restart pcoin-market`. The service is
 `pcoin-market.service`, `WorkingDirectory=/opt/pcoin-market`, behind Caddy.
+A change that needs a new column ships its `.sql`, run as root **first**
+(`mysql pcoin_market < orders-payment.sql` for the payment callback, §5a).
+
+```bash
+# the payment callback, against a THROWAWAY database it creates and drops
+# (refuses any name not starting pcm_ipn_test; needs a root-capable MariaDB)
+PCOIN_IPN_TEST_DB=pcm_ipn_test PCOIN_IPN_TEST_PORT=3306 node ipn-test.mjs
+```
 
 **Seeding the ladder is not idempotent and must never run twice.** `ladder.sql`
 creates the tables `IF NOT EXISTS` but the rung `INSERT` would reset `qty_sold`
