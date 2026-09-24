@@ -76,15 +76,26 @@ def sync(j):
     except FileNotFoundError:
         pass
     atomic_write(CADDY_PATH, caddy_text(ips))
-    v = subprocess.run(['caddy', 'validate', '--config', CADDYFILE, '--adapter', 'caddyfile'],
-                       capture_output=True, text=True)
+    # Validate AS THE caddy USER. `caddy validate` opens every log writer the
+    # config names; run as root it CREATES a missing log file owned by root, the
+    # running Caddy (user caddy) then cannot open it, and the reload fails. That
+    # is exactly what happened on 2026-09-24 with /var/log/caddy/admin.pc.am.log.
+    v = subprocess.run(['runuser', '-u', 'caddy', '--', 'caddy', 'validate', '--config', CADDYFILE,
+                        '--adapter', 'caddyfile'], capture_output=True, text=True)
     if v.returncode != 0:
         if old is not None:
             atomic_write(CADDY_PATH, old)
         sys.exit('caddy validate FAILED, previous copy restored:\n' + (v.stderr or v.stdout)[-800:])
-    r = subprocess.run(['systemctl', 'reload', 'caddy'], capture_output=True, text=True)
+    # Straight to Caddy's admin API, the same command the unit's ExecReload
+    # runs, with a timeout. A failed `systemctl reload` left the unit stuck in
+    # "reloading" for minutes, and every later reload queued behind it.
+    try:
+        r = subprocess.run(['caddy', 'reload', '--config', CADDYFILE, '--adapter', 'caddyfile', '--force'],
+                           capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        sys.exit('caddy reload timed out; the old list is still in force in Caddy (the panel reads the new one)')
     if r.returncode != 0:
-        sys.exit('caddy reload failed: ' + r.stderr[-400:])
+        sys.exit('caddy reload failed (the old list is still in force in Caddy): ' + (r.stderr or r.stdout)[-500:])
     print('caddy reloaded; allowed:', ', '.join(ips) or '(nobody)')
 
 
