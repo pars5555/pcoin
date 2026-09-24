@@ -15,6 +15,10 @@
 import { upstreamGet, upstreamCreds } from './services.mjs';
 import { esc, DASH, T, num, N, USD, PCT, YN, when, dur, agoIso, agoEpoch,
          hash, addr, card, note, kv, tbl, tiles, failed } from './ui.mjs';
+// The ops dashboard runs on THIS host. Read it over loopback: since 2026-09-24
+// its public path (explorer.pc.am/admin) is locked to the owner's addresses,
+// and a public round trip through Cloudflare was never needed for a neighbour.
+const OPS_API = process.env.ADMIN_OPS_API || 'http://127.0.0.1:8787/api';
 
 const B = t => (t ? { Authorization: 'Bearer ' + t } : {});
 
@@ -387,7 +391,7 @@ async function renderEarner(c) {
 
 // -- explorer ops -----------------------------------------------------------
 async function renderExplorer(c) {
-  const r = await upstreamGet('https://explorer.pc.am/admin/api', B(c.ops?.readToken));
+  const r = await upstreamGet(OPS_API, B(c.ops?.readToken));
   if (!r.ok) return { status: 'unreadable', body: failed('explorer.pc.am/admin', r.error) };
   const d = r.data, ch = d.chain || {}, cen = d.census || {}, st = d.state || {},
         p = st.peers || {}, tips = st.tips || {}, pool = st.pool || null;

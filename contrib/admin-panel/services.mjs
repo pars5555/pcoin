@@ -16,6 +16,10 @@
 //   3. Nothing here writes. Not one of these calls is a POST, and none of the
 //      tokens could perform one if it were.
 import { readFileSync, existsSync } from 'node:fs';
+// The ops dashboard runs on THIS host. Read it over loopback: since 2026-09-24
+// its public path (explorer.pc.am/admin) is locked to the owner's addresses,
+// and a public round trip through Cloudflare was never needed for a neighbour.
+const OPS_API = process.env.ADMIN_OPS_API || 'http://127.0.0.1:8787/api';
 
 const UPSTREAM = process.env.ADMIN_UPSTREAM || '/opt/pcoin-admin/upstream.json';
 const TTL_MS = 60_000;
@@ -52,7 +56,7 @@ export async function collect() {
   const [mkt, gate, ops, earner, stats, health, poolApi] = await Promise.all([
     get('https://market.pc.am/api/ops/summary', bearer(c.market?.readToken)),
     get('https://market.pc.am/api/ladder/gate'),
-    get('https://explorer.pc.am/admin/api', bearer(c.ops?.readToken)),
+    get(OPS_API, bearer(c.ops?.readToken)),
     get('https://pcnearner.pc.am/v1/admin/overview',
         c.pcnearner?.adminKey ? { 'X-Admin-Key': c.pcnearner.adminKey } : {}),
     get('https://wpcnpay.pc.am/stats', bearer(c.wpcnpay?.readToken)),
