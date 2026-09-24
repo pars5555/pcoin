@@ -44,7 +44,8 @@
 //   TELLS A HUMAN, CHANGES NO ORDER: a money callback for a payment that is not
 //   the one the order is tied to (a second payment, a re-used invoice link, a
 //   child), a money callback without a payment_id, a payment the UNIQUE index
-//   says already belongs to another order.
+//   says already belongs to another order, a 'failed' / 'expired' / 'refunded'
+//   that does not match the invoice of the pending order it would close.
 //
 //   DOES NOTHING: a short 'confirmed' (both underpayments measured on the
 //   account were already short at 'confirmed' and went 'partially_paid' later),
@@ -850,6 +851,21 @@ export function makeIpn({ pool, ladder, delivery, notify, secret,
         log.warn(`[ipn] ${c.status} for ${order.order_id} ignored — the order is '${order.status}', ` +
                  `no longer pending. Inventory left alone.`);
         return answer('ignored', `${c.status} for an order that is ${order.status}, not pending`);
+      }
+      // R5 for the callbacks that close an order, too. An invoice another API
+      // key on the shared account opened under this order id is signed with the
+      // same secret; its 'expired' must not give this order's rungs back while
+      // the buyer is still paying ours -- their payment would then land
+      // UNBACKED. The order stays pending and the sweeper expires it on time.
+      const mismatch = invoiceMismatch(d, order);
+      if (mismatch) {
+        tell(`fail-mismatch|${order.order_id}|${pid}|${c.status}`,
+          `⚠️ <b>A ${esc(c.status)} callback that does not match its invoice</b>\n` +
+          `<code>${esc(order.order_id)}</code> · payment <code>${esc(pid || '?')}</code>: ${esc(mismatch)}.\n` +
+          `The order was left <b>pending</b> and its PCN stays reserved; it expires on its own if nobody ` +
+          `pays. Nothing was sent. Find out where this callback came from.`);
+        return answer('needs_human', `${c.status} that does not match the invoice (${mismatch}); order left pending`,
+                      { reason: 'does not match its invoice' });
       }
       const closed = await withTx(async conn => {
         // Rungs first, then the order: the same order as accept().

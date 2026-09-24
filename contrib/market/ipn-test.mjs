@@ -122,13 +122,18 @@ const alertsLike = re => alerts.filter(a => re.test(a));
 
 // The fake wallet. listtransactions shows every send; `crash` makes the NEXT
 // sendtoaddress broadcast and then fail its answer, like an RPC timeout;
-// `hang` makes it broadcast NOTHING and never answer, like a process that died
-// between recording its claim and sending; `balanceThrows` makes the balance
-// read fail, which delivery reports as a crash.
-const wallet = { sends: [], crash: false, unreadable: false, hang: false, balanceThrows: false };
+// `crashBlind` does the same and leaves listtransactions failing too (the
+// correlated failure delivery.mjs describes); `hang` makes it broadcast NOTHING
+// and never answer, like a process that died between recording its claim and
+// sending; `balanceThrows` makes the balance read fail, which delivery reports
+// as a crash; `gate` (a promise) holds every balance read until it settles,
+// counting the readers held in `gated`.
+const wallet = { sends: [], crash: false, crashBlind: false, unreadable: false, hang: false, balanceThrows: false,
+                 gate: null, gated: 0 };
 const node = {
   async wallet(method, params = []) {
     if (method === 'getbalances') {
+      if (wallet.gate) { wallet.gated++; await wallet.gate; }
       if (wallet.balanceThrows) throw new Error('fake wallet: balance unreadable');
       return { mine: { trusted: 10_000_000 } };
     }
@@ -142,6 +147,10 @@ const node = {
       const txid = createHash('sha256').update(`${comment}|${wallet.sends.length}|${to}`).digest('hex');
       wallet.sends.push({ txid, to, amount: Number(amount), comment });
       if (wallet.crash) { wallet.crash = false; throw new Error('fake wallet: answer lost after broadcast'); }
+      if (wallet.crashBlind) {
+        wallet.crashBlind = false; wallet.unreadable = true;
+        throw new Error('fake wallet: answer lost after broadcast, and the node stopped answering');
+      }
       return txid;
     }
     if (method === 'getaddressesbylabel') return { pc1qfloattopup: { purpose: 'receive' } };
@@ -167,6 +176,28 @@ function crashingPool(re) {
     },
   });
 }
+
+// A pool whose statements matching `re` run at once but ANSWER `ms` late: the
+// commit is visible to every other connection while the caller still waits.
+function slowPool(re, ms) {
+  return new Proxy(pool, {
+    get(t, k) {
+      if (k === 'query') {
+        return async (sql, args) => {
+          const out = await t.query(sql, args);
+          if (re.test(String(sql))) await new Promise(r => setTimeout(r, ms));
+          return out;
+        };
+      }
+      const v = t[k];
+      return typeof v === 'function' ? v.bind(t) : v;
+    },
+  });
+}
+const until = async (cond, what) => {
+  for (let i = 0; i < 300; i++) { if (await cond()) return true; await new Promise(r => setTimeout(r, 10)); }
+  throw new Error(`timed out waiting for ${what}`);
+};
 
 const L = makeLadder(pool);
 const D = makeDelivery({ pool, node, notify, settings, log: quiet });
@@ -757,6 +788,24 @@ await test('R5: an order whose invoice id was never recorded is held, not judged
      w.delivery_error);
 });
 
+await test('R5: a failure callback that does not match its invoice does not close the order', async () => {
+  // Another API key on the shared account can open an invoice under this
+  // order id; its 'expired' must not hand this order's rungs back while the
+  // buyer is paying ours.
+  for (const [label, x] of [['another invoice_id', { invoiceId: 4999999998 }], ['another price', { price: 1 }]]) {
+    const o = await newOrder();
+    const r = await pay(o, { pid: Number(newPid()), status: 'expired', paid: 0, ...x });
+    const w = await row(o.id);
+    const f = await fills(o.id);
+    ok(`${label}: still pending, rungs still reserved`, w.status === 'pending' && f.reserved > 0 && !f.released,
+       `${w.status} ${JSON.stringify(f)}`);
+    ok(`${label}: a human is told`, r.body && r.body.outcome === 'needs_human', JSON.stringify(r.body));
+    await pay(o);
+    ok(`${label}: the genuine payment then pays`, sendsFor(o.id).length === 1 && (await row(o.id)).status === 'delivered');
+  }
+  ok('one alert each', alertsLike(/does not match its invoice/).length === 2, alerts.join(' || '));
+});
+
 await test('R5: a sub-cent order matches its invoice in whole cents', async () => {
   const o = await newOrder({ usd: 20.005 });             // stored as 20.01
   await pay(o, { price: 20.005 });
@@ -830,8 +879,11 @@ await test('R7: a crash between the send and its record never sends twice', asyn
 
 await test('R7: a crash after the claim is recorded, before the send: never sent on a retry', async () => {
   // The process dies holding its claim: status 'sending', nothing broadcast.
+  // It has its own delivery instance, as a process does: what it held in
+  // memory dies with it.
   const o = await newOrder();
   wallet.hang = true;
+  IPN = build(makeDelivery({ pool, node, notify, settings, log: quiet }));
   const dying = post(callback(o, { status: 'confirmed' }));   // never settles: the process "died"
   dying.catch(() => {});
   for (let i = 0; i < 200 && (await row(o.id)).status !== 'sending'; i++) await new Promise(r => setTimeout(r, 10));
@@ -849,6 +901,66 @@ await test('R7: a crash after the claim is recorded, before the send: never sent
      w2.status === 'needs_review' && sendsFor(o.id).length === 0, `${w2.status} ${sendsFor(o.id).length}`);
   await pay(o, { status: 'finished' });
   ok('and a callback after that still sends nothing', sendsFor(o.id).length === 0);
+});
+
+await test('R7: the stuck-send sweep leaves a send that is still in flight alone', async () => {
+  // An order paid long ago, sent now (the operator's Send, or a late
+  // callback): its paid_at is past the sweep's grace the moment it is claimed.
+  // The sweep must not read the wallet mid-send, find nothing, and hand it to
+  // a human as "no transaction was found" -- the cue to send it again.
+  const o = await newOrder({ usd: 100 });                // manual: waits for a human
+  await pay(o);
+  await q(`UPDATE orders SET paid_at = NOW() - INTERVAL 3 HOUR WHERE order_id = ?`, [o.id]);
+  // The claim's own answer arrives late, so its commit is visible to the
+  // sweep before the claiming call has read it.
+  const inFlight = makeDelivery({ pool: slowPool(/SET status='sending', delivery_mode='auto'/, 400),
+                                  node, notify, settings, log: quiet });
+  // Send pressed twice at once: both get past every check (held at the
+  // balance read) before either claims. sendtoaddress never answers: the
+  // winner's send is on its way for as long as this test looks.
+  let open;
+  wallet.gate = new Promise(r => { open = r; });
+  wallet.gated = 0;
+  wallet.hang = true;
+  const p1 = inFlight.deliverForce(o.id), p2 = inFlight.deliverForce(o.id);
+  p1.catch(() => {}); p2.catch(() => {});
+  try {
+    await until(() => wallet.gated === 2, 'both Sends at the balance read');
+  } finally { wallet.gate = null; open(); }
+  await until(async () => (await row(o.id)).status === 'sending', 'the claim');
+  await inFlight.reconcileSending();                     // the claim is visible, not yet answered
+  const w0 = await row(o.id);
+  ok('the sweep leaves a claim it has not seen answered', w0.status === 'sending', `${w0.status} ${w0.delivery_error}`);
+  const loser = await Promise.race([p1, p2]);            // the winner never answers
+  ok('one of the two Sends stands down', loser.ok && loser.already && sendsFor(o.id).length === 0, JSON.stringify(loser));
+  await inFlight.reconcileSending();                     // the loser has left; the winner is still sending
+  const w = await row(o.id);
+  ok('still sending, not handed to a human', w.status === 'sending' && !/no transaction was found/.test(w.delivery_error || ''),
+     `${w.status} ${w.delivery_error}`);
+  ok('no "stuck send" alert', alertsLike(/Stuck send/).length === 0, alerts.join(' || '));
+  // Another process's sweep (a restart, say) cannot see this one's sends and
+  // does examine it -- which is the behaviour a crashed send needs.
+  await D.reconcileSending();
+  ok('a process that is not sending it does examine it', (await row(o.id)).status === 'needs_review');
+});
+
+await test('R7: a send whose fate was unknown is resolved by the same process\'s next sweep', async () => {
+  // sendtoaddress broadcast, its answer was lost, and the wallet stopped
+  // answering too: delivery leaves the order 'sending' for the sweep. The sweep
+  // of the SAME process must still examine it once the send is over.
+  const o = await newOrder();
+  wallet.crashBlind = true;
+  await pay(o);
+  const w1 = await row(o.id);
+  ok('left sending, unresolved, one transaction out', w1.status === 'sending' && sendsFor(o.id).length === 1,
+     `${w1.status} ${sendsFor(o.id).length}`);
+  wallet.unreadable = false;
+  await q(`UPDATE orders SET paid_at = NOW() - INTERVAL 10 MINUTE WHERE order_id = ?`, [o.id]);
+  await D.reconcileSending();
+  const w2 = await row(o.id);
+  ok('the sweep records the one that went, and sends nothing more',
+     w2.status === 'delivered' && w2.delivered_txid === sendsFor(o.id)[0].txid && sendsFor(o.id).length === 1,
+     `${w2.status} ${sendsFor(o.id).length}`);
 });
 
 await test('R7: a crash after accepting, before delivery, is finished by the retry', async () => {

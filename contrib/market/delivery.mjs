@@ -153,12 +153,36 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
 
   const isAuto = usdValue => S.autoMaxUsd() > 0 && Number(usdValue) <= S.autoMaxUsd();
 
+  // Orders THIS process is claiming or sending right now. reconcileSending
+  // judges a 'sending' order stuck by its paid_at, which says nothing about when
+  // the send started: an order paid hours ago and sent now from the admin panel
+  // is "stuck" the moment it is claimed. Its sweep could then read the wallet
+  // before sendtoaddress had committed, find nothing, and hand the order to a
+  // human as "no transaction was found" -- an invitation to send it again while
+  // the first send is still on its way. A send this process is still waiting on
+  // is not stuck; the sweep leaves it alone. After a restart the map is empty,
+  // which is right: nothing is in flight in a process that has just started.
+  //
+  // Entered BEFORE the claim is sent, not after it answers: the claim's commit
+  // can be visible to other connections before this call has read its OK
+  // (ipn-test.mjs caught exactly that on MariaDB 10.11), so a sweep could
+  // otherwise see 'sending' while this map did not yet know. A count, not a
+  // set: two Sends pressed together both enter, one wins the claim, and the
+  // loser leaving must not take the winner's send out.
+  const sendingNow = new Map();
+  const enterSending = id => sendingNow.set(id, (sendingNow.get(id) || 0) + 1);
+  const leaveSending = id => {
+    const n = (sendingNow.get(id) || 0) - 1;
+    if (n > 0) sendingNow.set(id, n); else sendingNow.delete(id);
+  };
+
   /** Called once, when a payment confirms. Returns what happened, for the log.
    *
    *  Never throws into the IPN handler: NOWPayments retries anything that is
    *  not a 200, and a retry storm on a payment we have already recorded is the
    *  last thing this path needs. Failures become an operator message. */
   async function deliver(orderId, { force = false } = {}) {
+    let entered = false;
     try {
       const [order] = await q(
         `SELECT order_id, email, usd, address, quoted_pcn, status, delivered_txid
@@ -245,7 +269,10 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
       }
 
       // CLAIM. One winner; a concurrent caller gets 0 rows and stops. The
-      // 'sending' state is what makes a crash detectable afterwards.
+      // 'sending' state is what makes a crash detectable afterwards. Entered
+      // in sendingNow first (see there), and left again whatever happens.
+      enterSending(orderId);
+      entered = true;
       const claim = await q(
         `UPDATE orders SET status='sending', delivery_mode='auto'
           WHERE order_id=? AND status='awaiting_delivery' AND delivered_txid IS NULL`,
@@ -373,6 +400,8 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
                      `<code>${String(e.message).slice(0, 300)}</code>`);
       } catch {}
       return { ok: false, why: e.message };
+    } finally {
+      if (entered) leaveSending(orderId);
     }
   }
 
@@ -609,6 +638,8 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
           WHERE status='sending' AND delivered_txid IS NULL
             AND (paid_at IS NULL OR paid_at < (NOW() - INTERVAL 5 MINUTE))`);
       for (const o of stuck) {
+        // Still being claimed or sent by this process: not stuck (see sendingNow).
+        if (sendingNow.has(o.order_id)) continue;
         // Per-order, so one order that cannot be resolved does not abort the
         // sweep for every order queued behind it. Previously a single failing
         // findSentTx or UPDATE killed the whole pass, on every tick, forever —
