@@ -30,7 +30,9 @@ import { execFileSync } from 'node:child_process';
 import { collect, upstreamCreds } from './services.mjs';
 import { detailFor } from './detail.mjs';
 import { telegramPage } from './telegram.mjs';
-import { jobsPage } from './jobs.mjs';
+import { jobsPage, loadJobs, EXPECTED } from './jobs.mjs';
+import { overviewPage } from './overview.mjs';
+import { dependenciesPage, loadDependencies } from './dependencies.mjs';
 import { aiPage } from './ai.mjs';
 import { exchangesPage } from './exchanges.mjs';
 import { approvalsPage } from './approvals.mjs';
@@ -52,16 +54,65 @@ import { cachedVerdicts, verdictCell, vtKey } from './virustotal.mjs';
 const PORT   = Number(process.env.ADMIN_PORT || 8795);
 const PREFIX = (process.env.ADMIN_PREFIX || '').replace(/^\/*|\/*$/g, '');
 const DATA   = process.env.ADMIN_DATA || '/opt/pcoin-admin/data';
+// ADMIN_ROOT=1: the panel owns its whole hostname (admin.pc.am, since
+// 2026-09-24) and answers at /. That is only safe because the hostname is
+// locked to the owner's addresses -- in Caddy AND below in allowedClient() --
+// so the unguessable path is no longer what keeps scanners away.
+const ROOT   = process.env.ADMIN_ROOT === '1';
 
-if (!PREFIX) {
+if (!PREFIX && !ROOT) {
   console.error('ADMIN_PREFIX is not set. Refusing to start: without it every route ' +
-                'would answer at /, which is exactly what the unguessable path exists to avoid.');
+                'would answer at /, which is exactly what the unguessable path exists to avoid. ' +
+                'Set ADMIN_ROOT=1 only for a hostname that is IP-locked to the owner.');
   process.exit(2);
 }
 mkdirSync(DATA, { recursive: true });
 
-const BASE = '/' + PREFIX;
-const HOSTLABEL = 'explorer.pc.am \u00b7 read-only';
+const BASE = ROOT ? '' : '/' + PREFIX;
+// A cookie with an empty Path is scoped to the directory of the page that set
+// it, i.e. it would silently stop being sent to every other page.
+const COOKIE_PATH = BASE || '/';
+const HOSTLABEL = process.env.ADMIN_HOSTLABEL || (ROOT ? 'admin.pc.am' : 'explorer.pc.am');
+
+// \u2500\u2500 who may reach this panel at all \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// Owner, 2026-09-24: "only my ip addresses should have access to that page".
+// The list is /opt/pcoin-admin/allowed-ips.json, managed with
+// `pcoin-admin-allow` (which also rewrites Caddy's copy -- the two are checked
+// independently, so a mistake in one is still stopped by the other).
+//
+// The client address is X-Forwarded-For ONLY when the TCP peer is loopback,
+// i.e. Caddy, which sets it from CF-Connecting-IP -- a header Cloudflare
+// overwrites and a client cannot choose. From any other peer the header is
+// ignored. An unreadable list refuses everyone: a broken lock stays locked.
+// /ingest/ is exempt: hosts post their reports with a bearer token from
+// server addresses, and those were never going to be on this list.
+const ALLOW_FILE = process.env.ADMIN_ALLOW_FILE || '/opt/pcoin-admin/allowed-ips.json';
+let allowCache = { at: 0, set: null };
+function allowedSet() {
+  if (Date.now() - allowCache.at < 10_000) return allowCache.set;
+  let set = null;
+  try {
+    const j = JSON.parse(readFileSync(ALLOW_FILE, 'utf8'));
+    const ips = (Array.isArray(j.ips) ? j.ips : []).map(x => String((x && x.ip) || '').trim()).filter(Boolean);
+    set = new Set(ips);
+  } catch (e) {
+    console.error('[pcoin-admin] allow-list unreadable, refusing every remote client:', e.message);
+    set = null;
+  }
+  allowCache = { at: Date.now(), set };
+  return set;
+}
+const isLoopback = a => a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
+function clientOf(req) {
+  const peer = req.socket.remoteAddress || '';
+  const fwd = isLoopback(peer) ? (req.headers['x-forwarded-for'] || '').split(',')[0].trim() : '';
+  return { ip: fwd || peer || 'unknown', direct: !fwd && isLoopback(peer) };
+}
+function allowedClient(c) {
+  if (c.direct) return true;                       // a tool on this box, not the internet
+  const set = allowedSet();
+  return !!set && set.has(c.ip.replace(/^::ffff:/, ''));
+}
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -174,31 +225,35 @@ async function releaseScans() {
 
 // ── pages ──────────────────────────────────────────────────────────────────
 const NAV = [
-  ['Overview', [['', '\u{1F4CA} Dashboard']]],
-  ['Mining',   [['miners', '⛏️ My miners']]],
-  ['Services', [['services', '\u{1F5A7} All services'],
-                ['services/market',    '\u2022 market.pc.am', 'sub'],
-                ['pricing', '💲 How the PCN price works'],
-                ['pcn-index', '\u{1F4C8} PCN index (shadow)', 'sub'],
-                ['exchange', '\u{1F3E6} exchange.pc.am'],
-                ['services/wpcnpay',   '\u2022 wpcnpay.pc.am', 'sub'],
-                ['services/pcnearner', '\u2022 pcnearner.pc.am', 'sub'],
-                ['services/explorer',  '\u2022 explorer.pc.am', 'sub'],
-                ['releases', '\u{1F4E6} Releases & scans']]],
-  ['Operations', [['jobs', '\u{1F553} Scheduled jobs'],
-                  ['ai', '\u{1F916} AI activity'],
-                  ['exchanges', '\u{1F4B1} Exchange listings'],
-                  ['approvals', '\u{2705} Approvals'],
-                  ['wrapdesk', '\u{1F512} Wrap desk'],
-                  ['keeper', '\u{2696}\u{FE0F} wPCN keeper'],
-                  ['telegram', '\u{1F4AC} Telegram']]],
-  ['Work',     [['programs', '\u{1F381} Programs'],
-                ['tasks', '\u{1F4CB} Tasks'],
-                ['user-reports', '\u{1F41E} User reports']]],
-  ['Config',   [['security', '\u{1F512} Security (2FA)'],
-                ['vault', '\u{1F511} Vault commands'],
-                ['transfer', '\u{1F4B8} Move PCN'],
-                ['send', '\u{1F4E4} Send PCN (market-hot)']]],
+  // Grouped by what the owner is looking after, not by which host runs it
+  // (admin.pc.am, 2026-09-24). Every subsystem is one click from here, and
+  // the Overview summarises all of them on one screen.
+  ['Overview',      [['', '\u{1F4CA} Overview']]],
+  ['Money & price', [['pricing', '\u{1F4B2} Price'],
+                     ['pcn-index', '\u{1F4C8} PCN index (shadow)', 'sub'],
+                     ['services/market', '\u{1F6D2} Market'],
+                     ['exchange', '\u{1F3E6} Exchange'],
+                     ['wrapdesk', '\u{1F504} Wrap desk'],
+                     ['keeper', '\u2696\uFE0F wPCN keeper'],
+                     ['services/wpcnpay', '\u{1F4B3} wPCN payments'],
+                     ['send', '\u{1F4E4} Send PCN (market-hot)'],
+                     ['transfer', '\u{1F4B8} Move PCN']]],
+  ['Network',       [['miners', '\u26CF\uFE0F Miners & pools'],
+                     ['services/explorer', '\u26D3\uFE0F Chain & explorer'],
+                     ['services/pcnearner', '\u{1F3A8} GPU earner'],
+                     ['services', '\u{1F9E9} All services'],
+                     ['releases', '\u{1F4E6} Releases & scans']]],
+  ['Operations',    [['jobs', '\u{1F553} Scheduled jobs'],
+                     ['approvals', '\u2705 Approvals'],
+                     ['ai', '\u{1F916} AI activity'],
+                     ['telegram', '\u{1F4AC} Telegram'],
+                     ['exchanges', '\u{1F4B1} Exchange listings'],
+                     ['dependencies', '\u{1F517} Dependencies']]],
+  ['Work',          [['programs', '\u{1F381} Programs'],
+                     ['tasks', '\u{1F4CB} Tasks'],
+                     ['user-reports', '\u{1F41E} User reports']]],
+  ['Settings',      [['security', '\u{1F512} Security (2FA)'],
+                     ['vault', '\u{1F511} Vault commands']]],
 ];
 
 // The watcher is an external process. If it hangs or throws, the page must
@@ -207,6 +262,17 @@ const NAV = [
 const safeWrapdeskWork = () => {
   try { return wrapdeskWork(); }
   catch (e) { return { ok: false, why: String((e && e.message) || e) }; }
+};
+
+// The Overview refreshes every minute and the watcher runs SYNCHRONOUSLY for
+// 2-3 s, blocking every other request to this panel while it does. So the
+// Overview reuses a result up to five minutes old; the Wrap desk page itself
+// still runs it fresh on every load, which is where a decision gets made.
+let wrapWorkCache = { at: 0, v: null };
+const cachedWrapdeskWork = () => {
+  if (wrapWorkCache.v && Date.now() - wrapWorkCache.at < 300_000) return wrapWorkCache.v;
+  wrapWorkCache = { at: Date.now(), v: safeWrapdeskWork() };
+  return wrapWorkCache.v;
 };
 
 const shell2 = (page, title, body) => shell(title, body, page);
@@ -539,8 +605,15 @@ async function handle(req, res) {
     return res.end('not found\n');
   }
   const sub = path.slice(BASE.length) || '/';
-  const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim()
-             || req.socket.remoteAddress || 'unknown';
+  const client = clientOf(req);
+  const ip = client.ip;
+
+  // Before anything else, including the login page: an address that is not
+  // on the list learns nothing, not even that a panel is here.
+  if (!sub.startsWith('/ingest/') && !allowedClient(client)) {
+    res.writeHead(404, { 'content-type': 'text/plain', 'cache-control': 'no-store' });
+    return res.end('not found\n');
+  }
 
   // ── ingest ───────────────────────────────────────────────────────────────
   // Token-authenticated rather than session-authenticated, and placed before the
@@ -733,7 +806,7 @@ async function handle(req, res) {
       const id = newSession({ ip });
       return send(res, 303, '', {
         location: BASE + '/',
-        'set-cookie': `pcadm=${id}; HttpOnly; Secure; SameSite=Strict; Path=${BASE}; Max-Age=28800`,
+        'set-cookie': `pcadm=${id}; HttpOnly; Secure; SameSite=Strict; Path=${COOKIE_PATH}; Max-Age=28800`,
       });
     }
 
@@ -765,7 +838,7 @@ async function handle(req, res) {
     const id = newSession({ ip });
     return send(res, 303, '', {
       location: BASE + '/',
-      'set-cookie': `pcadm=${id}; HttpOnly; Secure; SameSite=Strict; Path=${BASE}; Max-Age=28800`,
+      'set-cookie': `pcadm=${id}; HttpOnly; Secure; SameSite=Strict; Path=${COOKIE_PATH}; Max-Age=28800`,
     });
   }
 
@@ -773,7 +846,7 @@ async function handle(req, res) {
     dropSession(sid);
     return send(res, 303, '', {
       location: BASE + '/',
-      'set-cookie': `pcadm=; HttpOnly; Secure; SameSite=Strict; Path=${BASE}; Max-Age=0`,
+      'set-cookie': `pcadm=; HttpOnly; Secure; SameSite=Strict; Path=${COOKIE_PATH}; Max-Age=0`,
     });
   }
 
@@ -965,6 +1038,9 @@ async function handle(req, res) {
   if (sub === '/pricing') {
     return send(res, 200, shell2('pricing', 'How the PCN price works',
                                  pricingPage(await pricingData())));
+  }
+  if (sub === '/dependencies') {
+    return send(res, 200, shell2('dependencies', 'Dependencies', dependenciesPage(loadDependencies())));
   }
   if (sub === '/pcn-index') {
     return send(res, 200, shell2('pcn-index', 'PCN index (shadow)',
@@ -1262,88 +1338,38 @@ async function handle(req, res) {
   }
 
   // ── overview ─────────────────────────────────────────────────────────────
+  // Every subsystem on one screen (overview.mjs). The reads run in parallel and
+  // each failure is passed on as a VALUE, so a dead source greys out its own
+  // card instead of taking the page down with it.
   const tasks = loadTasks();
-  // Pull the same live reads the Services page uses, so the tiles cannot drift
-  // from the detail behind them.
-  let svcs = [];
-  try { svcs = await collect(); } catch { svcs = []; }
-  const byName = Object.fromEntries(svcs.map(x => [x.name, x]));
-  const val = (name, label) => {
-    const svc = byName[name];
-    if (!svc) return null;
-    const row = (svc.rows || []).find(r => r[0] === label);
-    return row ? row[1] : null;
-  };
-  const dash = v => (v === null || v === undefined || v === '') ? '&mdash;' : esc(v);
-  const bad = svcs.filter(x => x.status === 'bad' || x.status === 'unreadable').length;
-
-  // Everything actually waiting on a person, not just the hand-typed list.
-  //
-  // The exchange is read here rather than inside needsYou() so that a slow or
-  // dead exchange costs this one call and not the whole page -- and so the
-  // FAILURE is passed in as a value. needsYou turns it into a visible item;
-  // it must never become a silently empty queue.
   const exCreds = upstreamCreds();
-  let exOver = null;
-  if (exCreds && exCreds.exchange) {
-    try {
-      exOver = await exchangeCall(exCreds.exchange, 'dashboard', 'GET', '/admin/api/overview');
-    } catch (e) {
-      exOver = { readable: false, status: 0, json: null, reason: e.message };
-    }
-  }
+  const [svcs, exOver, price] = await Promise.all([
+    collect().catch(() => []),
+    exCreds && exCreds.exchange
+      ? exchangeCall(exCreds.exchange, 'dashboard', 'GET', '/admin/api/overview')
+          .catch(e => ({ readable: false, status: 0, json: null, reason: e.message }))
+      : Promise.resolve(null),
+    fetch('https://price.pc.am/', { signal: AbortSignal.timeout(12000) })
+      .then(r => (r.ok ? r.json() : null)).catch(() => null),
+  ]);
   let reports = [];
   try { reports = loadReports(DATA); } catch { reports = []; }
-
+  const wrap = wrapdeskState();
   const needs = needsYou({
-    svcs, tasks, exOver, wrap: wrapdeskState(), reports,
+    svcs, tasks, exOver, wrap, reports,
     answeredIds: answeredReplies(loadApprovals()), base: BASE,
   });
-  const needsAction = needs.filter(i => i.sev === 'action').length;
-  const openTasks = needs.length;
+  let keeper = null;
+  try { keeper = keeperData(); } catch { keeper = null; }
 
-  return send(res, 200, shell2('', 'Overview', `
-    ${needsYouCard(needs, esc)}
-
-    <div class="stats-grid">
-      <div class="stat-box"><div class="label">Services healthy</div>
-        <div class="value" style="color:${bad ? 'var(--red)' : 'var(--green)'}">
-          ${svcs.length - bad}/${svcs.length || '?'}</div></div>
-      <div class="stat-box"><div class="label">Needs you</div>
-        <div class="value" style="color:${needsAction ? 'var(--red)'
-          : openTasks ? 'var(--yellow)' : 'var(--green)'}">${openTasks}</div></div>
-      <div class="stat-box"><div class="label">PCN ask price</div>
-        <div class="value">${dash(val('market.pc.am', 'Ask price'))}</div></div>
-      <div class="stat-box"><div class="label">Sale gate</div>
-        <div class="value">${dash(val('market.pc.am', 'Sale gate'))}</div></div>
-      <div class="stat-box"><div class="label">wPCN claims</div>
-        <div class="value">${dash(val('wpcnpay.pc.am', 'Claims banked'))}</div></div>
-      <div class="stat-box"><div class="label">Chain height</div>
-        <div class="value">${dash(val('explorer.pc.am/admin', 'Chain height'))}</div></div>
-    </div>
-
-    <div class="card"><h2>Services</h2>
-      <table><tr><th>Service</th><th>Host</th><th>State</th></tr>
-      ${svcs.map(x => `<tr><td><a href="${BASE}/services">${esc(x.name)}</a></td>
-        <td class="muted">${esc(x.host)}</td>
-        <td class="${x.status === 'ok' ? 'ok' : x.status === 'bad' ? 'bad' : 'warn'}">
-          ${esc((x.status || 'unknown').toUpperCase())}</td></tr>`).join('')
-       || '<tr><td colspan="3" class="bad">Could not read any service.</td></tr>'}
-      </table>
-    </div>
-
-    <div class="card"><h2>What this panel is</h2>
-      <p>One place to <b>see</b> PCoin's own operational surface. It is read-only across
-      services by design: the four existing panels keep their own authentication and keep
-      doing the acting, so a stolen session here cannot move money anywhere.</p>
-      <p class="muted">The unguessable path keeps this out of scanner traffic. It is not the
-      security &mdash; the password and the second factor are. Treat the URL as convenience,
-      not as a secret that protects anything.</p>
-      <p class="muted">Control with no panel at all, and therefore new work rather than a
-      migration: the price oracle (an admin token, no page), the wrap desk (CLI only), the
-      keeper (systemd environment) and the Telegram bot. PancakeSwap is deliberately absent
-      &mdash; it needs a private key, which belongs in a wallet and not in a web service.</p>
-    </div>`));
+  return send(res, 200, shell2('', 'Overview', overviewPage({
+    base: BASE, svcs, ex: exOver, price, wrap, work: cachedWrapdeskWork(), keeper,
+    // 3900 s: twice the collector's half-hourly cadence, the same threshold the
+    // Scheduled jobs page uses (jobs.mjs STALE_SECONDS).
+    jobs: loadJobs(DATA), expected: EXPECTED, staleSeconds: 3900,
+    sends: readLog(DATA + '/sends.json'),
+    needs, needsCard: items => needsYouCard(items, esc),
+  })));
 }
 
 server.listen(PORT, '127.0.0.1', () =>

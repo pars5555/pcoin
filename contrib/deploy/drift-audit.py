@@ -103,7 +103,7 @@ NOT_DEPLOYED_OK = {
     "pool": {"blocktest.mjs", "coinbasetest.mjs", "duptest.mjs",
              "storetest.mjs", "testminer.mjs"},
     "market": {"gen_ladder.mjs", "ops-send-test.mjs"},
-    "admin": {"send-test.mjs", "transfer-test.mjs", "transfer-crypto.entry.mjs",
+    "admin": {"send-test.mjs", "transfer-test.mjs", "transfer-crypto.entry.mjs", "admin-gate-test.mjs",
               "exchange-preview.mjs", "exchange-preview-drive.mjs", "exchange-preview-cf-drive.mjs"},
 }
 

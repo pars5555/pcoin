@@ -48,11 +48,11 @@
 // stopped answering. The page says to use the file picker in InPrivate.
 //
 // WHAT NO CODE HERE CAN REMOVE, said so it is decided rather than discovered:
-//   * The panel shares its origin with the public explorer. Script running on
-//     any explorer.pc.am page -- an XSS there, or something Cloudflare injects
-//     under /cdn-cgi/ -- is same-origin with this page and could read it while
-//     the owner types. SRI and the CSP stop other origins, not that. A separate
-//     hostname for the panel is the fix, and it is not made here.
+//   * Until 2026-09-24 the panel shared its origin with the public explorer, so
+//     script on any explorer.pc.am page was same-origin with this one. It now
+//     has its own hostname, admin.pc.am, locked to the owner's addresses, which
+//     closes that. What remains is anything Cloudflare itself injects under
+//     /cdn-cgi/ on admin.pc.am; SRI and the CSP stop other origins, not that.
 //   * JavaScript cannot erase a string. The passphrase as typed and the decrypted
 //     phrase are dropped at the earliest point and left to the garbage collector;
 //     every byte array holding key material is zeroed, strings cannot be.
