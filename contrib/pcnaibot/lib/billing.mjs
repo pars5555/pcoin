@@ -103,12 +103,13 @@ export function reserve(db, { chatId, updateId = null, reqKey = null, model, mic
       // a cent.
       //
       // With allowOverdraft the reservation may take the balance negative. The
-      // guard that remains is that it must be NON-NEGATIVE to start: a user who
+      // guard that remains is that it must be POSITIVE to start: a user who
       // is already in the red cannot keep going, so the exposure is bounded at
-      // one turn's ceiling per user rather than being unbounded. That matters
-      // because Telegram accounts are free and the allow-list will not stay
-      // one person forever.
-      const floor = allowOverdraft ? 0 : need;
+      // one turn's ceiling per user rather than being unbounded. Positive, not
+      // non-negative: a new user starts at exactly $0, and with the bot open
+      // to everyone ">= 0" handed every fresh Telegram account -- they are
+      // free -- one turn on the house.
+      const floor = allowOverdraft ? 1 : need;
       const dec = db.prepare(
         `UPDATE users
             SET balance_micro_usd = balance_micro_usd - ?,

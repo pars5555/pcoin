@@ -72,6 +72,10 @@ const ALLOWLIST_MODELS = cfg.list('MODEL_ALLOWLIST');
 const DEFAULT_MODEL = cfg.strOr('DEFAULT_MODEL', 'glm-5.3-flash');
 const ALLOWED_CHATS = new Set(cfg.intList('ALLOWLIST_CHAT_IDS'));
 const ADMIN_CHATS = new Set(cfg.intList('ADMIN_CHAT_IDS'));
+// OPEN_TO_ALL=1 answers everybody; ALLOWLIST_CHAT_IDS then no longer gates.
+// Kept separate from the list so an empty list still means "nobody".
+const OPEN_TO_ALL = cfg.bool('OPEN_TO_ALL', false);
+const mayUse = (chatId) => OPEN_TO_ALL || ALLOWED_CHATS.has(chatId) || ADMIN_CHATS.has(chatId);
 const GRANT_MICRO = cfg.int('GRANT_MICRO_USD', 100000);
 const MIN_CONF = cfg.int('MIN_CONF', 3);
 const PUBLISHED_MIN_USD = cfg.num('PUBLISHED_MIN_USD', 5);
@@ -357,8 +361,14 @@ async function depositScreen(chatId) {
   } catch (e) {
     if (e instanceof PoolEmpty) {
       log.error('ADDRESS POOL EMPTY -- a user could not be given a deposit address', { chat: chatTag(chatId) });
+      // The user is WAITING for an answer. Telling the admins is important but
+      // it is not their problem: awaiting a send per admin chat delays the
+      // person's own message by one Telegram timeout each, and if the admin
+      // chat is unreachable they wait for all of them. Fire the alerts off and
+      // answer the user now.
       for (const a of ADMIN_CHATS) {
-        await tg.sendMessage(a, 'The pcnaibot deposit address pool is EMPTY. New users cannot be given an address.');
+        tg.sendMessage(a, 'The pcnaibot deposit address pool is EMPTY. New users cannot be given an address.')
+          .catch(err => log.error('admin alert failed', errFields(err)));
       }
       return 'We could not allocate a deposit address just now. This has been reported and will be fixed — please try again shortly.';
     }
@@ -1724,7 +1734,7 @@ async function handleMessage(msg) {
   if (isTxHash(text)) {
     // Allow-listed users get a real verification; everybody else still must not
     // be charged for pasting a receipt.
-    if (!ALLOWED_CHATS.has(chatId) && !ADMIN_CHATS.has(chatId)) {
+    if (!mayUse(chatId)) {
       return 'This bot is not open yet. Thanks for your interest — it will be announced when it is.';
     }
     ensureUser(chatId);
@@ -1735,7 +1745,7 @@ async function handleMessage(msg) {
 
   // THE ALLOW-LIST. Empty means the bot answers nobody -- that is the launch
   // gate, not a bug.
-  if (!ALLOWED_CHATS.has(chatId) && !ADMIN_CHATS.has(chatId)) {
+  if (!mayUse(chatId)) {
     if (COMMANDS.has(first)) {
       return 'This bot is not open yet. Thanks for your interest — it will be announced when it is.';
     }
@@ -1937,6 +1947,8 @@ async function main() {
 
   let offset = (kvGetJson(db, 'tg:offset') ?? { offset: 0 }).offset;
   let processed = 0;
+  let pollFailures = 0;
+  const POLL_WARN_AFTER = 3;
 
   for (;;) {
     const res = await tg.getUpdates(offset, { timeout: 30 });
@@ -1948,10 +1960,24 @@ async function main() {
         log.error('409 from getUpdates: ANOTHER CONSUMER IS POLLING THIS TOKEN. Not retrying.');
         process.exit(1);
       }
-      log.warn('getUpdates failed', { desc: res.description, unknown: !!res.unknown });
+      // A LONE TIMEOUT IS NOT A FAULT. The long poll holds the connection for
+      // 30s and we give up at 45s; about 0.3% of polls (~9 a day, measured
+      // 2026-09-24) lose that race to a network blip between here and
+      // Telegram. Nothing is lost -- the offset has not moved, so the next poll
+      // re-reads the same updates -- so retry at once, quietly. Only a RUN of
+      // failures is an outage worth a warning, and only then do we back off.
+      pollFailures++;
+      const blip = res.unknown && res.description === 'timeout' && pollFailures < POLL_WARN_AFTER;
+      if (blip) {
+        log.debug('getUpdates timed out; retrying', { inARow: pollFailures });
+        continue;
+      }
+      log.warn('getUpdates failed', { desc: res.description, unknown: !!res.unknown, inARow: pollFailures });
       await new Promise((r) => setTimeout(r, 5000));
       continue;
     }
+    if (pollFailures >= POLL_WARN_AFTER) log.info('getUpdates recovered', { afterFailures: pollFailures });
+    pollFailures = 0;
 
     for (const up of res.result) {
       offset = up.update_id + 1;
@@ -1994,12 +2020,12 @@ async function main() {
             const ctrl = activeStreams.get(cid);
             if (ctrl) { ctrl.abort(); toast = 'Stopping…'; log.info('user pressed the inline stop button', { chat: chatTag(cid) }); }
             else toast = 'Nothing is generating.';
-          } else if (cid !== null && (ALLOWED_CHATS.has(cid) || ADMIN_CHATS.has(cid)) && data.startsWith('m:')) {
+          } else if (cid !== null && mayUse(cid) && data.startsWith('m:')) {
             ensureUser(cid);
             const r = setModel(cid, data.slice(2));
             toast = r.ok ? `Model: ${r.model}` : 'Not available';
             await sendScreen(cid, r.msg, quickKeyboard(ensureUser(cid)));
-          } else if (cid !== null && (ALLOWED_CHATS.has(cid) || ADMIN_CHATS.has(cid)) && data.startsWith('nav:')) {
+          } else if (cid !== null && mayUse(cid) && data.startsWith('nav:')) {
             // A menu button is the same screen its slash command shows.
             const u = ensureUser(cid);
             await showScreen(cid, u, data.slice(4));

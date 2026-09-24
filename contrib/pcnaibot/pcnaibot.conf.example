@@ -146,6 +146,8 @@ REGISTRY_MAX_AGE_SECONDS=21600
 # chat ids. Empty string = the bot answers nobody.
 ALLOWLIST_CHAT_IDS=
 ADMIN_CHAT_IDS=
+# 1 = answer EVERYBODY, and ALLOWLIST_CHAT_IDS no longer gates. Opened 2026-09-24.
+OPEN_TO_ALL=0
 # wPCN. ENABLED as of 2026-09-11: the shared verifier now credits from
 # serviceRate (not the ladder `price`) AND bonusPercent is 0, so wPCN credits at
 # exact parity with PCN. That closes the arbitrage in both halves --
@@ -237,7 +239,7 @@ UNDECLARED_OUTPUT_CAP=32000
 # that worst case is ~$1.15 on gpt-5, which locks out anyone holding less even
 # though a typical answer costs a fraction of a cent.
 #
-# ON, the balance must still be NON-NEGATIVE to start a turn -- so exposure is
+# ON, the balance must still be POSITIVE to start a turn -- so exposure is
 # bounded at one turn's ceiling per user, not unbounded. Telegram accounts are
 # free, so removing that second guard too would be an open tab for anybody.
 ALLOW_OVERDRAFT=1

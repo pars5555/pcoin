@@ -104,6 +104,27 @@ test('an insufficient balance refuses before anything is called, and moves no mo
 });
 
 // ---------------------------------------------------------------------------
+// OVERDRAFT needs money in the account to start. A new user is at exactly $0,
+// and Telegram accounts are free -- ">= 0" gave every one of them a turn.
+// ---------------------------------------------------------------------------
+test('overdraft lets a small balance start a big turn, but a $0 account cannot', () => {
+  const quote = quoteTurn({ inputTokens: 1000n, maxTokens: 4096n, priceRow: SONNET, marginE6: M3 });
+
+  const empty = freshDb(0);
+  assert.throws(() => reserve(empty, { chatId: 1, updateId: 1, model: 'claude-sonnet-5', microUsd: quote, allowOverdraft: true }),
+    InsufficientFunds);
+  assert.equal(bal(empty), 0, 'balance untouched');
+  assert.equal(resv(empty), 0, 'nothing reserved');
+  empty.close();
+
+  const small = freshDb(1000); // $0.001, far below the quote
+  reserve(small, { chatId: 1, updateId: 1, model: 'claude-sonnet-5', microUsd: quote, allowOverdraft: true });
+  assert.equal(bal(small), 1000 - Number(quote), 'the reservation took the balance negative');
+  assert.equal(reconcile(small).ok, true);
+  small.close();
+});
+
+// ---------------------------------------------------------------------------
 // Test 11 / 5.4: the same update_id must reserve exactly once.
 // ---------------------------------------------------------------------------
 test('the same update_id reserves exactly once', () => {
