@@ -204,8 +204,12 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
       // anyway". It skips the size rule, never the float floor, never the
       // claim, and never the double-send checks.
       if (!force && !isAuto(usd)) {
-        await q(`UPDATE orders SET delivery_mode='manual'
-                  WHERE order_id=? AND delivery_mode IS NULL`, [orderId]);
+        // Page once per order. Two deliveries of the same callback can reach
+        // here together; only the one whose UPDATE marked the order says so,
+        // the other would be the same page twice for one purchase.
+        const marked = await q(`UPDATE orders SET delivery_mode='manual'
+                                 WHERE order_id=? AND delivery_mode IS NULL`, [orderId]);
+        if (marked.affectedRows !== 1) return { ok: true, mode: 'manual', already: true };
         await notify(
           `🟠 <b>Manual delivery needed</b>\n` +
           `<code>${orderId}</code>\n` +

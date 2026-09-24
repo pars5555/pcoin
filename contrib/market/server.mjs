@@ -11,8 +11,11 @@
 //   1. An IPN is not trusted until its HMAC-SHA512 signature verifies against
 //      the IPN secret. An unverified callback endpoint is a mint: anyone who
 //      learns the URL can claim they paid.
-//   2. Delivery is idempotent on the NOWPayments payment_id, under a UNIQUE
-//      index. NOWPayments retries callbacks; a retry must never send twice.
+//   2. One payment, one order, one send. ipn.mjs ties each order to the
+//      NOWPayments payment that paid it (orders.paid_payment_id, UNIQUE) and
+//      never pays another payment on it automatically; delivery.mjs records
+//      its claim on the order before it spends. NOWPayments retries callbacks;
+//      a retry must never send twice.
 //   3. The destination address is validated LOCALLY (bech32 checksum + `pc`
 //      hrp) before an order is accepted, not after taking the money.
 //
@@ -238,6 +241,7 @@ import { makeNodeRpc, makeDelivery, makeBacking } from './delivery.mjs';
 import { makeNotifier, readNotifyConfig } from './notify.mjs';
 import { clientIp } from './clientip.mjs';
 import { geoFor, geoLine, ensureSchema as ensureGeoSchema } from './geoip.mjs';
+import { makeIpn, readRawBody, REQUIRED_COLUMNS } from './ipn.mjs';
 
 // Settings are read at CALL time, not captured here: the key can be rotated
 // and the feature switched off from the admin panel without a restart.
@@ -669,50 +673,10 @@ async function npCreateInvoice({ usd, orderId, address }) {
   return j;
 }
 
-/** NOWPayments signs the IPN body with HMAC-SHA512 over the JSON with keys
- *  sorted. Anything that does not verify is discarded without touching an
- *  order — a callback is a claim, not a fact, until the signature says so. */
-function ipnValid(rawBody, sigHeader) {
-  if (!sigHeader || !cfg.ipnSecret) return false;
-
-  // Re-serialise with keys sorted, but preserve each value's ORIGINAL source
-  // text. JSON.stringify would render 10.0 as "10" and 1e3 as "1000", and the
-  // HMAC would then be computed over a different string than the sender signed
-  // -- so every payment with a round amount would be rejected as a bad
-  // signature. That failure is silent and looks like an attack, which is the
-  // worst possible way to lose real payments. The reviver's `context.source`
-  // (Node 21+) gives the literal as it arrived.
-  let raws;
-  try {
-    // Record TOP-LEVEL keys only. The reviver visits every key at every depth
-    // and walks bottom-up, so a nested object whose child shared a top-level
-    // key name would overwrite the real entry and change the string being
-    // signed -- silently rejecting a legitimate callback. The payload is flat
-    // today; this stops it mattering if that ever changes.
-    //
-    // The root cannot be identified while descending, so every entry is tagged
-    // with the object that holds it and filtered at the end: the reviver's
-    // final call is `k === ''`, and its `v` IS the finished root.
-    const seen = [];
-    let rootObj = null;
-    JSON.parse(rawBody, function (k, v, ctx) {
-      if (this === undefined) return v;
-      if (k === '') { rootObj = v; return v; }
-      seen.push({ holder: this, key: k,
-                  src: ctx && ctx.source !== undefined ? ctx.source : JSON.stringify(v) });
-      return v;
-    });
-    if (rootObj === null || typeof rootObj !== 'object' || Array.isArray(rootObj)) return false;
-    raws = new Map();
-    for (const e of seen) if (e.holder === rootObj) raws.set(e.key, e.src);
-  } catch { return false; }
-
-  const canonical = '{' + [...raws.keys()].sort()
-    .map(k => JSON.stringify(k) + ':' + raws.get(k)).join(',') + '}';
-  const want = createHmac('sha512', cfg.ipnSecret).update(canonical).digest('hex');
-  const a = Buffer.from(want), b = Buffer.from(String(sigHeader));
-  return a.length === b.length && timingSafeEqual(a, b);
-}
+// The IPN signature check lives in ipn.mjs (signatureVariant). It checks the
+// RAW body bytes first -- what NOWPayments was measured to sign -- and keeps the
+// sorted, source-text-preserving form this file used before as a fallback, so a
+// callback that verified under the old check still verifies.
 
 /** Report what a completed sale actually earned, from the gateway's own fee
  *  breakdown. Never throws into the IPN path — a reporting bug must not cost a
@@ -799,7 +763,8 @@ async function reportSaleEconomics(d, opts = {}) {
 // ── pages ──────────────────────────────────────────────────────────────────
 // Throttles for alerts a stranger can trigger. Unbounded, they would be a
 // denial of service against the one channel carrying the double-send alarm.
-let lastSigAlert = 0, lastCrashAlert = 0, lastGatewayAlert = 0;
+// (The bad-signature throttle lives with the IPN, in ipn.mjs.)
+let lastCrashAlert = 0, lastGatewayAlert = 0, lastSchemaAlert = 0;
 
 // A body that is not JSON is a client error. Returns null AFTER answering 400,
 // so the caller returns immediately and never sees a half-parsed object.
@@ -818,6 +783,78 @@ const CSS = readFileSync('/opt/pcoin-market/style.css', 'utf8');
 const shell = (title, b) => `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title><link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230d1117'/><path d='M16 5 L18.4 13.6 L27 16 L18.4 18.4 L16 27 L13.6 18.4 L5 16 L13.6 13.6 Z' fill='%232dd4bf'/></svg>">
 <style>${CSS}</style></head><body>${b}</body></html>`;
+
+// ── the payment callback ───────────────────────────────────────────────────
+// All of it is in ipn.mjs: the signature, what a callback is worth, the tie
+// between an order and the one payment that paid it, and the hand-off to
+// delivery. What stays here is what happens once an order is PAID:
+//
+// SAY THANK YOU NOW, NOT WHEN THE COINS GO OUT. Owner's instruction 2026-09-14:
+// "once payment received on nowpayment it should post on channel." A manual
+// delivery can be hours after the payment (order Mmu1bc3zrfd6902 was paid at
+// 14:22 UTC and had announced nothing by evening). announcePurchase() re-reads
+// the order and posts nothing unless it is a real paid purchase; recordSent()
+// still calls it too, and pcoin-approve's `--key purchase-<id>` makes whichever
+// arrives second a no-op.
+//
+// WHAT DID THIS SALE ACTUALLY EARN? The gateway's fee breakdown arrives in the
+// callback. The first real sale took $20 and credited $14.34 because every
+// order triggered its own ~$5.39 on-chain withdrawal; this report is how a
+// silent change to the payout configuration shows up as a fee reappearing. For
+// an underpayment the basis is what actually arrived, so the customer's
+// shortfall is not billed to the gateway as "fees". A payment that is held for
+// a human (a child, a mismatch, an unbacked order) is not a sale and is not
+// reported as one.
+const IPN = makeIpn({
+  pool, ladder: L, delivery: D, notify,
+  secret: () => cfg.ipnSecret,
+  onPaid: d => {
+    D.announcePurchase(String(d.order_id)).catch(e => console.error('[ipn] announce:', e.message));
+    reportSaleEconomics(d).catch(e => console.error('[ipn] fee report:', e.message));
+  },
+  onUnderpaid: (d, paidUsd) => {
+    reportSaleEconomics(d, { basisUsd: paidUsd, partial: true })
+      .catch(e => console.error('[ipn] fee report (partial):', e.message));
+  },
+});
+
+// ── the columns the payment callback needs ─────────────────────────────────
+// ipn.mjs reads orders.paid_payment_id / invoice_usd and writes
+// ipn_events.outcome / note on every callback. orders-payment.sql adds them, as
+// root, because this process has no DDL rights. Deployed without them the
+// callback cannot decide anything -- so say it at startup instead of on the
+// first sale, answer callbacks 503 (NOWPayments retries them, nothing is lost)
+// and take no new orders: taking money that cannot be processed is the one
+// outcome worse than a closed shop. Re-checked on each refused request, so
+// running the migration reopens everything without a restart.
+let ipnSchemaOk = false;
+async function checkIpnSchema() {
+  try {
+    for (const [table, cols] of Object.entries(REQUIRED_COLUMNS)) {
+      await q(`SELECT ${cols.join(', ')} FROM ${table} LIMIT 0`);
+    }
+    ipnSchemaOk = true;
+    return null;
+  } catch (e) {
+    ipnSchemaOk = false;
+    return e.message;
+  }
+}
+function schemaAlert(missing) {
+  if (Date.now() - lastSchemaAlert < 30 * 60 * 1000) return;
+  lastSchemaAlert = Date.now();
+  console.error(`[market] MIGRATION MISSING (${missing}). Run orders-payment.sql as root; until then ` +
+                `payment callbacks answer 503 and /api/buy refuses orders.`);
+  notify(`🔴 <b>Payments cannot be processed — migration missing</b>\n` +
+         `<code>${esc(String(missing).slice(0, 200))}</code>\nRun <code>mysql pcoin_market &lt; ` +
+         `/opt/pcoin-market/orders-payment.sql</code> as root. Until then every payment callback is ` +
+         `answered 503 (NOWPayments retries it), nothing is paid or delivered, and new orders are ` +
+         `refused.`).catch(() => {});
+}
+{
+  const missing = await checkIpnSchema();
+  if (missing) schemaAlert(missing);
+}
 
 // ── server ─────────────────────────────────────────────────────────────────
 createServer(async (req, res) => {
@@ -863,324 +900,28 @@ createServer(async (req, res) => {
 
   try {
     // ---- IPN. No session, signature only. ----
+    // Everything about a payment callback is in ipn.mjs: it verifies the
+    // signature over the raw bytes before touching anything, decides what the
+    // callback is worth (R1-R8, see its header), ties the order to the payment,
+    // and hands a paid order to delivery. A throw from it lands in the catch
+    // below, answers 500 and pages; NOWPayments then retries, which is safe
+    // because every step there is idempotent.
     if (p === '/ipn' && req.method === 'POST') {
-      const raw = await body(req);
-      if (!ipnValid(raw, req.headers['x-nowpayments-sig'])) {
-        console.warn('[ipn] REJECTED bad signature');
-        // The dangerous case here is NOT forgery — a forged callback is
-        // correctly refused and costs nothing. It is a WRONG SECRET. If
-        // ipnSecret is unset, mistyped, or rotated at NOWPayments, this branch
-        // rejects every GENUINE payment: the customer pays, the gateway gets a
-        // 401, the order expires, the inventory is resold, and the only signal
-        // is the ABSENCE of a follow-up to the "new order" message. Absence of
-        // an event is not an alert, so say it out loud.
-        //
-        // Nothing from the unverified body is echoed: notify posts parse_mode
-        // HTML and does not escape, so attacker-controlled text must not reach
-        // it. Throttled hourly — this endpoint is publicly reachable and gets
-        // scanned.
-        if (Date.now() - lastSigAlert >= 60 * 60 * 1000) {
-          lastSigAlert = Date.now();
-          notify(`⚠️ <b>Payment callback rejected: bad signature</b>\n` +
-            (cfg.ipnSecret
-              ? `If a real customer just paid, the IPN secret here no longer matches ` +
-                `NOWPayments — every genuine payment is being refused. If nobody is ` +
-                `waiting, this is just a scanner and can be ignored.`
-              : `<b>ipnSecret IS NOT SET — every genuine payment is being rejected.</b>`) +
-            `\nbody ${raw.length}B, signature header ` +
-            `${req.headers['x-nowpayments-sig'] ? 'present' : 'absent'}\n` +
-            `Further reports suppressed for an hour.`).catch(() => {});
-        }
-        return json(res, 401, { error: 'bad signature' });
+      let raw;
+      try { raw = await readRawBody(req); }
+      catch (e) {
+        if (e.code === 'BODY_TOO_LARGE') return json(res, 413, { error: 'body too large' });
+        throw e;
       }
-      const d = JSON.parse(raw);
-
-      // Record the event. The UNIQUE(payment_id, status) key stops the same
-      // callback being *logged* twice.
-      //
-      // What it must NOT do is skip the work. This row is written before any
-      // order or ladder change, so if the handler then died -- a deadlock in
-      // settleLadder, a dropped connection, a restart mid-request -- the retry
-      // NOWPayments sends would hit the duplicate key, be answered
-      // `200 {ok:true}`, and the payment would never be applied at all. The
-      // gateway would consider it delivered and stop retrying. That is a paid
-      // order silently lost.
-      //
-      // So a duplicate is not an early return: it falls through and repeats the
-      // work, which is safe precisely because every step below is idempotent --
-      // the orders UPDATE is guarded on status and settleLadder only ever moves
-      // rows still marked 'reserved'.
-      let duplicate = false;
-      try {
-        await q(`INSERT INTO ipn_events (payment_id, order_id, status, raw) VALUES (?,?,?,?)`,
-                [String(d.payment_id), d.order_id ?? null, String(d.payment_status), raw.slice(0, 60000)]);
-      } catch (e) {
-        if (e.code === 'ER_DUP_ENTRY') duplicate = true;
-        else throw e;
-      }
-
-      // `d.order_id ?? null` above, and the same here: mysql2 rejects an
-      // `undefined` bind with "Bind parameters must not contain undefined",
-      // which would throw into the 500 handler and make NOWPayments retry a
-      // callback that can never succeed.
-      const rows = await q(`SELECT order_id, status FROM orders WHERE order_id = ?`,
-                           [d.order_id ?? null]);
-      if (!rows.length) {
-        // A SIGNED callback — so it really is from NOWPayments — naming an order
-        // this database has never heard of. Someone paid for something we have
-        // no record of. This was the only outcome in the whole IPN handler that
-        // was completely silent, while its two money-anomaly siblings below both
-        // log and alert. Answered 200 deliberately (a retry cannot help), which
-        // is exactly why it must not also be invisible.
-        console.error('[ipn] SIGNED callback for an unknown order:', d.order_id);
-        notify(`🔴 <b>Payment for an unknown order</b>\n<code>${esc(String(d.order_id ?? 'null'))}</code>\n` +
-          `payment <code>${esc(String(d.payment_id ?? '?'))}</code> · status ` +
-          `<code>${esc(String(d.payment_status ?? '?'))}</code>\n` +
-          `The signature verified, so this is a real callback — but no such order exists ` +
-          `here. Somebody may have paid and be waiting with nothing.`).catch(() => {});
-        return json(res, 200, { ok: true, note: 'unknown order ignored', duplicate });
-      }
-
-      if (['finished', 'confirmed'].includes(d.payment_status)) {
-        // A human releases the coins; this only records that payment landed.
-        // 'expired' is accepted here too: the sweeper may have timed the order
-        // out minutes before a slow chain confirmed it, and a payment that
-        // arrived is a payment that arrived.
-        await q(`UPDATE orders SET status='awaiting_delivery', paid_at=NOW(),
-                        paid_amount=?, pay_currency=? WHERE order_id=? AND status IN ('pending','expired')`,
-                [d.actually_paid ?? d.pay_amount ?? null, d.pay_currency || null, d.order_id]);
-
-        // Settle unconditionally rather than only when the UPDATE moved a row:
-        // settleLadder is idempotent, so this also repairs the case where a
-        // previous delivery of this callback set the status and then died
-        // before the ladder was written.
-        const moved = await L.settleLadder(d.order_id);
-        if (moved === 0) {
-          const [{ c }] = await q(
-            `SELECT COUNT(*) c FROM ladder_fills WHERE order_id = ? AND state = 'sold'`, [d.order_id]);
-          if (!Number(c)) {
-            // Paid, but no inventory is backing it -- the reservation was
-            // released before the money landed. Do NOT silently re-price the
-            // order at today's rungs and do NOT quietly drop it: the customer
-            // paid the quoted amount.
-            //
-            // A log line is not enough. The operator releasing coins works from
-            // the orders table, where this looked like any other
-            // `awaiting_delivery` row -- so the same rungs could be handed out
-            // twice, once here and once to whoever bought them after the
-            // release. The state has to be visible where the decision is made.
-            // The reason has to reach the person who authorises the spend, and
-            // that person works from the orders table and Telegram -- not from
-            // journalctl. A console line here left the order looking like any
-            // other awaiting_delivery row.
-            await q(`UPDATE orders SET status='needs_review', delivery_error=? WHERE order_id=?`,
-                    ['UNBACKED: the ladder reservation was released before the payment confirmed, ' +
-                     'so these rungs may already have been sold to someone else', d.order_id]);
-            console.error(`[ladder] UNBACKED PAID ORDER ${d.order_id} -- reservation was ` +
-                          `released before payment confirmed. Marked needs_review. DO NOT DELIVER ` +
-                          `until someone has decided what this customer is owed.`);
-            await notify(
-              `🚨 <b>UNBACKED PAID ORDER — do not deliver</b>\n<code>${d.order_id}</code>\n` +
-              `The customer paid, but the ladder reservation had already been released, so the ` +
-              `rungs behind this order may have been sold to somebody else.\n` +
-              `Marked <b>needs_review</b>. Decide what they are owed before sending anything.`);
-          }
-        }
-
-        // The amount is recorded but nothing compared it to what was ordered.
-        // Delivery is manual, so this is a flag for the human rather than a
-        // gate -- but an underpayment that reaches an operator unannounced is
-        // an operator about to hand over coins that were not paid for.
-        // Both figures are in `pay_currency` — `actually_paid` against the
-        // `pay_amount` that was asked for. Do NOT compare against
-        // `price_amount`, which is denominated in USD: for anyone paying in a
-        // coin worth more or less than a dollar that comparison is meaningless
-        // in both directions, and it would fire constantly or never.
-        const paid = Number(d.actually_paid ?? NaN);
-        const wanted = Number(d.pay_amount ?? NaN);
-        let underpaid = false;
-        if (isFinite(paid) && isFinite(wanted) && wanted > 0 && paid < wanted * 0.99) {
-          underpaid = true;
-          console.error(`[ipn] UNDERPAID ${d.order_id}: ${paid} of ${wanted} ${d.pay_currency || ''}. ` +
-                        `Marked needs_review.`);
-          await q(`UPDATE orders SET status='needs_review' WHERE order_id=? AND status='awaiting_delivery'`,
-                  [d.order_id]);
-          await notify(`🔴 <b>Underpaid</b>\n<code>${d.order_id}</code>\n` +
-                       `Paid ${paid} of ${wanted} ${d.pay_currency || ''}. Marked needs_review — ` +
-                       `nothing was sent.`);
-        }
-
-        // SAY THANK YOU NOW, NOT WHEN THE COINS GO OUT.
-        //
-        // Owner's instruction 2026-09-14: "once payment received on nowpayment
-        // it should post on channel." The post used to fire from
-        // delivery.recordSent(), which for an automatic delivery is seconds
-        // later and for a MANUAL one can be hours -- order Mmu1bc3zrfd6902 was
-        // paid at 14:22 UTC and had still announced nothing by evening, and the
-        // pinned listing banner had not moved either.
-        //
-        // announcePurchase() re-reads the order and posts nothing unless the
-        // status is a real paid purchase, so the needs_review paths above
-        // (unbacked reservation, underpayment) stay silent. recordSent() still
-        // calls it too; pcoin-approve's `--key purchase-<id>` makes whichever
-        // arrives second a no-op.
-        D.announcePurchase(d.order_id).catch(e => console.error('[ipn] announce:', e.message));
-
-        // Hand it to delivery: small orders send themselves, larger ones queue
-        // and message the operator. deliver() never throws — a delivery problem
-        // must not turn into a non-200 that makes NOWPayments retry a payment
-        // we have already recorded.
-        // WHAT DID THIS SALE ACTUALLY EARN?
-        //
-        // The gateway's fee breakdown arrives in the callback and was never
-        // read. It should have been: the first real sale took $20 and credited
-        // $14.34, because a payout wallet was configured and every single order
-        // triggered its own ~$5.39 on-chain withdrawal. That is 28% on a $20
-        // order, against 1,305 PCN handed over that the ladder prices at
-        // $19.59 — the market was selling below cost and nothing said so.
-        //
-        // Custody now holds funds instead of forwarding them per payment, and
-        // this is how we find out whether that worked: from the gateway's own
-        // numbers on a real sale, not from a settings page. It also stays
-        // useful afterwards, because a silent change to the payout
-        // configuration would show up here as a fee reappearing.
-        reportSaleEconomics(d).catch(e => console.error('[ipn] fee report:', e.message));
-
-        if (!underpaid) await D.deliver(d.order_id);
-      } else if (d.payment_status === 'partially_paid') {
-        // FIRST: has this order already been paid out?
-        //
-        // The NOWPayments dashboard lets an operator re-send an IPN or force a
-        // status, so this callback can arrive for an order that was delivered
-        // minutes ago. Nothing below would send coins twice -- deliver() claims on
-        // `status='awaiting_delivery' AND delivered_txid IS NULL` and this branch's
-        // own UPDATE is guarded the same way -- but without this check it would
-        // still rewrite the row's note and fire a Telegram alert saying money is
-        // waiting, for an order that is finished. An alert that cries for action on
-        // a settled order is how a real one gets ignored.
-        const [done] = await q(
-          'SELECT delivered_txid FROM orders WHERE order_id=?', [d.order_id ?? null]);
-        if (done && done.delivered_txid) {
-          console.log(`[ipn] partially_paid for ${d.order_id}: already delivered; ignoring`);
-          return json(res, 200, { ok: true, note: 'already delivered' });
-        }
-
-        // A SHORT PAYMENT IS STILL A PAYMENT, AND IT MATCHED NO BRANCH AT ALL.
-        //
-        // 'partially_paid' is the status NOWPayments actually uses when someone
-        // sends less than the invoice asked for. It is not in the success list and
-        // not in the failure list, so the callback fell straight through: the order
-        // stayed 'pending', the sweeper expired it two hours later, and nobody was
-        // told. The customer had paid and held nothing, and the order was in a
-        // terminal state with paid_amount NULL -- no record that money had arrived.
-        // Happened on 2026-08-29 to order Mmte1xvake1040f: $33.46 of $35.00 paid,
-        // repaired by hand.
-        //
-        // The underpaid check that already existed lives INSIDE the success branch,
-        // so it could only ever catch 'finished but short'. It could never fire for
-        // the status that actually means short.
-        //
-        // Policy, set by the owner: deliver exactly what was paid for. The price is
-        // locked on the order row at quote time, so the deliverable amount is simply
-        // what that money buys at that price. This is also the right shape for an
-        // OVERpayment, which arrives as 'finished' with actually_paid above
-        // pay_amount and is handled by the same recompute below.
-        const paid = Number(d.actually_paid);
-        const want = Number(d.pay_amount);
-        const [ord] = await q(
-          'SELECT quoted_price, quoted_pcn, usd, status, delivered_txid FROM orders WHERE order_id=?',
-          [d.order_id ?? null]);
-
-        // Anything we cannot read resolves NOTHING. Record the payment, hold for a
-        // human, and say why -- never guess an amount to send.
-        if (!ord || ord.delivered_txid || !isFinite(paid) || !isFinite(want) || want <= 0 ||
-            !(Number(ord.quoted_price) > 0)) {
-          await q("UPDATE orders SET status='needs_review', paid_amount=?, pay_currency=?, paid_at=NOW()," +
-                  ' delivery_error=? WHERE order_id=? AND delivered_txid IS NULL',
-                  [isFinite(paid) ? paid : null, d.pay_currency || null,
-                   'PARTIAL PAYMENT: could not compute a deliverable amount. Held for review.',
-                   d.order_id ?? null]);
-          await notify('\u26a0\ufe0f <b>Partial payment, amount unreadable</b>' +
-            '\n<code>' + String(d.order_id) + '</code>' +
-            '\nHeld for review. Nothing was sent.');
-          return json(res, 200, { ok: true, note: 'partial, unreadable' });
-        }
-
-        // What that money actually buys, at the price locked on the order.
-        // WHAT THE MONEY WAS WORTH.
-        //
-        // Prefer the gateway's own fiat figure when it sends one: it converted at
-        // the rate it actually used, and the ratio below is only an approximation
-        // of that. On the 2026-08-29 incident the two differed by $0.008 -- 0.19 PCN
-        // -- which is small but is the customer's money, not ours to round.
-        // Fall back to the ratio when the field is absent, which is common.
-        const outcome_fiat = Number(d.actually_paid_at_fiat ?? d.actually_paid_fiat ?? NaN);
-        const paidUsd = isFinite(outcome_fiat) && outcome_fiat > 0
-          ? outcome_fiat
-          : Number(ord.usd) * (paid / want);
-        // Within 1% of the invoice is EXACT for our purposes -- gateways round, and
-        // quoted_pcn came from walking the ladder rather than from usd/price, so
-        // recomputing it would shift the number the customer was actually promised
-        // by a fraction of a PCN. Same 1% band the existing underpaid check uses.
-        const effectivelyExact = Math.abs(1 - paid / want) <= 0.01;
-        const givePcn = effectivelyExact
-          ? Number(ord.quoted_pcn)
-          : Number((paidUsd / Number(ord.quoted_price)).toFixed(8));
-        const shortPct = (1 - paid / want) * 100;
-
-        // ALWAYS needs_review, never auto -- regardless of size. A short payment can
-        // mean a split or still-arriving transaction, and auto-delivering on the
-        // first fragment then again on the second is how the same order pays twice.
-        // The operator releases it with one click once they can see the whole thing.
-        await q("UPDATE orders SET status='needs_review', usd=?, quoted_pcn=?," +
-                ' paid_amount=?, pay_currency=?, paid_at=NOW(), delivery_error=?' +
-                ' WHERE order_id=? AND delivered_txid IS NULL',
-                [Number(paidUsd.toFixed(2)), givePcn, paid, d.pay_currency || null,
-                 'PARTIAL PAYMENT: ' + paid + ' of ' + want + ' ' + (d.pay_currency || '') +
-                 ' (' + shortPct.toFixed(1) + '% short). Amount set to what was paid, at the' +
-                 ' locked quote ' + ord.quoted_price + '. Press Send (reviewed) to release it.',
-                 d.order_id ?? null]);
-
-        await notify('\ud83d\udfe0 <b>Partial payment \u2014 review and send</b>' +
-          '\n<code>' + String(d.order_id) + '</code>' +
-          '\nPaid <b>' + paid + '</b> of ' + want + ' ' + (d.pay_currency || '') +
-          ' (' + shortPct.toFixed(1) + '% short)' +
-          '\nThat buys <b>' + givePcn.toFixed(8) + ' PCN</b> at the locked $' + ord.quoted_price +
-          '\nwas ' + Number(ord.quoted_pcn).toFixed(8) + ' PCN for $' + Number(ord.usd).toFixed(2) +
-          '\n\nNothing was sent. Open <b>market.pc.am/admin \u2192 Orders</b> and press' +
-          ' <b>Send (reviewed)</b> to release exactly what was paid for.').catch(() => {});
-        // Report the economics for this one too. It used to be called only from the
-        // confirmed/finished branch, so a partial payment settled with NO fee report at
-        // all -- and the only real sale this market has taken was a partial, which is
-        // why there was no observed fee data to reason from when the question came up.
-        //
-        // basisUsd is what actually arrived, not what was invoiced: the percentage is
-        // meant to measure the gateway's cut, and billing the customer's shortfall to
-        // the gateway would have fired the >5% warning on a clean sale.
-        reportSaleEconomics(d, { basisUsd: paidUsd, partial: true })
-          .catch(e => console.error('[ipn] fee report (partial):', e.message));
-
-        return json(res, 200, { ok: true, note: 'partial, held for review' });
-
-      } else if (['failed', 'expired', 'refunded'].includes(d.payment_status)) {
-        // Guarded on 'pending', exactly like the success branch is. Unguarded,
-        // a late 'expired' callback for an earlier attempt overwrote an order
-        // that a LATER payment had already moved to 'awaiting_delivery' — the
-        // customer's paid order silently reverting to a failed one. A different
-        // status is a different row under UNIQUE(payment_id, status), so the
-        // dedup key does not stop this.
-        const r = await q(`UPDATE orders SET status=? WHERE order_id=? AND status='pending'`,
-                          [d.payment_status, d.order_id ?? null]);
-        if (r.affectedRows === 1) {
-          // Give the rungs back. Only touches 'reserved' rows, so a refund
-          // after delivery cannot un-sell inventory.
-          await L.releaseLadder(d.order_id);
-        } else {
-          console.warn(`[ipn] ${d.payment_status} for ${d.order_id} ignored — the order is ` +
-                       `no longer pending. Inventory left alone.`);
+      if (!ipnSchemaOk) {
+        const missing = await checkIpnSchema();
+        if (missing) {
+          schemaAlert(missing);
+          return json(res, 503, { error: 'payment processing is paused: a database migration is missing' });
         }
       }
-      return json(res, 200, { ok: true });
+      const r = await IPN.handle(raw, req.headers['x-nowpayments-sig']);
+      return json(res, r.http, r.body);
     }
 
     // ---- public price ----
@@ -1681,6 +1422,16 @@ createServer(async (req, res) => {
       const gate = await saleGate(usd, email);
       if (!gate.open) return json(res, 503, { error: gate.reason, saleOpen: false });
 
+      // No order the payment callback could not process (see checkIpnSchema).
+      if (!ipnSchemaOk) {
+        const missing = await checkIpnSchema();
+        if (missing) {
+          schemaAlert(missing);
+          return json(res, 503, { error: 'orders are paused: payments cannot be processed right ' +
+            'now. Nothing was reserved or charged. Try again shortly.', saleOpen: false });
+        }
+      }
+
       // Checked inside the transaction below as well; this is the cheap early
       // answer so a user with three unpaid orders gets a clear message instead
       // of a rolled-back one.
@@ -1954,10 +1705,11 @@ createServer(async (req, res) => {
     // UPDATE the authorisation check and the race guard at once.
     //
     // It lands the order in 'expired', NOT a new 'cancelled' status, and that is
-    // deliberate: the IPN handler credits a payment for an order in
-    // ('pending','expired') precisely because a slow chain can confirm after a
-    // timeout. A status this rail's money path does not know would turn a late
-    // payment into "unknown order ignored" -- money in, nothing recorded.
+    // deliberate: the IPN handler still accepts a payment for an order in one of
+    // ipn.mjs's UNPAID states ('pending','expired','failed','refunded') precisely
+    // because a slow chain can confirm after a timeout. A status this rail's
+    // money path does not know reads as a paid order, and a late payment would
+    // sit with a human instead of reaching the buyer.
     if (req.method === 'POST' && p.startsWith('/api/order/') && p.endsWith('/cancel')) {
       if (!email) return json(res, 401, { error: 'sign in first' });
       const orderId = p.slice('/api/order/'.length, -'/cancel'.length);

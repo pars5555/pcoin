@@ -1101,18 +1101,25 @@ ${left !== undefined ? `<p class="s" style="color:var(--dim)">${left} attempt(s)
       if (qy) { where.push('(order_id LIKE ? OR email LIKE ? OR address LIKE ? OR ' +
                            'delivered_txid LIKE ? OR ip LIKE ? OR invoice_id LIKE ?)');
                 args.push(`%${qy}%`, `%${qy}%`, `%${qy}%`, `%${qy}%`, `%${qy}%`, `%${qy}%`); }
-      const L2 = listQuery(u, {
+      const orderCols = `order_id, email, ip, user_agent, usd, quoted_pcn, quoted_price, address, status,
+               delivery_mode, delivered_txid, delivery_error, invoice_id, invoice_url,
+               paid_amount, pay_currency, created_at, paid_at, delivered_at`;
+      const listOpts = {
         table: 'orders', where, args,
         // Everything about the order. The point of this page is to answer "who
         // is this, and what happened" without opening a database session — it
         // carried the email and nothing else.
-        cols: `order_id, email, ip, user_agent, usd, quoted_pcn, quoted_price, address, status,
-               delivery_mode, delivered_txid, delivery_error, invoice_id, invoice_url,
-               paid_amount, pay_currency, created_at, paid_at, delivered_at`,
+        cols: `${orderCols}, invoice_usd, paid_payment_id`,
         sortable: ['created_at', 'paid_at', 'delivered_at', 'usd', 'quoted_pcn', 'status', 'order_id'],
         defaultSort: 'created_at',
-      });
-      const rows = await q(L2.sql, L2.args);
+      };
+      let L2 = listQuery(u, listOpts);
+      let rows;
+      // invoice_usd / paid_payment_id arrive with orders-payment.sql. Until it
+      // has run, the page must still list the orders -- it is where a human
+      // goes when payments are stuck, which is exactly then.
+      try { rows = await q(L2.sql, L2.args); }
+      catch { L2 = listQuery(u, { ...listOpts, cols: orderCols }); rows = await q(L2.sql, L2.args); }
       const opts = ['', 'pending', 'awaiting_delivery', 'sending', 'delivered', 'needs_review',
                     'expired', 'failed', 'refunded']
         .map(s => `<option value="${s}"${s === st ? ' selected' : ''}>${s || 'any status'}</option>`).join('');
@@ -1170,6 +1177,10 @@ ${left !== undefined ? `<p class="s" style="color:var(--dim)">${left} attempt(s)
               <dt>Pays to</dt><dd class="mono">${esc(o.address)}</dd>
               <dt>Quoted</dt><dd>${money(o.quoted_pcn)} PCN at $${money(o.quoted_price)} each · $${Number(o.usd).toFixed(2)}</dd>
               <dt>Actually paid</dt><dd>${o.paid_amount ? `${esc(String(o.paid_amount))} ${esc(o.pay_currency || '')}` : '—'}</dd>
+              <dt>Invoiced</dt><dd>$${Number(o.invoice_usd ?? o.usd).toFixed(2)}${o.invoice_usd != null && Number(o.invoice_usd) !== Number(o.usd) ? ` (the order was set to $${Number(o.usd).toFixed(2)}, what was paid)` : ''}</dd>
+              <dt>Payment</dt><dd class="mono">${o.paid_payment_id
+                ? `${esc(o.paid_payment_id)} — the one NOWPayments payment this order is for; the market sends for it once and never automatically for any other`
+                : '—'}</dd>
               <dt>Invoice</dt><dd>${o.invoice_id
                 ? (o.invoice_url
                     ? `<a href="${esc(o.invoice_url)}" target="_blank" rel="noreferrer noopener">${esc(o.invoice_id)}</a>`
@@ -1234,18 +1245,36 @@ ${left !== undefined ? `<p class="s" style="color:var(--dim)">${left} attempt(s)
     }
 
     if (sub === 'ipn') {
+      // What the handler DID with each callback (ipn.mjs writes outcome and
+      // note). "needs_human" and "held" are the ones waiting on a person: a
+      // Telegram alert can be lost, this list cannot.
+      const OUTCOMES = ['needs_human', 'held', 'paid', 'duplicate', 'ignored', 'closed', 'noted',
+                        'unknown_order', 'raced'];
+      const oc = OUTCOMES.includes(u.searchParams.get('outcome')) ? u.searchParams.get('outcome') : '';
       const L2 = listQuery(u, {
-        table: 'ipn_events', cols: 'id, payment_id, order_id, status, received_at',
-        sortable: ['id', 'received_at', 'status'], defaultSort: 'id',
+        table: 'ipn_events', cols: 'id, payment_id, order_id, status, outcome, note, received_at',
+        where: oc ? ['outcome = ?'] : [], args: oc ? [oc] : [],
+        sortable: ['id', 'received_at', 'status', 'outcome'], defaultSort: 'id',
       });
       let rows = [];
       try { rows = await q(L2.sql, L2.args); }
       catch { rows = await q(`SELECT id, payment_id, order_id, status FROM ipn_events ORDER BY id DESC LIMIT 100`); }
+      const ocPill = o => (!o ? '<span class="s">—</span>'
+        : `<span class="pill ${['needs_human', 'held', 'unknown_order', 'raced'].includes(o) ? 'bad'
+                               : o === 'paid' ? 'ok' : ''}">${esc(o.replace(/_/g, ' '))}</span>`);
+      const opts = ['', ...OUTCOMES]
+        .map(s => `<option value="${s}"${s === oc ? ' selected' : ''}>${s ? s.replace(/_/g, ' ') : 'any outcome'}</option>`).join('');
       return sendHtml(200, page('IPN log', 'ipn', flash + `
-        <p class="s">Every callback NOWPayments has delivered. Duplicates are expected — the handler is idempotent.</p>
-        <div class="wrap"><table><thead><tr><th>#</th><th>Payment</th><th>Order</th><th>Status</th></tr></thead><tbody>
+        <p class="s">Every callback NOWPayments has delivered, and what the handler did with it. Duplicates are
+          expected — the handler is idempotent. <b>held</b> and <b>needs human</b> are waiting on a person;
+          nothing on them was sent automatically. Callbacks from before 2026-09-24 have no outcome recorded.</p>
+        <form class="filters" method="GET"><select name="outcome">${opts}</select><button>Filter</button>
+          <a class="s" href="/admin/ipn">clear</a></form>
+        <div class="wrap"><table><thead><tr><th>#</th><th>Payment</th><th>Order</th><th>Status</th>
+          <th>Outcome</th><th>Why</th></tr></thead><tbody>
         ${rows.map(r => `<tr><td>${r.id}</td><td class="mono">${esc(r.payment_id)}</td>
-          <td class="mono">${esc(r.order_id || '—')}</td><td>${statusPill(r.status)}</td></tr>`).join('')}
+          <td class="mono">${esc(r.order_id || '—')}</td><td>${statusPill(r.status)}</td>
+          <td>${ocPill(r.outcome)}</td><td class="s">${esc(String(r.note || '').slice(0, 300))}</td></tr>`).join('')}
         </tbody></table></div>${pager(u, L2.page, rows.length, L2.per)}`, email, csrfTok));
     }
 
