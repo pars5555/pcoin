@@ -37,6 +37,7 @@ import { readFileSync, writeFileSync, existsSync, renameSync,
          openSync, closeSync, fsyncSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { timingSafeEqual, createHash, X509Certificate } from 'node:crypto';
+import { validateIndexBody, confirmTwice, speedCheck, remember } from './index-relay.mjs';
 
 const STATE = '/opt/pcoin-price/state.json';
 const PORT = 8788;
@@ -391,6 +392,24 @@ const DEFAULTS = {
   // undefined would differ from null on the very first poll and announce a
   // clearance that never happened.
   poolHeldAnnounced: null,
+
+  // THE PCN INDEX, relayed in SHADOW (price plan Phase 2). Read by the primary
+  // from exchange.pc.am every 60 s, checked again here (index-relay.mjs), and
+  // published as an `index` block that nothing credits with yet. There is
+  // deliberately no switch that would make it the rate: that arrives with the
+  // code that uses it, because a setting that does nothing reads as switched.
+  indexUrl: 'https://exchange.pc.am/api/index',
+  indexMaxAgeSeconds: 600,  // older than this and the published block says stale
+  indexState: null,         // null = never polled; else held|live|frozen|unknown|disabled
+  indexNano: null,          // the last ACCEPTED price, as a string of nano-USD
+  indexSeq: null,
+  indexComputedAt: null,    // seconds, the exchange's computation time
+  indexAt: 0,               // ms, when this side last accepted a reading
+  indexMeta: null,          // { lastMoveAt, window, limitedBy, reasons }
+  indexRefused: null,       // { why, seq, usd, at } while a reading is being refused
+  indexError: null,         // { why, at } while the endpoint cannot be read
+  indexHistory: [],         // [{t, nano}] accepted, 25 h -- for the speed check; not replicated
+  indexRebaseArmed: false,  // set by POST /admin/index/accept after a deliberate re-seed
 
   adminToken: '',
 };
@@ -795,6 +814,136 @@ if (ROLE === 'primary') {
 // answer with the same number. A replica that polled the ladder itself could
 // not reach it anyway -- the market runs on the primary's loopback.
 
+// ── the PCN index, relayed in shadow ───────────────────────────────────────
+// Only the primary polls, for the same reason as the ladder: three origins
+// polling on their own could disagree about what the exchange said.
+//
+// A failed or unusable read resolves NOTHING: the last accepted reading stays,
+// and ageSeconds/stale say how old it is. A reading that moved faster than the
+// exchange's own rules allow is REFUSED and alerted -- once per reading -- and
+// the last accepted one stays. After a deliberate re-seed on the exchange, an
+// operator accepts the new value with POST /admin/index/accept.
+const INDEX_DOWN_ALERT_MS = 10 * 60 * 1000;
+let indexPending = null;          // transient guard, in memory like seenLadder
+let indexFailingSince = 0;
+let indexDownAlerted = false;
+let indexRefusalAlerted = null;
+
+async function pollIndex() {
+  if (ROLE !== 'primary') return { ok: false, why: 'not the primary' };
+  const nowMs = Date.now();
+  const nowS = Math.floor(nowMs / 1000);
+  let reading;
+  try {
+    const r = await fetch(st.indexUrl, { signal: AbortSignal.timeout(8000),
+                                         headers: { accept: 'application/json' } });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const text = await r.text();
+    if (text.length > 64 * 1024) throw new Error('body larger than 64 KB');
+    const v = validateIndexBody(JSON.parse(text), { nowS });
+    if (!v.ok) throw new Error(`${v.kind}: ${v.why}`);
+    reading = v.reading;
+  } catch (e) {
+    const why = String(e && e.message || e).slice(0, 200);
+    if (!indexFailingSince) indexFailingSince = nowMs;
+    st.indexError = { why, at: nowMs };
+    if (!indexDownAlerted && nowMs - indexFailingSince >= INDEX_DOWN_ALERT_MS) {
+      indexDownAlerted = true;
+      notify('🟠 <b>PCN index unreachable</b> (shadow)\n' +
+        `price.pc.am has not had a usable index reading from exchange.pc.am for ` +
+        `${Math.round((nowMs - indexFailingSince) / 60000)} min. Nothing credits with it yet, so ` +
+        `no money is affected; the shadow record has a gap.\n<code>${why}</code>`);
+    }
+    try { save(st); } catch (se) { console.warn('[price] index error not saved:', se.message); }
+    return { ok: false, why };
+  }
+  if (indexDownAlerted) {
+    notify('✅ <b>PCN index readable again</b> (shadow)\n' +
+      `It was unusable for ${Math.round((nowMs - indexFailingSince) / 60000)} min.`);
+  }
+  indexFailingSince = 0;
+  indexDownAlerted = false;
+  st.indexError = null;
+
+  const g = confirmTwice(indexPending, reading);
+  indexPending = g.pending;
+  if (!g.confirmed) {
+    try { save(st); } catch { /* nothing new to lose */ }
+    return { ok: true, confirmed: false };
+  }
+  const prev = st.indexNano !== null && st.indexSeq !== null
+    ? { nano: Number(st.indexNano), seq: st.indexSeq } : null;
+  const speed = st.indexRebaseArmed
+    ? { ok: true }
+    : speedCheck({ prev, history: st.indexHistory, reading, nowS });
+  if (!speed.ok) {
+    const key = `${reading.seq}|${reading.nano}`;
+    st.indexRefused = { why: speed.why, seq: reading.seq, usd: reading.usd, at: nowMs };
+    if (indexRefusalAlerted !== key) {
+      indexRefusalAlerted = key;
+      notify('🔴 <b>PCN index reading REFUSED</b> (shadow)\n' +
+        `exchange.pc.am says <code>$${reading.usd}</code> (seq ${reading.seq}); price.pc.am keeps ` +
+        `<code>$${prev ? prev.nano / 1e9 : 'none'}</code> (seq ${prev ? prev.seq : '-'}).\n` +
+        `<code>${speed.why}</code>\n\nThe exchange caps its own moves, so this is either a bug, a ` +
+        'compromise, or a deliberate re-seed. If you re-seeded it, accept the new value with ' +
+        '<code>POST /admin/index/accept</code> on the primary. Nothing credits with the index yet.');
+    }
+    try { save(st); } catch { /* the refusal is in memory and will be re-derived */ }
+    return { ok: false, why: speed.why };
+  }
+  indexRefusalAlerted = null;
+  st.indexRefused = null;
+  st.indexState = reading.state;
+  st.indexComputedAt = reading.computedAt;
+  st.indexAt = nowMs;
+  st.indexMeta = { lastMoveAt: reading.lastMoveAt ?? null, window: reading.window ?? null,
+                   limitedBy: reading.limitedBy ?? [], reasons: reading.reasons ?? [] };
+  // 'unknown' and 'disabled' carry no price. They are relayed as states and
+  // leave the last accepted price in place as the speed check's baseline --
+  // they never erase it, and the published block shows no price for them.
+  if (reading.nano !== null) {
+    if (st.indexRebaseArmed) {
+      notify('✅ <b>PCN index re-based</b> (shadow)\n' +
+        `price.pc.am accepted <code>$${reading.usd}</code> (seq ${reading.seq}) as its new baseline.`);
+      st.indexHistory = [];
+    }
+    st.indexNano = String(reading.nano);
+    st.indexSeq = reading.seq;
+    st.indexHistory = remember(st.indexHistory, { t: nowS, nano: reading.nano });
+    st.indexRebaseArmed = false;
+  }
+  try { save(st); } catch (e) { console.warn('[price] index reading not saved:', e.message); }
+  return { ok: true, confirmed: true, state: reading.state };
+}
+if (ROLE === 'primary') {
+  // Not awaited: unlike the ladder, nothing needs the index before the first
+  // request, and a slow exchange must not hold the oracle's startup.
+  pollIndex().catch(e => console.warn('[price] index poll threw:', e && e.message));
+  setInterval(() => pollIndex().catch(e => console.warn('[price] index poll threw:', e && e.message)), 60000);
+}
+
+/** The `index` block of / and /price. null before the first poll. */
+function indexBlock() {
+  if (!st.indexState) return null;
+  const ageS = st.indexComputedAt ? Math.floor(Date.now() / 1000) - st.indexComputedAt : null;
+  const priced = ['held', 'live', 'frozen'].includes(st.indexState) && st.indexNano !== null;
+  const m = st.indexMeta || {};
+  return {
+    usd: priced ? Number(st.indexNano) / 1e9 : null,
+    state: st.indexState,
+    seq: priced ? st.indexSeq : null,
+    ageSeconds: ageS,
+    stale: ageS === null || ageS > st.indexMaxAgeSeconds || (ROLE === 'replica' && !syncOk),
+    lastMoveAt: m.lastMoveAt ?? null,
+    window: m.window ?? null,
+    limitedBy: m.limitedBy ?? [],
+    reasons: m.reasons ?? [],
+    refused: st.indexRefused ? { why: st.indexRefused.why, seq: st.indexRefused.seq, usd: st.indexRefused.usd } : null,
+    inUse: false,
+    source: st.indexUrl,
+  };
+}
+
 function rollDay() {
   const d = today();
   if (st.day !== d) { st.day = d; st.soldToday = 0; }
@@ -992,6 +1141,10 @@ createServer(async (req, res) => {
           ageSeconds: st.poolAt ? Math.floor((Date.now() - st.poolAt) / 1000) : null,
           rateHeldAboveBy: st.poolHeldBy ?? null,
         } : null,
+        // SHADOW DATA. The exchange-anchored PCN index (price plan Phase 2),
+        // published so it can be judged beside creditRateUsd for a week before
+        // anything uses it. `inUse` is false and nothing here reads it.
+        index: indexBlock(),
         currency: 'USD',
         // BUYBACK. Every field below describes selling PCN back to us, and it
         // is CLOSED unless `buybackOpen` is true. When it is closed the price
@@ -1036,7 +1189,7 @@ createServer(async (req, res) => {
               '2026-09-19 BOTH numbers here follow it down -- what services credit, and what ' +
               'PCN is sold for. Both stop at a published floor of $' + Number(st.poolFloorUsd).toFixed(4) + ', which ' +
               'is also where the keeper starts buying the pool back. The sale price is ' +
-              're-anchored at most hourly, against a 24-HOUR MEDIAN rather than the spot, and ' +
+              're-anchored at most hourly, against a 6-HOUR MEDIAN rather than the spot, and ' +
               'by at most 8% in one step or 12% in a day; it is never RAISED by a pool read, ' +
               'and rises only when PCN is bought or spent. ' +
               // Both directions, deliberately. This field used to end by telling
@@ -1049,7 +1202,8 @@ createServer(async (req, res) => {
               "contract's redeem(). " +
               (st.buybackOpen
                 ? 'Buying PCN back is a separate constant-product curve at a much lower price.'
-                : 'This service is not buying PCN back at present.'),
+                : 'This service is not buying PCN back at present.') +
+              ' `index` is shadow data from exchange.pc.am; do not credit with it yet.',
         role: ROLE,
         // A consumer can tell a fresh price from a remembered one. Both are
         // usable; only one is current, and pretending otherwise is how a stale
@@ -1111,6 +1265,7 @@ createServer(async (req, res) => {
         serviceCeiling:             { min: 0,  max: 1e6 },
         serviceRetuneIntervalHours: { min: 0,  max: 8760 },
         serviceRateAt:              { min: 0,  max: 4e12 },
+        indexMaxAgeSeconds:         { min: 60, max: 3600 },
       };
       const pending = {};
       for (const [key, bound] of Object.entries(BOUNDS)) {
@@ -1156,6 +1311,19 @@ createServer(async (req, res) => {
                               target: retuneTarget(), price: postedPrice() });
     }
 
+    // After a DELIBERATE re-seed on the exchange, the speed check refuses the
+    // new value -- correctly, since it moved faster than any fill can move it.
+    // This is the operator saying "that jump was me": the next reading two polls
+    // agree on becomes the new baseline, whatever it is (inside floor/ceiling).
+    if (p === '/admin/index/accept' && req.method === 'POST') {
+      if (ROLE !== 'primary') return json(res, 409, { error: 'this is a replica; write to the primary' });
+      if (!isAdmin(req)) return json(res, 401, { error: 'admin token required' });
+      st.indexRebaseArmed = true;
+      save(st);
+      return json(res, 200, { ok: true, armed: true, refused: st.indexRefused,
+        note: 'the next reading two polls agree on becomes the baseline' });
+    }
+
     // Full curve state, so a replica can mirror it. Public: it is the same
     // numbers /price already exposes, just complete.
     if (p === '/state') {
@@ -1164,21 +1332,27 @@ createServer(async (req, res) => {
       // real origin IP, which the proxy exists to hide — together with the SNI
       // and the exact key pin a replica authenticates it with. Anything added
       // to the state in future is private until it is named here.
+      //
+      // One flat list. The pool keys used to sit in a loop nested INSIDE the
+      // main one, which copied them seventeen times over and read as though
+      // they were conditional on something.
+      //
+      // The pool SAMPLES and the index HISTORY stay behind: both are arrays
+      // that grow with uptime, and a payload that grows is how a working sync
+      // breaks months later against the 256 KB ceiling. Replicas publish the
+      // primary's conclusions; only the primary needs the raw memory.
+      const PUBLIC_STATE = [
+        'reserve','supply','feeBps','dailySellCapUsd','serviceRate',
+        'serviceMaxMovePct','serviceCeiling','serviceRetuneIntervalHours',
+        'serviceRateAt','ladderPrice','ladderAt','ladderSoldPcn',
+        'ladderRemainingPcn','soldToday','day','history','role',
+        'poolFollow','poolPrice','poolAt','poolMedian','poolHeldBy',
+        'poolSampleCount','poolFloorUsd','poolTwapHours','poolWpcn','poolUsdt',
+        'indexUrl','indexMaxAgeSeconds','indexState','indexNano','indexSeq',
+        'indexComputedAt','indexAt','indexMeta','indexRefused','indexError',
+      ];
       const pub = {};
-      for (const kk of ['reserve','supply','feeBps','dailySellCapUsd','serviceRate',
-                        'serviceMaxMovePct','serviceCeiling','serviceRetuneIntervalHours',
-                        'serviceRateAt','ladderPrice','ladderAt','ladderSoldPcn',
-                        'ladderRemainingPcn','soldToday','day','history','role']) {
-      // The pool scalars, so all three origins publish one story. The
-      // SAMPLES stay behind: that array is capped at 2000 entries and would
-      // add ~80 KB to every sync, against a 256 KB ceiling -- a payload that
-      // grows with uptime is how a working sync breaks months later.
-      for (const kk of ['poolFollow','poolPrice','poolAt','poolMedian','poolHeldBy',
-                        'poolSampleCount','poolFloorUsd','poolTwapHours','poolWpcn','poolUsdt']) {
-        if (st[kk] !== undefined) pub[kk] = st[kk];
-      }
-        if (st[kk] !== undefined) pub[kk] = st[kk];
-      }
+      for (const kk of PUBLIC_STATE) if (st[kk] !== undefined) pub[kk] = st[kk];
       return json(res, 200, pub);
     }
 
