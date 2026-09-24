@@ -614,28 +614,50 @@ Scan or copy. It is yours permanently.`,
   }
 }
 
+// What each model is FOR, so a user can choose without knowing the names (owner, 2026-09-24).
+// `tag` rides on the button, which a phone cuts at ~30 characters; `desc` goes in the message
+// above. Written from the registry's own figures on 2026-09-24 (speed = aaOutputTps/aaTtft,
+// smarts = aaIntelligence/aaCoding, 📷 = supportsVision). A model missing here still sells,
+// just without a description.
+const MODEL_INFO = {
+  'deepseek-v4.1-flash': { tag: '⚡ fastest', desc: 'Fastest by far, cheap and smart. Best pick for quick answers. Text only.' },
+  'mimo-v2.5':           { tag: 'cheapest', desc: 'The cheapest. Fine for everyday chat and short questions. Text only.' },
+  'gpt-5-mini':          { tag: '📷 cheap', desc: 'Cheap and reliable for simple tasks. Reads photos.' },
+  'qwen3.8-flash':       { tag: '📷 cheap', desc: 'Cheap, reads photos and documents. Can be slow on long tasks.' },
+  'glm-5.3-flash':       { tag: '📷 cheap, smart', desc: 'Cheap and surprisingly smart, good at code. Reads photos. Slow to start.' },
+  'deepseek-v4-flash':   { tag: 'code', desc: 'Cheap and good at code. Text only. The newer v4.1-flash is faster.' },
+  'deepseek-v4-pro':     { tag: 'reasoning', desc: 'Strong reasoning and code at a mid price. Text only.' },
+  'glm-5.3':             { tag: 'smart, code', desc: 'Very smart and great at code, for harder problems.' },
+  'gpt-5':               { tag: '📷 premium', desc: 'Strong all-rounder for writing and analysis. Reads photos. Premium price.' },
+  'qwen3.8-max':         { tag: '📷 smartest', desc: 'The smartest and best at code, reads photos. The most expensive and slowest.' },
+};
+
 function modelsScreen() {
   const s = sellableModels();
   if (s.expired) {
     return { text: 'Model prices are not available right now, so paid models are temporarily closed. Free models still work.', keyboard: null };
   }
+  const lines = [];
   const rows = s.models.map((m) => {
-    let label;
+    let price;
     if (FREE_TO_USER.has(m.model)) {
-      label = `${m.model} — FREE`;
+      price = 'FREE';
     } else {
       // The price shown is the price CHARGED, mirror included -- a menu that
       // advertised the vendor's 0 while the turn debited a balance would be the
       // deposit-screen-vs-oracle mismatch all over again.
       const c = chargePriceFor(db, m, PRICE_MIRRORS);
-      const inUsd = (Number(c.inputPerM) * Number(cfg.num('MARGIN', 3))).toFixed(4);
-      const outUsd = (Number(c.outputPerM) * Number(cfg.num('MARGIN', 3))).toFixed(4);
-      label = `${m.model} — $${inUsd}/$${outUsd} per 1M`;
+      const inUsd = trimZeros((Number(c.inputPerM) * Number(cfg.num('MARGIN', 3))).toFixed(4));
+      const outUsd = trimZeros((Number(c.outputPerM) * Number(cfg.num('MARGIN', 3))).toFixed(4));
+      price = `$${inUsd} / $${outUsd} per 1M`;
     }
-    return [{ text: label, callback_data: `m:${m.model}` }];
+    const info = MODEL_INFO[m.model];
+    lines.push(`<b>${escapeHtml(m.model)}</b> — ${info ? escapeHtml(info.desc) + ' ' : ''}<i>${escapeHtml(price)}</i>`);
+    return [{ text: info ? `${m.model} · ${info.tag}` : m.model, callback_data: `m:${m.model}` }];
   });
   return {
-    text: '<b>Choose a model.</b> Prices are per 1M tokens, input/output, and include our margin.\n\nReasoning tokens are billed as output.',
+    text: '<b>Choose a model.</b>\n\n' + lines.join('\n\n')
+      + '\n\n<i>Prices are per 1M tokens, input / output, and include our margin. Reasoning tokens are billed as output. 📷 = reads photos.</i>',
     keyboard: rows.length ? { inline_keyboard: rows } : null,
   };
 }
@@ -1304,7 +1326,12 @@ async function runTurnAgentic({ chatId, updateId, model, text, resv, attachments
   // The agent cannot see this bot, so it does not know that what it saves is delivered: asked
   // for a picture it made one and then said "I can't transmit files anywhere from here"
   // (2026-09-14). One line, every run, and it stops apologising.
-  message += '\n\n(Note: you are the assistant behind the PCoin AI Telegram bot; the user talks to you from Telegram and can send you photos, documents, voice notes and video, which land in your workspace. Any file you save in the workspace is sent to the user automatically as an attachment: when asked for a picture, chart, document or file, make it and name it in your answer, and never say you cannot send it. Do not create files nobody asked for. Answer as a general assistant, not as a coding tool, unless the user is coding.)';
+  message += '\n\n(Note: you are the assistant behind the PCoin AI Telegram bot; the user talks to you from Telegram and can send you photos, documents, voice notes and video, which land in your workspace. Any file you save in the workspace is sent to the user automatically as an attachment: when asked for a picture, chart, document or file, make it and name it in your answer, and never say you cannot send it. Do not create files nobody asked for. Answer as a general assistant, not as a coding tool, unless the user is coding.'
+    // THE STEP BUDGET, SAID OUT LOUD. Asked for a logo (2026-09-24), qwen3.8-flash made one, saw
+    // its curved text was off, and spent every remaining step debugging the arc maths -- the run
+    // hit the limit mid-fix after six minutes and the user got the broken first draft. A model
+    // that knows it has N steps delivers something good early and refines within them.
+    + ` You have at most ${AGENT_MAX_TURNS} tool steps for this message: produce a good result early, refine only while steps remain, and always finish with a short answer to the user. The user is waiting on a phone, so prefer the simplest approach that works.)`;
 
   try {
     for await (const ev of agent.streamRun({

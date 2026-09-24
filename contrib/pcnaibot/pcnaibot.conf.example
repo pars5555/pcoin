@@ -105,7 +105,7 @@ OONACODE_REGISTRY_URL=https://api.oonacode.oonak.ai/api/registry
 #   * qwen3.7-max IGNORES max_tokens -- 9,085 output tokens against a cap of 32,
 #     a 284x overrun, while still reporting stop_reason "max_tokens".
 # The startup probe re-checks all of this and refuses to sell anything failing it.
-MODEL_ALLOWLIST=mimo-v2.5,glm-5.3-flash,gpt-5-mini,qwen3.8-flash,deepseek-v4-flash,gpt-5,glm-5.3,qwen3.8-max,deepseek-v4-pro
+MODEL_ALLOWLIST=mimo-v2.5,glm-5.3-flash,gpt-5-mini,qwen3.8-flash,deepseek-v4-flash,deepseek-v4.1-flash,gpt-5,glm-5.3,qwen3.8-max,deepseek-v4-pro
 
 # WHAT THE CUSTOMER PAYS, which is a different question from what a model costs
 # us. Two pool models are priced 0/0 because the vendor gives that tier away;
@@ -273,7 +273,8 @@ AGENT_ENABLED=1
 OONACODE_AGENT_KEY=REPLACE - an OonaCode key of kind "agent"
 # Agentic steps one message may take. Reaching it is a SUCCESSFUL run that
 # stopped early, not a failure.
-AGENT_MAX_TURNS=12
+# 30 is OonaCode's per-run maximum. 12 cut a logo off mid-fix (2026-09-24).
+AGENT_MAX_TURNS=30
 # The reservation ceiling for one run, in CREDITS (1000 credits = $1). There is
 # no max_tokens to derive a worst case from here, so it is declared; max_turns
 # is what actually bounds the run. Measured: a trivial run costs 1.1-2.7.
