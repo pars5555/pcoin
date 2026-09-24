@@ -1070,12 +1070,12 @@ async function handle(req, res) {
   if (sub === '/exchange' && req.method === 'POST') {
     const form = await readBody(req);
     const cred = loadCredential();
-    const section = exchangeSection({ base: BASE, creds: upstreamCreds(), actor: String((cred && cred.username) || 'owner') });
+    const section = exchangeSection({ base: BASE, creds: upstreamCreds(), actor: String((cred && cred.username) || 'owner'), sendLogPath: DATA + '/sends.json' });
     const r = await section.action(form, url);
     return send(res, 200, shell2('exchange', 'exchange.pc.am', await section.page(r.url, r.flash)));
   }
   if (sub === '/exchange') {
-    const section = exchangeSection({ base: BASE, creds: upstreamCreds(), actor: 'owner' });
+    const section = exchangeSection({ base: BASE, creds: upstreamCreds(), actor: 'owner', sendLogPath: DATA + '/sends.json' });
     return send(res, 200, shell2('exchange', 'exchange.pc.am', await section.page(url)));
   }
 

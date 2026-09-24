@@ -48,7 +48,9 @@ export function readLog(path) {
   try { const j = JSON.parse(readFileSync(path, 'utf8')); return Array.isArray(j) ? j : []; }
   catch (e) { if (e && e.code === 'ENOENT') return []; return [{ at: new Date().toISOString(), result: 'log-unreadable', error: e.message }]; }
 }
-function appendLog(path, entry) {
+// Exported for the exchange page's "Pay from market-hot": its sends belong in
+// the same history as the ones made on this page.
+export function appendLog(path, entry) {
   const log = readLog(path).filter((x) => x.result !== 'log-unreadable');
   log.unshift(entry);
   const tmp = `${path}.tmp`;
