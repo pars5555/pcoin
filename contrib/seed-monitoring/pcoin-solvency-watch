@@ -51,6 +51,19 @@ REQ_FILE = os.environ.get("WRAP_REQUESTS", "/var/lib/wrapdesk/requests.json")
 TOKEN = os.environ.get("WPCN_TOKEN", "0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1")
 ISSUED = float(os.environ.get("WPCN_ISSUED", "50000"))
 FAIL_STREAK = int(os.environ.get("SOLVENCY_FAIL_STREAK", "3"))
+# PLANNED MOVES (2026-09-24). The owner moves reserve surplus to market-hot now
+# and then, and check A paged "wPCN solvency: CRITICAL" every time -- correctly
+# for a theft, wrongly for his own transfer, and an alarm that cries wolf is one
+# people stop reading. So he registers a move BEFORE making it, in the admin
+# panel (Reserve moves page, authenticator code required): amount, a window,
+# a note. A later drop of the core reserve that MATCHES an unused plan -- same
+# amount within PLAN_TOLERANCE (the network fee), inside the window, and with
+# backing still whole -- is reported as a planned move instead of CRITICAL.
+# Anything else still pages exactly as before, including any move that breaks
+# backing, planned or not. The file is written only by the panel; which plans
+# have been used is recorded HERE, in this watcher's own state.
+PLANS_FILE = os.environ.get("SOLVENCY_PLANS", "/etc/pcoin/control/reserve-planned-moves.json")
+PLAN_TOLERANCE = float(os.environ.get("SOLVENCY_PLAN_TOLERANCE", "0.01"))
 
 RESERVE = os.environ.get("SOLVENCY_RESERVE", "")
 if not RESERVE:
@@ -130,6 +143,34 @@ def allocated_addresses():
         return []
 
 
+def load_plans():
+    """Unused, unexpired plans. An unreadable file is NO plans: it can only make
+    the watcher stricter, never quieter."""
+    try:
+        j = json.load(open(PLANS_FILE, encoding="utf-8"))
+        plans = j.get("plans", []) if isinstance(j, dict) else []
+        return [x for x in plans if isinstance(x, dict) and x.get("id")]
+    except FileNotFoundError:
+        return []
+    except Exception as e:
+        print("  planned-moves file unreadable (%s) -- treating as NO plans" % e)
+        return []
+
+
+def match_plan(plans, drop, now, used):
+    for x in plans:
+        try:
+            if x["id"] in used or x.get("cancelled"):
+                continue
+            if float(x.get("until", 0)) < now:
+                continue
+            if abs(float(x["pcn"]) - drop) <= PLAN_TOLERANCE:
+                return x
+        except (KeyError, TypeError, ValueError):
+            continue
+    return None
+
+
 def load_state():
     """Normalise, never merely 'handle unreadable'. A file that parses but lacks
     a key once killed pcoin-wrapdesk-watch with KeyError on its first real
@@ -147,6 +188,7 @@ def load_state():
     s.setdefault("fails", 0)
     s.setdefault("last_alert", "")
     s.setdefault("last_digest_day", "")
+    s.setdefault("plans_used", {})
     return s
 
 
@@ -221,8 +263,28 @@ def main():
     print("  backing vs outstanding : %.4f%%" % (ratio_out * 100 if ratio_out else 0))
     print("  backing vs issued      : %.4f%%" % (ratio_iss * 100 if ratio_iss else 0))
 
+    # A0 - a move the owner registered in advance. Only a drop that matches an
+    # unused plan AND leaves backing whole qualifies; it then replaces the two A
+    # items below for this run. It is never silent: it sends its own notice.
+    planned, planned_note = None, ""
+    if (st["core_pcn"] is not None and core_pcn < st["core_pcn"] - 1e-8
+            and total + 1e-8 >= ISSUED):
+        drop = st["core_pcn"] - core_pcn
+        planned = match_plan(load_plans(), drop, time.time(), st["plans_used"])
+        if planned is not None:
+            info = ("A. PLANNED MOVE: the core reserve moved %.8f PCN (%.8f -> %.8f). It matches "
+                    "the plan registered %s UTC for %.8f PCN (\"%s\"), inside its window, and "
+                    "backing is still whole. Record it in PCOIN-WPCN-RUNBOOK.md."
+                    % (drop, st["core_pcn"], core_pcn,
+                       time.strftime("%Y-%m-%d %H:%M", time.gmtime(float(planned.get("created", 0)))),
+                       float(planned["pcn"]), str(planned.get("note", ""))[:120]))
+            print("  " + info)
+            planned_note = info
+            if not a.dry_run and a.force_supply is None and a.force_reserve is None:
+                st["plans_used"][planned["id"]] = {"at": int(time.time()), "moved": round(drop, 8)}
+
     # A - the core reserve must never shrink, and must never have spent anything
-    if st["core_pcn"] is not None and core_pcn < st["core_pcn"] - 1e-8:
+    if planned is None and st["core_pcn"] is not None and core_pcn < st["core_pcn"] - 1e-8:
         alerts.append("A. THE CORE RESERVE SHRANK: %.8f -> %.8f PCN (-%.8f). "
                       "That wallet held one UTXO unspent since height 5765. Any "
                       "spend from it is an emergency."
@@ -247,7 +309,7 @@ def main():
             warns.append("A. First look at this reserve: %.8f PCN has been spent over "
                          "its lifetime. On its own that is history, not evidence -- "
                          "check it against PCOIN-WPCN-RUNBOOK.md." % core_sent)
-    elif core_sent > st["core_sent"] + 1e-8:
+    elif planned is None and core_sent > st["core_sent"] + 1e-8:
         moved = core_sent - st["core_sent"]
         if total + 1e-8 >= ISSUED:
             warns.append("A. The core reserve spent %.8f PCN since the last check "
@@ -288,6 +350,11 @@ def main():
             % (core_pcn, total, supply, ISSUED,
                ratio_out * 100 if ratio_out else 0,
                ratio_iss * 100 if ratio_iss else 0, RESERVE))
+
+    # Sent once: the plan is recorded as used below, and the reserve figure it
+    # compared against moves on with the state.
+    if planned_note:
+        notify("wPCN solvency: planned move done", planned_note + "\n\n" + body)
 
     if alerts or warns:
         sev = "CRITICAL" if alerts else "warning"

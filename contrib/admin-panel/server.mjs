@@ -33,6 +33,7 @@ import { telegramPage } from './telegram.mjs';
 import { jobsPage, loadJobs, EXPECTED } from './jobs.mjs';
 import { overviewPage } from './overview.mjs';
 import { dependenciesPage, loadDependencies } from './dependencies.mjs';
+import { reserveMovesPage, reserveMovesAction } from './reserve-moves.mjs';
 import { aiPage } from './ai.mjs';
 import { exchangesPage } from './exchanges.mjs';
 import { approvalsPage } from './approvals.mjs';
@@ -235,6 +236,7 @@ const NAV = [
                      ['exchange', '\u{1F3E6} Exchange'],
                      ['wrapdesk', '\u{1F504} Wrap desk'],
                      ['keeper', '\u2696\uFE0F wPCN keeper'],
+                     ['reserve-moves', '\u{1F6E1}\uFE0F Reserve moves'],
                      ['services/wpcnpay', '\u{1F4B3} wPCN payments'],
                      ['send', '\u{1F4E4} Send PCN (market-hot)'],
                      ['transfer', '\u{1F4B8} Move PCN']]],
@@ -1016,6 +1018,18 @@ async function handle(req, res) {
 
   // Send PCN from market-hot: preview, then the owner's authenticator code. The caps
   // live on the market host (contrib/market/ops-send.mjs), not here. See send.mjs.
+  // Reserve moves: tell the solvency watcher about a transfer before making it.
+  // Adding a plan weakens an alarm, so it takes the authenticator code, once.
+  if (sub === '/reserve-moves') {
+    let result = null;
+    if (req.method === 'POST') {
+      const form = await readBody(req);
+      const cred = loadCredential();
+      result = reserveMovesAction(form, { verifyCode: (c) => checkTotp(c, cred && cred.totp) });
+    }
+    return send(res, 200, shell2('reserve-moves', 'Reserve moves', reserveMovesPage({ base: BASE, result })));
+  }
+
   if (sub === '/send') {
     const logPath = DATA + '/sends.json';
     let result = null;
