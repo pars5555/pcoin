@@ -13,9 +13,11 @@
 // before anything can move, and a code cannot be replayed for a second send.
 //
 // WHAT THIS HOST HOLDS: a send token, in upstream.json beside the read and
-// refund tokens. The caps live on the MARKET host, not here -- 1,000 PCN a send
-// and 2,000 PCN a rolling 24 hours by default -- so a compromised panel is
-// bounded by numbers it cannot change.
+// refund tokens. There is NO amount cap on these manual sends: the owner removed
+// it on 2026-09-24 ("capping transactions is ok for market only ... i wanna send
+// manually there should not be cap"). The market host can still enforce one
+// (sendMaxPcn / sendDayMaxPcn in its config), but none is set. His authenticator
+// code, good once, is the gate.
 //
 // NOTHING IS GUESSED. An answer that never came back is recorded and shown as
 // "unknown -- check before retrying", never as failed, because the send may
@@ -124,20 +126,41 @@ export async function hotBalance(creds) {
 
 const hidden = (k, v) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`;
 
+const fmt = (n) => Number(n).toLocaleString('en-US', { maximumFractionDigits: 8 });
+
+/** PCN sent from this page in the last 24 h, from its own log. Shown for
+ *  information only: manual sends have NO cap (owner, 2026-09-24). */
+export function sentLast24h(log, now = Date.now()) {
+  return log.filter((x) => x.result === 'sent' && now - Date.parse(x.at) < 86400000)
+    .reduce((s, x) => s + (Number(x.pcn) || 0), 0);
+}
+
+/** Said BEFORE the code is asked for: an amount market-hot cannot cover. */
+export function sendProblems(pcn, hotPcn) {
+  return hotPcn !== null && pcn > hotPcn
+    ? [`market-hot holds only ${fmt(hotPcn)} PCN, less than ${fmt(pcn)} PCN, so the market host will refuse this.`]
+    : [];
+}
+
 export function sendPage({ base, result = null, hotPcn = null, hotError = null, log = [] }) {
   const flash = result && result.flash
     ? `<div class="card"><p class="${result.bad ? 'bad' : 'good'}">${esc(result.flash)}</p>`
       + (result.txid ? `<p><a href="https://explorer.pc.am/tx/${esc(result.txid)}" target="_blank" rel="noopener">View the transaction on the explorer</a></p>` : '')
       + '</div>'
     : '';
+  // THE BALANCE IS THE FIRST THING ON THE PAGE, large (owner, 2026-09-24: "here I
+  // should see market hot balance so I know if there is enough PCN to send").
   const bal = hotPcn !== null
-    ? `<p>market-hot holds <b>${esc(Number(hotPcn).toLocaleString('en-US', { maximumFractionDigits: 8 }))} PCN</b> right now.</p>`
+    ? `<div style="display:flex;gap:32px;flex-wrap:wrap;margin:6px 0 10px">
+        <div><div class="muted">market-hot balance -- the most you can send</div><div style="font-size:30px;font-weight:700">${esc(fmt(hotPcn))} PCN</div></div>
+        <div><div class="muted">sent from this page in the last 24 h</div><div style="font-size:30px;font-weight:700">${esc(fmt(sentLast24h(log)))} PCN</div></div>
+      </div>`
     : `<p class="bad">market-hot's balance could not be read (${esc(hotError || 'unknown')}). Sending still works; the market host checks the balance itself.</p>`;
   const intro = `<div class="card"><h2>Send PCN from market-hot</h2>${bal}
-    <p class="muted">For payouts you decide -- a bounty, a refund by hand, a transfer to another wallet of yours.
-    Two steps: check the address and amount, then confirm with your authenticator code. The market host refuses
-    more than <b>1,000 PCN in one send</b> or <b>2,000 PCN in 24 hours</b>, and never pays the same form twice.
-    Every send is posted to the ops channel.</p></div>`;
+    <p class="muted">For payouts you decide -- a bounty, a refund by hand, an exchange withdrawal, a transfer to another wallet of yours.
+    Two steps: check the address and amount, then confirm with your authenticator code. There is no amount limit on
+    these manual sends (the market's automatic deliveries keep their own). A form is never paid twice, and every
+    send is posted to the ops channel.</p></div>`;
 
   let body;
   if (result && result.view === 'confirm' && result.s) {
@@ -147,6 +170,7 @@ export function sendPage({ base, result = null, hotPcn = null, hotError = null, 
       <tr><td>To</td><td><code style="font-size:15px">${esc(s.to)}</code><br><span class="muted">ends in <b>${esc(s.to.slice(-4))}</b> -- check every character</span></td></tr>
       ${s.note ? `<tr><td>Note</td><td>${esc(s.note)}</td></tr>` : ''}
       <tr><td>From</td><td>market-hot</td></tr></table>
+      ${sendProblems(s.pcn, hotPcn).map((p) => `<p class="bad">${esc(p)}</p>`).join('')}
       <form method="post" action="${esc(base)}/send" style="margin-top:12px">
         ${hidden('step', 'send')}${hidden('key', s.key)}${hidden('to', s.to)}${hidden('pcn', String(s.pcn))}${hidden('note', s.note)}
         <label>Authenticator code <input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required style="width:110px"></label>

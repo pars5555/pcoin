@@ -9,11 +9,15 @@ const TO = 'pc1qclkpmsdklwehq54fztw5qw8ssnuwmee3szaz2e';
 const NOW = Date.UTC(2026, 8, 24, 12, 0, 0);
 const cfg = { sendToken: TOKEN, sendMaxPcn: 1000, sendDayMaxPcn: 2000 };
 
-function wallet(history = [], { failList = false, failSend = false } = {}) {
+function wallet(history = [], { failList = false, failSend = false, trusted = null } = {}) {
   const sent = [];
   return {
     sent,
     async wallet(method, params) {
+      if (method === 'getbalances') {
+        if (trusted === null) throw new Error('balance not modelled');
+        return { mine: { trusted } };
+      }
       if (method === 'listtransactions') {
         if (failList) throw new Error('rpc timeout');
         return [...history, ...sent];
@@ -91,5 +95,26 @@ await check('a send whose answer is lost says "check before retrying", not "fail
   const r = await opsSendPcn({ auth: 'Bearer ' + TOKEN, raw: req(), cfg, node: wallet([], { failSend: true }), now: NOW });
   assert.equal(r.code, 502);
   assert.match(r.obj.error, /BEFORE trying again/);
+});
+await check('NO cap when none is configured (owner 2026-09-24): two 5,000 PCN sends in a row both go out', async () => {
+  const w = wallet([], { trusted: 20000 });
+  const open = { sendToken: TOKEN };
+  const a = await opsSendPcn({ auth: 'Bearer ' + TOKEN, raw: req({ key: 'send:big00001', pcn: 5000 }), cfg: open, node: w, now: NOW });
+  assert.equal(a.code, 200, JSON.stringify(a.obj));
+  const b = await opsSendPcn({ auth: 'Bearer ' + TOKEN, raw: req({ key: 'send:big00002', pcn: 5000 }), cfg: open, node: w, now: NOW });
+  assert.equal(b.code, 200, JSON.stringify(b.obj));
+  assert.equal(w.sent.length, 2);
+});
+await check('a cap of 0 means no cap too', async () => {
+  const w = wallet([], { trusted: 20000 });
+  const r = await opsSendPcn({ auth: 'Bearer ' + TOKEN, raw: req({ pcn: 1224 }), cfg: { sendToken: TOKEN, sendMaxPcn: 0, sendDayMaxPcn: 0 }, node: w, now: NOW });
+  assert.equal(r.code, 200, JSON.stringify(r.obj));
+});
+await check('more than market-hot holds is a plain refusal, and nothing is sent', async () => {
+  const w = wallet([], { trusted: 100 });
+  const r = await opsSendPcn({ auth: 'Bearer ' + TOKEN, raw: req({ pcn: 500 }), cfg: { sendToken: TOKEN }, node: w, now: NOW });
+  assert.equal(r.code, 400);
+  assert.match(r.obj.error, /holds 100\.00000000 PCN spendable/);
+  assert.equal(w.sent.length, 0);
 });
 console.log(`ALL ${n} CHECKS PASSED`);

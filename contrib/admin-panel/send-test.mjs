@@ -23,10 +23,12 @@ const fakeWallet = {
     throw new Error('unexpected ' + method);
   },
 };
+// The market's config, per test: none of its caps are set by default (owner, 2026-09-24).
+let marketCfg = { sendToken: TOKEN };
 const srv = createServer((req, res) => {
   let b = ''; req.on('data', (c) => { b += c; });
   req.on('end', async () => {
-    const r = await opsSendPcn({ auth: req.headers.authorization, raw: b, cfg: { sendToken: TOKEN }, node: fakeWallet });
+    const r = await opsSendPcn({ auth: req.headers.authorization, raw: b, cfg: marketCfg, node: fakeWallet });
     res.writeHead(r.code, { 'content-type': 'application/json' }); res.end(JSON.stringify(r.obj));
   });
 });
@@ -81,10 +83,13 @@ await acheck('step two with a good code SENDS once, logs it, and a double submit
   assert.equal(log.length, 2); assert.equal(log[1].result, 'sent'); assert.equal(log[0].result, 'already');
 });
 
-await acheck('over the per-send cap is refused by the MARKET, and shown as NOT sent', async () => {
-  const r = await sendAction(form({ step: 'send', key: newKey(), to: TO, pcn: '1500', code: nextCode() }), { verifyCode: goodCode, creds, logPath });
-  assert.match(r.flash, /^NOT sent: amount must be above 0 and at most 1000 PCN/);
-  assert.equal(sent.length, 1);
+await acheck('a per-send cap, IF the market config sets one, is refused there and shown as NOT sent', async () => {
+  marketCfg = { sendToken: TOKEN, sendMaxPcn: 1000 };
+  try {
+    const r = await sendAction(form({ step: 'send', key: newKey(), to: TO, pcn: '1500', code: nextCode() }), { verifyCode: goodCode, creds, logPath });
+    assert.match(r.flash, /^NOT sent: amount must be at most 1000 PCN per send/);
+    assert.equal(sent.length, 1);
+  } finally { marketCfg = { sendToken: TOKEN }; }
 });
 
 await acheck('no send token configured: switched off, nothing sent', async () => {
@@ -99,6 +104,13 @@ await acheck('an unreachable market host is UNKNOWN, not failed, and keeps the c
     { verifyCode: goodCode, creds: { market: { sendToken: TOKEN, sendUrl: 'http://127.0.0.1:9/api/ops/send-pcn' } }, logPath });
   assert.match(r.flash, /^UNKNOWN: /);
   assert.equal(r.view, 'confirm'); assert.equal(r.s.key, key);
+});
+
+await acheck('with no cap configured, 1,500 PCN in one manual send goes out', async () => {
+  const before = sent.length;
+  const r = await sendAction(form({ step: 'send', key: newKey(), to: TO, pcn: '1500', code: nextCode() }), { verifyCode: goodCode, creds, logPath });
+  assert.match(r.flash, /^SENT\. 1500 PCN/);
+  assert.equal(sent.length, before + 1);
 });
 
 srv.close();

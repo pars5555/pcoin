@@ -15,11 +15,19 @@
 //     this. A code is not something this host can verify -- it never holds the
 //     owner's TOTP secret -- so the token proves "the panel asked", and the caps
 //     below bound what a compromised panel could do with it.
-//   * CAPS: `sendMaxPcn` per send (default 1,000) and `sendDayMaxPcn` per rolling
-//     24 hours (default 2,000), counted from the WALLET's own history of sends
-//     that carry a `send:` key, so a restart cannot reset them. If that history
-//     cannot be read, nothing is sent: an unanswerable question must not resolve
-//     to the answer that spends money.
+//   * NO CAP BY DEFAULT, by the owner's decision (2026-09-24: "capping
+//     transactions is ok for market only ... i wanna send manually there should
+//     not be cap"). This page is HIS manual send; the market's automatic
+//     deliveries keep their own limits in delivery.mjs, untouched. His
+//     authenticator code, checked once per send by the panel, is the gate.
+//     `sendMaxPcn` / `sendDayMaxPcn` still work if set above 0 -- per send, and
+//     per rolling 24 hours counted from the WALLET's own `send:` history so a
+//     restart cannot reset them -- but they are not set.
+//   * THE BALANCE IS CHECKED BEFORE SENDING, so "not enough in market-hot" is a
+//     plain refusal instead of a node error that reads like a lost answer.
+//   * If the wallet's history cannot be read, nothing is sent: the duplicate
+//     check needs it, and an unanswerable question must not resolve to the
+//     answer that spends money.
 //   * IDEMPOTENT BY COMMENT, like the refund path and delivery.mjs: the key goes
 //     into the transaction's comment, and a key already on a send returns that
 //     txid instead of paying twice. The panel mints the key when it draws the
@@ -58,8 +66,9 @@ export async function opsSendPcn({ auth = '', raw = '', cfg = {}, node, notify =
   const to = String(b.to || '').trim();
   const pcn = Number(b.pcn);
   const note = String(b.note || '').replace(/[^\x20-\x7e]/g, '').trim().slice(0, 80);
-  const MAX = Number(cfg.sendMaxPcn || 1000);
-  const DAY_MAX = Number(cfg.sendDayMaxPcn || 2000);
+  // 0 or unset = no limit (owner, 2026-09-24). Only a positive value binds.
+  const MAX = Number(cfg.sendMaxPcn) > 0 ? Number(cfg.sendMaxPcn) : Infinity;
+  const DAY_MAX = Number(cfg.sendDayMaxPcn) > 0 ? Number(cfg.sendDayMaxPcn) : Infinity;
 
   if (!/^send:[0-9A-Za-z._-]{6,80}$/.test(key)) {
     return { code: 400, obj: { error: 'a send needs its idempotency key (send:...); nothing was sent' } };
@@ -67,8 +76,11 @@ export async function opsSendPcn({ auth = '', raw = '', cfg = {}, node, notify =
   if (!/^pc1[02-9ac-hj-np-z]{20,87}$/.test(to)) {
     return { code: 400, obj: { error: `${to || '(empty)'} does not look like a PCoin address; nothing was sent` } };
   }
-  if (!Number.isFinite(pcn) || pcn <= 0 || pcn > MAX) {
-    return { code: 400, obj: { error: `amount must be above 0 and at most ${MAX} PCN per send; got ${b.pcn}` } };
+  if (!Number.isFinite(pcn) || pcn <= 0) {
+    return { code: 400, obj: { error: `amount must be a number above 0; got ${b.pcn}. Nothing was sent.` } };
+  }
+  if (pcn > MAX) {
+    return { code: 400, obj: { error: `amount must be at most ${MAX} PCN per send (sendMaxPcn); got ${b.pcn}. Nothing was sent.` } };
   }
   const amount = Number(pcn.toFixed(8));
 
@@ -96,10 +108,20 @@ export async function opsSendPcn({ auth = '', raw = '', cfg = {}, node, notify =
     byTx.set(t.txid, (byTx.get(t.txid) || 0) + Math.abs(Number(t.amount || 0)));
   }
   const sentToday = [...byTx.values()].reduce((s, v) => s + v, 0);
-  if (sentToday + amount > DAY_MAX + 1e-9) {
+  if (Number.isFinite(DAY_MAX) && sentToday + amount > DAY_MAX + 1e-9) {
     return { code: 400, obj: { error: `this would take the last 24 hours to ${(sentToday + amount).toFixed(8)} PCN, `
       + `over the ${DAY_MAX} PCN daily limit (${sentToday.toFixed(8)} already sent). Nothing was sent.` } };
   }
+
+  // Enough in the wallet? Checked here so a short balance is a plain refusal. A
+  // balance that cannot be read does not block: sendtoaddress checks it anyway.
+  try {
+    const bal = await node.wallet('getbalances', []);
+    const have = Number(bal && bal.mine && bal.mine.trusted);
+    if (Number.isFinite(have) && amount > have) {
+      return { code: 400, obj: { error: `market-hot holds ${have.toFixed(8)} PCN spendable, less than ${amount} PCN. Nothing was sent.` } };
+    }
+  } catch { /* unreadable balance: let the node decide */ }
 
   let txid;
   try {
