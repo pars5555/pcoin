@@ -369,12 +369,25 @@ export function makeIpn({ pool, ladder, delivery, notify, secret,
   /** One transaction on its own connection, retried on a deadlock. The IPN
    *  takes rungs before the order row; the sweeper and the admin's Expire take
    *  them the other way round, so a collision is possible and InnoDB resolves
-   *  it by killing one side. A retry is correct because the work is idempotent. */
+   *  it by killing one side. A retry is correct because the work is idempotent.
+   *
+   *  READ COMMITTED, for this transaction only. Production runs MariaDB 11.8
+   *  with innodb_snapshot_isolation=ON (its default there): under REPEATABLE
+   *  READ, a transaction that locks a row changed since its first read fails
+   *  with ER_CHECKREAD ("Record has changed since last read"). settleLadder
+   *  reads the order's fills without a lock and then locks the rungs, so every
+   *  callback that met another callback, a purchase or the sweeper on the same
+   *  rung threw, answered 500 and paged, and the order stayed pending until
+   *  NOWPayments retried (measured: 71 of 90 first deliveries in a burst).
+   *  Nothing here relies on a snapshot: every decision is taken on a locking
+   *  read or a conditional UPDATE, which read the latest committed row at any
+   *  isolation level. */
   async function withTx(fn) {
     const conn = await pool.getConnection();
     try {
       for (let attempt = 1; ; attempt++) {
         try {
+          await conn.query('SET TRANSACTION ISOLATION LEVEL READ COMMITTED');
           await conn.beginTransaction();
           const out = await fn(conn);
           if (out && out.rollback) { await conn.rollback(); return out.value; }

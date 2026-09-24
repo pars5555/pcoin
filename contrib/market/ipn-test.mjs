@@ -102,8 +102,21 @@ for (let i = 1; i <= 6; i++) {
 }
 const [[ver]] = await admin.query(`SELECT VERSION() AS v`);
 
+// Production (MariaDB 11.8) runs innodb_snapshot_isolation=ON, the 11.8
+// default: a REPEATABLE READ transaction that locks or changes a row changed
+// since its snapshot fails with ER_CHECKREAD instead of carrying on. 10.6.18+ /
+// 10.11.8+ have the switch but default it OFF, 10.4 does not have it. Every
+// session here runs production's setting wherever the server has it, so the
+// races below meet the same errors they meet there.
+const [[si]] = await admin.query(
+  `SELECT COUNT(*) AS n FROM information_schema.SYSTEM_VARIABLES WHERE VARIABLE_NAME = 'INNODB_SNAPSHOT_ISOLATION'`)
+  .catch(() => [[{ n: 0 }]]);
+const SNAPSHOT_ISOLATION = Number(si.n) > 0 && process.env.PCOIN_IPN_TEST_SNAPSHOT !== '0';
 const pool = mysql.createPool({ ...CONN, database: DBN, connectionLimit: 12, decimalNumbers: false });
-pool.on('connection', c => c.query(`SET SESSION sql_mode = '${SQL_MODE}'`));
+pool.on('connection', c => {
+  c.query(`SET SESSION sql_mode = '${SQL_MODE}'`);
+  if (SNAPSHOT_ISOLATION) c.query(`SET SESSION innodb_snapshot_isolation = ON`);
+});
 const q = async (s, a = []) => (await pool.query(s, a))[0];
 
 // ── the harness ─────────────────────────────────────────────────────────────
@@ -290,7 +303,8 @@ async function test(title, fn) {
 }
 const skip = (title, why) => { skipped++; console.log(`\n# ${title}\n  skip ${why}`); };
 
-console.log(`database ${DBN} on MariaDB ${ver.v}, implementation ${IMPL}`);
+console.log(`database ${DBN} on MariaDB ${ver.v}, implementation ${IMPL}, ` +
+            `innodb_snapshot_isolation ${SNAPSHOT_ISOLATION ? 'ON (as production)' : 'not available / off'}`);
 
 // ── 0. the migration ────────────────────────────────────────────────────────
 
