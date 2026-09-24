@@ -128,6 +128,56 @@ def save_state(s):
     os.replace(tmp, STATE)
 
 
+# ---- /buy: where to buy PCN, answered at once (2026-09-24) -----------------
+# Owner: *"yes ... a 'Buy PCN' link in the bot"*, after deciding NOT to sell PCN
+# for Telegram Stars (Stars may not become money, and PCN is sellable for USDT).
+# Answered HERE with fixed, owner-approved text rather than by the answer bot,
+# whose drafts wait up to 15 minutes in the approval queue. In the group only
+# /buy is answered; in a private chat /start is too, since that is the first
+# thing every new visitor sends. One reply per chat per BUY_COOLDOWN seconds, so
+# a burst of /buy cannot make the bot flood the group.
+BUY_RE = re.compile(r"^/(buy|start)(@PCoinPCNBot)?(\s|$)", re.I)
+BUY_COOLDOWN = 60
+BUY_TEXT = (
+    "How to buy PCN\n\n"
+    "market.pc.am: buy PCN directly and pay with USDT or any coin NOWPayments accepts. "
+    "The PCN is sent to your own address once the payment confirms.\n\n"
+    "exchange.pc.am: the PCN/USD order book. Buy from other people at their price, or sell yours.\n\n"
+    "Prices move with demand, so check the page before you pay. "
+    "Questions? Ask in the PCoin chat: https://t.me/PCoinPCNChat"
+)
+BUY_BUTTONS = json.dumps({"inline_keyboard": [
+    [{"text": "Buy on market.pc.am", "url": "https://market.pc.am"}],
+    [{"text": "Trade on exchange.pc.am", "url": "https://exchange.pc.am"}],
+]})
+
+
+def answer_buy(token, msg, st):
+    """True if `msg` was a /buy (or a private /start) and has been dealt with."""
+    m = BUY_RE.match((msg.get("text") or "").strip())
+    if not m or (msg.get("from") or {}).get("is_bot"):
+        return False
+    chat = msg.get("chat") or {}
+    if m.group(1).lower() == "start" and chat.get("type") != "private":
+        return False
+    last = st.setdefault("buy_last", {})
+    now = time.time()
+    if now - float(last.get(str(chat.get("id")), 0)) < BUY_COOLDOWN:
+        return True                      # answered moments ago: consume, stay quiet
+    if DRY:
+        print("  [dry-run] would answer /buy in %s" % chat.get("id"))
+        return True
+    try:
+        api(token, "sendMessage", {
+            "chat_id": chat.get("id"), "text": BUY_TEXT, "reply_markup": BUY_BUTTONS,
+            "reply_to_message_id": msg.get("message_id"), "allow_sending_without_reply": "true",
+            "disable_web_page_preview": "true"})
+        last[str(chat.get("id"))] = now
+    except Exception as e:               # a lost /buy answer is not worth holding the offset for
+        print("  /buy reply failed (%s)" % type(e).__name__, file=sys.stderr)
+    return True
+
+
 def api(token, method, params=None, timeout=40):
     url = "https://api.telegram.org/bot%s/%s" % (token, method)
     data = urllib.parse.urlencode(params or {}).encode()
@@ -715,6 +765,13 @@ def main():
 
         msg = u.get("message") or u.get("edited_message") or {}
         chat = (msg.get("chat") or {}).get("id")
+
+        # /buy in any chat, and /start in a private one -- before the group filter
+        # below, which would otherwise consume a private message unanswered. An
+        # EDITED message is never a fresh command.
+        if u.get("message") and answer_buy(token, msg, st):
+            delivered_through = uid
+            continue
 
         # Everything not from OUR group is consumed and ignored on purpose: this
         # is the only poller, so leaving them unconsumed would stall the offset
