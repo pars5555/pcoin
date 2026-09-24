@@ -1184,6 +1184,39 @@ await test('record: each decision is written on its ipn_events row', async () =>
   ok('the unknown order', (await events('NO-SUCH-ORDER-REC'))[0]?.outcome === 'unknown_order');
 });
 
+await test('record: a later callback on the same row that decides something is what the row says', async () => {
+  // (payment_id, status) is one row. A short 'confirmed' is ignored; the same
+  // payment's 'confirmed' then arrives in full and pays.
+  const o = await newOrder();
+  await pay(o, { status: 'confirmed', paid: 0.1 });
+  await pay(o, { status: 'confirmed' });
+  const c = (await events(o.id)).find(e => e.status === 'confirmed');
+  ok('it says paid, and keeps that it was ignored before',
+     c.outcome === 'paid' && /\[earlier: ignored: confirmed at \d/.test(c.note || ''), JSON.stringify(c));
+  ok('and it was paid once', sendsFor(o.id).length === 1);
+  // The same decision twice (another payment's callback, retried) is one note.
+  const x = newPid();
+  await pay(o, { pid: Number(x) });
+  await pay(o, { pid: Number(x) });
+  const [ex] = await q(`SELECT outcome, note FROM ipn_events WHERE payment_id = ?`, [x]);
+  ok('a repeated decision does not grow the note', ex?.outcome === 'needs_human' && !/\[earlier/.test(ex?.note || ''),
+     JSON.stringify(ex));
+  // A 'finished' that paid a manual order, then the same 'finished' reporting
+  // less: held. The held filter must find that row.
+  const m = await newOrder({ usd: 100 });
+  await pay(m);
+  await pay(m, { paid: 0.1 });
+  const f = (await events(m.id)).find(e => e.status === 'finished');
+  ok('the row that said paid now says held, and keeps paid',
+     f.outcome === 'held' && /\[earlier: paid: /.test(f.note || ''), JSON.stringify(f));
+  ok('the held filter finds it',
+     (await q(`SELECT COUNT(*) AS n FROM ipn_events WHERE order_id = ? AND outcome = 'held'`, [m.id]))[0].n == 1);
+  await pay(m, { paid: 0.1 });
+  await pay(m);
+  const f2 = (await events(m.id)).find(e => e.status === 'finished');
+  ok('repeats change nothing on it', f2.outcome === 'held' && f2.note === f.note, JSON.stringify(f2));
+});
+
 // ── legacy orders, unknown orders, late payments ────────────────────────────
 
 await test('an order paid before the migration: its own late callback is a duplicate, a new payment is not', async () => {

@@ -469,15 +469,40 @@ export function makeIpn({ pool, ladder, delivery, notify, secret,
       : `${head} Could not compute a deliverable amount. Held for review.`;
   }
 
-  /** The decision, next to the callback it was made on. First decision wins:
-   *  a retry of the same callback is the same event row, and what that row
-   *  should say is what the callback DID. Best effort -- the order row and the
-   *  alert are the load-bearing records; this one makes them findable. */
+  /** The decision, next to the callback it was made on. Best effort -- the
+   *  order row and the alert are the load-bearing records; this one makes them
+   *  findable, and the admin log filters on it.
+   *
+   *  One row per (payment_id, status), so a later callback with the same pair
+   *  lands on the same row. A retry that changes nothing (ignored, duplicate,
+   *  raced) never overwrites what the row says. A later one that DID decide
+   *  something -- the short 'confirmed' that was ignored and now arrives in
+   *  full and pays, the 'finished' that paid and now reports less and is held
+   *  -- replaces it, and the note keeps what the row said before. Otherwise the
+   *  row would still read 'ignored' over a payout, and the held / needs_human
+   *  filter would miss a hold. */
+  const WEAK = new Set(['ignored', 'duplicate', 'raced']);
   async function record(ev, res) {
     if (!ev || !ev.id || !res || !res.outcome) return;
+    const outcome = String(res.outcome).slice(0, 32);
+    const note = res.note ? String(res.note).slice(0, 2000) : '';
     try {
-      await q(`UPDATE ipn_events SET outcome = ?, note = ? WHERE id = ? AND outcome IS NULL`,
-              [String(res.outcome).slice(0, 32), res.note ? String(res.note).slice(0, 2000) : null, ev.id]);
+      if (WEAK.has(outcome)) {
+        await q(`UPDATE ipn_events SET outcome = ?, note = ? WHERE id = ? AND outcome IS NULL`,
+                [outcome, note || null, ev.id]);
+        return;
+      }
+      // note before outcome: it reads the row's earlier outcome (left-to-right
+      // assignment and SIMULTANEOUS_ASSIGNMENT agree on that here). The same
+      // decision again -- same outcome, note already starting with this one --
+      // changes nothing, so a repeat never grows the note.
+      await q(`UPDATE ipn_events
+                  SET note = NULLIF(LEFT(CONCAT(?, IF(outcome IS NULL, '',
+                                   CONCAT(' [earlier: ', outcome, IFNULL(CONCAT(': ', note), ''), ']'))), 2000), ''),
+                      outcome = ?
+                WHERE id = ?
+                  AND (outcome IS NULL OR outcome <> ? OR LEFT(IFNULL(note, ''), CHAR_LENGTH(?)) <> ?)`,
+              [note, outcome, ev.id, outcome, note, note]);
     } catch (e) { log.error('[ipn] could not record the outcome:', e.message); }
   }
 
