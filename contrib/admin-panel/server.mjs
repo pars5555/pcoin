@@ -40,6 +40,7 @@ import { keeperPage, keeperData, validate as keeperValidate, writeTuning } from 
 import { minersPage, minersData } from './miners.mjs';
 import { pricingPage, pricingData } from './pricing.mjs';
 import { vaultPage } from './vault.mjs';
+import { sendPage, sendAction, readLog, hotBalance } from './send.mjs';
 import { transferRoute } from './transfer.mjs';
 import { exchangeSection, exchangeCall } from './exchange.mjs';
 import { needsYou, needsYouCard } from './needs-you.mjs';
@@ -194,7 +195,8 @@ const NAV = [
                 ['user-reports', '\u{1F41E} User reports']]],
   ['Config',   [['security', '\u{1F512} Security (2FA)'],
                 ['vault', '\u{1F511} Vault commands'],
-                ['transfer', '\u{1F4B8} Move PCN']]],
+                ['transfer', '\u{1F4B8} Move PCN'],
+                ['send', '\u{1F4E4} Send PCN (market-hot)']]],
 ];
 
 // The watcher is an external process. If it hangs or throws, the page must
@@ -935,6 +937,20 @@ async function handle(req, res) {
   // commands use exist only on the owner's machine, which is the whole point.
   if (sub === '/vault') {
     return send(res, 200, shell2('vault', 'Vault commands', vaultPage()));
+  }
+
+  // Send PCN from market-hot: preview, then the owner's authenticator code. The caps
+  // live on the market host (contrib/market/ops-send.mjs), not here. See send.mjs.
+  if (sub === '/send') {
+    const logPath = DATA + '/sends.json';
+    let result = null;
+    if (req.method === 'POST') {
+      const form = await readBody(req);
+      const cred = loadCredential();
+      result = await sendAction(form, { verifyCode: (c) => checkTotp(c, cred && cred.totp), creds: upstreamCreds(), logPath });
+    }
+    const hb = await hotBalance(upstreamCreds());
+    return send(res, 200, shell2('send', 'Send PCN', sendPage({ base: BASE, result, hotPcn: hb.hotPcn, hotError: hb.hotError, log: readLog(logPath) })));
   }
 
   // Move PCN: the one page that signs, and it signs IN THE OWNER'S BROWSER.

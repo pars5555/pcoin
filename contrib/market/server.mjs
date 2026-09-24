@@ -382,6 +382,7 @@ setInterval(() => R.scan().catch(e => console.error('[retire]', e.message)),
 
 // ── admin panel ────────────────────────────────────────────────────────────
 import { makeAdmin } from './admin.mjs';
+import { opsSendPcn } from './ops-send.mjs';
 const ADMIN = makeAdmin({ pool, cfg, settings: S, ladder: L, delivery: D, backing: B,
                           waivers: W, notify });
 await ADMIN.ensureTable();
@@ -1240,6 +1241,13 @@ createServer(async (req, res) => {
     // about whether the node broadcast -- so a lookup that THROWS resolves
     // nothing and refuses, rather than collapsing into "nothing was sent" and
     // paying twice (delivery.mjs:139-150 is the same rule, learned the hard way).
+    // SEND PCN from market-hot, for the admin panel's Send page. ops-send.mjs holds
+    // the guards: its own token, per-send and 24h caps, idempotent by key.
+    if (p === '/api/ops/send-pcn' && req.method === 'POST') {
+      const r = await opsSendPcn({ auth: req.headers.authorization || '', raw: await body(req), cfg, node, notify });
+      return json(res, r.code, r.obj);
+    }
+
     if (p === '/api/ops/refund-pcn' && req.method === 'POST') {
       const want = cfg.refundToken;
       if (!want) {
