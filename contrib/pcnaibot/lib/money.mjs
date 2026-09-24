@@ -117,6 +117,13 @@ export function microUsdToString(micro, dp = 6) {
   return `${neg ? '-' : ''}${whole}${dp > 0 ? `.${frac}` : ''}`;
 }
 
+// A decimal string without its trailing zeros: 100.0000 -> 100, 7.9260 -> 7.926.
+// For a BALANCE the owner wants no padding (2026-09-24); per-turn charges keep
+// their fixed places so a $0.0004 cost still lines up and never reads as 0.
+export function trimZeros(s) {
+  return String(s).includes('.') ? String(s).replace(/0+$/, '').replace(/\.$/, '') : String(s);
+}
+
 // How much PCN is a given USD amount, at a stamped rate? Used for the deposit
 // screen's live minimum, which must be recomputed on every render and never
 // stored as static text.

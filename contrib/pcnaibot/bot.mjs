@@ -19,7 +19,7 @@ import { TelegramClient, escapeHtml, splitMessage } from './lib/telegram.mjs';
 import { readRate } from './lib/rate.mjs';
 import { allocateAddress, poolStats, PoolEmpty } from './lib/pool.mjs';
 import { creditedUsdLast30Days } from './lib/deposits.mjs';
-import { microUsdToString, usdToPcnString, satsToPcnString, parseScaled } from './lib/money.mjs';
+import { microUsdToString, trimZeros, usdToPcnString, satsToPcnString, parseScaled } from './lib/money.mjs';
 import {
   fetchRegistry, findPoolModel, normalizeModel, upsertPrices, billableSet,
   storedPrice, priceTableAge, looksTiered, PriceUnknown, POOL_PROVIDER_ID,
@@ -33,6 +33,7 @@ import {
 import { estimateRequestTokens } from './lib/tokens.mjs';
 import { WpcnService, isTxHash, STATE as WSTATE, humanMessage } from './lib/wpcn.mjs';
 import { probeAll } from './lib/probe.mjs';
+import { startAdminApi } from './lib/admin-api.mjs';
 import QRCode from 'qrcode';
 import { extractSvgs, svgToPng, unknownBlockTypes } from './lib/render.mjs';
 import { newDeliverables, deliverFiles, noteUploaded } from './lib/deliver.mjs';
@@ -305,7 +306,7 @@ function startScreen(u) {
     '• Search the web and read pages for you',
     '• Remember our conversation until you start a new chat',
     '',
-    `Model: <code>${escapeHtml(u.model)}</code> · Balance: <b>$${escapeHtml(microUsdToString(u.balance_micro_usd, 4))}</b>`,
+    `Model: <code>${escapeHtml(u.model)}</code> · Balance: <b>$${escapeHtml(trimZeros(microUsdToString(u.balance_micro_usd, 4)))}</b>`,
     GRANT_MICRO > 0
       ? `Free grant: <b>$${escapeHtml(microUsdToString(u.grant_micro_usd, 4))}</b> — spendable on <b>free models only</b>.`
       : '',
@@ -665,7 +666,7 @@ function whenLabel(sec) {
 function balanceScreen(u) {
   const led = db.prepare('SELECT * FROM ledger WHERE chat_id=? ORDER BY id DESC LIMIT 10').all(u.chat_id);
   const lines = [
-    `Balance: <b>$${escapeHtml(microUsdToString(u.balance_micro_usd, 4))}</b>`,
+    `Balance: <b>$${escapeHtml(trimZeros(microUsdToString(u.balance_micro_usd, 4)))}</b>`,
     u.reserved_micro_usd > 0 ? `Reserved for a turn in flight: $${escapeHtml(microUsdToString(u.reserved_micro_usd, 4))}` : '',
     GRANT_MICRO > 0 ? `Free grant (free models only): $${escapeHtml(microUsdToString(u.grant_micro_usd, 4))}` : '',
     `Model: <code>${escapeHtml(u.model)}</code>`,
@@ -799,7 +800,7 @@ async function runTurn(chatId, updateId, text, attachments = []) {
   } catch (e) {
     if (e instanceof InsufficientFunds) {
       const need = microUsdToString(e.needed, 4);
-      return `This turn could cost up to <b>$${escapeHtml(need)}</b> and your balance is $${escapeHtml(microUsdToString(e.available, 4))}.\n\nTop up with /topup, or switch to a free model with /models.`;
+      return `This turn could cost up to <b>$${escapeHtml(need)}</b> and your balance is $${escapeHtml(trimZeros(microUsdToString(e.available, 4)))}.\n\nTop up with /topup, or switch to a free model with /models.`;
     }
     throw e;
   }
@@ -1884,6 +1885,27 @@ async function publishCommands() {
   }
 }
 
+// Display names for the admin Users page. The bot stores no names, so ask
+// Telegram, and remember the answer for an hour -- the page reloads often and
+// a user's name rarely changes.
+const nameCache = new Map();
+async function telegramNames(chatIds) {
+  const out = {};
+  const now = Date.now();
+  await Promise.all(chatIds.map(async (id) => {
+    const hit = nameCache.get(id);
+    if (hit && now - hit.at < 3600000) { out[id] = hit.name; return; }
+    const r = await tg.call('getChat', { chat_id: id }, { timeoutMs: 5000 }).catch(() => null);
+    if (!r || !r.ok) return;
+    const c = r.result || {};
+    const name = [[c.first_name, c.last_name].filter(Boolean).join(' '), c.username ? `@${c.username}` : '']
+      .filter(Boolean).join(' ') || null;
+    nameCache.set(id, { name, at: now });
+    out[id] = name;
+  }));
+  return out;
+}
+
 async function main() {
   const me = await tg.getMe();
   if (!me.ok) { log.error('getMe failed; refusing to start', { desc: me.description }); process.exit(1); }
@@ -1896,7 +1918,27 @@ async function main() {
     log.warn('PRIVACY MODE IS OFF -- this bot would see every message in any group it is added to. Turn it ON in BotFather.');
   }
 
+  // A RESTART ENDS EVERY TURN. Whatever was running died with the old process,
+  // so its per-user lock and its open reservation belong to nobody. Left alone
+  // they cost the user 3 minutes of "still busy" and 60 minutes of money they
+  // cannot spend (2026-09-24: a deploy caught a new user mid-turn and her next
+  // messages were refused). Held reservations are different -- the turn MAY
+  // have run -- and stay with the age-out.
+  const unlocked = db.prepare('UPDATE users SET busy_at = NULL WHERE busy_at IS NOT NULL').run().changes;
+  const orphans = db.prepare("SELECT id FROM reservations WHERE state = 'open'").all();
+  for (const r of orphans) release(db, r.id, 'bot restarted mid-turn');
+  if (unlocked || orphans.length) log.info('cleared turns cut off by the restart', { unlocked, released: orphans.length });
+
   await publishCommands();
+
+  // admin.pc.am's Users page. Before the probe, so the panel works during the
+  // ~2.5 minutes the probe takes.
+  startAdminApi({
+    db,
+    token: cfg.strOr('ADMIN_API_TOKEN', ''),
+    port: cfg.int('ADMIN_API_PORT', 8797),
+    names: telegramNames,
+  });
 
   await refreshPrices();
 

@@ -148,6 +148,12 @@ ALLOWLIST_CHAT_IDS=
 ADMIN_CHAT_IDS=
 # 1 = answer EVERYBODY, and ALLOWLIST_CHAT_IDS no longer gates. Opened 2026-09-24.
 OPEN_TO_ALL=0
+# admin.pc.am's "PcoinAiBot users" page (list users, credit a balance) calls a
+# listener on 127.0.0.1:ADMIN_API_PORT with this bearer token. The same token
+# goes in /opt/pcoin-admin/upstream.json as "pcnaibot": {"url","token"}. Unset
+# or shorter than 32 characters = the listener does not start.
+ADMIN_API_TOKEN=
+ADMIN_API_PORT=8797
 # wPCN. ENABLED as of 2026-09-11: the shared verifier now credits from
 # serviceRate (not the ladder `price`) AND bonusPercent is 0, so wPCN credits at
 # exact parity with PCN. That closes the arbitrage in both halves --
