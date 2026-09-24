@@ -73,6 +73,168 @@ namespace PCoinTray
             f.Controls.Add(b);
             return b;
         }
+
+        //! Height of `lines` lines of text in `font`, measured rather than assumed.
+        public static int LinesHigh(Font font, int lines)
+        {
+            return TextRenderer.MeasureText("Ag", font).Height * lines;
+        }
+    }
+
+    /**
+     * Lays a dialog out top to bottom from MEASURED text, so that nothing in it
+     * can be clipped at any display scale (GitHub issue #3).
+     *
+     * The app declares itself DPI-aware (PCoinTray.manifest), which keeps text
+     * sharp but means Windows scales nothing for us: at 150% a 9pt font is drawn
+     * half as large again in pixels, while every pixel size the code sets stays
+     * exactly what it was. A Label in a box sized for 100% then wraps, and the
+     * lines that no longer fit are cut off without a trace. That is how "check
+     * your paper" came to ask for "Word" with no number: the word grid was fixed
+     * in 1.4.28 by measuring it, and this is the same fix for every other part of
+     * the dialogs a person meets while setting up a phrase or forwarding.
+     *
+     * Every height comes from measuring the text in the font it is drawn in.
+     * Every width, margin and gap is the 100% design value times Scale, so text
+     * wraps where it did at 100% and the dialog keeps its proportions. The window
+     * is then sized from what it ended up containing. Scale is read off the
+     * dialog's own font, so it is 1.0 at 100% - where the layout is the one these
+     * dialogs always had - and it follows whatever font was actually used.
+     */
+    sealed class Flow
+    {
+        readonly Form _form;
+        //! 1.0 at 100% display scaling, 1.5 at 150%, 2.0 at 200%.
+        public readonly float Scale;
+        public readonly int Left;
+        //! Width of the column in real pixels; text wraps at it.
+        public int Width;
+        //! Top of the next row in real pixels.
+        public int Y;
+
+        //! `left`, `top` and `width` are the 100% design values. Set the form's
+        //! Font first: the scale is read from it.
+        public Flow(Form form, int left, int top, int width)
+        {
+            _form = form;
+            float dpi;
+            using (var g = Graphics.FromHwnd(IntPtr.Zero)) dpi = g.DpiY;
+            // 9pt is 12 pixels at 96 DPI, the size these dialogs were designed at.
+            Scale = form.Font.SizeInPoints * dpi / 72f / 12f;
+            Left = Px(left);
+            Width = Px(width);
+            Y = Px(top);
+        }
+
+        public int Px(int designPixels)
+        {
+            return (int)Math.Round(designPixels * Scale);
+        }
+
+        //! A label that wraps at the column width and is exactly as tall as the
+        //! wrapped text, or as `minLines` lines, for text that is set later.
+        public Label Text(string s, bool bold, int gapAfter, int minLines = 1)
+        {
+            var l = Ui.Text(_form, s, Left, Y, Width, 1, bold);
+            l.Height = Math.Max(l.GetPreferredSize(new Size(Width, 0)).Height, Ui.LinesHigh(l.Font, minLines));
+            Y = l.Bottom + Px(gapAfter);
+            return l;
+        }
+
+        //! Adds `c` at the left of the column, keeping its own size (a CheckBox
+        //! with AutoSize, a Panel sized by the caller).
+        public T Place<T>(T c, int gapAfter) where T : Control
+        {
+            c.Location = new Point(Left, Y);
+            _form.Controls.Add(c);
+            Y = c.Bottom + Px(gapAfter);
+            return c;
+        }
+
+        //! Adds `c` at the left of the column, `designWidth` wide at 100%, or
+        //! the whole column for 0. A single-line TextBox takes its height from
+        //! its own font.
+        public T Place<T>(T c, int designWidth, int gapAfter) where T : Control
+        {
+            c.Width = designWidth > 0 ? Px(designWidth) : Width;
+            return Place(c, gapAfter);
+        }
+
+        //! A multi-line TextBox tall enough for `lines` lines of its own font.
+        public TextBox Box(TextBox t, int designWidth, int lines, int gapAfter)
+        {
+            Place(t, designWidth, 0);
+            t.Height = Ui.LinesHigh(t.Font, lines) + (t.Height - t.ClientSize.Height) + Px(4);
+            Y = t.Bottom + Px(gapAfter);
+            return t;
+        }
+
+        //! A label and its field on one row, the field starting at `column`
+        //! pixels from the left edge, both centred on the taller of the two.
+        public void Pair(Label label, Control field, int column, int gapAfter)
+        {
+            int h = Math.Max(label.Height, field.Height);
+            label.Location = new Point(Left, Y + (h - label.Height) / 2);
+            field.Location = new Point(Left + column, Y + (h - field.Height) / 2);
+            Y += h + Px(gapAfter);
+        }
+
+        //! A button at least `designWidth` x 30 at 100%, and larger if its text
+        //! needs it. Placed by Row().
+        public Button Button(string text, int designWidth, DialogResult r)
+        {
+            var b = Ui.Button(_form, text, Left, Y, Px(designWidth), r);
+            b.Height = Px(30);
+            var need = b.GetPreferredSize(Size.Empty);
+            b.Size = new Size(Math.Max(Px(designWidth), need.Width), Math.Max(Px(30), need.Height));
+            return b;
+        }
+
+        //! One row: `left` packed from the left edge, `right` ending at the
+        //! right edge of the column (or after `left`, if they would meet), all
+        //! centred on the tallest.
+        public void Row(Control[] left, Control[] right, int gapAfter)
+        {
+            int gap = Px(10), h = 0, x = Left, rightW = -gap;
+            foreach (var c in left) h = Math.Max(h, c.Height);
+            foreach (var c in right) { h = Math.Max(h, c.Height); rightW += c.Width + gap; }
+            foreach (var c in left)
+            {
+                c.Location = new Point(x, Y + (h - c.Height) / 2);
+                x = c.Right + gap;
+            }
+            x = Math.Max(Left + Width - rightW, x);
+            foreach (var c in right)
+            {
+                c.Location = new Point(x, Y + (h - c.Height) / 2);
+                x = c.Right + gap;
+            }
+            Y += h + Px(gapAfter);
+        }
+
+        //! Sizes the window to what it contains. If that is taller than the
+        //! screen it opens on - the forwarding window at 175% on a 1080p
+        //! display - it stops at the screen and scrolls, because a button below
+        //! the bottom of the screen is as lost as a clipped one.
+        public void Finish()
+        {
+            int right = Left + Width, bottom = 0;
+            foreach (Control c in _form.Controls)
+            {
+                right = Math.Max(right, c.Right);
+                bottom = Math.Max(bottom, c.Bottom);
+            }
+            _form.ClientSize = new Size(right + Left, bottom + Px(16));
+
+            Rectangle screen = Screen.FromPoint(Control.MousePosition).WorkingArea;
+            if (_form.Height > screen.Height)
+            {
+                int chrome = _form.Height - _form.ClientSize.Height;
+                _form.AutoScroll = true;
+                _form.ClientSize = new Size(right + Left + SystemInformation.VerticalScrollBarWidth,
+                                            screen.Height - chrome);
+            }
+        }
     }
 
     /**
@@ -93,17 +255,18 @@ namespace PCoinTray
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition = FormStartPosition.CenterScreen;
             ControlBox = false;
-            ClientSize = new Size(420, 90);
             TopMost = true;
             Font = new Font("Segoe UI", 9f);
-            Controls.Add(new Label { Text = message, Location = new Point(16, 18), Size = new Size(388, 34) });
+
+            var flow = new Flow(this, 16, 18, 388);     // measured: see Flow
+            flow.Text(message, false, 4);
             var bar = new ProgressBar
             {
-                Location = new Point(16, 56),
-                Size = new Size(388, 16),
+                Height = flow.Px(16),
                 Style = ProgressBarStyle.Marquee
             };
-            Controls.Add(bar);
+            flow.Place(bar, 0, 0);
+            flow.Finish();
         }
 
         protected override void OnShown(EventArgs e)
@@ -148,22 +311,26 @@ namespace PCoinTray
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition = FormStartPosition.CenterScreen;
             MaximizeBox = MinimizeBox = false;
-            ClientSize = new Size(460, 250);
             Font = new Font("Segoe UI", 9f);
             TopMost = true;
 
-            Ui.Text(this, headline, 20, 16, 420, 24, true);
-            Ui.Text(this, body, 20, 44, 420, 118, false);
-            Ui.Text(this, "Type " + word + " to continue:", 20, 168, 200, 22, false);
+            var flow = new Flow(this, 20, 16, 420);     // measured: see Flow
+            flow.Text(headline, true, 4);
+            flow.Text(body, false, 6);
+            var prompt = Ui.Text(this, "Type " + word + " to continue:", 0, 0, 1, 1, false);
+            prompt.AutoSize = true;
 
-            var box = new TextBox { Location = new Point(220, 164), Size = new Size(120, 26) };
+            var box = new TextBox { Width = flow.Px(120) };
             Controls.Add(box);
+            flow.Pair(prompt, box, Math.Max(flow.Px(200), prompt.Width + flow.Px(6)), 12);
 
-            var ok = Ui.Button(this, action, 240, 204, 200, DialogResult.OK);
+            var ok = flow.Button(action, 200, DialogResult.OK);
             ok.Enabled = false;
             box.TextChanged += (s, e) => ok.Enabled = box.Text.Trim().ToUpperInvariant() == word;
-            var cancel = Ui.Button(this, "Cancel", 20, 204, 100, DialogResult.Cancel);
+            var cancel = flow.Button("Cancel", 100, DialogResult.Cancel);
             CancelButton = cancel;
+            flow.Row(new Control[] { cancel }, new Control[] { ok }, 0);
+            flow.Finish();
         }
     }
 
@@ -180,50 +347,48 @@ namespace PCoinTray
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition = FormStartPosition.CenterScreen;
             MaximizeBox = MinimizeBox = false;
-            ClientSize = new Size(500, hasExistingWallet ? 330 : 280);
             Font = new Font("Segoe UI", 9f);
             TopMost = true;
 
-            Ui.Text(this, "Back up your PCoin with 12 words", 20, 18, 460, 26, true);
-            Ui.Text(this,
+            var flow = new Flow(this, 20, 18, 460);     // measured: see Flow
+            flow.Text("Back up your PCoin with 12 words", true, 4);
+            flow.Text(
                 "Right now the coins on this PC exist only as a file. If Windows is " +
                 "reinstalled or the disk fails, they are gone.\r\n\r\n" +
                 "A recovery phrase is twelve ordinary English words that can rebuild the " +
                 "wallet on any machine. You write them on paper once and keep the paper " +
                 "somewhere safe. Anyone who has the words has the money, so they never go " +
                 "in an email, a photo or a password manager you do not control.",
-                20, 48, 460, 118, false);
+                false, 6);
 
-            int y = 172;
             if (hasExistingWallet)
             {
-                var warn = Ui.Text(this,
+                var warn = flow.Text(
                     "Your existing wallet is not touched. It keeps its coins and stays " +
                     "spendable. The new phrase-backed wallet is created alongside it, and " +
                     "future mining rewards are paid into it.",
-                    20, y, 460, 52, false);
+                    false, 6);
                 warn.ForeColor = Color.FromArgb(120, 70, 0);
-                y += 58;
             }
 
             var adv = new CheckBox
             {
                 Text = "Use 24 words instead of 12 (advanced)",
-                Location = new Point(20, y),
-                Size = new Size(300, 22)
+                AutoSize = true
             };
             adv.CheckedChanged += (s, e) => WordCount = adv.Checked ? 24 : 12;
-            Controls.Add(adv);
-            y += 30;
+            flow.Place(adv, 8);
 
-            var create = Ui.Button(this, "Create a recovery phrase", 20, y, 200, DialogResult.OK);
+            var create = flow.Button("Create a recovery phrase", 200, DialogResult.OK);
             create.Click += (s, e) => Choice = SetupChoice.Create;
-            var restore = Ui.Button(this, "I already have one", 230, y, 140, DialogResult.OK);
+            var restore = flow.Button("I already have one", 140, DialogResult.OK);
             restore.Click += (s, e) => Choice = SetupChoice.Restore;
-            var cancel = Ui.Button(this, "Not now", 380, y, 100, DialogResult.Cancel);
+            var cancel = flow.Button("Not now", 100, DialogResult.Cancel);
             cancel.Click += (s, e) => Choice = SetupChoice.Cancel;
             AcceptButton = create;
             CancelButton = cancel;
+            flow.Row(new Control[] { create, restore }, new Control[] { cancel }, 0);
+            flow.Finish();
         }
     }
 
@@ -278,22 +443,22 @@ namespace PCoinTray
             }
             int colW = cellSize.Width + 22;          // widest entry, plus gutters
             int rowH = cellSize.Height + 8;
-            int panelW = Math.Max(480, cols * colW);
             int panelH = rows * rowH + 16;
-            int contentW = panelW;                   // everything else lines up with the grid
-            ClientSize = new Size(contentW + 40, 150 + panelH + 60);
 
-            Ui.Text(this, headline, 20, 16, contentW, 24, true);
-            Ui.Text(this, body, 20, 44, contentW, 92, false);
+            // The headline, body and button around the grid are measured the
+            // same way (see Flow), and everything lines up with the grid.
+            var flow = new Flow(this, 20, 16, 480);
+            flow.Width = Math.Max(flow.Width, cols * colW);
+            flow.Text(headline, true, 4);
+            flow.Text(body, false, 6);
 
             _panel = new Panel
             {
-                Location = new Point(20, 142),
-                Size = new Size(panelW, panelH),
+                Size = new Size(flow.Width, panelH),
                 BorderStyle = BorderStyle.FixedSingle,
                 BackColor = Color.FromArgb(248, 246, 255)
             };
-            Controls.Add(_panel);
+            flow.Place(_panel, 4);
 
             for (int i = 0; i < words.Length; i++)
             {
@@ -331,11 +496,16 @@ namespace PCoinTray
             Controls.Add(_cover);
             _cover.BringToFront();
 
-            _countdown = Ui.Text(this, "", 20, 150 + panelH, 300, 22, false);
+            // Sized for the longest thing it will say; it starts empty.
+            _countdown = Ui.Text(this, "This window closes in 0:00", 0, 0, 1, 1, false);
+            _countdown.Size = _countdown.GetPreferredSize(Size.Empty);
+            _countdown.Text = "";
             _countdown.ForeColor = Color.FromArgb(110, 110, 120);
 
-            var ok = Ui.Button(this, continueText, contentW - 140, 146 + panelH, 160, DialogResult.OK);
+            var ok = flow.Button(continueText, 160, DialogResult.OK);
             AcceptButton = ok;
+            flow.Row(new Control[] { _countdown }, new Control[] { ok }, 0);
+            flow.Finish();
 
             _timer.Interval = 1000;
             _timer.Tick += (s, e) =>
@@ -383,6 +553,8 @@ namespace PCoinTray
         readonly Label[] _labels = new Label[3];
         readonly Label _status;
 
+        const string MISMATCH = "That does not match your phrase. Check your paper.";
+
         public PhraseConfirmForm(string[] words)
         {
             _words = words;
@@ -392,21 +564,35 @@ namespace PCoinTray
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition = FormStartPosition.CenterScreen;
             MaximizeBox = MinimizeBox = false;
-            ClientSize = new Size(460, 260);
             Font = new Font("Segoe UI", 9f);
             TopMost = true;
 
-            Ui.Text(this, "Confirm you wrote the words down", 20, 16, 420, 24, true);
-            Ui.Text(this, "Type the words at these positions from your paper. " +
-                          "The window with the phrase is closed on purpose.", 20, 44, 420, 40, false);
+            // MEASURED, like the word grid before it (see Flow). The "Word N"
+            // labels used to be fixed 70x24-pixel boxes. Above 100% display
+            // scaling "Word 24" no longer fit, wrapped at the space, and the
+            // number went to a second line the box cut off - so this window
+            // asked for three words without saying which. That was the second
+            // half of GitHub issue #3, in every release up to 1.4.35, and the
+            // workaround people found was to drop Windows to 100%.
+            var flow = new Flow(this, 20, 16, 420);
+            flow.Text("Confirm you wrote the words down", true, 4);
+            flow.Text("Type the words at these positions from your paper. " +
+                      "The window with the phrase is closed on purpose.", false, 8);
 
+            int labelW = 0;
             for (int i = 0; i < 3; i++)
             {
-                _labels[i] = Ui.Text(this, "Word " + (_positions[i] + 1), 20, 96 + i * 36, 70, 24, false);
+                _labels[i] = Ui.Text(this, "Word " + (_positions[i] + 1), 0, 0, 1, 1, false);
+                _labels[i].AutoSize = true;
+                // Wide enough for every label Reroll can produce, not only the
+                // three shown first, so a later "Word 24" never meets its box.
+                if (i == 0)
+                    for (int n = 1; n <= words.Length; n++)
+                        labelW = Math.Max(labelW, TextRenderer.MeasureText(
+                            "Word " + n.ToString(CultureInfo.InvariantCulture), _labels[0].Font).Width);
                 var t = new TextBox
                 {
-                    Location = new Point(96, 92 + i * 36),
-                    Size = new Size(200, 26),
+                    Width = flow.Px(200),
                     Font = new Font("Consolas", 11f),
                     // No autocomplete and no suggestion history: the phrase must
                     // not end up in a Windows autofill store.
@@ -416,15 +602,23 @@ namespace PCoinTray
                 _boxes[i] = t;
                 Controls.Add(t);
             }
+            int column = Math.Max(flow.Px(70), labelW) + flow.Px(6);
+            for (int i = 0; i < 3; i++)
+                flow.Pair(_labels[i], _boxes[i], column, i < 2 ? 10 : 12);
 
-            _status = Ui.Text(this, "", 20, 208, 300, 22, false);
+            // Sized for the one thing it ever says, so that cannot be clipped
+            // either; it starts empty.
+            _status = flow.Text(MISMATCH, false, 6);
+            _status.Text = "";
             _status.ForeColor = Color.Firebrick;
 
-            var ok = Ui.Button(this, "Confirm", 240, 214, 100, DialogResult.None);
+            var ok = flow.Button("Confirm", 100, DialogResult.None);
             ok.Click += (s, e) => Verify();
-            var back = Ui.Button(this, "Show me again", 20, 214, 120, DialogResult.Retry);
-            Ui.Button(this, "Cancel", 350, 214, 90, DialogResult.Cancel);
+            var back = flow.Button("Show me again", 120, DialogResult.Retry);
+            var cancel = flow.Button("Cancel", 90, DialogResult.Cancel);
             AcceptButton = ok;
+            flow.Row(new Control[] { back }, new Control[] { ok, cancel }, 0);
+            flow.Finish();
         }
 
         void Verify()
@@ -434,7 +628,7 @@ namespace PCoinTray
                 string typed = Bip39.Normalize(_boxes[i].Text);
                 if (!string.Equals(typed, _words[_positions[i]], StringComparison.Ordinal))
                 {
-                    _status.Text = "That does not match your phrase. Check your paper.";
+                    _status.Text = MISMATCH;
                     Reroll();
                     return;
                 }
@@ -500,34 +694,34 @@ namespace PCoinTray
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition = FormStartPosition.CenterScreen;
             MaximizeBox = MinimizeBox = false;
-            ClientSize = new Size(540, 330);
             Font = new Font("Segoe UI", 9f);
             TopMost = true;
 
-            Ui.Text(this, "Type your 12 or 24 words", 20, 16, 500, 24, true);
-            Ui.Text(this, "In order, separated by spaces. Upper or lower case does not matter. " +
-                          "Nothing is changed until the phrase checks out.", 20, 42, 500, 36, false);
+            var flow = new Flow(this, 20, 16, 500);     // measured: see Flow
+            flow.Text("Type your 12 or 24 words", true, 2);
+            flow.Text("In order, separated by spaces. Upper or lower case does not matter. " +
+                      "Nothing is changed until the phrase checks out.", false, 6);
 
             _input = new TextBox
             {
-                Location = new Point(20, 84),
-                Size = new Size(500, 96),
                 Multiline = true,
                 Font = new Font("Consolas", 11f),
                 AutoCompleteMode = AutoCompleteMode.None,
                 AutoCompleteSource = AutoCompleteSource.None
             };
             _input.TextChanged += (s, e) => CheckPhrase();
-            Controls.Add(_input);
+            flow.Box(_input, 0, 5, 10);
 
-            _status = Ui.Text(this, "0 of 12 words", 20, 190, 500, 22, true);
-            _detail = Ui.Text(this, "", 20, 214, 500, 66, false);
+            _status = flow.Text("0 of 12 words", true, 2);
+            _detail = flow.Text("", false, 8, 4);      // four lines, as it always had room for
 
-            _ok = Ui.Button(this, "Restore this wallet", 330, 288, 190, DialogResult.OK);
+            _ok = flow.Button("Restore this wallet", 190, DialogResult.OK);
             _ok.Enabled = false;
             _ok.Click += (s, e) => Mnemonic = Bip39.Normalize(_input.Text);
-            var cancel = Ui.Button(this, "Cancel", 20, 288, 100, DialogResult.Cancel);
+            var cancel = flow.Button("Cancel", 100, DialogResult.Cancel);
             CancelButton = cancel;
+            flow.Row(new Control[] { cancel }, new Control[] { _ok }, 0);
+            flow.Finish();
         }
 
         void CheckPhrase()

@@ -56,57 +56,58 @@ namespace PCoinTray
      */
     class TypeAddressAgainForm : Form
     {
+        const string MISMATCH = "The two addresses are not the same. Check both.";
+
         public TypeAddressAgainForm(string address)
         {
             Text = "PCoin - type the address again";
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition = FormStartPosition.CenterScreen;
             MaximizeBox = MinimizeBox = false;
-            ClientSize = new Size(560, 300);
             Font = new Font("Segoe UI", 9f);
             TopMost = true;
 
-            Ui.Text(this, "Windows could not check who you are", 20, 16, 520, 24, true);
-            Ui.Text(this,
+            var flow = new Flow(this, 20, 16, 520);     // measured: see Flow (SeedForms.cs)
+            flow.Text("Windows could not check who you are", true, 4);
+            flow.Text(
                 "This PC signs in with a PIN, a fingerprint or no password, so nothing can gate this " +
                 "change - anyone signed in as you could redirect your coins. The whole address has to " +
                 "be typed twice instead.",
-                20, 44, 520, 60, false);
+                false, 8);
 
-            Ui.Text(this, "The address you entered:", 20, 112, 520, 18, false);
+            flow.Text("The address you entered:", false, 2);
             var shown = new TextBox
             {
                 Text = address,
-                Location = new Point(20, 132),
-                Size = new Size(520, 24),
                 ReadOnly = true,
                 Font = new Font("Consolas", 10f)
             };
-            Controls.Add(shown);
+            flow.Place(shown, 0, 10);
 
-            Ui.Text(this, "Type the WHOLE address again", 20, 166, 520, 18, false);
+            flow.Text("Type the WHOLE address again", false, 2);
             var box = new TextBox
             {
-                Location = new Point(20, 186),
-                Size = new Size(520, 24),
                 Font = new Font("Consolas", 10f)
             };
-            Controls.Add(box);
+            flow.Place(box, 0, 6);
 
-            var mismatch = Ui.Text(this, "", 20, 216, 520, 20, false);
+            // Sized for what it says; it starts empty.
+            var mismatch = flow.Text(MISMATCH, false, 14);
+            mismatch.Text = "";
             mismatch.ForeColor = Color.FromArgb(160, 40, 40);
 
-            var ok = Ui.Button(this, "Save forwarding address", 320, 250, 220, DialogResult.OK);
+            var ok = flow.Button("Save forwarding address", 220, DialogResult.OK);
             ok.Enabled = false;
             box.TextChanged += delegate
             {
                 bool same = string.Equals(box.Text, address, StringComparison.Ordinal);
                 ok.Enabled = same;
-                mismatch.Text = (box.Text.Length == 0 || same)
-                    ? "" : "The two addresses are not the same. Check both.";
+                mismatch.Text = (box.Text.Length == 0 || same) ? "" : MISMATCH;
             };
-            var cancel = Ui.Button(this, "Cancel", 20, 250, 110, DialogResult.Cancel);
+            var cancel = flow.Button("Cancel", 110, DialogResult.Cancel);
             CancelButton = cancel;
+            flow.Row(new Control[] { cancel }, new Control[] { ok }, 0);
+            flow.Finish();
         }
     }
 
@@ -141,7 +142,16 @@ namespace PCoinTray
          */
         bool _cannotVerify;
 
+        //! Width of the confirmation box when it takes only the last six
+        //! characters; with _cannotVerify it is as wide as the address box.
+        readonly int _confirmNarrow;
+
         const int RPC_TIMEOUT_MS = 20000;
+
+        const string NO_LOCK =
+            "This PC signs in with a PIN, a fingerprint or no password, so nothing can gate " +
+            "this change - anyone signed in as you could redirect your coins. The whole " +
+            "address has to be typed twice instead.";
 
         public ForwardSettingsForm(ForwardEngine engine, RpcClient rpc, Func<string> payoutWallet)
         {
@@ -154,11 +164,17 @@ namespace PCoinTray
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition = FormStartPosition.CenterScreen;
             MaximizeBox = MinimizeBox = false;
-            ClientSize = new Size(580, 690);
             Font = new Font("Segoe UI", 9f);
 
-            Ui.Text(this, "Forward my coins", 20, 16, 540, 26, true);
-            Ui.Text(this,
+            // Measured rather than placed (see Flow, SeedForms.cs), for the same
+            // reason as the phrase dialogs: above 100% display scaling the text
+            // outgrew its fixed boxes and was cut off. It was already cut off at
+            // 100% here - the body needed 135 pixels and had 118, so its last
+            // paragraph, the one saying nothing is forwarded until a test
+            // payment has been confirmed, was never on screen at all.
+            var flow = new Flow(this, 20, 16, 540);
+            flow.Text("Forward my coins", true, 4);
+            flow.Text(
                 "This app is a wallet. Mined coins are paid into it and stay here, recoverable with " +
                 "your twelve words, until you choose otherwise.\r\n\r\n" +
                 "If you set an address below, the app will automatically send coins there once they " +
@@ -167,56 +183,56 @@ namespace PCoinTray
                 "Before any real forwarding starts, the app sends a 1.00000000 PC test payment and " +
                 "waits for you to confirm you can see it. If you never confirm it, nothing more is " +
                 "ever sent.",
-                20, 46, 540, 118, false);
+                false, 8);
 
             // Read-only multiline box rather than a label: it shows the
             // destination address, and an address is something people need to be
             // able to select and copy.
-            _current.Location = new Point(20, 172);
-            _current.Size = new Size(540, 76);
             _current.Multiline = true;
             _current.ReadOnly = true;
             _current.BorderStyle = BorderStyle.FixedSingle;
             _current.BackColor = Color.FromArgb(246, 246, 250);
             _current.Font = new Font("Segoe UI", 9f);
-            Controls.Add(_current);
+            flow.Box(_current, 0, 5, 12);
 
-            Ui.Text(this, "FORWARD TO THIS ADDRESS", 20, 260, 540, 18, false);
-            _address.Location = new Point(20, 280);
-            _address.Size = new Size(540, 24);
+            flow.Text("FORWARD TO THIS ADDRESS", false, 2);
             _address.Font = new Font("Consolas", 10f);
-            Controls.Add(_address);
+            flow.Place(_address, 0, 8);
 
-            _confirmLabel = Ui.Text(this, "Retype the LAST 6 CHARACTERS of that address", 20, 312, 540, 18, false);
-            _confirm.Location = new Point(20, 332);
-            _confirm.Size = new Size(200, 24);
+            _confirmLabel = flow.Text("Retype the LAST 6 CHARACTERS of that address", false, 2);
             _confirm.Font = new Font("Consolas", 10f);
-            Controls.Add(_confirm);
+            flow.Place(_confirm, 200, 8);
+            _confirmNarrow = _confirm.Width;
 
-            _noLock = Ui.Text(this, "", 20, 364, 540, 56, false);
+            // Sized for the warning Render() puts here; it starts empty.
+            _noLock = flow.Text(NO_LOCK, false, 4);
+            _noLock.Text = "";
             _noLock.ForeColor = Color.FromArgb(150, 90, 0);
 
-            _status = Ui.Text(this, "", 20, 424, 540, 96, false);
+            _status = flow.Text("", false, 4, 5);
             _status.ForeColor = Color.FromArgb(40, 40, 40);
 
-            Ui.Text(this,
+            flow.Text(
                 "Timing, honestly: mined coins cannot be spent for 101 blocks, which on PCoin today " +
                 "is about a day. Forwards start roughly a day after this PC finds a block, and then " +
                 "arrive about as often as it finds them. There is no way to make that faster.",
-                20, 524, 540, 56, false).ForeColor = Color.FromArgb(105, 105, 115);
+                false, 10).ForeColor = Color.FromArgb(105, 105, 115);
 
-            _save = Ui.Button(this, "Save forwarding address", 20, 590, 220, DialogResult.None);
+            _save = flow.Button("Save forwarding address", 220, DialogResult.None);
             _save.Click += delegate { Submit(); };
 
-            _stop = Ui.Button(this, "Stop forwarding, keep coins here", 250, 590, 230, DialogResult.None);
+            _stop = flow.Button("Stop forwarding, keep coins here", 230, DialogResult.None);
             _stop.Click += delegate { StopForwarding(); };
+            flow.Row(new Control[] { _save, _stop }, new Control[0], 8);
 
-            _clear = Ui.Button(this, "Clear the stuck forward record", 20, 628, 230, DialogResult.None);
+            _clear = flow.Button("Clear the stuck forward record", 230, DialogResult.None);
             _clear.Click += delegate { ClearStuckRecord(); };
 
-            var close = Ui.Button(this, "Close", 460, 628, 100, DialogResult.OK);
+            var close = flow.Button("Close", 100, DialogResult.OK);
             CancelButton = close;
             AcceptButton = _save;
+            flow.Row(new Control[] { _clear }, new Control[] { close }, 0);
+            flow.Finish();
 
             Render();
         }
@@ -260,19 +276,16 @@ namespace PCoinTray
 
             if (_cannotVerify)
             {
-                _noLock.Text =
-                    "This PC signs in with a PIN, a fingerprint or no password, so nothing can gate " +
-                    "this change - anyone signed in as you could redirect your coins. The whole " +
-                    "address has to be typed twice instead.";
+                _noLock.Text = NO_LOCK;
                 _noLock.Visible = true;
                 _confirmLabel.Text = "Type the WHOLE address again";
-                _confirm.Size = new Size(540, 24);
+                _confirm.Width = _address.Width;
             }
             else
             {
                 _noLock.Visible = false;
                 _confirmLabel.Text = "Retype the LAST 6 CHARACTERS of that address";
-                _confirm.Size = new Size(200, 24);
+                _confirm.Width = _confirmNarrow;
             }
         }
 
