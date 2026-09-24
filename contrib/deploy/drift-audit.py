@@ -78,6 +78,21 @@ DEPLOYMENTS = {
                  "~/.ssh/id_ed25519", ["**/*.py"]),
     "pool": ("contrib/pool", "/opt/pcoin-pool", "~/.ssh/id_ed25519",
              ["*.mjs"]),
+    # price.pc.am has THREE origins and the public URL reaches whichever one
+    # Cloudflare picks -- the third (the parsos coordinator) once served a
+    # month-old build for weeks while the other two were current. So each is its
+    # own deployment here: an audit of "price" that looked at one box would be
+    # the same blind spot again. state.json is per-origin state, never compared.
+    "price": ("contrib/price", "/opt/pcoin-price", "~/.ssh/id_ed25519", ["server.mjs"]),
+    "price-replica": ("contrib/price", "/opt/pcoin-price", "~/.ssh/id_ed25519", ["server.mjs"]),
+    "price-parsos": ("contrib/price", "/opt/pcoin-price", "~/.ssh/parsos_server", ["server.mjs"]),
+    # Its /stats endpoint lived only on the server for twelve days (2026-09-12
+    # to 09-24) before this entry existed.
+    "wpcn-pay": ("contrib/wpcn-pay", "/opt/pcoin-wpcn-pay", "~/.ssh/id_ed25519", ["server.mjs"]),
+    # The unified admin panel, including the pinned Move PCN crypto bundle: a
+    # drifted bundle is refused by the panel itself, but a drifted server.mjs
+    # is not, and it is the file that decides which routes can spend.
+    "admin": ("contrib/admin-panel", "/opt/pcoin-admin", "~/.ssh/id_ed25519", ["*.mjs", "*.js"]),
 }
 
 # Files that are SUPPOSED to be absent from a server: tests and local helpers
@@ -87,7 +102,9 @@ DEPLOYMENTS = {
 NOT_DEPLOYED_OK = {
     "pool": {"blocktest.mjs", "coinbasetest.mjs", "duptest.mjs",
              "storetest.mjs", "testminer.mjs"},
-    "market": {"gen_ladder.mjs"},
+    "market": {"gen_ladder.mjs", "ops-send-test.mjs"},
+    "admin": {"send-test.mjs", "transfer-test.mjs", "transfer-crypto.entry.mjs",
+              "exchange-preview.mjs", "exchange-preview-drive.mjs", "exchange-preview-cf-drive.mjs"},
 }
 
 # Never compared: state, generated files, or files holding credentials.
