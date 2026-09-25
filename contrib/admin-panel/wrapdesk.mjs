@@ -494,7 +494,38 @@ export function wrapdeskWork() {
   return { ok: true, items, allocation, warnings, ranAt: new Date().toISOString() };
 }
 
+// THE REQUEST NUMBER THE CUSTOMER SEES (owner, 2026-09-25: "you say #72 and #73
+// but there is no such number in admin -- add the order number so I don't
+// confuse"). The watcher keys a wrap by its DEPOSIT (txid:address); the desk
+// numbers its requests and stores each with its deposit address, so the join is
+// on the address. Read-only, the desk's own file. A deposit the desk has no
+// request for (the reserve's own change, a test) simply shows no number.
+const REQUESTS_FILE = process.env.WRAPDESK_REQUESTS || '/var/lib/wrapdesk/requests.json';
+function requestsByAddress() {
+  const out = new Map();
+  try {
+    const r = JSON.parse(readFileSync(REQUESTS_FILE, 'utf8'));
+    for (const q of Object.values((r && r.requests) || {})) {
+      if (q && q.address) out.set(String(q.address).toLowerCase(), q);
+    }
+  } catch { /* unreadable: cards show no number rather than a wrong one */ }
+  return out;
+}
+
 function workCard(w) {
+  const reqs = requestsByAddress();
+  const reqOf = (i) => (i && i.key ? reqs.get(String(i.key).split(':')[1] || '') || null : null);
+  const reqNo = (i) => { const q = reqOf(i); return q && q.index ? `#${q.index}` : ''; };
+  const reqLabel = (i) => {
+    const q = reqOf(i);
+    if (!q) return '';
+    const when = Number(q.created) ? new Date(Number(q.created)).toISOString().replace('T', ' ').slice(0, 16) + ' UTC' : '';
+    return `<div style="margin:0 0 4px"><span style="display:inline-block;padding:2px 10px;border-radius:999px;`
+      + `background:var(--blue);color:#0b1020;font-weight:800;font-size:13px">Request #${esc(q.index)}</span>`
+      + ` <span style="font-size:13px">${esc(q.account || '')}</span>`
+      + (when ? ` <span class="muted" style="font-size:12px">&middot; requested ${esc(when)}</span>` : '')
+      + `</div>`;
+  };
   if (!w.ok) {
     return card('What needs you',
       note('This could not be read, so nothing is shown rather than something wrong. '
@@ -538,13 +569,13 @@ function workCard(w) {
   const isTest = (i) => /TEST WRAP/.test(String(i.title || ''));
   const sendForm = (i) => (i.kind !== 'send' || !i.key ? '' :
     `<form method="post" style="margin-top:10px"`
-    + ` onsubmit="return confirm('Send ${esc(amountOf(i) || '')} wPCN from the keeper`
+    + ` onsubmit="return confirm('${reqNo(i) ? `Request ${esc(reqNo(i))}: s` : 'S'}end ${esc(amountOf(i) || '')} wPCN from the keeper`
     + ` now? This moves real money and cannot be undone.')">`
     + `<input type="hidden" name="action" value="send">`
     + `<input type="hidden" name="key" value="${esc(i.key)}">`
     + `<button style="background:var(--accent,#2dd4bf);color:#0b1020;border:0;`
     + `border-radius:999px;padding:8px 18px;cursor:pointer;font-weight:700">`
-    + `Send ${esc(amountOf(i) ? `${amountOf(i)} wPCN ` : '')}now</button>`
+    + `Send ${esc(amountOf(i) ? `${amountOf(i)} wPCN ` : '')}now${reqNo(i) ? ` &mdash; request ${esc(reqNo(i))}` : ''}</button>`
     + `<p class="muted" style="margin:6px 0 0;font-size:12px">Pays from the keeper wallet `
     + `and closes the wrap in one step. Refused if this address has already been paid, `
     + `if it would cross the per-address ceiling or the daily cap, or if an earlier `
@@ -583,12 +614,12 @@ function workCard(w) {
     const amt = String(Number(f.pcn));
     return summary
       + `<form method="post" style="margin-top:8px"`
-      + ` onsubmit="return confirm('Refund ${esc(amt)} PCN to ${esc(f.sender)} from the market wallet now? `
+      + ` onsubmit="return confirm('${reqNo(i) ? `Request ${esc(reqNo(i))}: r` : 'R'}efund ${esc(amt)} PCN to ${esc(f.sender)} from the market wallet now? `
       + `This moves real money and cannot be undone.')">`
       + `<input type="hidden" name="action" value="refund">`
       + `<input type="hidden" name="key" value="${esc(i.key)}">`
       + `<button style="background:var(--yellow);color:#0b1020;border:0;border-radius:999px;`
-      + `padding:8px 18px;cursor:pointer;font-weight:700">Refund ${esc(amt)} PCN to `
+      + `padding:8px 18px;cursor:pointer;font-weight:700">Refund ${reqNo(i) ? `request ${esc(reqNo(i))}: ` : ''}${esc(amt)} PCN to `
       + `${esc(f.sender.slice(0, 10))}&hellip;${esc(f.sender.slice(-6))}</button>`
       + `<p class="muted" style="margin:6px 0 0;font-size:12px">Sends back exactly what this `
       + `deposit brought, to the address it came from (<code>${esc(f.sender)}</code>) &mdash; both `
@@ -691,6 +722,7 @@ function workCard(w) {
   const block = (i, colour) =>
     `<div style="border-left:3px solid var(--${colour});padding:8px 12px;margin:10px 0;`
     + `background:var(--panel-2);border-radius:4px">`
+    + reqLabel(i)
     + `<div style="font-weight:700">${esc(i.title)}</div>`
     + (i.to ? `<div style="margin-top:4px">to <code>${esc(i.to)}</code></div>` : '')
     + `<pre style="white-space:pre-wrap;margin:6px 0 0;font-size:12px">${esc(i.detail.join(String.fromCharCode(10)))}</pre>`
