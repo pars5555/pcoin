@@ -240,15 +240,54 @@ def save_state(s):
         print("  (state not written: %s)" % e)
 
 
+# A PLANNED CLOSURE IS NOT AN OUTAGE (owner, 2026-09-25: the exchange and the
+# market were closed for two hours while the PCN price moved to the exchange
+# index, and this watch paged the ops channel every six minutes about a 403 we
+# had set on purpose). /etc/pcoin/control/maintenance-<name> declares one: its
+# first line is when it ENDS (ISO-8601 UTC, or epoch seconds), the rest is why.
+#
+# The end time is the point. Past it the check counts again, so a closure that
+# overruns -- or a file somebody forgot to delete -- pages exactly as before. An
+# end more than a day away is refused, and a file that cannot be read or parsed
+# silences NOTHING: an unknown maintenance state collapses to "check it".
+MAINT_DIR = os.environ.get("SERVICE_MAINT_DIR", "/etc/pcoin/control")
+MAINT_MAX_SECONDS = 24 * 3600
+
+
+def maintenance(name, now=None):
+    """(until_epoch, why) while a planned closure of `name` is declared, else None."""
+    now = time.time() if now is None else now
+    try:
+        with open(os.path.join(MAINT_DIR, "maintenance-" + name), encoding="utf-8") as fh:
+            first, _, rest = fh.read().partition("\n")
+        first = first.strip()
+        if first.isdigit():
+            until = float(first)
+        else:
+            until = datetime.datetime.fromisoformat(first.replace("Z", "+00:00")).timestamp()
+    except (OSError, ValueError):
+        return None
+    if not (now < until <= now + MAINT_MAX_SECONDS):
+        return None
+    return until, (rest.strip().splitlines() or [""])[0][:160]
+
+
 def main():
     dry = "--dry-run" in sys.argv
     st = load_state()
-    bad, good = [], []
+    bad, good, planned = [], [], []
 
     for name, url, want in SERVICES:
         if ONLY and name not in ONLY:
             continue
         ok, detail = probe(url, want)
+        m = None if ok else maintenance(name)
+        if m:
+            st["streak"][name] = 0
+            planned.append(name)
+            print("  %-12s PLANNED %s -- closed on purpose until %s UTC: %s" % (
+                name, detail, time.strftime("%H:%M", time.gmtime(m[0])), m[1] or "no reason given"))
+            continue
         if ok:
             st["streak"][name] = 0
             good.append(name)
@@ -289,7 +328,7 @@ def main():
             save_state(st)
         return 1
 
-    print("all %d services are answering" % len(good))
+    print("all %d services are answering%s" % (len(good), (" (%s closed on purpose)" % ", ".join(planned)) if planned else ""))
     if st["last_alert"] not in ("", "ok"):
         print("  (recovered)")
     st["last_alert"] = "ok"
