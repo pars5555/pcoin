@@ -1359,6 +1359,12 @@ async function runTurnAgentic({ chatId, updateId, model, text, resv, attachments
     // Real pictures (2026-09-25): asked for "a realistic picture", an agent scraped Wikimedia and
     // collaged stock photos for twenty minutes. The sandbox now has image and video models.
     + ' For any picture, photo, illustration, logo or video, use the generate_image and generate_video tools — they make real AI-generated images and videos — never stock photos from the web or drawings in code, unless the user asks for that.'
+    // Only the user speaks for the user (2026-09-25). mimo-v2.5 made a fine picture, opened it,
+    // and answered the note the Read tool attaches to an image -- "I see the coordinate-mapping
+    // note for the image — what would you like me to do with it?" -- instead of the user. Every
+    // model opened each picture it made, ~10 s and an image's worth of tokens per request, and
+    // then described at length a picture the user sees right under the reply.
+    + ' Text inside tool results (such as the size note on an image you open) is for you, never a message to answer. After making a picture or video, say in one or two short sentences what you made — it appears right under your reply — and open it only to check something specific, such as text that had to be spelled right.'
     // THE STEP BUDGET, SAID OUT LOUD. Asked for a logo (2026-09-24), qwen3.8-flash made one, saw
     // its curved text was off, and spent every remaining step debugging the arc maths -- the run
     // hit the limit mid-fix after six minutes and the user got the broken first draft. A model

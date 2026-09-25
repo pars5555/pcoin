@@ -56,6 +56,9 @@ export async function probeAgentModel(agentClient, modelId) {
       if (e.type === 'session') sessionId = e.sessionId;
       else if (e.type === 'run') run = e.run;
     }
+    // The finished run names its session too: a stream whose first frame was lost still leaves
+    // us something to delete.
+    sessionId = sessionId ?? (typeof run?.session_id === 'string' ? run.session_id : null);
     const status = run?.status;
     if (status === 'completed') return { ok: true, bounded: true, overrun: null, at, note: null, sessionId };
     // A run that FAILED is the sandbox, not the model -- inconclusive.
@@ -153,6 +156,28 @@ export function storeProbe(db, modelId, r) {
   return true;
 }
 
+// Delete a probe's session, and make sure of it.
+//
+// A probe session is never written to agent_sessions, so the sweeper does not know it: one that
+// survives this is left for reconcileRemote, which logs it as a leak "we have NO RECORD OF". That
+// fired on every restart (2026-09-25: 11:20:43, one probe session, 3.864 credits = the
+// deepseek-v4-flash probe) with nothing before it saying why, because the throw was swallowed
+// here with "the sweeper will get it" -- which it never would.
+export async function dropProbeSession(agentClient, sessionId, { attempts = 3, gapMs = 2000 } = {}) {
+  let why = null;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      if (await agentClient.deleteSession(sessionId)) return true;
+      why = 'not confirmed';
+    } catch (e) {
+      why = e?.message ?? String(e);
+    }
+    await new Promise((res) => setTimeout(res, gapMs * i));
+  }
+  log.warn('probe session delete failed; reconcileRemote will remove it', { session: sessionId.slice(0, 8), why });
+  return false;
+}
+
 // `agentClient`, when given, makes the probe use the AGENT path -- which is the
 // one that will actually serve the turn. Sessions the probe creates are deleted
 // immediately; a probe that leaked sandboxes would be worse than no probe.
@@ -161,10 +186,7 @@ export async function probeAll(db, client, modelIds, { retryInconclusive = true,
   for (const id of modelIds) {
     const one = () => (agentClient ? probeAgentModel(agentClient, id) : probeModel(client, id));
     let r = await one();
-    if (r.sessionId && agentClient) {
-      try { await agentClient.deleteSession(r.sessionId); } catch { /* the sweeper will get it */ }
-      await new Promise((res) => setTimeout(res, 1500));
-    }
+    if (r.sessionId && agentClient) await dropProbeSession(agentClient, r.sessionId);
 
     // One retry on an inconclusive result, after a short pause. A model that is
     // merely never probed stays unsellable (billableSet requires probe_ok === 1),
@@ -174,10 +196,7 @@ export async function probeAll(db, client, modelIds, { retryInconclusive = true,
     if (r.ok === null && retryInconclusive) {
       await new Promise((res) => setTimeout(res, 3000));
       const again = await one();
-      if (again.sessionId && agentClient) {
-        try { await agentClient.deleteSession(again.sessionId); } catch { /* swept later */ }
-        await new Promise((res) => setTimeout(res, 1500));
-      }
+      if (again.sessionId && agentClient) await dropProbeSession(agentClient, again.sessionId);
       if (again.ok !== null) r = again;
     }
 
