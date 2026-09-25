@@ -69,6 +69,14 @@ def say(*a):
     print(*a, file=sys.stderr)
 
 
+def exact(micro):
+    """1123000 -> '1.123'. The amount as it goes on chain, never rounded to cents:
+    a message saying 1.12 about a 1.123 payment is a message that lies."""
+    whole, frac = divmod(int(micro), 1_000_000)
+    s = f"{whole:,}.{frac:06d}".rstrip("0")
+    return s + "0" * max(0, 2 - len(s.split(".")[1]))
+
+
 def result(state, code, **kw):
     print(json.dumps(dict(state=state, **kw)))
     sys.exit(code)
@@ -255,7 +263,7 @@ def settle(w3, acct, d, key, rec, wait):
     save_ledger(d)
     if first:
         notify("keeper paid an exchange withdrawal",
-               f"{int(rec['micro']) / 1e6:,.2f} USDT (BSC) to {rec['to']} for {rec.get('note') or key}.\n"
+               f"{exact(int(rec['micro']))} USDT (BSC) to {rec['to']} for {rec.get('note') or key}.\n"
                f"tx {rec['hash']} (block {r['blockNumber']})")
     return r
 
@@ -347,11 +355,11 @@ def send(key, to, micro_s, note, dry):
             if dry:
                 result("unknown", 3, txid=rec["hash"], message="DRY RUN: a signed transaction exists for this key; would wait for it.")
             settle(w3, acct, d, key, rec, RECEIPT_WAIT)
-            result("sent", 0, txid=rec["hash"], message=f"Paid {usd:,.2f} USDT to {to}.")
+            result("sent", 0, txid=rec["hash"], message=f"Paid {exact(micro)} USDT to {to}.")
 
     # ---- a fresh payment
     if usd > PER_SEND_MAX_USD + 1e-9:
-        result("refused", 2, message=f"{usd:,.2f} USDT is above the {PER_SEND_MAX_USD:,.2f} per-payout ceiling. Nothing was sent.")
+        result("refused", 2, message=f"{exact(micro)} USDT is above the {PER_SEND_MAX_USD:,.2f} per-payout ceiling. Nothing was sent.")
     today = sent_today_micro(d) / 1e6
     if today + usd > DAILY_MAX_USD + 1e-9:
         result("refused", 2, message=f"{today:,.2f} USDT already left the keeper today; this would make "
@@ -366,7 +374,7 @@ def send(key, to, micro_s, note, dry):
     units = micro * 10 ** (USDT_DECIMALS - 6)
     have = usdt.functions.balanceOf(acct.address).call()
     if have - units < int(floor * 10 ** USDT_DECIMALS):
-        result("refused", 2, message=f"the keeper holds {have / 10 ** USDT_DECIMALS:,.2f} USDT; paying {usd:,.2f} would "
+        result("refused", 2, message=f"the keeper holds {have / 10 ** USDT_DECIMALS:,.2f} USDT; paying {exact(micro)} would "
                                      f"leave it under its own {floor:,.2f} USDT floor. Nothing was sent.")
 
     tx = usdt.functions.transfer(to, units).build_transaction({"from": acct.address})
@@ -379,7 +387,7 @@ def send(key, to, micro_s, note, dry):
     if w3.eth.get_balance(acct.address) < tx["gas"] * tx["gasPrice"]:
         result("refused", 2, message="the keeper does not have enough BNB for gas. Nothing was sent.")
     if dry:
-        result("dry-run", 0, message=f"DRY RUN: would pay {usd:,.2f} USDT to {to} from {acct.address} "
+        result("dry-run", 0, message=f"DRY RUN: would pay {exact(micro)} USDT to {to} from {acct.address} "
                                      f"(holds {have / 10 ** USDT_DECIMALS:,.2f}, floor {floor:,.2f}, nonce {tx['nonce']}).")
 
     signed = acct.sign_transaction(tx)
@@ -405,7 +413,7 @@ def send(key, to, micro_s, note, dry):
             save_ledger(d)
             result("refused", 2, message=f"The node refused the transaction ({e}). Nothing was sent.")
     settle(w3, acct, d, key, rec, RECEIPT_WAIT)
-    result("sent", 0, txid=h, message=f"Paid {usd:,.2f} USDT to {to}.")
+    result("sent", 0, txid=h, message=f"Paid {exact(micro)} USDT to {to}.")
 
 
 def main():
