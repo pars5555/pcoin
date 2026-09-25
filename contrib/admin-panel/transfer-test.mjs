@@ -976,7 +976,17 @@ async function browserSuite(VS) {
     const txid = VS[UI_CASES[0].title].receipt.txid;
     M.tx = { status: 200, body: { txid, accepted_by_node: true, network: { has_it: true } } };
     const before = M.broadcasts.length;
-    await ev(`window.confirm = () => true; document.getElementById('mv-broadcast').click(); true`);
+    // The page's own dialog, never window.confirm (owner, 2026-09-25). Cancel
+    // must send nothing; the dialog's Broadcast button sends exactly once.
+    await ev(`window.confirm = () => { throw new Error('window.confirm must not be used'); }; document.getElementById('mv-broadcast').click(); true`);
+    await waitFor(`document.querySelector('.xconfirm-cancel') ? true : null`, 10000);
+    await ev(`document.querySelector('.xconfirm-cancel').click(); true`);
+    await sleep(600);
+    ok('Cancel in the page\'s own dialog broadcasts nothing', M.broadcasts.length === before,
+      String(M.broadcasts.length - before));
+    await ev(`document.getElementById('mv-broadcast').click(); true`);
+    await waitFor(`document.querySelector('.xconfirm-ok') ? true : null`, 10000);
+    await ev(`document.querySelector('.xconfirm-ok').click(); true`);
     const out = await waitFor(`(() => { const r = document.getElementById('mv-result'); if (!r.textContent) return null;
       const a = r.querySelector('a'); return { text: r.textContent, href: a ? a.getAttribute('href') : null, again: !document.getElementById('mv-broadcast').disabled }; })()`, 30000);
     M.tx = { status: 503, body: { error: { code: 'test_mock', message: 'test mock: nothing is broadcast' } } };

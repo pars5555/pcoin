@@ -632,8 +632,14 @@
     const plan = S.plan, signed = S.signed;
     if (!plan || !signed || S.busy) return;
     const change = plan.changeOut ? '\nchange ' + K.sat(plan.changeOut.value) + ' PCN back to ' + plan.changeOut.address : '';
-    if (!window.confirm('Broadcast ' + K.sat(plan.sending) + ' PCN to\n' + plan.to + '\n\nfrom ' + plan.system
-      + ', fee ' + K.sat(plan.fee) + ' PCN' + change + '\n\nA transaction cannot be recalled.')) return;
+    // The page's own dialog, never the browser's confirm() (owner, 2026-09-25).
+    // If the dialog is somehow missing, nothing is broadcast: a guard that is
+    // absent must fail closed on a button that moves money.
+    const ask = 'Broadcast ' + K.sat(plan.sending) + ' PCN to\n' + plan.to + '\n\nfrom ' + plan.system
+      + ', fee ' + K.sat(plan.fee) + ' PCN' + change + '\n\nA transaction cannot be recalled.';
+    if (typeof window.pcoinConfirm !== 'function') return;
+    if (!(await window.pcoinConfirm(ask, { ok: 'Broadcast ' + K.sat(plan.sending) + ' PCN', danger: true }))) return;
+    if (S.plan !== plan || S.signed !== signed || S.busy) return;
     const btn = $('mv-broadcast');
     btn.disabled = true;
     lockForm(true);
