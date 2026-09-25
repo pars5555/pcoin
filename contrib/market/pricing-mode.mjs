@@ -300,12 +300,23 @@ async function main() {
     }
     console.log(`  $${minUsd} quote         ${f(qt.body.pcn, 8)} PCN at $${f(qt.body.effectivePrice)}  (flat)`);
     const gate = await getJson(`${MARKET}/api/ladder/gate`).catch(e => ({ status: 0, body: { reason: e.message } }));
-    console.log(`  sale gate            ${gate.body && gate.body.open ? 'OPEN' : 'CLOSED: ' + (gate.body && gate.body.reason)}`);
-    if (!(gate.body && gate.body.open)) {
+    // AN OPERATOR PAUSE IS NOT A FAILED SWITCH. On 2026-09-25 the switch was run
+    // with sales paused on purpose (the owner closed the market while the price
+    // moved to the index), every price check passed, and this still paged a red
+    // "check FAILED" because the gate said closed. saleOpen off is the one closed
+    // reason that says nothing about the price: report it and go on. Any OTHER
+    // closed reason -- an unknown or stale index, a sold-out ladder -- is still a
+    // failed switch.
+    const pausedByOperator = S.get('saleOpen') === false;
+    console.log(`  sale gate            ${gate.body && gate.body.open ? 'OPEN'
+      : (pausedByOperator ? 'PAUSED by the operator (saleOpen off) -- the price above is verified; it sells when sales are turned back on'
+        : 'CLOSED: ' + (gate.body && gate.body.reason))}`);
+    if (!(gate.body && gate.body.open) && !pausedByOperator) {
       await mismatch(`the sale gate is closed: ${gate.body && gate.body.reason}`, UNDO);
     }
 
-    console.log('\n  OK. market.pc.am sells at the PCN index' + (premium > 0 ? ` + ${premium}%` : '') + ', flat.');
+    console.log('\n  OK. market.pc.am sells at the PCN index' + (premium > 0 ? ` + ${premium}%` : '') + ', flat.'
+      + (pausedByOperator ? ' (Sales are paused by the operator.)' : ''));
     console.log('  price.pc.am\'s sellPriceUsd follows within two of its polls (about 2 minutes).');
     await tell(`🔁 <b>market.pc.am now prices off the PCN index</b> (${esc(who)})\n` +
                `$${f(got)} a coin = max(index $${f(st1.index.usd)} (seq ${st1.index.seq}) x ` +
