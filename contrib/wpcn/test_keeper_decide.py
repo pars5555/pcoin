@@ -23,6 +23,9 @@ _tmp.write("{}")
 _tmp.close()
 os.environ["KEEPER_TUNING"] = _tmp.name
 os.environ["KEEPER_EFFECTIVE"] = _tmp.name + ".eff"
+# An import by path caches bytecode in a __pycache__ BESIDE the keeper -- a stray
+# directory in /usr/local/bin when this runs as root against the installed one.
+sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_loader(
     "keeper", importlib.machinery.SourceFileLoader("keeper", KEEPER))
 k = importlib.util.module_from_spec(spec)

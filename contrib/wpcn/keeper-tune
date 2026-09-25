@@ -1,0 +1,289 @@
+#!/usr/bin/env python3
+"""Set the wPCN keeper's knobs from a shell, exactly as the admin panel does.
+
+    keeper-tune                                   show the file, nothing written
+    keeper-tune KEY VALUE [KEY VALUE ...]         validate EVERY pair, then write once
+    keeper-tune --dry-run KEY VALUE [...]         validate and show; write nothing
+    keeper-tune anchor_index=true dead_band=0.03  KEY=VALUE works too
+
+Installed as /usr/local/bin/keeper-tune on the keeper host (178.105.3.51).
+
+WHY THIS EXISTS. The keeper's settings live in /etc/pcoin/control/
+keeper-tuning.json, which the admin panel's wPCN keeper page writes. The price
+plan's Step 2 switch and its rollback are a handful of keys that must change
+TOGETHER -- anchor_index with buy_floor_usd with min_wpcn -- and a runbook step
+that says "open the panel and type five values" is a step somebody does four
+fifths of. This does the same write from one command line, so the switch and
+the rollback are each one line that can be pasted, reviewed and repeated.
+
+THE KEEPER IS THE SCHEMA, NOT THIS FILE. It imports the INSTALLED keeper by
+path (the way test_keeper_decide.py does, without running main()) and checks
+every value with the keeper's own _coerce(), then checks the whole resulting
+file with the keeper's own load_tuning() -- the exact code the next run will
+read it with. A bound written here would be a second definition of the rule,
+and the day the two disagree this would write a file the keeper refuses, which
+stops it trading (that refusal is deliberate: a broken tuning file is FATAL to
+the keeper, never a fallback to defaults). A key the installed keeper does not
+know is refused here for the same reason, which also makes the install order
+self-enforcing: anchor_index cannot be set until a keeper that reads it is in
+place.
+
+WHAT IT WILL NOT DO
+  * write anything unless EVERY pair is valid -- a half-applied switch is a
+    keeper running on a combination nobody chose;
+  * write a file the keeper would refuse, even because of a key it was not
+    asked to touch (it says which one);
+  * overwrite a tuning file it cannot parse -- that may be the only record of
+    what somebody meant, so it is left for a human;
+  * win a race with the panel: if the file changes between reading it and
+    replacing it, it stops and asks for a re-run instead of discarding the
+    other write;
+  * change the file's owner or mode. The panel runs as its own user and must
+    still be able to read what this wrote.
+It writes via a temp file in the same directory and a single rename, so the
+keeper can never read half a file.
+"""
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+import sys
+import tempfile
+import time
+
+KEEPER = os.environ.get("KEEPER_BIN", "/usr/local/bin/pcoin-wpcn-keeper")
+TUNING = os.environ.get("KEEPER_TUNING", "/etc/pcoin/control/keeper-tuning.json")
+
+USAGE = __doc__.split("\n\n")[0] + """
+
+options: --dry-run   --file PATH (default %s)   --keeper PATH (default %s)""" % (TUNING, KEEPER)
+
+
+def die(msg, code=2):
+    sys.stdout.flush()          # so the refusal prints AFTER what led up to it
+    print("keeper-tune: " + msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def load_keeper(path):
+    """The keeper module, imported without running main().
+
+    Pointed at an empty tuning file of its own and with every KEEPER_* variable
+    removed from this process first, so importing it neither reads production
+    nor lets a stray variable in this shell change what "valid" means. The
+    unit's Environment= lines are the unit's business; this validates the FILE.
+    """
+    for v in [v for v in os.environ if v.startswith("KEEPER_")]:
+        del os.environ[v]
+    fd, empty = tempfile.mkstemp(suffix=".json", prefix="keeper-tune-import-")
+    with os.fdopen(fd, "w") as f:
+        f.write("{}")
+    os.environ["KEEPER_TUNING"] = empty
+    os.environ["KEEPER_EFFECTIVE"] = empty + ".eff"
+    # An import by path caches bytecode in a __pycache__ BESIDE the keeper, i.e.
+    # a stray directory in /usr/local/bin. This tool must leave nothing behind.
+    sys.dont_write_bytecode = True
+    try:
+        spec = importlib.util.spec_from_loader(
+            "keeper", importlib.machinery.SourceFileLoader("keeper", path))
+        k = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(k)
+    except Exception as e:                                   # noqa: BLE001
+        die("could not load the keeper at %s: %s" % (path, e))
+    finally:
+        os.unlink(empty)
+    for need in ("TUNABLES", "_coerce", "load_tuning"):
+        if not hasattr(k, need):
+            die("%s has no %s -- is that the keeper?" % (path, need))
+    return k
+
+
+def read_raw(path):
+    """(bytes or None if absent). Anything else is a hard stop."""
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except FileNotFoundError:
+        return None
+    except Exception as e:                                   # noqa: BLE001
+        die("cannot read %s: %s" % (path, e))
+
+
+def parse_pairs(args):
+    """[(key, raw)] from `k v k v` and/or `k=v`. Duplicates are refused: which
+    of two values was meant is not a question to answer silently."""
+    pairs, i = [], 0
+    while i < len(args):
+        a = args[i]
+        if "=" in a:
+            key, raw = a.split("=", 1)
+            i += 1
+        else:
+            if i + 1 >= len(args):
+                die("%r has no value" % a)
+            key, raw = a, args[i + 1]
+            i += 2
+        pairs.append((key.strip(), raw.strip()))
+    seen = set()
+    for key, _ in pairs:
+        if key in seen:
+            die("%s is given twice" % key)
+        seen.add(key)
+    return pairs
+
+
+def as_json(v):
+    """The value as the panel would write it: a bool stays a bool, and a whole
+    number is written as 1500, not 1500.0 (JSON.stringify's spelling)."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, float) and v.is_integer():
+        return int(v)
+    return v
+
+
+def show(v):
+    return "(not in file)" if v is _ABSENT else json.dumps(v)
+
+
+_ABSENT = object()
+
+
+def main(argv):
+    global KEEPER, TUNING
+    dry = False
+    args = []
+    it = iter(argv)
+    for a in it:
+        if a == "--dry-run":
+            dry = True
+        elif a == "--file":
+            TUNING = next(it, None) or die("--file needs a path")
+        elif a == "--keeper":
+            KEEPER = next(it, None) or die("--keeper needs a path")
+        elif a in ("-h", "--help"):
+            print(USAGE)
+            return 0
+        elif a.startswith("--"):
+            die("unknown option %s\n\n%s" % (a, USAGE))
+        else:
+            args.append(a)
+
+    k = load_keeper(KEEPER)
+    with open(KEEPER, "rb") as f:
+        ksum = hashlib.sha256(f.read()).hexdigest()[:12]
+    print("keeper   : %s (sha256 %s...)" % (KEEPER, ksum))
+    print("file     : %s" % TUNING)
+
+    before_raw = read_raw(TUNING)
+    if before_raw is None:
+        current = {}
+        print("           (absent -- the unit's Environment= and the defaults apply today)")
+    else:
+        try:
+            current = json.loads(before_raw.decode("utf-8"))
+            if not isinstance(current, dict):
+                raise ValueError("top level is not an object")
+        except Exception as e:                               # noqa: BLE001
+            die("%s is already unreadable (%s). The keeper is refusing to trade on "
+                "it. Not overwriting a file this cannot read -- it may be the only "
+                "record of what somebody meant. Fix or remove it by hand." % (TUNING, e))
+
+    pairs = parse_pairs(args)
+    if not pairs:
+        w = max(len(key) for key in k.TUNABLES)
+        for key, (kind, lo, hi, env, dflt, _doc) in k.TUNABLES.items():
+            bounds = "on/off" if kind == "bool" else "%s .. %s" % (lo, hi)
+            print("  %-*s  %-14s  %-18s default %s" % (
+                w, key, show(current.get(key, _ABSENT)), bounds, dflt))
+        print("\nNothing written. Usage:\n" + USAGE)
+        return 0
+
+    # Every pair, validated by the keeper's own _coerce(), before anything is
+    # written. All errors are reported together, not one per attempt.
+    errors, new_vals = [], {}
+    for key, raw in pairs:
+        if key not in k.TUNABLES:
+            errors.append("%s is not a setting this keeper knows. Known: %s"
+                          % (key, ", ".join(k.TUNABLES)))
+            continue
+        try:
+            new_vals[key] = as_json(k._coerce(key, raw, "the command line"))
+        except ValueError as e:
+            errors.append(str(e))
+    if errors:
+        die("NOTHING WRITTEN:\n  - " + "\n  - ".join(errors))
+
+    after = dict(current)
+    after.update(new_vals)
+    who = os.environ.get("SUDO_USER") or os.environ.get("USER") or "?"
+    after["_note"] = (
+        "Written by keeper-tune on the keeper host. The keeper reads this on every "
+        "run and refuses to trade if it is unparsable or out of bounds -- it does NOT "
+        "fall back to defaults. Bounds live in the keeper, not here. Last written %s "
+        "by keeper-tune (%s): %s." % (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                      who, ", ".join(new_vals)))
+
+    # Before -> after, for every setting in either version of the file.
+    keys = [key for key in k.TUNABLES if key in current or key in after]
+    w = max(len(key) for key in keys)
+    print()
+    for key in keys:
+        b, a = current.get(key, _ABSENT), after.get(key, _ABSENT)
+        mark = "  <- set" if key in new_vals and b != a else ("  (unchanged)" if key in new_vals else "")
+        print("  %-*s  %16s -> %-16s%s" % (w, key, show(b), show(a), mark))
+
+    directory = os.path.dirname(os.path.abspath(TUNING))
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".keeper-tuning.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(after, f, indent=1)
+            f.flush()
+            os.fsync(f.fileno())
+        # The whole candidate, read by the keeper's own reader. This is what
+        # catches a bad value in a key nobody asked to change.
+        k.TUNING_FILE = tmp
+        _vals, _srcs, err = k.load_tuning()
+        if err:
+            die("NOTHING WRITTEN: the keeper would refuse the resulting file: %s" % err)
+        if dry:
+            print("\nDRY RUN -- valid, and the keeper would accept it. Nothing written.")
+            return 0
+        # Keep owner and mode. mkstemp made it 0600 and ours; the panel runs as
+        # its own user and must still be able to read and replace this file.
+        if before_raw is not None:
+            st = os.stat(TUNING)
+        else:
+            st = os.stat(directory)
+        os.chmod(tmp, (st.st_mode & 0o7777) if before_raw is not None else 0o644)
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            os.chown(tmp, st.st_uid, st.st_gid)
+        # Lost-update guard: the panel may have saved while we were working.
+        if read_raw(TUNING) != before_raw:
+            die("NOTHING WRITTEN: %s changed while keeper-tune was working (the panel "
+                "saved?). Run it again so neither write is lost silently." % TUNING)
+        os.replace(tmp, TUNING)
+        tmp = None
+        try:
+            dfd = os.open(directory, os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
+        except OSError:
+            pass
+    finally:
+        if tmp and os.path.exists(tmp):
+            os.unlink(tmp)
+
+    st = os.stat(TUNING)
+    print("\nwritten  : %s (mode %04o, uid %d, gid %d)"
+          % (TUNING, st.st_mode & 0o7777, st.st_uid, st.st_gid))
+    print("The keeper reads it on its next run; no restart. Check what it ran with:\n"
+          "  journalctl -u pcoin-wpcn-keeper -n 30 --no-pager | grep tuning")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

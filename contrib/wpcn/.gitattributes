@@ -1,0 +1,10 @@
+# LF whatever the checkout platform does, for the same reason as the root
+# .gitattributes rule for pcoin-wpcn-keeper: keeper-tune carries a shebang and
+# runs on a Linux box, and a CRLF checkout turns it into "/usr/bin/env:
+# 'python3\r': No such file or directory" -- an error that names the
+# interpreter, not the stray carriage return. The timer drop-in is systemd's,
+# which tolerates CRLF, but there is no reason to ship it to Linux that way.
+# (Kept here rather than in the root file only because the change that added
+# these two files was scoped to this directory; fold it into the root freely.)
+keeper-tune                           text eol=lf
+pcoin-wpcn-keeper.timer.d/*.conf      text eol=lf

@@ -34,6 +34,20 @@ So: this bot may move the POOL. It must never move price.pc.am. Flipping the
 anchor is a separate, later decision gated on real third-party volume -- see
 WRAP-DESK.md sections 6 and 9.
 
+THE ANCHOR CAN NOW BE THE PCN INDEX (price plan Phase 3 Step 2, decision D11)
+
+With `anchor_index` on, the price the pool is held to is the PCN INDEX that
+price.pc.am relays -- the volume-weighted median of qualifying user-to-user
+fills on exchange.pc.am -- and not the ladder ask. The arrow still points the
+same way: the index is built from exchange fills, capped at 2% a fill and 5% a
+day, and nothing in it reads the pool, so the pool follows and never leads.
+The owner approved D11 on 2026-09-24 and chose to switch on 2026-09-25: parity
+both ways, a 3% dead band, every minute, in steps of at most $10 / 400 wPCN a
+run. An index that is stale, unknown, too old or missing is UNKNOWN and the
+keeper HOLDS. It never falls back to the ladder: a keeper aimed at whichever
+number happens to be readable is aimed at nothing in particular.
+(PCOIN-PRICE-EXCHANGE-ANCHOR-PLAN.md, off-repo on D:, section 2.4 and Step 2.)
+
 WHAT IT WILL NOT DO
 
   * It will not trade on a price it could not read. An unreadable rate is
@@ -45,6 +59,9 @@ WHAT IT WILL NOT DO
     just hand the difference to the next arbitrageur.
   * It will not exceed the daily budget, so a bug or a manipulated read cannot
     drain the float in one run.
+  * It will not take more than one step per run (max_usdt_per_run /
+    max_wpcn_per_run). A big gap is closed over several runs, each on a fresh
+    read of the pool, so a wrong read costs one step and not the day.
   * It will not act on an implausible gap. A 5x discrepancy is far more likely
     to be a broken oracle than a real market, so it alerts and holds.
 
@@ -126,11 +143,13 @@ TUNABLES = {
     "slippage": ("frac", 0.001, 0.20, "KEEPER_SLIPPAGE", 0.01,
                  "Worst execution accepted on a swap before it reverts."),
     "target_discount_pct": ("num", 0.0, 50.0, "KEEPER_TARGET_DISCOUNT_PCT", 5.0,
-                            "How far BELOW the ladder ask the pool is held. 0 = parity, "
-                            "which is what the owner chose on 2026-09-19."),
+                            "How far BELOW the anchor (the ladder ask, or the PCN index "
+                            "when anchor_index is on) the pool is held. 0 = parity, which "
+                            "is what the owner chose on 2026-09-19 and again for the index "
+                            "(D11)."),
     "max_target_usd": ("num", 0.0001, 10.0, "KEEPER_MAX_TARGET_USD", 0.10,
-                       "Hard ceiling on the computed target. One corrupted ladder read "
-                       "would otherwise have the keeper chase it and spend everything."),
+                       "Hard ceiling on the computed target. One corrupted ladder or index "
+                       "read would otherwise have the keeper chase it and spend everything."),
     "buy": ("bool", None, None, "KEEPER_BUY", True,
             "May it spend USDT buying wPCN when the pool is below target? Off makes it "
             "one-directional and lets the pool fall on real selling."),
@@ -145,6 +164,28 @@ TUNABLES = {
     "sell": ("bool", None, None, "KEEPER_SELL", True,
              "May it sell wPCN when the pool is above target? Off means nothing pulls a "
              "premium back down, so parity is enforced only from below."),
+    # The four below arrived with the index (price plan Phase 3 Step 2). Their
+    # defaults are D11's numbers, approved by the owner on 2026-09-24, so that a
+    # bare run and a run with the key missing from the file are the same program.
+    "anchor_index": ("bool", None, None, "KEEPER_ANCHOR_INDEX", False,
+                     "Aim at the PCN INDEX -- the median of user-to-user fills on "
+                     "exchange.pc.am, as price.pc.am relays it -- instead of the ladder "
+                     "ask. While it is on, an index that is stale, unknown, too old or "
+                     "missing means NO TRADE: it never falls back to the ladder. Owner's "
+                     "decision D11: parity with the index, both ways, every minute."),
+    "max_usdt_per_run": ("num", 0.0, 10000.0, "KEEPER_MAX_USDT_PER_RUN", 10.0,
+                         "Most USDT one run may spend. With the timer running every "
+                         "minute this, not the daily cap, paces a correction: a big gap "
+                         "is closed in steps, each on a fresh read of the pool. 0 stops "
+                         "buying."),
+    "max_wpcn_per_run": ("num", 0.0, 50000.0, "KEEPER_MAX_WPCN_PER_RUN", 400.0,
+                         "Most wPCN one run may sell. The selling side of "
+                         "max_usdt_per_run. 0 stops selling."),
+    "max_index_age_s": ("num", 30.0, 3600.0, "KEEPER_MAX_INDEX_AGE_S", 180.0,
+                        "With anchor_index on: an index reading older than this many "
+                        "seconds is not a price, and the keeper holds. price.pc.am "
+                        "refreshes it every minute, so 180 allows a couple of missed "
+                        "polls and no more."),
 }
 
 _TRUE = ("1", "on", "true", "yes")
@@ -225,10 +266,15 @@ MIN_WPCN_FLOOR = _TUNE["min_wpcn"]
 BUY_ON = _TUNE["buy"]
 SELL_ON = _TUNE["sell"]
 BUY_FLOOR_USD = _TUNE["buy_floor_usd"]
+ANCHOR_INDEX = _TUNE["anchor_index"]
+MAX_USDT_PER_RUN = _TUNE["max_usdt_per_run"]
+MAX_WPCN_PER_RUN = _TUNE["max_wpcn_per_run"]
+MAX_INDEX_AGE_S = _TUNE["max_index_age_s"]
 
 SLIPPAGE = _TUNE["slippage"]
-# A persistent condition is not new information every 10 minutes. Only its
-# onset and its clearing are, so repeat alerts are throttled to this.
+# A persistent condition is not new information every run -- every 10 minutes,
+# or every minute with the 10-every-minute timer drop-in. Only its onset and its
+# clearing are, so repeat alerts are throttled to this.
 NAG_SECONDS = int(os.environ.get("KEEPER_NAG_SECONDS", 21600))  # 6 hours
 FEE_NUM, FEE_DEN = 9975, 10000                                  # PancakeSwap 0.25%
 
@@ -243,9 +289,10 @@ def notify(subject, body):
 def notify_throttled(key, subject, body, seconds=NAG_SECONDS):
     """Alert at most once per `seconds` for this condition.
 
-    The timer runs every 10 minutes, so an unfunded float or a stuck price feed
-    would otherwise page 144 times a day and teach everyone to ignore the
-    channel -- which is exactly what happened to pcoin-concentration-watch when
+    The timer runs every 10 minutes (every minute with the index drop-in), so an
+    unfunded float or a stuck price feed would otherwise page 144 -- or 1,440 --
+    times a day and teach everyone to ignore the channel -- which is exactly
+    what happened to pcoin-concentration-watch when
     it sent the same figure twenty-four times in eight hours. A condition that
     persists is not new information; only its onset and its clearing are.
     """
@@ -323,39 +370,147 @@ def write_effective(extra=None):
         print(f"[warn] could not write {EFFECTIVE_FILE}: {e}", file=sys.stderr)
 
 
-def posted_rate():
-    """The target pool price: the LADDER ask, less TARGET_DISCOUNT_PCT.
+# The index states that carry a price (plan section 2.4). `held` is not a fault:
+# it means too few new qualifying fills to move, and "a held price is still the
+# price". `frozen` is the owner's brake, and also still the price. `unknown`,
+# `disabled`, and any state this code has never heard of carry NO price, and
+# they collapse to "do nothing" -- never to the ladder, never to the last value.
+INDEX_PRICED_STATES = ("live", "held", "frozen")
 
-    NOT serviceRate. serviceRate = min(ladder, pool) while the oracle follows the
-    pool down, so it equals the pool whenever the pool is under the ladder --
-    and a keeper aimed at that is aimed at its own reflection. Every run printed
-    `+0.00% -- within dead band` because of it.
 
-    `sellPriceUsd` is the oracle's `postedPrice()`: the ladder's marginal price,
-    set by our order book and never by the pool. It is the only field here that
-    the pool cannot move, which is exactly what an anchor has to be.
+def _real(x):
+    """A finite float from a JSON number or a numeric string, else None.
 
-    Returns None for UNKNOWN, and None must never trade.
+    bool is refused on purpose: in Python True == 1, so a flag in the wrong
+    field would otherwise read as a price of one dollar.
     """
+    if x is None or isinstance(x, bool):
+        return None
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return None
+    if v != v or v in (float("inf"), float("-inf")):
+        return None
+    return v
+
+
+def index_verdict(d, max_age_s=None, max_target_usd=None):
+    """(usd, None) when price.pc.am's `index` block is a price the keeper may
+    aim at, else (None, why). Pure, no I/O: the body is handed in.
+
+    Every test is unknown-shaped (CLAUDE.md 7.2). A field that is missing, null
+    or the wrong type rejects exactly as a bad value does -- `stale` must be
+    literally false, not merely absent, and an age that cannot be read is not a
+    young age. The age is price.pc.am's, measured on ITS clock against the
+    exchange's computedAt; the keeper's own bound is tighter than price.pc.am's
+    600 s `stale`, because the keeper now acts every minute and a three-minute-
+    old index is already three missed chances to notice it stopped.
+
+    It deliberately does NOT look at `inUse`. That field says whether the RAILS
+    credit at the index (Step 4); the keeper moves first, at Step 2.
+    """
+    max_age_s = MAX_INDEX_AGE_S if max_age_s is None else max_age_s
+    max_target_usd = MAX_TARGET_USD if max_target_usd is None else max_target_usd
+    if not isinstance(d, dict):
+        return None, "price.pc.am's answer is not a JSON object"
+    ix = d.get("index")
+    if not isinstance(ix, dict):
+        return None, "price.pc.am carries no index block"
+    state = ix.get("state")
+    if state not in INDEX_PRICED_STATES:
+        return None, "index state is %r, not live, held or frozen" % (state,)
+    if ix.get("stale") is not False:
+        return None, ("price.pc.am marks the index stale" if ix.get("stale") is True
+                      else "index 'stale' is %r, not false" % (ix.get("stale"),))
+    age = _real(ix.get("ageSeconds"))
+    if age is None:
+        return None, "index ageSeconds is %r, not a number" % (ix.get("ageSeconds"),)
+    if age > max_age_s:
+        return None, "index is %.0f s old, over max_index_age_s %.0f" % (age, max_age_s)
+    usd = _real(ix.get("usd"))
+    if usd is None:
+        return None, "index usd is %r, not a number" % (ix.get("usd"),)
+    if not (usd > 0):
+        return None, "index $%s is not above zero" % (usd,)
+    if usd > max_target_usd:
+        return None, ("index $%.8f is above the max_target_usd sanity bound $%.8f"
+                      % (usd, max_target_usd))
+    return usd, None
+
+
+def index_from_body(d, max_age_s=None, max_target_usd=None):
+    """The PCN index in USD from a price.pc.am body, or None for UNKNOWN.
+    index_verdict() says why; this is the shape the rest of the keeper uses."""
+    return index_verdict(d, max_age_s, max_target_usd)[0]
+
+
+def target_from_body(d):
+    """(target, info) from a price.pc.am body. Pure. target None = UNKNOWN.
+
+    info always names the anchor in force ("index" or "ladder"), and when the
+    target is None it says why -- so the log line and the alert can say what
+    the keeper is NOT doing, which from the outside looks the same as "nothing
+    to do".
+    """
+    if ANCHOR_INDEX:
+        ix = d.get("index") if isinstance(d, dict) else None
+        info = {"anchor": "index",
+                "index": ({k: ix.get(k) for k in ("usd", "state", "seq", "ageSeconds", "stale")}
+                          if isinstance(ix, dict) else None)}
+        anchor, why = index_verdict(d)
+        if anchor is None:
+            # UNKNOWN collapses to DO NOTHING. sellPriceUsd is sitting right
+            # there in the same body and is perfectly readable -- which is
+            # exactly why this line has to exist: falling back to it would put
+            # the keeper back on the ladder the moment the index hiccups, and
+            # the owner switched it off the ladder on purpose.
+            info["why"] = why + " -- NOT falling back to the ladder price"
+            return None, info           # UNKNOWN: hold. Never the ladder.
+    else:
+        # NOT serviceRate. serviceRate = min(ladder, pool) while the oracle
+        # follows the pool down, so it equals the pool whenever the pool is
+        # under the ladder -- and a keeper aimed at that is aimed at its own
+        # reflection. Every run printed `+0.00% -- within dead band` because of
+        # it. `sellPriceUsd` is the oracle's `postedPrice()`: the ladder's
+        # marginal price, set by our order book and never by the pool.
+        info = {"anchor": "ladder"}
+        anchor = _real(d.get("sellPriceUsd")) if isinstance(d, dict) else None
+        if anchor is None or not (anchor > 0):
+            info["why"] = "sellPriceUsd is %r" % (d.get("sellPriceUsd") if isinstance(d, dict) else d,)
+            return None, info
+    info["anchor_usd"] = anchor
+    target = anchor * (1.0 - TARGET_DISCOUNT_PCT / 100.0)
+    if not (0 < target <= MAX_TARGET_USD):
+        # Loud, because silence here looks identical to "nothing to do".
+        info["why"] = ("%s $%.8f gives target $%.8f, above the max_target_usd sanity "
+                       "bound of $%.8f" % (info["anchor"], anchor, target, MAX_TARGET_USD))
+        print("REFUSING: %s. Not trading." % info["why"], file=sys.stderr)
+        return None, info
+    return target, info
+
+
+def posted_rate():
+    """The target pool price and what it came from: (target, info).
+
+    The anchor is the LADDER ask (`sellPriceUsd`), or with anchor_index on the
+    PCN INDEX -- either way less TARGET_DISCOUNT_PCT, and either way a number
+    the pool cannot move, which is exactly what an anchor has to be. The choice
+    itself is target_from_body(), which is pure and tested
+    (test_keeper_anchor.py); this only fetches.
+
+    Returns target None for UNKNOWN, and None must never trade.
+    """
+    anchor = "index" if ANCHOR_INDEX else "ladder"
     try:
         with urllib.request.urlopen("https://price.pc.am", timeout=25) as r:
             d = json.load(r)
-        v = d.get("sellPriceUsd")
-        if v is None:
-            return None
-        ladder = float(v)
-        if not (ladder > 0):
-            return None
-        target = ladder * (1.0 - TARGET_DISCOUNT_PCT / 100.0)
-        if not (0 < target <= MAX_TARGET_USD):
-            # Loud, because silence here looks identical to "nothing to do".
-            print("REFUSING: ladder $%.8f gives target $%.8f, above the "
-                  "KEEPER_MAX_TARGET_USD sanity bound of $%.8f. Not trading."
-                  % (ladder, target, MAX_TARGET_USD), file=sys.stderr)
-            return None
-        return target
-    except Exception:
-        return None
+    except Exception as e:
+        return None, {"anchor": anchor, "why": "price.pc.am unreadable: %s" % e}
+    try:
+        return target_from_body(d)
+    except Exception as e:
+        return None, {"anchor": anchor, "why": "price.pc.am's answer unusable: %s" % e}
 
 
 def decide(pool, ladder, buy_floor, dead_band):
@@ -427,6 +582,41 @@ def solve_trade(reserve_in, reserve_out, target_price, buying_out):
     return lo
 
 
+def run_budget(buying, want, spent_today, have):
+    """How much THIS run may trade, and which limit decided it. Pure, no I/O.
+
+    The per-run caps came with the every-minute timer (D11). At ten minutes the
+    daily cap was the only pacing, and one run could spend all of it on a single
+    read of the pool. At one minute the right shape is small steps: a run trades
+    at most max_*_per_run, the next run re-reads the pool, and carries on only
+    if the gap is still there. A correction that somebody else's trade finishes
+    for us costs us nothing, and a wrong read costs one step, not the day.
+
+    Returns (budget, bound_by). bound_by names the term that set the budget --
+    "daily cap", "float floor", "per-run cap", or "gap" when the whole trade
+    fits -- so a blocked or partial run says WHICH limit to look at. Ties go to
+    the limits before the gap, and to the daily cap first: that is the order
+    the blocked-run message always used.
+    """
+    if buying:
+        run_cap = MAX_USDT_PER_RUN
+        day_left = DAILY_USDT_CAP - spent_today
+        float_left = max(0.0, have - MIN_USDT_FLOOR)
+    else:
+        run_cap = MAX_WPCN_PER_RUN
+        day_left = DAILY_WPCN_CAP - spent_today
+        float_left = max(0.0, have - MIN_WPCN_FLOOR)
+    budget = min(want,
+                 run_cap,
+                 day_left,
+                 float_left)
+    for name, v in (("daily cap", day_left), ("float floor", float_left),
+                    ("per-run cap", run_cap), ("gap", want)):
+        if v == budget:
+            return budget, name
+    return budget, "gap"
+
+
 def main() -> int:
     live = "--live" in sys.argv
 
@@ -447,8 +637,9 @@ def main() -> int:
     # settings is the failure this line exists to make impossible.
     print("tuning               : " + ", ".join(
         f"{k}={_TUNE[k]}[{_TUNE_SRC[k]}]" for k in
-        ("dead_band", "target_discount_pct", "buy", "buy_floor_usd", "sell",
-         "daily_usdt_cap", "daily_wpcn_cap")))
+        ("anchor_index", "dead_band", "target_discount_pct", "buy", "buy_floor_usd",
+         "sell", "max_usdt_per_run", "max_wpcn_per_run", "daily_usdt_cap",
+         "daily_wpcn_cap", "min_wpcn", "max_index_age_s")))
     write_effective()
     sys.path.insert(0, os.environ.get("WPCN_DIR", "/opt/wpcn"))
     sys.path.insert(1, os.path.dirname(os.path.abspath(__file__)))
@@ -467,13 +658,27 @@ def main() -> int:
     acct = w3.eth.account.from_key(key)
 
     # ---- read both prices; either unreadable means DO NOTHING --------------
-    posted = posted_rate()
+    posted, pinfo = posted_rate()
+    anchor = pinfo.get("anchor", "ladder")        # "index" or "ladder", for every message
     if posted is None:
-        notify_throttled("posted_unreadable",
-               "keeper: price.pc.am unreadable",
-               "Could not read the posted rate, so the target price is UNKNOWN. "
-               "Not trading. This is a hold, not a decision that the pool is fine.")
-        print("UNVERIFIED: posted rate unreadable -- holding")
+        why = pinfo.get("why") or "no reason recorded"
+        # Replace what the panel shows: a target from an earlier run displayed
+        # beside "held" would read as the keeper aiming at it.
+        write_effective({"anchor": anchor, "hold": why, "index": pinfo.get("index")})
+        if anchor == "index":
+            notify_throttled("index_unusable",
+                   "keeper: PCN index unusable -- not trading",
+                   f"{why}.\n\nanchor_index is on, so the keeper aims at the PCN index "
+                   f"and at nothing else. An index it cannot use is UNKNOWN: it holds, "
+                   f"and it does NOT fall back to the ladder price. It resumes by itself "
+                   f"on the first run that reads a fresh live, held or frozen index.")
+            print(f"UNVERIFIED: {why} -- holding, nothing traded")
+        else:
+            notify_throttled("posted_unreadable",
+                   "keeper: price.pc.am unreadable",
+                   "Could not read the posted rate, so the target price is UNKNOWN. "
+                   "Not trading. This is a hold, not a decision that the pool is fine.")
+            print(f"UNVERIFIED: posted rate unreadable ({why}) -- holding")
         return 2
 
     pair_abi = [
@@ -503,7 +708,10 @@ def main() -> int:
     pool = u_res / w_res
     gap = pool / posted - 1.0
 
-    # The decision itself is `decide()` above -- pure, and tested there.
+    # The decision itself is `decide()` above -- pure, and tested there. It
+    # calls its second argument `ladder`; with anchor_index on it is the index,
+    # and the rule does not change: sell above it, buy below it, and at
+    # buy_floor_usd = 0 that is parity from both sides.
     action, target, buy_target, sell_target = decide(
         pool, posted, BUY_FLOOR_USD, DEAD_BAND)
     floor_mode = BUY_FLOOR_USD > 0
@@ -514,8 +722,15 @@ def main() -> int:
     # from its own second read of a moving price.
     write_effective({"pool_price": pool, "target_price": posted,
                      "buy_target": buy_target, "sell_target": sell_target,
-                     "floor_mode": floor_mode})
-    print(f"posted (price.pc.am) : ${posted:.8f}")
+                     "floor_mode": floor_mode, "anchor": anchor,
+                     "anchor_usd": pinfo.get("anchor_usd"), "index": pinfo.get("index")})
+    if anchor == "index":
+        ix = pinfo.get("index") or {}
+        print(f"target (PCN index)   : ${posted:.8f}   (index ${pinfo.get('anchor_usd')}, "
+              f"{ix.get('state')}, seq {ix.get('seq')}, {ix.get('ageSeconds')} s old, "
+              f"via price.pc.am)")
+    else:
+        print(f"posted (price.pc.am) : ${posted:.8f}")
     print(f"pool   (pancakeswap) : ${pool:.8f}   ({gap*100:+.2f}%)")
     print(f"reserves             : {w_res:,.2f} wPCN / {u_res:,.2f} USDT")
     if floor_mode:
@@ -541,7 +756,7 @@ def main() -> int:
         buying = action == "buy"
     else:
         if floor_mode and pool < posted * (1.0 - DEAD_BAND):
-            print(f"pool ${pool:.8f} is {abs(gap)*100:.2f}% below the ladder "
+            print(f"pool ${pool:.8f} is {abs(gap)*100:.2f}% below the {anchor} "
                   f"${posted:.8f} -- and that is ALLOWED. Floor mode defends "
                   f"${buy_target:.8f}, not parity, and the pool is "
                   f"{buy_gap*100:+.2f}% against it. Nothing to do.")
@@ -550,7 +765,7 @@ def main() -> int:
             # whenever the pool sat exactly on the ladder, and then said the
             # pool was inside a +/-3% band of a price it was 124% above.
             print(f"HOLD: pool is {buy_gap*100:+.2f}% against the buy target "
-                  f"${buy_target:.8f} and {gap*100:+.2f}% against the ladder "
+                  f"${buy_target:.8f} and {gap*100:+.2f}% against the {anchor} "
                   f"${sell_target:.8f}. Neither side is outside its "
                   f"+/-{DEAD_BAND*100:.1f}% dead band -- nothing to do.")
         return 0
@@ -593,7 +808,7 @@ def main() -> int:
         return 0
     if (not buying) and not SELL_ON:
         print("SELLING IS OFF (KEEPER_SELL=off) -- the pool is allowed to RISE.")
-        print(f"pool ${pool:.8f} is {abs(gap) * 100:.2f}% above the ladder ${posted:.8f}. "
+        print(f"pool ${pool:.8f} is {abs(gap) * 100:.2f}% above the {anchor} ${posted:.8f}. "
               "Nothing sold. A buyer moving the price up is the point, not a fault "
               "to correct -- and min(ladder, pool) already caps what the rails credit.")
         return 0
@@ -605,49 +820,55 @@ def main() -> int:
                "keeper: DEFENDING THE $%.4f FLOOR" % buy_target,
                f"pool ${pool:.8f} has fallen to {buy_gap*100:+.2f}% of the "
                f"${buy_target:.8f} floor, so the keeper is buying wPCN back up to "
-               f"it.\nThe ladder is ${posted:.8f}; everything above the floor was "
+               f"it.\nThe {anchor} is ${posted:.8f}; everything above the floor was "
                f"left alone deliberately.\nThis spends the USDT float. Watch it: "
                f"when it is gone nothing holds the floor IN THE POOL, and only "
                f"the code floors (rateFloorUsd, ladderMinPriceUsd) still hold "
                f"what PCN itself is credited and sold at.")
+    # The budget, per-run cap included, is `run_budget()` -- pure, and tested
+    # in test_keeper_anchor.py.
     if buying:
         want = solve_trade(u_res, w_res, target, True)
-        budget = min(want,
-                     DAILY_USDT_CAP - st["usdt_spent"],
-                     max(0.0, have_usdt - MIN_USDT_FLOOR))
+        budget, bound_by = run_budget(True, want, st["usdt_spent"], have_usdt)
         unit, need_label = "USDT", "USDT"
     else:
         want = solve_trade(w_res, u_res, target, False)
-        budget = min(want,
-                     DAILY_WPCN_CAP - st["wpcn_spent"],
-                     max(0.0, have_wpcn - MIN_WPCN_FLOOR))
+        budget, bound_by = run_budget(False, want, st["wpcn_spent"], have_wpcn)
         unit, need_label = "wPCN", "wPCN"
 
     print(f"to reach ${target:.8f} : trade {want:,.6f} {unit}")
-    print(f"allowed this run     : {budget:,.6f} {unit}")
+    print(f"allowed this run     : {budget:,.6f} {unit}"
+          + ("" if bound_by == "gap" or budget <= 0 else
+             f"   (held to this by the {bound_by}"
+             + ("; the next run carries on from a fresh read of the pool)"
+                if bound_by == "per-run cap" else ")")))
 
     if budget <= 0:
         # Name the term that ACTUALLY bound the budget. Choosing the reason by
         # "have we spent anything today" blamed the daily cap on every run after
         # the first trade, including when the cap had plenty left and the float
         # was sitting on its floor -- which sends the reader to raise a limit
-        # that was not binding while the wallet stays empty.
+        # that was not binding while the wallet stays empty. run_budget() names
+        # it now, the per-run cap included.
         if buying:
             cap_left = DAILY_USDT_CAP - st["usdt_spent"]
-            floor_left = max(0.0, have_usdt - MIN_USDT_FLOOR)
             cap_txt = f"{cap_left:,.4f} of {DAILY_USDT_CAP:,.0f} USDT/day left"
             floor_txt = f"float {have_usdt:,.4f} USDT against a {MIN_USDT_FLOOR:,.2f} floor"
         else:
             cap_left = DAILY_WPCN_CAP - st["wpcn_spent"]
-            floor_left = max(0.0, have_wpcn - MIN_WPCN_FLOOR)
             cap_txt = f"{cap_left:,.2f} of {DAILY_WPCN_CAP:,.0f} wPCN/day left"
             floor_txt = f"float {have_wpcn:,.2f} wPCN against a {MIN_WPCN_FLOOR:,.2f} floor"
-        if cap_left <= 0:
+        if bound_by == "daily cap":
             why = "daily cap reached"
-            fix = "Raise KEEPER_DAILY_%s_CAP, or wait for the daily reset." % unit.upper()
-        elif floor_left <= 0:
+            fix = ("Raise daily_%s_cap (admin panel, or keeper-tune), or wait for the "
+                   "daily reset." % unit.lower())
+        elif bound_by == "float floor":
             why = f"{need_label} float at or below floor"
             fix = f"Top the float up -- send {need_label} to {acct.address}."
+        elif bound_by == "per-run cap":
+            why = f"max_{unit.lower()}_per_run is 0"
+            fix = (f"Raise max_{unit.lower()}_per_run (admin panel, or keeper-tune). "
+                   f"At 0 this side of the keeper is switched off.")
         else:
             why = "nothing to trade"
             fix = "No action: the gap is already inside the dead band."
@@ -713,7 +934,8 @@ def main() -> int:
     st["trades"].append({"at": int(time.time()), "dir": "buy" if buying else "sell",
                          "amount": budget, "unit": unit,
                          "pool_before": pool, "posted": posted, "target": target,
-                         "floor_mode": floor_mode,
+                         "floor_mode": floor_mode, "anchor": anchor,
+                         "bound_by": bound_by,
                          "block": r.blockNumber})
     save_state(st)
 
@@ -728,8 +950,11 @@ def main() -> int:
            (f"Spent {budget:,.6f} USDT buying wPCN." if buying
             else f"Sold {budget:,.6f} wPCN for USDT.") + "\n"
            f"pool ${pool:.8f} -> ${after:.8f}, target ${target:.8f}, "
-           f"ladder ${posted:.8f}\n"
-           f"float before this trade {have_usdt:,.4f} USDT / {have_wpcn:,.2f} wPCN.")
+           f"{anchor} ${posted:.8f}\n"
+           + (f"A {budget:,.2f} {unit} step, held there by the per-run cap: the next "
+              f"run re-reads the pool and carries on only if the gap is still there.\n"
+              if bound_by == "per-run cap" else "")
+           + f"float before this trade {have_usdt:,.4f} USDT / {have_wpcn:,.2f} wPCN.")
     return 0
 
 
