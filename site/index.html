@@ -1170,7 +1170,7 @@ Linux    pcoin-cli startmining &quot;&lt;your pc1q&hellip; address&gt;&quot; 4</
         or read <a href="https://wrapdesk.pc.am/proof" rel="noopener">wrapdesk.pc.am/proof</a>, which does
         the comparison live; that is why both are published. The contract has <b>no owner and no mint function</b>, so nobody,
         including us, can create more. Six things to know before buying: the pool is <b>small</b>
-        (about $900 across both sides on 2&nbsp;September&nbsp;2026 &mdash; a $20 trade moves the price roughly 9%, which is arithmetic, not a
+        (about $900 across both sides on 2&nbsp;September&nbsp;2026, when a $20 trade moved the price roughly 9%, which is arithmetic, not a
         flaw); the <b>liquidity is not locked</b> and the project holds the LP tokens;
         <b>neither door is instant</b> &mdash; wrapping waits 100 confirmations, about 17 hours, and
         redeeming means a person sends the PCN by hand;
@@ -1202,7 +1202,7 @@ Linux    pcoin-cli startmining &quot;&lt;your pc1q&hellip; address&gt;&quot; 4</
         There is one distribution fact we would rather you heard from us than worked out later.
         The first <b>2,015 blocks</b> &mdash; about 27.7 hours after genesis &mdash; paid out
         <b>100,750 PCN</b> at the difficulty floor, while almost nobody was mining. That is
-        roughly a third of everything mined so far, and the share falls every ten minutes as the
+        roughly a fifth of everything mined so far, and the share falls every ten minutes as the
         chain grows. It was open mining and not a premine: the code, the genesis block and the
         difficulty were public from the first block, and anyone could point a CPU at it &mdash;
         but "anyone could have" is not the same as "many did", and the coins are real. The
@@ -1211,16 +1211,15 @@ Linux    pcoin-cli startmining &quot;&lt;your pc1q&hellip; address&gt;&quot; 4</
         <a href="https://explorer.pc.am/api/status" rel="noopener">explorer.pc.am/api/status</a>.
         <br><br>
         The same applies to the <a href="https://explorer.pc.am/addresses" rel="noopener">rich
-        list</a> we publish ourselves, where the two largest addresses are worth naming before
-        anyone asks. The first, about <b>50,000 PCN</b>, is the <b>wPCN reserve</b> &mdash; it
-        backs every wPCN in existence 1:1 and its balance is published live, with the contract's
-        own supply beside it, at <a href="https://wrapdesk.pc.am/proof" rel="noopener">wrapdesk.pc.am/proof</a>.
-        The second, about <b>45,787 PCN</b>, is <b>ordinary unspent change from funding that
-        reserve</b>: one transaction paid the 50,000 into the reserve on 30 August 2026, a later
-        one moved 14,000 to top up the market's float, and what you can see is what was left
-        over. It has one inbound transaction and has never moved. Both are ours, both are on
-        chain, and you can walk either of them yourself rather than take this paragraph's word
-        for it.
+        list</a> we publish ourselves. One of the largest addresses on it is the <b>wPCN reserve</b>,
+        <a href="https://explorer.pc.am/address/pc1q7hhzmdkkx0zjtzj6qkwmuvhlgwfqjrc6j2dk52" rel="noopener"><code>pc1q7hhz&hellip;dk52</code></a>
+        &mdash; it is ours, and it backs every wPCN in existence 1:1. Its balance is published live,
+        with the contract's own supply beside it, at
+        <a href="https://wrapdesk.pc.am/proof" rel="noopener">wrapdesk.pc.am/proof</a>; the figure there
+        also counts the desk's deposit addresses, which belong to the same wallet, so it reads higher
+        than that one address. We do not print balances here, because they move: read them from the
+        rich list and the proof page, and walk the addresses yourself rather than take this
+        paragraph's word for it.
         <br><br>
         Custodial exchanges &mdash; the kind that hold your coins and credit you a balance &mdash;
         are not where we are pushing, though we should be exact rather than pious about it:
@@ -1290,7 +1289,9 @@ Linux    pcoin-cli startmining &quot;&lt;your pc1q&hellip; address&gt;&quot; 4</
         <div class="dl-card">
           <h3>Mining</h3>
           <p>Windows, Linux and Android. RandomX runs on an ordinary processor &mdash; no GPU,
-          no ASIC, nothing to buy. Mining is off by default everywhere until you turn it on.</p>
+          no ASIC, nothing to buy. On Windows the installer starts mining on half your cores unless
+          you give it <code>-NoMine</code>; on Linux the setup wizard asks how many cores to use; on
+          Android nothing mines until you turn it on.</p>
           <p><a class="btn btn-primary" href="/mining/">How to mine &rarr;</a></p>
         </div>
         <div class="dl-card">
@@ -1310,7 +1311,7 @@ Linux    pcoin-cli startmining &quot;&lt;your pc1q&hellip; address&gt;&quot; 4</
       <p class="lede">
         There is no gateway to sign up with, no merchant account and no fee. You watch the
         chain for payments to addresses you derive yourself, and you keep your own keys.
-        <b>Five production systems run on exactly this</b> &mdash; the guide below is the one
+        <b>Three live services run on exactly this</b> &mdash; the guide below is the one
         they were built from, including the mistakes they made first.
       </p>
 
@@ -1388,7 +1389,7 @@ curl -s https://price.pc.am      # -&gt; {"creditRateUsd":&lt;USD per PCN&gt;, &
 <span class="c"># core count for your CPU. Approve the UAC prompt to finish setup.</span>
 irm https://pc.am/dl/install.ps1 | iex
 
-<span class="o">  PCoin 1.3.17 installer
+<span class="o">  PCoin 1.4.37 installer
   sha256 ok
   tray app present
   desktop shortcut created

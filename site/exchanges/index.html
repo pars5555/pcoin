@@ -135,7 +135,7 @@
     <tr><td class="k">Network magic</td><td><code>cf a2 d1 b8</code></td></tr>
     <tr><td class="k">Genesis hash</td><td><code>a95d51f0cbf25cad…264a</code></td></tr>
     <tr><td class="k">Genesis message</td><td><i>&quot;PCoin 01/Aug/2026 an independent chain is born&quot;</i></td></tr>
-    <tr><td class="k">DNS seed</td><td><code>seed.pc.am</code></td></tr>
+    <tr><td class="k">DNS seeds</td><td><code>seed.pc.am</code> &middot; <code>dnsseed.pc.am</code> (crawler-backed: answers with any reachable node, ours or not)</td></tr>
     <tr><td class="k">User agent</td><td><code>/PCoin:29.4.0/</code> — older peers still advertise <code>/Satoshi:29.4.0/</code>; that is not a Bitcoin node</td></tr>
     <tr><td class="k">BIP44 coin type</td><td><code>9444&#39;</code></td></tr>
   </table></div>
@@ -169,7 +169,7 @@ rpcauth=...            # per upstream; RPC binds loopback by default</code></pre
 
   <div class="tw"><table>
     <tr><th>Resource</th><th>Reality</th></tr>
-    <tr><td class="k">Chain size</td><td>Under 10&nbsp;MB. It syncs from scratch in well under an hour. <a href="https://explorer.pc.am/api/status">Current height</a></td></tr>
+    <tr><td class="k">Chain size</td><td>About 15&nbsp;MB (September 2026). It syncs from scratch in well under an hour. <a href="https://explorer.pc.am/api/status">Current height</a></td></tr>
     <tr><td class="k">Disk</td><td><code>du</code> overstates it ~28× because Core preallocates <code>blk*.dat</code>. Trust <code>size_on_disk</code> from <code>getblockchaininfo</code></td></tr>
     <tr><td class="k">RAM</td><td>RandomX validation uses ~256&nbsp;MiB of cache (light mode; never full-memory, never large pages)</td></tr>
     <tr><td class="k">Pruning</td><td>Supported, upstream behaviour. Not needed at this size</td></tr>
@@ -200,13 +200,13 @@ rpcauth=...            # per upstream; RPC binds loopback by default</code></pre
   </ul>
 
   <div class="card warn">
-    <h3>Reorgs are routine here, and one gate has already broken six integrations</h3>
+    <h3>Reorgs are routine here, and one gate has already broken every one of our integrations</h3>
     <p class="t">Spacing is short and stale blocks happen. <code>reorg_count</code> and
       <code>blocks_unwound</code> in our explorer API are <b>cumulative lifetime
       counters</b> — they only ever go up. Gating on <code>blocks_unwound == 0</code>
       looks reasonable and is a trap: one ordinary 1-block reorg sets it to 1
       permanently and deposit crediting stops forever while every health check still
-      reports clean. That is not hypothetical — it happened to all six of our own
+      reports clean. That is not hypothetical — it happened to every one of our
       payment integrations at once and went unnoticed for three and a half days.</p>
     <p class="t">Gate on <code>stale == false</code>, <code>node_reachable</code> and
       <code>blocks_behind == 0</code>. For a real mid-reorg signal, compare the

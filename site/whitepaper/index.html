@@ -263,7 +263,7 @@
   has run before needs no seed at all.</p>
 
   <h2 id="utility">8. What PCN is used for</h2>
-  <p>PCN is spendable today. Three independent products accept it and credit the payer
+  <p>PCN is spendable today. Three products, all run by the PCoin maintainer, accept it and credit the payer
   automatically once the deposit confirms:</p>
 
   <table>
@@ -295,12 +295,16 @@
     <tr><td>Decimals</td><td>8 (not 18)</td></tr>
     <tr><td>Supply</td><td>Fixed, minted once at deployment</td></tr>
     <tr><td>Privileges</td><td>No owner, no mint, no pause, no blacklist, no transfer fee, no proxy</td></tr>
-    <tr><td>Redemption</td><td><code>redeem()</code>, permissionless, at any time</td></tr>
+    <tr><td>Redemption</td><td>Preferred since 19 September 2026: a <em>return</em> to the desk at <a href="https://wrapdesk.pc.am/redeem">wrapdesk.pc.am/redeem</a>. Second route: a burn through <code>redeem()</code>, permissionless, at any time</td></tr>
   </table>
 
   <p>The contract is verified on BscScan and cannot be changed by anyone, ourselves
-  included. Wrapping is a deposit to the reserve; redeeming burns wPCN and releases the
-  matching PCN. Both directions are public and auditable on their respective chains.</p>
+  included. Wrapping is a deposit to the reserve. Redeeming releases the matching PCN by one
+  of two routes: since 19 September 2026 the preferred one is a <em>return</em>, which sends the
+  wPCN back to the desk's inventory at wrapdesk.pc.am/redeem so it can be wrapped again; the
+  second is a burn through the contract's <code>redeem()</code>. The supply is fixed and cannot be
+  minted, so a burn permanently shrinks what can ever be wrapped. Both routes pay the same PCN,
+  and both directions are public and auditable on their respective chains.</p>
 
   <h2 id="risks">10. Risks and honest limits</h2>
   <div class="note bad">
@@ -360,8 +364,8 @@
     <tr><td>Aug 2026</td><td>Mainnet launch, RandomX proof of work, no premine</td></tr>
     <tr><td>Aug 2026</td><td>LWMA activation at height 2800, with no chain split</td></tr>
     <tr><td>Aug 2026</td><td>Block explorer, public mining pool, Windows / Linux / Android wallets</td></tr>
-    <tr><td>Aug 2026</td><td>Android wallet published on Google Play</td></tr>
-    <tr><td>Aug&ndash;Sep 2026</td><td>Three independent services accepting PCN in production</td></tr>
+    <tr><td>Sep 2026</td><td>Android wallet published on Google Play</td></tr>
+    <tr><td>Aug&ndash;Sep 2026</td><td>Three services, all run by the PCoin maintainer, accepting PCN in production</td></tr>
     <tr><td>Aug 2026</td><td>wPCN 1:1 wrapper and its PancakeSwap market</td></tr>
   </table>
 
@@ -388,8 +392,10 @@
 
   <h3>Q2 2027</h3>
   <ul>
-    <li><strong>A market beyond the single DEX pair</strong>, subject to listing
-    requirements that are not entirely within our control.</li>
+    <li><strong>A market we do not run.</strong> PCN already trades on our own order book,
+    <a href="https://exchange.pc.am">exchange.pc.am</a>, and wPCN on its PancakeSwap pair; a listing
+    on a venue we do not operate is subject to requirements that are not entirely within our
+    control.</li>
     <li><strong>More merchants accepting PCN</strong>, with the integration guide and
     reference implementations kept current.</li>
   </ul>

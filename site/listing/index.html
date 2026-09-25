@@ -87,8 +87,9 @@
   <h1>Listing kit</h1>
   <p class="lede">Everything a mining calculator, pool directory, price tracker or exchange needs to list
   PCoin (PCN) &mdash; the chain facts, the live endpoints with their exact shapes, the pools, the market feed,
-  the logos. Every number on this page is either a constant of the chain or read live from the linked API;
-  nothing here is typed in by hand.</p>
+  the logos. Every number on this page is either a constant of the chain or comes from the linked APIs;
+  the sample API responses below are dated example snapshots, there to show the shape &mdash; call the
+  endpoint for current values.</p>
 </section>
 
 <main class="wrap">
@@ -112,13 +113,13 @@
 
 <h2>Network data &mdash; live</h2>
 <div class="card">
-  <p>One call, no key, CORS open. Height, difficulty, supply and the block timestamp come straight from the index; <code>index.stale</code> is <code>true</code> when the index is behind the node, so a reader can refuse stale numbers instead of trusting them.</p>
+  <p>One call, no key, CORS open. Height, difficulty, supply and the block timestamp come straight from the index; <code>index.stale</code> is <code>true</code> when the index is behind the node, so a reader can refuse stale numbers instead of trusting them. <b>The response below is an example snapshot</b> from 19 September 2026 (height 8603), not current figures.</p>
   <pre>GET https://explorer.pc.am/api/status
 
 { "chain": { "height": 8603, "difficulty": 0.11962281, "supply_pcn": "430150.00000000",
              "block_time": 1789783875, "best_hash": "…", "tx_count": 9597 },
   "index": { "status": "ok", "stale": false, "node_connections": 51, "blocks_behind": 0 } }</pre>
-  <p>Network hashrate (and the same difficulty/height) from the pool API, MiningCore-shaped:</p>
+  <p>Network hashrate (and the same difficulty/height) from the pool API, MiningCore-shaped &mdash; <b>again an example snapshot</b> from the same moment, not current figures:</p>
   <pre>GET https://pool.pc.am/api/pools/pcoin
 
 { "pool": { "networkStats": { "networkHashrate": 734238.3, "networkDifficulty": 0.11962281,

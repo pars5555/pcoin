@@ -166,7 +166,7 @@
             <a href="https://explorer.pc.am/api/status">explorer.pc.am/api/status</a> &mdash; read it
             rather than trusting a number written on a page.</dd>
         <dt>Block production</dt>
-        <dd class="warn">Our own pool finds roughly <b>seven blocks in ten</b>. That is a majority, and
+        <dd class="warn">As of September 2026 our own pool finds roughly <b>two blocks in three</b>. That is a majority, and
             it is the single largest thing wrong with this project today. It is also the gate on most
             of the list below.</dd>
         <dt>Exchanges</dt>
@@ -221,7 +221,7 @@
         <p>Our own services take PCN today &mdash;
         <a href="https://webai.pc.am">webai.pc.am</a>,
         <a href="https://aicontrol.pc.am">AI&nbsp;Control</a> and
-        <a href="https://t.me/MyWebsiteBuilderBot">@MyWebsiteBuilderBot</a> among them. Each issues an
+        <a href="https://t.me/MyWebsiteBuilderBot">@MyWebsiteBuilderBot</a>. Each issues an
         address only your account is credited for, waits for confirmations, and converts at the
         PCN index. The integration guide is at <a href="https://docs.pc.am">docs.pc.am</a> if you
         want to accept PCN in your own product.</p>
@@ -231,7 +231,10 @@
         <p>PCN cannot trade on an exchange that has never heard of it, so <b>wPCN</b> exists: a BEP-20
         token on BNB Smart Chain, backed one-for-one by PCN held in a public reserve. It trades in a
         PancakeSwap pool. <a href="https://wrapdesk.pc.am">wrapdesk.pc.am</a> turns PCN into wPCN, and
-        the contract's own <span class="mono">redeem()</span> turns it back.</p>
+        <a href="https://wrapdesk.pc.am/redeem">wrapdesk.pc.am/redeem</a> turns it back &mdash; since
+        19 September preferably by a <b>return</b> to the desk, which keeps that wPCN available to be
+        wrapped again, with a burn through the contract's own <span class="mono">redeem()</span> as the
+        second route.</p>
         <p><b>The pool is small.</b> A few hundred dollars moves it noticeably. It is a door, not a
         market, and it should not be read as a valuation.</p>
       </li>

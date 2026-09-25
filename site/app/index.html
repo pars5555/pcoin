@@ -255,7 +255,7 @@
       <b>Windows</b> &mdash; PCoin Wallet handles payment links from version
       1.4.20. If you have an older one, reinstall it from
       <a href="https://pc.am/download/" target="_blank" rel="noopener">pc.am/download</a>.<br>
-      <b>iPhone</b> &mdash; there is no iOS wallet yet, so nothing can open the
+      <b>iPhone</b> &mdash; there is no iPhone wallet, so nothing can open the
       link. Copy the address instead and pay from a device that has one.
     </p>
     <p class="note">
@@ -371,15 +371,42 @@ document.querySelectorAll('nav button').forEach((b) => {
 });
 
 // ---- chain + rate ----
+// price.pc.am's root body becomes nine fields (owner, 2026-09-25: "simplify the
+// price.pc.am json response"): serviceRate, pool.*, ladder.* and note leave it.
+// So: creditRateUsd (serviceRate only for an origin still on the old body),
+// poolUsd (else the old pool block), and `stale` -- present in both shapes, and
+// in the new one THE flag that says the price must not be used. A price the
+// feed will not stand behind is shown as a dash, like one it could not read.
+// The note leaves too, so the card that explains the price explains it itself;
+// its one figure, the floor, is read live.
+function rateNote(p) {
+  const floor = Number(p.floorUsd != null ? p.floorUsd : p.rateFloorUsd);
+  return 'The PCN price is the PCN index: the volume-weighted median price of real user-to-user ' +
+    'trades on exchange.pc.am, a small order book the project runs. Trades with the project\'s own ' +
+    'bots, and trades between linked accounts, do not count. It moves only when new qualifying ' +
+    'trades arrive, and when there is too little trading it holds its last value.' +
+    (floor > 0 ? ' It never goes below $' + floor.toFixed(4) + '.' : '') +
+    ' PCoin services credit one PCN at this price; market.pc.am sells PCN at it plus a markup. ' +
+    'The wPCN pool on PancakeSwap is not an input to it.';
+}
 async function loadChain() {
   try {
     const p = await getJson(PRICE);
-    $('rate').textContent = usd(p.serviceRate) + ' / PCN';
-    const pool = p.pool && p.pool.medianUsd;
-    $('rate-sub').textContent = 'what PCoin services credit 1 PCN at';
-    $('w-posted').textContent = usd(p.serviceRate);
+    const rate = p.creditRateUsd != null ? p.creditRateUsd : p.serviceRate;
+    const fresh = p.stale === false && !('ladder' in p && !(p.ladder && p.ladder.stale === false));
+    const pool = p.poolUsd != null ? p.poolUsd : (p.pool && p.pool.spotUsd);
+    if (!(Number(rate) > 0)) throw new Error('no rate');
+    if (fresh) {
+      $('rate').textContent = usd(rate) + ' / PCN';
+      $('rate-sub').textContent = 'what PCoin services credit 1 PCN at';
+      $('w-posted').textContent = usd(rate);
+    } else {
+      $('rate').textContent = FAIL;
+      $('rate-sub').innerHTML = '<span class="err">the PCN price is not current right now; services hold new credits until it is</span>';
+      $('w-posted').textContent = FAIL;
+    }
     $('w-pool').textContent = pool ? usd(pool) : 'not enough data yet';
-    $('rate-note').textContent = p.note || '';
+    $('rate-note').textContent = p.note || rateNote(p);
   } catch (e) {
     $('rate').textContent = FAIL;
     $('rate-sub').innerHTML = '<span class="err">could not read the rate</span>';
