@@ -160,6 +160,10 @@ fi
 
 # ------------------------------------------------------------------ 3. deploy
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+# The copy of each replaced file goes OUTSIDE the docroot. It used to sit
+# beside the live file as "<name>.bak.<stamp>", where Apache served it: every
+# old version of every page stayed public and crawlable (found 2026-09-25).
+BACKUP_ROOT="${PCOIN_DEPLOY_BACKUPS:-/var/backups/pcoin-deploy}"
 total_changed=0; total_same=0; sites=0; failed=0
 
 for target in $TARGETS; do
@@ -189,7 +193,10 @@ for target in $TARGETS; do
       continue
     fi
     mkdir -p "$(dirname "$dst")"
-    [ -f "$dst" ] && cp -a "$dst" "$dst.bak.$STAMP"
+    if [ -f "$dst" ]; then
+      bak="$BACKUP_ROOT/$STAMP/${docroot##*/}/$rel"
+      mkdir -p "$(dirname "$bak")" && cp -a "$dst" "$bak"
+    fi
     tmp="$dst.stage.$$"
     cp "$f" "$tmp"                     # byte copy; no text transform
     chown "$OWNER" "$tmp" 2>/dev/null
