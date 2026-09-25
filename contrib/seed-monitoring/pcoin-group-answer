@@ -982,7 +982,7 @@ def main():
         stx = x.get("stats") or {}
         la = d.get("ladder") or {}
         pool = p.get("pool") or {}
-        for v in (p.get("creditRateUsd"), p.get("sellPriceUsd"),
+        for v in (p.get("creditRateUsd"), p.get("sellPriceUsd"), p.get("rateFloorUsd"),
                   pool.get("spotUsd"), pool.get("medianUsd"),
                   stx.get("bestBidUsd"), stx.get("bestAskUsd"),
                   stx.get("lastPriceUsd"), stx.get("highUsd"), stx.get("lowUsd"),

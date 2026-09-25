@@ -44,6 +44,7 @@ import os
 import sys
 import time
 import re
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -73,11 +74,40 @@ SOURCES = {
     # the facts as something measured. A second pool you cannot see is a second
     # pool you will eventually lie about.
     "pool2": "https://pool2.pc.am/api/pools/pcoin",
+    # The exchange's aggregator feed carries the one withdrawal limit /api/public
+    # does not: USDT.max_withdraw, the per-account daily USDT cap (null = none).
+    # The prompt hard-coded it ("$50 a day") and a prompt cannot be the source of
+    # truth for a number an admin changes from a web page.
+    "assets": "https://exchange.pc.am/api/cmc/assets",
+    # Supply is on rule 1's list of things never to state from memory, and
+    # nothing here supplied it, so the bot could only refuse.
+    "supply": "https://explorer.pc.am/api/supply",
 }
+
+# Public pages that are TEXT, not JSON. Each is reduced to a few parsed values at
+# collect time -- the page itself is never cached or printed. A marker that is not
+# found gives None (UNKNOWN), never a guessed value.
+TEXT_SOURCES = {
+    # The wrap desk's front page. On 2026-09-23 the bot told a member wrapping was
+    # CLOSED four days after it reopened, because "open" lived only in the prompt.
+    "wrapdesk": "https://wrapdesk.pc.am/",
+    # What the one-liners install RIGHT NOW. These pins are what a user actually
+    # gets, so they are the right answer to "what is the latest version".
+    "win_miner": "https://pc.am/dl/install.ps1",
+    "win_wallet": "https://pc.am/dl/install-wallet.ps1",
+    "linux": "https://pc.am/dl/install.sh",
+    # The Android miner APK link on the mining page names its release tag.
+    "mining_page": "https://pc.am/mining/",
+}
+# These change on a release, not by the minute: read them at most every 10 min.
+TEXT_CACHE_SECONDS = 600
 
 # One transaction, looked up by its own id. NOT in SOURCES because it is asked
 # per question rather than collected on a timer.
 WITHDRAWAL_STATUS = "https://exchange.pc.am/api/withdrawal-status?txid=%s"
+# The same id on the PCoin chain, when the exchange has no record of it. A 404
+# here is an ANSWER ("not on this chain"), unlike a timeout, which is unknown.
+CHAIN_TX = "https://explorer.pc.am/api/tx/%s"
 
 
 def get(url):
@@ -97,7 +127,44 @@ def get(url):
     return None, "%s: %s" % (type(last).__name__, str(last)[:80])
 
 
-def collect():
+def get_text(url):
+    """A public page as text -> (text, None) or (None, error). Same retry as get()."""
+    req = urllib.request.Request(url, headers={"User-Agent": "pcoin-facts"})
+    last = None
+    for attempt in (1, 2):
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+                return r.read(400000).decode("utf-8", "replace"), None
+        except Exception as e:
+            last = e
+            if attempt == 1:
+                time.sleep(1)
+    return None, "%s: %s" % (type(last).__name__, str(last)[:80])
+
+
+def parse_text(name, t):
+    """Reduce one TEXT_SOURCES page to the few values we use. None = not found."""
+    if name == "wrapdesk":
+        # Both strings come from the desk's own template (wrapdesk-server.mjs,
+        # home()): the paused card replaces the sign-in button entirely.
+        if "New wrap requests are paused" in t:
+            return {"intake": "paused"}
+        if "Sign in to wrap" in t:
+            return {"intake": "open"}
+        return {"intake": None}
+    if name in ("win_miner", "win_wallet"):
+        m = re.search(r"\[string\]\$Version\s*=\s*'([0-9.]+)'", t)
+        return {"version": m.group(1) if m else None}
+    if name == "linux":
+        m = re.search(r'^VER="?v?([0-9.]+)"?', t, re.M)
+        return {"version": m.group(1) if m else None}
+    if name == "mining_page":
+        m = re.search(r"releases/download/v([0-9.]+)/pcoin-android-miner\.apk", t)
+        return {"android_miner_release": m.group(1) if m else None}
+    return {}
+
+
+def collect(prev=None):
     out, errs = {}, {}
     for name, url in SOURCES.items():
         d, err = get(url)
@@ -105,18 +172,31 @@ def collect():
             errs[name] = err
         else:
             out[name] = d
-    return {"at": int(time.time()), "data": out, "unreadable": errs}
+    # Slow sources: reuse the previous reading while it is fresh enough.
+    prev = prev or {}
+    if prev.get("text") and time.time() - prev.get("text_at", 0) < TEXT_CACHE_SECONDS:
+        text, text_errs, text_at = prev["text"], prev.get("text_unreadable", {}), prev["text_at"]
+    else:
+        text, text_errs, text_at = {}, {}, int(time.time())
+        for name, url in TEXT_SOURCES.items():
+            t, err = get_text(url)
+            if err:
+                text_errs[name] = err
+            else:
+                text[name] = parse_text(name, t)
+    return {"at": int(time.time()), "data": out, "unreadable": errs,
+            "text": text, "text_unreadable": text_errs, "text_at": text_at}
 
 
 def cached(refresh=False):
-    if not refresh:
-        try:
-            c = json.load(open(CACHE, encoding="utf-8"))
-            if time.time() - c.get("at", 0) < CACHE_SECONDS:
-                return c
-        except Exception:
-            pass
-    c = collect()
+    prev = None
+    try:
+        prev = json.load(open(CACHE, encoding="utf-8"))
+    except Exception:
+        prev = None
+    if not refresh and prev and time.time() - prev.get("at", 0) < CACHE_SECONDS:
+        return prev
+    c = collect(None if refresh else prev)
     try:
         os.makedirs(os.path.dirname(CACHE), exist_ok=True)
         tmp = CACHE + ".tmp"
@@ -342,13 +422,19 @@ def block(c):
     # `if "pool" not in bad or "pool2" not in bad`, which withheld it exactly
     # when BOTH our pools were unreadable: the one moment a miner most needs
     # somewhere else to point their hashrate.
+    # Corrected 2026-09-25: this said the pool's "web stats page does not
+    # answer" long after https://pcoin.aioncore.pro/ went live (it is linked from
+    # the pc.am home page), and it gave only the raw IP -- so on 2026-09-21 the
+    # bot told a miner "I don't know aioncore" about the one pool pc.am lists.
     out.append(
-        "A SECOND, INDEPENDENT POOL EXISTS and is run by somebody outside the project: "
-        "stratum 198.244.169.49:3333, RandomX, no registration. We do not run it and "
-        "cannot vouch for it, and its web stats page does not answer -- but its stratum "
-        "is live and building on this chain. If a miner asks for an alternative, give "
-        "them that address: a chain where most blocks come from one pool is less secure, "
-        "and pointing people elsewhere is genuinely good for PCoin.")
+        "AN INDEPENDENT POOL, AIONCORE, is run by somebody outside the project: "
+        "stratum pcoin.aioncore.pro:3333 (the same server as 198.244.169.49:3333), "
+        "stats at https://pcoin.aioncore.pro/, RandomX, no registration. It is listed on "
+        "the pc.am home page and was paid the 500 PCN independent-pool bounty on "
+        "24 September 2026. We do not run it and cannot vouch for its payouts. If a "
+        "miner asks for an alternative, give them that address: a chain where most "
+        "blocks come from one pool is less secure, and pointing people elsewhere is "
+        "genuinely good for PCoin.")
 
     if "price" in bad:
         out.append("PRICE: UNREADABLE (%s) -- say you cannot read the rate right now." % bad["price"])
@@ -356,9 +442,12 @@ def block(c):
         p = d["price"]
         pool = p.get("pool") or {}
         out.append("PRICE: credit rate $%s per PCN. This is what the AI services CREDIT, and it "
-                   "is not a market price. Ladder sell price $%s. wPCN pool spot $%s."
+                   "is not a market price. Ladder sell price $%s. wPCN pool spot $%s.%s"
                    % (n(p.get("creditRateUsd"), 6), n(p.get("sellPriceUsd"), 6),
-                      n(pool.get("spotUsd"), 6)))
+                      n(pool.get("spotUsd"), 6),
+                      (" Both the credit rate and the sale price follow the wPCN pool DOWN and "
+                       "stop at a published floor of $%s." % n(p.get("rateFloorUsd")))
+                      if p.get("rateFollowsPoolDown") and p.get("rateFloorUsd") else ""))
         out.append("BUYBACK: %s. The project itself does not buy PCN back at price.pc.am."
                    % ("OPEN" if p.get("buybackOpen") else "closed"))
 
@@ -384,11 +473,20 @@ def block(c):
                 and n(w.get("minimumBep20Usd"), 2) != n(w.get("minimumUsd"), 2)):
             mins = "$%s for USDT on BNB Smart Chain, $%s for USDT on TRON and for PCN" % (
                 n(w.get("minimumBep20Usd"), 2), n(w.get("minimumUsd"), 2))
+        # The daily USDT cap comes from the aggregator feed. null there means the
+        # cap is OFF; an unreadable feed means UNKNOWN -- never "no cap".
+        if "assets" in bad or not isinstance(d.get("assets"), dict):
+            cap = " The daily USDT cap could not be read just now -- do not quote one."
+        else:
+            mx = (d["assets"].get("USDT") or {}).get("max_withdraw")
+            cap = (" USDT withdrawals are capped at $%s per account per UTC day; PCN has no daily cap."
+                   % n(mx, 2) if mx is not None else
+                   " There is no daily cap on USDT withdrawals right now.")
         out.append("WITHDRAWALS: minimum %s, paid by hand within %s hours. Fees: USDT on TRON "
-                   "$%s, USDT on BNB Smart Chain $%s, PCN %s. Two-factor is required first."
+                   "$%s, USDT on BNB Smart Chain $%s, PCN %s. Two-factor is required first.%s"
                    % (mins, w.get("turnaroundHours"),
                       n(w.get("feeTrc20Usd"), 2), n(w.get("feeBep20Usd"), 2),
-                      "free" if str(w.get("feePcn")) in ("0", "0.0") else w.get("feePcn")))
+                      "free" if str(w.get("feePcn")) in ("0", "0.0") else w.get("feePcn"), cap))
         out.append("ORDER BOOK NOW: best bid $%s, best ask $%s, last trade $%s, 24h volume %s PCN "
                    "across %s trades."
                    % (n(st.get("bestBidUsd"), 6), n(st.get("bestAskUsd"), 6),
@@ -426,12 +524,52 @@ def block(c):
                       "Nothing is waiting in the payout queue."
                       if oldest is None else
                       "The oldest request still waiting is %d hours old." % (oldest // 3600)))
+        # No contract address here any more: the output guard holds every draft
+        # containing an 0x address, so a bot that obeyed this line by quoting it
+        # would have been silenced -- the same feed-vs-guard contradiction that
+        # killed the pool answers on 2026-09-21.
         out.append("If somebody says a withdrawal failed: every payout the exchange has sent has "
                    "confirmed successfully so far. Ask them for the transaction id and which "
                    "network, and say it will be checked -- do NOT tell them it failed, and do "
-                   "NOT guess. USDT on BNB Smart Chain is a TOKEN with 18 decimals (contract "
-                   "0x55d398326f99059ff775485246999027b3197955); a wallet that has not added it "
-                   "shows nothing, which is the usual cause of 'it never arrived'.")
+                   "NOT guess. USDT on BNB Smart Chain is a TOKEN: a wallet that has not added "
+                   "USDT on BNB Smart Chain from its own token list shows nothing, which is the "
+                   "usual cause of 'it never arrived'. Do not give a contract address.")
+
+    # ── supply ────────────────────────────────────────────────────────────
+    su = d.get("supply")
+    if "supply" in bad or not isinstance(su, dict):
+        out.append("SUPPLY: UNREADABLE -- do not state a supply figure.")
+    else:
+        h = su.get("height")
+        left = (210000 - h % 210000) if isinstance(h, int) else None
+        out.append("SUPPLY: %s PCN mined so far (%s of it still immature) of the %s cap; no premine. "
+                   "The block reward halves every 210,000 blocks; the next halving is %s blocks "
+                   "from now (do not turn that into a date)."
+                   % (n(su.get("total_supply_pcn"), 0), n(su.get("immature_pcn"), 0),
+                      n(su.get("max_supply_pcn"), 0), left if left is not None else "an unknown number of"))
+
+    # ── what the install lines install, and the wrap desk ─────────────────
+    tx, tbad = c.get("text") or {}, c.get("text_unreadable") or {}
+    def ver(key, field="version"):
+        v = (tx.get(key) or {}).get(field)
+        return ("v" + v) if v else "UNKNOWN"
+    out.append("RELEASES (what the install lines install right now -- the only versions you may "
+               "quote): Windows miner %s, Windows PCoin Wallet %s, Linux node and miner %s, "
+               "Android miner APK from release %s. The Android wallet's version is whatever "
+               "Google Play shows. An UNKNOWN here means: say you cannot check it right now."
+               % (ver("win_miner"), ver("win_wallet"), ver("linux"),
+                  ver("mining_page", "android_miner_release")))
+    intake = (tx.get("wrapdesk") or {}).get("intake")
+    if intake == "open":
+        out.append("WRAP DESK: OPEN -- wrapdesk.pc.am is taking new PCN -> wPCN requests "
+                   "(read from its own page within the last 10 minutes).")
+    elif intake == "paused":
+        out.append("WRAP DESK: PAUSED -- wrapdesk.pc.am says new wrap requests are paused right "
+                   "now. Anything already sent is still paid or returned, and redeeming wPCN back "
+                   "to PCN still works. Do not guess when it reopens.")
+    else:
+        out.append("WRAP DESK: could not be read just now (%s) -- do not say whether it is open."
+                   % (tbad.get("wrapdesk") or "no marker found"))
 
     if bad:
         out.append("NOTE: %d source(s) could not be read this time. For anything they cover, say "
@@ -455,15 +593,48 @@ def txid_line(t):
     if err:
         return "UNREADABLE: the exchange could not be asked about that transaction just now. "                "Say you will check it, and do not guess."
     if not d.get("found"):
-        return ("NO RECORD: the exchange has no withdrawal paid with that transaction. That does "
-                "NOT mean it failed -- it may be from another service, or mistyped. Ask them to "
-                "check the hash. Never tell them their money is lost.")
+        base = ("NO EXCHANGE RECORD: the exchange has no withdrawal paid with that transaction. "
+                "That does NOT mean it failed. Never tell them their money is lost.")
+        # A 0x id is a BNB Smart Chain hash and cannot be on the PCoin chain.
+        if t.startswith("0x"):
+            return base + " It is a BNB Smart Chain hash, which the PCoin explorer cannot see."
+        return base + " " + chain_tx_line(t)
     return ("WITHDRAWAL FOUND: %s %s on %s, status %s, requested %s, paid %s. Chain check: %s"
             % (d.get("amount"), d.get("asset"), d.get("network"), d.get("status"),
                time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(d.get("requestedAt") or 0)),
                time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(d.get("paidAt") or 0))
                if d.get("paidAt") else "not yet",
                d.get("verifyDetail") or "not verified yet"))
+
+
+def chain_tx_line(t):
+    """Is this id a transaction on the PCoin chain? Status and confirmations ONLY.
+
+    Deliberately prints no address and no amount: those are public on the
+    explorer, but the bot posts into a public group and the guard holds any
+    draft containing an address anyway. A 404 is an ANSWER (the explorer does
+    not know it); any other failure is UNKNOWN and says so.
+    """
+    req = urllib.request.Request(CHAIN_TX % urllib.parse.quote(t, safe=""),
+                                 headers={"User-Agent": "pcoin-facts"})
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            tx = (json.load(r) or {}).get("tx") or {}
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return ("ON THE PCOIN CHAIN: not found. It may be a TRON or BNB Smart Chain "
+                    "transaction, not yet broadcast, or mistyped -- ask them to check it.")
+        return "ON THE PCOIN CHAIN: could not be checked just now. Say it will be checked."
+    except Exception:
+        return "ON THE PCOIN CHAIN: could not be checked just now. Say it will be checked."
+    if tx.get("status") == "confirmed":
+        return ("ON THE PCOIN CHAIN: confirmed in block %s, %s confirmations%s."
+                % (tx.get("height"), tx.get("confirmations"),
+                   " (a mining reward: spendable after 100)" if tx.get("is_coinbase") else ""))
+    if tx.get("status") == "unconfirmed":
+        return ("ON THE PCOIN CHAIN: seen and waiting in the mempool, not yet in a block. "
+                "That is normal for a few minutes; blocks are random, about 10 minutes apart.")
+    return "ON THE PCOIN CHAIN: its status could not be read. Say it will be checked."
 
 
 def main():
