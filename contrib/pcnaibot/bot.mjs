@@ -40,6 +40,10 @@ import { newDeliverables, deliverFiles, noteUploaded } from './lib/deliver.mjs';
 import { AgentClient, AgentUnavailable, AgentRefused, creditsToMicroUsd, runOutcome, stopNote } from './lib/agent.mjs';
 import { liveSession, recordSession, setSessionModel, touchSession, retireSession, sweepDeletions, reconcileRemote } from './lib/agentstore.mjs';
 import { pollAgentEvents } from './lib/lifecycle.mjs';
+import {
+  MEDIA_MODELS, MediaClient, PromptMemory, mediaOffer, priceUsd, usdToMicro, moneyLabel, badgeOf,
+  runImage, startVideo, pollVideos, sendOriginal, runningReservationIds, SHAPES,
+} from './lib/media.mjs';
 import { streamMessages, StreamStage } from './lib/stream.mjs';
 import { mdToHtml } from './lib/markdown.mjs';
 import { DraftStream } from './lib/drafts.mjs';
@@ -148,6 +152,30 @@ const agent = (() => {
   if (!k) { log.warn('AGENT_ENABLED but no OONACODE_AGENT_KEY; agentic mode is off'); return null; }
   return new AgentClient(cfg.strOr('OONACODE_BASE', 'https://api.oonacode.oonak.ai'), k);
 })();
+
+// ---- pictures and video (lib/media.mjs) ----------------------------------
+// The plain API key: OonaCode lists and serves its image and video models only to a key of kind
+// `api`, never to the agent key.
+const media = new MediaClient(cfg.strOr('OONACODE_BASE', 'https://api.oonacode.oonak.ai'), cfg.str('OONACODE_KEY'));
+const promptMemory = new PromptMemory();
+
+// OonaCode's list of media models, kept like the chat price table: a failed read keeps the last
+// good one, and one older than REGISTRY_MAX_AGE sells nothing -- an unknown price does not bill.
+async function refreshMedia() {
+  try {
+    const all = await media.listModels();
+    const entries = all.filter((m) => m.modality === 'image' || m.modality === 'video');
+    kvSetJson(db, 'media:listing', { at: nowSec(), entries });
+    log.info('media models refreshed', { offered: Object.keys(mediaOffer(entries)).join(',') || '(none)' });
+  } catch (e) {
+    log.warn('could not list media models; keeping the previous list', errFields(e));
+  }
+}
+function currentOffer() {
+  const l = kvGetJson(db, 'media:listing');
+  if (!l || nowSec() - l.at > REGISTRY_MAX_AGE) return {};
+  return mediaOffer(l.entries);
+}
 
 // DIAGNOSTIC ONLY. When set, this string is appended to every text chunk
 // received from the provider, so the delivered answer shows exactly where the
@@ -286,7 +314,7 @@ const QUICK = {
 function quickKeyboard(u) {
   return {
     keyboard: [
-      [{ text: `🧠 Model: ${u.model}` }],
+      [{ text: `${badgeOf(u.model)} Model: ${u.model}` }],
       [{ text: QUICK.balance }, { text: QUICK.topup }],
       [{ text: QUICK.clear }, { text: QUICK.help }],
     ],
@@ -295,7 +323,9 @@ function quickKeyboard(u) {
   };
 }
 function quickAction(text) {
-  if (text.startsWith('🧠 Model:')) return 'models';
+  // Any badge: the button shows 🎨 or 🎬 for a picture or video model, and an old keyboard still
+  // in a chat sends 🧠.
+  if (/^(🧠|🎨|🎬) Model:/u.test(text)) return 'models';
   for (const [k, v] of Object.entries(QUICK)) if (text === v) return k;
   return null;
 }
@@ -308,7 +338,8 @@ function startScreen(u) {
     '<b>What I can do</b>',
     '• Answer questions and chat, in any language',
     '• Read what you send me: photos, screenshots, documents, PDFs, spreadsheets, voice notes, audio and video',
-    '• Write and run code, make pictures, charts, PDFs and files — and send them back to you here',
+    '• Write and run code, make charts, PDFs and files — and send them back to you here',
+    '• Make pictures 🎨 and videos 🎬 — pick a picture or video model in /models',
     '• Search the web and read pages for you',
     '• Remember our conversation until you start a new chat',
     '',
@@ -331,6 +362,7 @@ function helpScreen() {
     '• Each message is billed by what the model actually used: tokens in and out, at the price shown in <b>Choose model</b> (per 1M tokens, our margin included). Reasoning tokens count as output.',
     `• One message can take up to <b>${AGENT_MAX_TURNS} steps</b>; a longer job stops there and continues when you say "continue".`,
     '• <b>Send files</b> as photos, documents, voice notes or videos, with a caption saying what to do. Files the agent makes come back as pictures or documents.',
+    '• <b>Pictures and videos</b>: pick a 🎨 or 🎬 model in /models, then just describe what you want. Each picture or clip has one price, shown in the list; send a photo with a caption to change it or bring it to life.',
     '• <b>Stop</b> an answer with /stop or the ⏹ button; you pay only for what was written.',
     '• <b>New chat</b> forgets the conversation and deletes its files from the server.',
     '• <b>Top up</b> by sending PCN to your own permanent address; credit lands after 3 confirmations.',
@@ -504,6 +536,20 @@ async function handleTxHash(chatId, txhash) {
 // between rendering the keyboard and the user tapping it is refused rather
 // than stored and 404d on the next turn.
 function setModel(chatId, model) {
+  if (MEDIA_MODELS[model]) {
+    const o = currentOffer()[model];
+    if (!o) return { ok: false, msg: `<code>${escapeHtml(model)}</code> is not available right now. Use /models for the current list.` };
+    db.prepare('UPDATE users SET model = ? WHERE chat_id = ?').run(model, chatId);
+    const how = o.info.kind === 'video'
+      ? 'Describe the video you want — or send a photo with a caption to bring it to life. A clip takes 1–5 minutes and arrives here; you can keep chatting meanwhile.'
+      : 'Describe the picture you want — or send a photo with a caption saying what to change. Under each picture: 🔁 another one, other shapes, and the original file.';
+    return {
+      ok: true,
+      model,
+      msg: `Model set to <b>${badgeOf(model)} ${escapeHtml(model)}</b> — ${escapeHtml(mediaPriceLabel(o))}.\n\n${how}\n\n`
+        + 'Your chat conversation is kept: pick a chat model in /models to go back to it.',
+    };
+  }
   const s = sellableModels();
   if (s.expired) return { ok: false, msg: 'Model prices are unavailable right now, so paid models are temporarily closed.' };
   const row = s.models.find((m) => m.model === model);
@@ -661,11 +707,28 @@ function modelsScreen() {
     lines.push(`<b>${escapeHtml(m.model)}</b> — ${info ? escapeHtml(info.desc) + ' ' : ''}<i>${escapeHtml(price)}</i>`);
     return [{ text: info ? `${m.model} · ${info.tag}` : m.model, callback_data: `m:${m.model}` }];
   });
+
+  // PICTURE AND VIDEO MODELS, after the chat ones (owner, 2026-09-25: the user picks them from
+  // this list, with a badge). Only what OonaCode is serving now, at its live price x our margin.
+  const offer = currentOffer();
+  const mediaLines = [];
+  for (const o of Object.values(offer)) {
+    mediaLines.push(`<b>${badgeOf(o.id)} ${escapeHtml(o.id)}</b> — ${escapeHtml(o.info.desc)} <i>${escapeHtml(mediaPriceLabel(o))}</i>`);
+    rows.push([{ text: `${o.id} · ${o.info.tag}`, callback_data: `m:${o.id}` }]);
+  }
   return {
-    text: '<b>Choose a model.</b>\n\n' + lines.join('\n\n')
-      + '\n\n<i>Prices are per 1M tokens, input / output, and include our margin. Reasoning tokens are billed as output. 📷 = reads photos.</i>',
+    text: '<b>Choose a model.</b>\n\n<b>🧠 Chat models</b> — they talk, write, code and use tools.\n\n' + lines.join('\n\n')
+      + (mediaLines.length ? '\n\n<b>🎨 Pictures and 🎬 video</b> — describe what you want and get it back.\n\n' + mediaLines.join('\n\n') : '')
+      + '\n\n<i>Chat prices are per 1M tokens, input / output; picture and video prices are per item. All include our margin. Reasoning tokens are billed as output. 📷 = reads photos.</i>',
     keyboard: rows.length ? { inline_keyboard: rows } : null,
   };
+}
+
+// What one picture or clip costs the user, margin included -- from OonaCode's live price.
+function mediaPriceLabel(o) {
+  const p = priceUsd(o);
+  if (o.info.kind === 'video') return `${moneyLabel(usdToMicro(p.typical, MARGIN_E6))} per ${o.info.duration}-second clip (${o.info.resolution})`;
+  return `${moneyLabel(usdToMicro(p.typical, MARGIN_E6))} a picture`;
 }
 
 // A ledger row as a person reads it: WHAT it was (the model for a turn, the rail for a deposit)
@@ -675,7 +738,8 @@ function modelsScreen() {
 function ledgerLabel(l) {
   if (l.kind === 'ai_turn') {
     const words = String(l.note ?? '').trim().split(/\s+/);
-    const model = words[0] === 'agent' || words[0] === 'stream' ? words[1] : words[0];
+    const model = words[0] === 'agent' || words[0] === 'stream' || words[0] === 'media' ? words[1] : words[0];
+    if (words[0] === 'media' && model) return `${badgeOf(model)} <code>${escapeHtml(model)}</code>`;
     return model ? `<code>${escapeHtml(model)}</code>` : 'a turn';
   }
   if (l.kind === 'deposit_pcn') return 'PCN deposit';
@@ -717,6 +781,10 @@ function balanceScreen(u) {
 // ---------------------------------------------------------------------------
 async function runTurn(chatId, updateId, text, attachments = []) {
   const u = ensureUser(chatId);
+
+  // A PICTURE OR VIDEO MODEL, before anything about chat models -- it is not in their billable
+  // set, and the check below would otherwise move the user off it.
+  if (MEDIA_MODELS[u.model]) return runMediaTurn(chatId, updateId, u, text, attachments);
 
   const s = sellableModels();
   const row = s.models.find((m) => m.model === u.model);
@@ -1137,6 +1205,83 @@ function toolVerb(name) {
   return TOOL_VERBS[name] ?? TOOL_VERBS[bare] ?? 'Working';
 }
 
+// THE USER PICKS THE MODEL (owner, 2026-09-25: "we should not decide for user the model"). A chat
+// model asked for a picture or a video points at the 🎨/🎬 models that are on sale now, and makes
+// it itself only when the user says so. Named from the live list, so it never suggests a model
+// that cannot be picked; with none on sale, it says nothing and the agent makes it as before.
+function mediaSuggestion() {
+  const offered = Object.values(currentOffer());
+  if (!offered.length) return '';
+  const names = offered.map((o) => `${o.id} (${o.info.tag.replace(/^\S+\s/, '')})`).join(', ');
+  return ` This bot also has picture and video models the user can pick in /models — ${names} — which turn a description straight into a picture or a clip, faster and cheaper than you.`
+    + ' When the user asks you to make a picture, photo, illustration, logo or video (not a chart, diagram or document you would make with code), do not make it yet: say in one or two sentences which of those models fits and that they can pick it in /models, and that you can make it here instead if they prefer.'
+    + ' Make it yourself only when they say so — or have already said so.';
+}
+
+// ---------------------------------------------------------------------------
+// A picture or a video, straight from the model the user picked (lib/media.mjs).
+// ---------------------------------------------------------------------------
+const mediaDeps = (draft = null) => ({ db, tg, media, marginE6: MARGIN_E6, memory: promptMemory, draft });
+
+// What a picture model can take as a picture: a photo, an image sent as a file, a still sticker.
+const imageInputs = (attachments) => attachments.filter((a) =>
+  a.kind === 'photo' || (a.kind === 'document' && /^image\/(png|jpe?g|webp)$/.test(a.contentType ?? ''))
+  || (a.kind === 'sticker' && a.contentType === 'image/webp'));
+
+async function runMediaTurn(chatId, updateId, u, text, attachments) {
+  const offer = currentOffer()[u.model];
+  if (!offer) {
+    db.prepare('UPDATE users SET model=? WHERE chat_id=?').run(DEFAULT_MODEL, chatId);
+    return `<code>${escapeHtml(u.model)}</code> is not available right now, so you have been moved to <code>${escapeHtml(DEFAULT_MODEL)}</code>. `
+      + 'Nothing has been charged. Pick another picture or video model in /models, or send your message again.';
+  }
+  const inputs = imageInputs(attachments);
+  // Nothing billed for what a picture model cannot use: a voice note, a PDF, a clip.
+  if (attachments.length && !inputs.length) {
+    return `${badgeOf(u.model)} <b>${escapeHtml(u.model)}</b> makes ${offer.info.kind === 'video' ? 'videos' : 'pictures'} — it can take a photo, but not this kind of file. `
+      + 'To talk about the file, pick a chat model in /models. <b>Nothing has been charged.</b>';
+  }
+  if (offer.info.kind === 'image') {
+    if (!text) return 'Add a caption to the photo saying what to change — for example "make it winter". <b>Nothing has been charged.</b>';
+    const draft = new DraftStream(tg, chatId, draftIdFor(updateId), { canStop: false });
+    return runImage(mediaDeps(draft), { chatId, updateId, offer, prompt: text, shape: 'square', inputs });
+  }
+  return startVideo(mediaDeps(), { chatId, updateId, offer, prompt: text, inputs });
+}
+
+// A button under a picture or a clip: `mj:<job>:<again|square|wide|tall|file>`.
+async function handleMediaButton(chatId, updateId, jobId, action) {
+  if (action === 'file') {
+    const r = await sendOriginal(mediaDeps(), { chatId, jobId });
+    if (r) await tg.sendMessage(chatId, r);
+    return;
+  }
+  const mem = promptMemory.get(jobId);
+  if (!mem) {
+    await tg.sendMessage(chatId, 'I no longer have the description of that one — I keep your words only until the bot restarts. Please send it again.');
+    return;
+  }
+  const offer = currentOffer()[mem.model];
+  if (!offer) { await tg.sendMessage(chatId, `<code>${escapeHtml(mem.model)}</code> is not available right now. See /models.`); return; }
+  let unlock;
+  try { unlock = acquireUserLock(db, chatId); }
+  catch (e) {
+    if (e instanceof Busy) { await tg.sendMessage(chatId, 'Your previous message is still being answered — one at a time, please.'); return; }
+    throw e;
+  }
+  try {
+    const reply = mem.kind === 'video'
+      ? await startVideo(mediaDeps(), { chatId, updateId, offer, prompt: mem.prompt, inputs: mem.inputs })
+      : await runImage(mediaDeps(new DraftStream(tg, chatId, draftIdFor(updateId), { canStop: false })), {
+        chatId, updateId, offer, prompt: mem.prompt, inputs: mem.inputs,
+        shape: action === 'again' ? mem.shape : action,
+      });
+    if (reply) await tg.sendLong(chatId, reply);
+  } finally {
+    unlock();
+  }
+}
+
 const SANDBOX_RETRIES = 3;
 // 5 s, then 10 s, then 20 s: a gateway deploy restarts its sandbox service for about half a
 // minute, and the old 4 + 8 s sat entirely inside that window (three failures, 07:21:45 to
@@ -1364,7 +1509,8 @@ async function runTurnAgentic({ chatId, updateId, model, text, resv, attachments
   const system = 'You are the assistant behind the PCoin AI Telegram bot; the user talks to you from Telegram and can send you photos, documents, voice notes and video, which land in your workspace. Any file you save in the workspace is sent to the user automatically as an attachment: when asked for a picture, chart, document or file, make it and name it in your answer, and never say you cannot send it. Do not create files nobody asked for. Answer as a general assistant, not as a coding tool, unless the user is coding.'
     // Real pictures (2026-09-25): asked for "a realistic picture", an agent scraped Wikimedia and
     // collaged stock photos for twenty minutes. The sandbox now has image and video models.
-    + ' For any picture, photo, illustration, logo or video, use the generate_image and generate_video tools — they make real AI-generated images and videos — never stock photos from the web or drawings in code, unless the user asks for that.'
+    + mediaSuggestion()
+    + ' When you make a picture, photo, illustration, logo or video, use the generate_image and generate_video tools — they make real AI-generated images and videos — never stock photos from the web or drawings in code, unless the user asks for that.'
     // Only the user speaks for the user (2026-09-25). mimo-v2.5 made a fine picture, opened it,
     // and answered the note the Read tool attaches to an image -- "I see the coordinate-mapping
     // note for the image — what would you like me to do with it?" -- instead of the user. Every
@@ -2002,7 +2148,10 @@ async function main() {
   // messages were refused). Held reservations are different -- the turn MAY
   // have run -- and stay with the age-out.
   const unlocked = db.prepare('UPDATE users SET busy_at = NULL WHERE busy_at IS NOT NULL').run().changes;
-  const orphans = db.prepare("SELECT id FROM reservations WHERE state = 'open'").all();
+  // EXCEPT a video still being made: that job lives on OonaCode's side and outlives us, and the
+  // poller settles its reservation when it ends (lib/media.mjs).
+  const stillMaking = runningReservationIds(db);
+  const orphans = db.prepare("SELECT id FROM reservations WHERE state = 'open'").all().filter((r) => !stillMaking.has(r.id));
   for (const r of orphans) release(db, r.id, 'bot restarted mid-turn');
   if (unlocked || orphans.length) log.info('cleared turns cut off by the restart', { unlocked, released: orphans.length });
 
@@ -2018,6 +2167,7 @@ async function main() {
   });
 
   await refreshPrices();
+  await refreshMedia();
 
   // PROBE BEFORE SELLING ANYTHING. /v1/models is not authoritative for
   // reachability -- all three Claude models are listed and refuse at call time
@@ -2040,6 +2190,22 @@ async function main() {
 
   setInterval(() => refreshPrices().catch((e) => log.error('price refresh failed', errFields(e))),
     cfg.int('REGISTRY_REFRESH_SECONDS', 600) * 1000);
+  setInterval(() => refreshMedia().catch((e) => log.error('media refresh failed', errFields(e))),
+    cfg.int('REGISTRY_REFRESH_SECONDS', 600) * 1000);
+
+  // Clips being made: finished ones are settled and delivered. At startup too -- a clip started
+  // before a restart is still ours to deliver. One pass at a time.
+  let videosBusy = false;
+  const pollClips = () => {
+    if (videosBusy) return;
+    videosBusy = true;
+    pollVideos(mediaDeps())
+      .then((c) => { if (c.done || c.failed) log.info('video jobs', c); })
+      .catch((e) => log.warn('video poll failed', errFields(e)))
+      .finally(() => { videosBusy = false; });
+  };
+  setInterval(pollClips, 15000);
+  pollClips();
   // Re-probe daily: a provider can change a credential or a model's behaviour
   // under us, and the registry will not mention it.
   setInterval(() => probeAll(db, oona, ALLOWLIST_MODELS).catch((e) => log.error('probe failed', errFields(e))),
@@ -2159,6 +2325,18 @@ async function main() {
             const r = setModel(cid, data.slice(2));
             toast = r.ok ? `Model: ${r.model}` : 'Not available';
             await sendScreen(cid, r.msg, quickKeyboard(ensureUser(cid)));
+          } else if (cid !== null && mayUse(cid) && /^mj:\d+:(again|square|wide|tall|file)$/.test(data)) {
+            // A picture's or clip's own button. Billed work, so it runs like a turn: in the
+            // background (the poll loop never waits on a picture), under the user's lock, and
+            // reserved against THIS update's id.
+            ensureUser(cid);
+            const [, id, action] = data.split(':');
+            toast = action === 'file' ? 'Sending the file…' : SHAPES[action] ? `${SHAPES[action]}…` : 'Another one…';
+            const updateId = up.update_id;
+            const task = handleMediaButton(cid, updateId, Number(id), action)
+              .catch((e) => { log.error('media button threw', errFields(e)); });
+            inFlightTurns.add(task);
+            task.finally(() => inFlightTurns.delete(task));
           } else if (cid !== null && mayUse(cid) && data.startsWith('nav:')) {
             // A menu button is the same screen its slash command shows.
             const u = ensureUser(cid);

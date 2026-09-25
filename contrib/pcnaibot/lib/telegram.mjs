@@ -195,8 +195,13 @@ export class TelegramClient {
   // A photo with a caption. Telegram caps a CAPTION at 1024 characters where a
   // message is 4096, so anything longer must be a photo plus a short caption
   // followed by the rest as its own message -- never silently truncated.
-  async sendPhoto(chatId, buffer, { filename = 'qr.png', caption = null, parseMode = 'HTML', contentType = 'image/png' } = {}) {
-    return this.#sendFile('sendPhoto', 'photo', chatId, buffer, { filename, caption, parseMode, contentType });
+  async sendPhoto(chatId, buffer, { filename = 'qr.png', caption = null, parseMode = 'HTML', contentType = 'image/png', replyMarkup = null } = {}) {
+    return this.#sendFile('sendPhoto', 'photo', chatId, buffer, { filename, caption, parseMode, contentType, replyMarkup });
+  }
+
+  // A clip, played inline. `supports_streaming` lets a phone start it before the whole file is in.
+  async sendVideo(chatId, buffer, { filename = 'video.mp4', caption = null, parseMode = 'HTML', contentType = 'video/mp4', replyMarkup = null } = {}) {
+    return this.#sendFile('sendVideo', 'video', chatId, buffer, { filename, caption, parseMode, contentType, replyMarkup, extra: { supports_streaming: true } });
   }
 
   // A file, sent as a FILE rather than a picture.
@@ -206,16 +211,21 @@ export class TelegramClient {
   // refuses image types it cannot display. So anything that is not a plain
   // raster the user wants to LOOK at -- an SVG, a PDF, a zip, an oversized
   // render -- goes this way, where the bytes arrive intact.
-  async sendDocument(chatId, buffer, { filename = 'file.bin', caption = null, parseMode = 'HTML', contentType = 'application/octet-stream' } = {}) {
-    return this.#sendFile('sendDocument', 'document', chatId, buffer, { filename, caption, parseMode, contentType });
+  async sendDocument(chatId, buffer, { filename = 'file.bin', caption = null, parseMode = 'HTML', contentType = 'application/octet-stream', replyMarkup = null } = {}) {
+    return this.#sendFile('sendDocument', 'document', chatId, buffer, { filename, caption, parseMode, contentType, replyMarkup });
   }
 
-  async #sendFile(method, field, chatId, buffer, { filename, caption, parseMode, contentType }) {
+  async #sendFile(method, field, chatId, buffer, { filename, caption, parseMode, contentType, replyMarkup = null, extra = {} }) {
     if (caption !== null && telegramLength(caption) > CAPTION_LIMIT) {
       throw new Error(`caption is ${telegramLength(caption)} units, over Telegram's ${CAPTION_LIMIT} limit`);
     }
     const { boundary, body } = multipartBody(
-      { chat_id: chatId, caption, parse_mode: caption ? parseMode : undefined },
+      {
+        chat_id: chatId, caption, parse_mode: caption ? parseMode : undefined,
+        // A multipart field is a string, so the keyboard goes as JSON, as the Bot API expects.
+        reply_markup: replyMarkup ? JSON.stringify(replyMarkup) : undefined,
+        ...extra,
+      },
       { field, filename, contentType, buffer }
     );
     const ctrl = new AbortController();
