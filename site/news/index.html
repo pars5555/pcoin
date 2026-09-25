@@ -126,6 +126,30 @@
   <main>
 
     <article class="entry">
+      <div class="meta"><time>2026-09-25</time><span class="tag infra">Price</span></div>
+      <h2>The PCN price now comes from trades between users</h2>
+      <p><b>The PCN price is now the PCN index</b>: the volume-weighted median price of real trades
+      between users on <a href="https://exchange.pc.am">exchange.pc.am</a>. Until today it was a rate
+      we posted ourselves, from a sale ladder and the wPCN pool. Trades with our own bots and our own
+      accounts never count toward the index, and neither do trades between linked accounts or by
+      accounts less than three days old. It needs at least 5 qualifying trades by 4 different people,
+      worth $25, in its window &mdash; 24 hours, widening to 72 and then 168 when trading is thin. It
+      moves at most 2% per qualifying trade and 5% a day, never goes below $0.015 or above $0.10, and
+      with no qualifying trades it holds its last value.</p>
+      <p><b>Everything that had its own price now reads this one.</b> The services that take PCN credit
+      it at the index. <a href="https://market.pc.am">market.pc.am</a> sells PCN at the index plus 3%,
+      one flat price for any order size. On the exchange, our bots sell at the index plus 3% (up to $120
+      a day) and buy at 30% below it (up to $50 a day, in five $10 rounds); everything else there is
+      users trading with users. A bot of ours holds the PancakeSwap wPCN pool within 3% of the index in
+      both directions, within a daily budget; the pool no longer sets any price.</p>
+      <p>Read it live at <a href="https://exchange.pc.am/api/index">exchange.pc.am/api/index</a> or
+      <a href="https://price.pc.am">price.pc.am</a>. It is a step towards an honest price, not the end
+      of one: the book is young and thin, we run it, and nobody is obliged to buy PCN at the index.
+      Integrators: the field is still <code>creditRateUsd</code>, and a 503 from
+      <code>price.pc.am/credit-rate</code> means hold &mdash; see <a href="https://docs.pc.am/#pricing">docs.pc.am</a>.</p>
+    </article>
+
+    <article class="entry">
       <div class="meta"><time>2026-09-04</time><span class="tag infra">Android</span></div>
       <h2>The wallet is on Google Play, and switching to it erases the old one</h2>
       <p><b>PCoin Wallet is published on Google Play</b> &mdash;

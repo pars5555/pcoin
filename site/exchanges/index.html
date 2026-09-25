@@ -148,7 +148,7 @@
     <li><b>No admin keys, no mint function, no pause.</b> Supply is fixed by consensus.</li>
   </ul>
   <p><a href="https://market.pc.am">market.pc.am</a> sells PCN from the project
-    treasury at a published price. Those are <b>already-mined coins being sold by a
+    treasury at a published price: the PCN index plus 3%. Those are <b>already-mined coins being sold by a
     holder</b>, not an issuance — no new supply is created and the 21 M cap is
     untouched.</p>
 
@@ -261,7 +261,8 @@ rpcauth=...            # per upstream; RPC binds loopback by default</code></pre
     <tr><td class="k">Address history / UTXOs</td><td><code>/api/address/{addr}</code>, <code>/api/address/{addr}/txs</code></td></tr>
     <tr><td class="k">Broadcast</td><td><code>POST /api/tx</code></td></tr>
     <tr><td class="k">Core REST (read-only subset)</td><td><code>explorer.pc.am/rest/…</code> — <code>chaininfo.json</code>, <code>block/*</code>, <code>tx/*</code>, <code>headers/*</code>, <code>mempool/*</code></td></tr>
-    <tr><td class="k">Reference rate</td><td><a href="https://price.pc.am">price.pc.am</a> — read it at credit time and stamp it on the row; never hardcode a rate</td></tr>
+    <tr><td class="k">Reference rate</td><td><a href="https://price.pc.am">price.pc.am</a>, field <code>creditRateUsd</code> — the PCN index. Read it at credit time and stamp it on the row; never hardcode a rate, and treat a 503 from <code>/credit-rate</code> as hold</td></tr>
+    <tr><td class="k">PCN index</td><td><a href="https://exchange.pc.am/api/index">exchange.pc.am/api/index</a> — the volume-weighted median of qualifying user-to-user trades on exchange.pc.am, the project's own PCN/USD order book. House-bot and linked-account trades never count; it moves at most 2% per trade and 5% a day and holds when trading is thin</td></tr>
     <tr><td class="k">Merchant integration guide</td><td><a href="https://docs.pc.am">docs.pc.am</a></td></tr>
   </table></div>
 

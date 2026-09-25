@@ -170,9 +170,11 @@
             it is the single largest thing wrong with this project today. It is also the gate on most
             of the list below.</dd>
         <dt>Exchanges</dt>
-        <dd>None. PCN is not listed anywhere and has no orderbook.</dd>
+        <dd>Our own only. PCN trades on <a href="https://exchange.pc.am">exchange.pc.am</a>, a small
+            PCN/USD order book we run. No outside exchange lists it.</dd>
         <dt>Price</dt>
-        <dd>Posted by us, not discovered by a market. See <em>An honest price</em> below.</dd>
+        <dd>The PCN index: the median of real trades between users on that book, capped in how fast
+            it moves. Set by users, but on a young venue we run. See <em>An honest price</em> below.</dd>
         <dt>Holders</dt>
         <dd>A few hundred addresses hold a balance, and the largest few hold most of the coins.
             The <a href="https://explorer.pc.am">explorer</a>'s rich list is the live answer.</dd>
@@ -221,7 +223,7 @@
         <a href="https://aicontrol.pc.am">AI&nbsp;Control</a> and
         <a href="https://t.me/MyWebsiteBuilderBot">@MyWebsiteBuilderBot</a> among them. Each issues an
         address only your account is credited for, waits for confirmations, and converts at the
-        published rate. The integration guide is at <a href="https://docs.pc.am">docs.pc.am</a> if you
+        PCN index. The integration guide is at <a href="https://docs.pc.am">docs.pc.am</a> if you
         want to accept PCN in your own product.</p>
       </li>
       <li>
@@ -255,13 +257,16 @@
       </li>
       <li>
         <h3>An honest price <span class="pill wip">In progress</span></h3>
-        <p><a href="https://price.pc.am">price.pc.am</a> is a rate <em>we post</em>, sold from a
-        finite ladder. It is not discovered on a market and must not be read as a valuation.</p>
-        <p>Until 9 September 2026 a bot of ours also held the PancakeSwap pool to that posted rate by
-        buying whenever it fell. <b>That has been switched off.</b> Defending a price out of a small
-        float is a countdown rather than a defence, and a pool held exactly level by our own money
-        tells nobody anything. The pool is now free to move on real trading, and the rate our services
-        credit PCN at <b>follows it downward</b>, with a published floor.</p>
+        <p>Since 25 September 2026 the PCN price is the <b>PCN index</b>: the volume-weighted median
+        of real trades between users on <a href="https://exchange.pc.am">exchange.pc.am</a>. Trades
+        with our own bots and accounts never count, and neither do linked accounts or accounts under
+        three days old. It moves at most 2% per trade and 5% a day, stays between $0.015 and $0.10,
+        and holds still when trading is thin. Our services credit PCN at it, market.pc.am sells at it
+        plus 3%, and <a href="https://price.pc.am">price.pc.am</a> publishes it. Before that date the
+        price was a rate we posted ourselves.</p>
+        <p>That is a step, not the finish. The book is young and thin, and we run the venue. A bot of
+        ours also holds the PancakeSwap pool within 3% of the index, within a small daily budget; the
+        pool no longer sets the price.</p>
         <p class="gate"><b>What would fix it properly:</b> a price somebody who is not us agreed to,
         in a venue we do not run.</p>
       </li>

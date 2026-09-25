@@ -612,23 +612,41 @@ fsync($tmpHandle); rename($tmp, $f); fsync($dirHandle);</code></pre>
 
   <p>The rate is published, free and unauthenticated:</p>
 <pre><code>curl -s https://price.pc.am</code></pre>
-<pre><code>{                          <span class="c">// example from August 2026 &mdash; the live value differs</span>
-  "price": 0.015,
-  "serviceRate": 0.015,     &lt;-- USD per 1 PCN. Use THIS.
+<pre><code>{                          <span class="c">// trimmed &mdash; read the live values, never copy them</span>
+  "creditRateUsd": &lt;USD per PCN&gt;,   &lt;-- credit at THIS.
+  "rateFieldToUse": "creditRateUsd",
+  "serviceRate": &lt;the same number&gt;,  <span class="c">// kept for older integrations</span>
+  "sellPriceUsd": &lt;USD per PCN&gt;,    <span class="c">// what market.pc.am charges. Never credits anything.</span>
   "currency": "USD",
   "stale": false,
-  "at": "2026-08-12T19:26:46.829Z"
+  "index": { "usd": &lt;USD per PCN&gt;, "state": "held", "stale": false, "ageSeconds": 14, &hellip; },
+  &hellip;
 }</code></pre>
 
-  <p>Read <code>serviceRate</code>. It is USD per one PCN, so
-  <code>usd = pcn &times; serviceRate</code>.</p>
+  <p>Read <code>creditRateUsd</code>. It is USD per one PCN, so
+  <code>usd = pcn &times; creditRateUsd</code>. The same bare number is at
+  <a href="https://price.pc.am/credit-rate">price.pc.am/credit-rate</a>, where there is no
+  field to pick wrong.</p>
+
+  <p>That number is the <strong>PCN index</strong>: the volume-weighted median price of real
+  user-to-user trades on <a href="https://exchange.pc.am">exchange.pc.am</a>. Trades against the
+  house bots or the project's own accounts never count, and neither do trades between linked
+  accounts or by accounts under three days old. It needs at least 5 qualifying trades, by 4
+  different people, worth $25, in a window of 24 hours that widens to 72 and then 168 when trading
+  is thin. It moves at most 2% per qualifying trade and 5% a day, never below $0.015 or above
+  $0.10, and with no qualifying trades it <em>holds</em> its last value. The exchange publishes it,
+  with the evidence behind it, at
+  <a href="https://exchange.pc.am/api/index">exchange.pc.am/api/index</a>; price.pc.am checks each
+  reading independently and relays it in its <code>index</code> block. Integrate against
+  price.pc.am, not the exchange: that second check is what protects your ledger from a bad
+  reading.</p>
 
   <div class="note warn">
     <p><strong>PancakeSwap is not the price either.</strong> wPCN (a BEP-20 claim on PCN)
-    trades on BNB Smart Chain, and a bot holds that pool <em>to</em> the price.pc.am
-    rate &mdash; the pool follows the feed, never the reverse. Its liquidity is a few
-    hundred dollars, so a single small trade moves it by percent; reading it as a price
-    lets anyone who spends $20 set your credit rate. Read price.pc.am, and only
+    trades on BNB Smart Chain, and a bot holds that pool within 3% of the PCN index, in
+    both directions and within a daily budget &mdash; the pool follows the index, never the
+    reverse. Its liquidity is thin, so a single small trade moves it by percent; reading it
+    as a price lets anyone who spends $20 set your credit rate. Read price.pc.am, and only
     price.pc.am. A customer holding wPCN pays you by redeeming it for PCN at
     <a href="https://wrapdesk.pc.am/redeem">wrapdesk.pc.am/redeem</a> and sending the PCN &mdash;
     never accept wPCN directly unless you run your own BSC watcher.</p>
@@ -651,9 +669,13 @@ credited_rate_usd  DECIMAL(18,8)   -- the rate AT THE MOMENT OF CREDIT</code></p
 
   <h3>An unreadable rate is not a rate of zero</h3>
   <p>This is section 6 applied to the one input that costs money. If the oracle times
-  out, returns nonsense, or reports <code>"stale": true</code>, you have <strong>no
-  rate</strong> &mdash; which is not the same as a rate of zero, and not a reason to
-  credit anyway.</p>
+  out, returns nonsense, or reports <code>"stale": true</code> &mdash; at the top level or
+  in <code>index</code> &mdash; you have <strong>no rate</strong>, which is not the same as a
+  rate of zero, and not a reason to credit anyway.</p>
+  <p><strong><code>/credit-rate</code> answers 503 when the index is stale or unknown.</strong>
+  A 503 means <strong>hold</strong>: never credit at a guessed, remembered or zero rate
+  instead, and never read the 503 body as a number. Retry later; the deposit will still be
+  there.</p>
 <pre><code>if (!rate.usable) {
   hold(deposit, 'no_usable_rate');   // credit nothing, lose nothing, retry later
   return;
@@ -690,23 +712,32 @@ credited_rate_usd  DECIMAL(18,8)   -- the rate AT THE MOMENT OF CREDIT</code></p
   <code>stale</code> and <code>stateAgeSeconds</code> describe the
   <strong>replica&rsquo;s sync</strong>, not the price:</p>
 <pre><code>{
-  "serviceRate": 0.015,
+  "creditRateUsd": &lt;USD per PCN&gt;,
   "stale": false,          <span class="c">// is this replica in sync with the primary?</span>
   "stateAgeSeconds": 25,   <span class="c">// how long since it last synced</span>
-  "ladder": {
-    "ageSeconds": 35,      <span class="c">// how long since the PRICE itself moved</span>
+  "index": {
+    "state": "held",       <span class="c">// live, held or frozen is a price; unknown is not</span>
+    "ageSeconds": 35,      <span class="c">// how long since the exchange last COMPUTED the index</span>
     "stale": false         <span class="c">// &lt;-- the one that says the price is usable</span>
-  }
+  },
+  "ladder": { "stale": false, &hellip; }   <span class="c">// kept for older integrations; follows index.stale</span>
 }</code></pre>
   <p>Guarding only <code>stateAgeSeconds</code> catches a replica that has fallen
   behind &mdash; but on a replica that condition already implies
   <code>stale: true</code>, so the guard adds almost nothing. What it misses is the
-  case that costs money: the replica syncing perfectly while the market ladder
-  behind it is frozen. Then <code>stale</code> is false, the sync age is seconds,
+  case that costs money: the replica syncing perfectly while the index behind it has
+  stopped being computed. Then <code>stale</code> is false, the sync age is seconds,
   and you credit at a stale price indefinitely.</p>
-  <p><strong>Honour <code>ladder.stale</code>, and bound
-  <code>ladder.ageSeconds</code> as well.</strong> Give the freshness bound its own
+  <p><strong>Honour <code>index.stale</code>, and bound
+  <code>index.ageSeconds</code> as well.</strong> <code>ladder.stale</code> is kept as an
+  alias that follows the index, so an integration that already checks it keeps working;
+  new code should read <code>index.stale</code>. Give the freshness bound its own
   config key: reusing the cache-age bound means tightening one destroys the other.</p>
+  <p><strong>A held index is still a price.</strong> <code>index.state</code> is
+  <code>held</code> whenever there has been too little qualifying trading to move it. The
+  value is re-published with a fresh time, and you credit at it exactly as you would at
+  <code>live</code>. Only <code>stale: true</code>, state <code>unknown</code>, or a 503
+  from <code>/credit-rate</code> means hold.</p>
 
   <h3>Cache it, briefly, and age it out</h3>
   <p>Cache for a minute or two so a burst of deposits does not hammer the oracle, but
@@ -822,8 +853,10 @@ bitcoin-cli unloadwallet sweep-tmp</code></pre>
     <li>Deposit-height gate on the deposit's own height, asserted twice</li>
     <li>Coinbase deposits require 100 confirmations</li>
     <li>Every failure path holds rather than credits</li>
-    <li>Rate read from price.pc.am at credit time, <code>ladder.stale</code> honoured, and
-    <code>credited_rate_usd</code> stamped on the row &mdash; no rate anywhere in a template or a constant</li>
+    <li>Rate (<code>creditRateUsd</code>) read from price.pc.am at credit time,
+    <code>index.stale</code> honoured (<code>ladder.stale</code> is its alias), a 503 from
+    <code>/credit-rate</code> treated as hold, and <code>credited_rate_usd</code> stamped on the
+    row &mdash; no rate anywhere in a template or a constant</li>
     <li><code>block_hash</code> re-checked for recent credits; flags, does not reverse — and the flag is visible</li>
     <li>Addresses validated locally</li>
     <li>Treasury figure on the admin page, and it refuses to show a partial sum</li>
@@ -839,8 +872,9 @@ bitcoin-cli unloadwallet sweep-tmp</code></pre>
     <p><strong>wPCN and PCN credit at exactly the same rate.</strong> One wPCN is worth
     one PCN, because that is what wPCN <em>is</em> &mdash; a 1:1 claim on PCN held in a
     public reserve, redeemable 1:1. Both are credited at
-    <a href="https://price.pc.am/credit-rate">price.pc.am/credit-rate</a>, the same number
-    as any PCN deposit.</p>
+    <a href="https://price.pc.am/credit-rate">price.pc.am/credit-rate</a> &mdash; the PCN
+    index, the same number as any PCN deposit &mdash; and a 503 there means hold, exactly as
+    for PCN.</p>
 
     <p class="note">This changed on 11 September 2026. Paying in wPCN used to earn
     <strong>10% more</strong> credit, on the reasoning that to collect the bonus a customer had

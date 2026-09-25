@@ -181,8 +181,25 @@
     </div></details>
 
     <details><summary>Is PCN on an exchange? Can I sell it?</summary><div class="a">
-      <p>PCN is not listed on any centralised exchange. If you see "PCN" on one, it is either wPCN
-      or a scam. The only public market today is <b>wPCN on PancakeSwap</b> (see below), and it is small.</p>
+      <p>PCN trades on one exchange: <a href="https://exchange.pc.am">exchange.pc.am</a>, a small
+      PCN/USD order book that the project runs. You can place an order to sell there, and other
+      people can buy it. A bot of ours also buys a little each day, at 30% below the PCN index and
+      up to $50 a day. <b>Nobody is obliged to buy, so there is no guaranteed way to cash out</b>, and
+      a large sale moves the price against you.</p>
+      <p>PCN is not listed on any other exchange. If you see "PCN" on one, it is either wPCN or a scam.</p>
+    </div></details>
+
+    <details><summary>How is the PCN price set?</summary><div class="a">
+      <p>It is the <b>PCN index</b>: the volume-weighted median price of real trades between users on
+      <a href="https://exchange.pc.am">exchange.pc.am</a>. Trades with our own bots and accounts do not
+      count, and neither do trades between linked accounts or by accounts less than three days old.
+      It moves at most 2% per qualifying trade and 5% a day, never goes below $0.015 or above $0.10,
+      and holds still when there is too little trading.</p>
+      <p>Every service that takes PCN credits it at the index, and
+      <a href="https://market.pc.am">market.pc.am</a> sells PCN at the index plus 3%. The live figure is at
+      <a href="https://price.pc.am">price.pc.am</a> and
+      <a href="https://exchange.pc.am/api/index">exchange.pc.am/api/index</a>. The book is young and
+      small, so read the index as a young number, not a valuation.</p>
     </div></details>
 
     <details><summary>What is wPCN?</summary><div class="a">
@@ -198,13 +215,15 @@
       returning the wPCN to the desk's inventory, or burning it through the contract. The supply is fixed
       at 50,000 and cannot be minted, so every burn permanently shrinks what can ever be wrapped again.
       A return keeps it usable.</p>
-      <p><b>wPCN and PCN can have different prices, and the two directions differ.</b> If wPCN trades below
-      PCN, anyone can buy it, redeem 1:1 and pull it back up. If wPCN trades <i>above</i> PCN, only wrapping
-      more PCN pushes it back down, and that needs wPCN in the desk's inventory. While wrapping is closed
-      the desk's remaining allocation is used up, wPCN can sit at a premium to PCN with nothing to
-      correct it. The rate
-      PCoin's services credit PCN at is never raised by the pool &mdash; nor is the price we sell PCN for &mdash; so a premium costs no one who spends
-      PCN, but it can mean paying more for wPCN on PancakeSwap than PCN costs at market.pc.am.</p>
+      <p><b>wPCN and PCN can have different prices, and the two directions differ.</b> A bot of ours
+      holds the PancakeSwap pool within 3% of the PCN index in both directions, but only within a daily
+      budget ($50 of USDT and 2,000 wPCN), so a bigger move can outrun it. Beyond that: if wPCN trades
+      below PCN, anyone can buy it, redeem 1:1 and pull it back up. If wPCN trades <i>above</i> PCN, only
+      wPCN leaving the desk's inventory pushes it back down &mdash; somebody wrapping more PCN, or our bot
+      selling &mdash; and once that inventory is used up, wPCN can sit at a premium to PCN with nothing to
+      correct it. The pool is not an input to the PCN price: the rate PCoin's services credit PCN at and
+      the price we sell PCN for both come from the index, so a premium costs no one who spends PCN, but it
+      can mean paying more for wPCN on PancakeSwap than PCN costs at market.pc.am.</p>
     </div></details>
 
     <h2>Staying safe</h2>

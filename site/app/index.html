@@ -129,7 +129,7 @@
   </div>
 
   <div class="card">
-    <h2>Rate</h2>
+    <h2>PCN index</h2>
     <div class="big" id="rate">&hellip;</div>
     <div class="sub" id="rate-sub">reading price.pc.am</div>
   </div>
@@ -152,7 +152,8 @@
       <a class="act" style="text-align:center;text-decoration:none;line-height:1.4"
          href="https://exchange.pc.am" target="_blank" rel="noopener">Trade on exchange.pc.am</a>
     </div>
-    <p class="note" style="margin-top:10px">Prices move with demand, so check the page before you pay.</p>
+    <p class="note" style="margin-top:10px">market.pc.am charges the PCN index plus 3%, one price
+      for any order size. On the exchange you pay what the seller asks. Check the page before you pay.</p>
   </div>
 
   <div class="card">
@@ -270,11 +271,11 @@
     <h2>PCN &harr; wPCN</h2>
     <p class="note">
       <b>wPCN</b> is PCN on BNB Smart Chain, backed one-for-one by PCN held in a
-      public reserve. It exists so PCN can trade somewhere; PCN itself is not
-      listed on any exchange.
+      public reserve. It exists so PCN can trade on PancakeSwap; PCN itself
+      trades only on exchange.pc.am, our own order book.
     </p>
     <div class="row" style="margin-top:8px"><span class="k">Pool price</span><span class="v" id="w-pool">&hellip;</span></div>
-    <div class="row"><span class="k">Posted rate</span><span class="v" id="w-posted">&hellip;</span></div>
+    <div class="row"><span class="k">PCN index</span><span class="v" id="w-posted">&hellip;</span></div>
     <div class="row"><span class="k">Wrap fee</span><span class="v">5%</span></div>
   </div>
 
@@ -319,7 +320,8 @@
     <h2>Read this first</h2>
     <p class="note warn">
       The wPCN pool is small &mdash; a few hundred dollars moves it noticeably.
-      It is a door, not a market, and it should not be read as a valuation.
+      A bot of ours holds it within 3% of the PCN index, within a small daily
+      budget. It is a door, not a market, and it should not be read as a valuation.
       There is a limit on how much can be wrapped; the desk will say so.
     </p>
   </div>
@@ -330,7 +332,7 @@
   <a href="https://explorer.pc.am" target="_blank" rel="noopener">explorer</a> &middot;
   <a href="https://t.me/PCoinPCNChat" target="_blank" rel="noopener">chat</a> &middot;
   <a href="https://discord.gg/dGmdwJkb9f" target="_blank" rel="noopener">discord</a><br>
-  <span style="opacity:.5;font-size:.8em">build 2026-09-10b</span><br>
+  <span style="opacity:.5;font-size:.8em">build 2026-09-25</span><br>
   This page stores nothing and holds no keys.
 </p>
 

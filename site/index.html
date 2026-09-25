@@ -986,13 +986,13 @@ Linux    pcoin-cli startmining &quot;&lt;your pc1q&hellip; address&gt;&quot; 4</
         roughly half an hour. The same phone that runs the miner can pay for what it uses.
       </p>
       <p class="lede">
-        <b>All four take wPCN too, in the same way and for the same value.</b> wPCN is PCN
+        <b>All three take wPCN too, in the same way and for the same value.</b> wPCN is PCN
         wrapped as a token on BNB Smart Chain, so one wPCN credits exactly what one PCN
         credits &mdash; no better and no worse. What it buys you is speed: you paste the
         transaction hash and it lands in about a minute, against about half an hour for PCN.
         There is no bonus on either side, because the two are the same coin and pricing them
-        differently would say otherwise. Both read the same rate from
-        <a href="https://price.pc.am" rel="noopener">price.pc.am</a> at the moment your payment
+        differently would say otherwise. Both read the same rate &mdash; the PCN index, published at
+        <a href="https://price.pc.am" rel="noopener">price.pc.am</a> &mdash; at the moment your payment
         credits, and that rate is stamped on your record so a later move cannot change what you
         were given.
       </p>
@@ -1032,15 +1032,17 @@ Linux    pcoin-cli startmining &quot;&lt;your pc1q&hellip; address&gt;&quot; 4</
 
       <p class="lede">
         Would rather not mine? You can buy PCN with ordinary crypto at
-        <a href="https://market.pc.am" rel="noopener">market.pc.am</a>. It is sold from a fixed
-        ladder of 100,000 coins that gets dearer as it empties, so the price rises as the
-        ladder sells &mdash; but those rungs are a schedule we wrote, not a market, and the rate
-        at <a href="https://price.pc.am" rel="noopener">price.pc.am</a> is posted by us rather
-        than discovered by trading. <b>The market does not buy PCN back, and the wrap desk is closed
-        to new wrapping</b> as of 13&nbsp;September&nbsp;2026 &mdash; so there is currently no practical
-        way to sell PCN back. Only wPCN somebody already holds can be sold, into PancakeSwap&rsquo;s
-        small pool; terms in the <a href="#trade">Trading section</a>.
-        <b>Buy only what you intend to spend.</b>
+        <a href="https://market.pc.am" rel="noopener">market.pc.am</a>. It sells already-mined coins
+        from a fixed stock at <b>one flat price for any order size: the PCN index plus 3%</b>. The
+        PCN index is what people pay each other on our order book,
+        <a href="https://exchange.pc.am" rel="noopener">exchange.pc.am</a> &mdash; the median of real
+        trades between users, with our own bots&rsquo; trades left out. The live figure is at
+        <a href="https://price.pc.am" rel="noopener">price.pc.am</a>. That book is young, small and
+        run by us, so read the index as a young number, not a valuation.
+        <b>The market does not buy PCN back.</b> You can offer PCN for sale on the exchange, and a bot
+        of ours buys a small amount there each day at 30% below the index, but nobody is obliged to
+        buy: <b>there is no guaranteed way to sell PCN back.</b> Terms in the
+        <a href="#trade">Trading section</a>. <b>Buy only what you intend to spend.</b>
       </p>
       <div class="cards">
         <div class="card">
@@ -1060,26 +1062,26 @@ Linux    pcoin-cli startmining &quot;&lt;your pc1q&hellip; address&gt;&quot; 4</
           </p>
         </div>
         <div class="card">
-          <h3>A rate, not a market</h3>
+          <h3>One rate: the PCN index</h3>
           <p>
-            All three services credit at the <strong>same published rate</strong>, taken from
+            All three services credit at the <strong>same rate</strong>, taken from
             <a href="https://price.pc.am" rel="noopener">price.pc.am</a> at the moment your
             deposit confirms &mdash; so none of them can quote you one number and pay another.
-            The rate follows what PCN currently costs on the
-            <a href="https://market.pc.am" rel="noopener">market ladder</a> and is deliberately
-            slow-moving. <strong>It is not a market price</strong> &mdash; PCN itself is not listed on
-            any exchange. Its wrapped form, wPCN, trades on PancakeSwap in a small pool that
-            follows this rate rather than setting it. Check the live figure before you send.
+            That rate is the <strong>PCN index</strong>: the median price of real trades between
+            users on <a href="https://exchange.pc.am" rel="noopener">exchange.pc.am</a>. It moves
+            slowly on purpose &mdash; at most 2% per trade and 5% a day &mdash; and holds still when
+            there is too little trading. The book is young and small, so <strong>the index is not a
+            valuation</strong>. Check the live figure before you send.
           </p>
         </div>
       </div>
 
       <div class="honest-box" style="max-width:100%;margin-top:26px">
         <b>Status: live.</b>
-        Take AI&nbsp;Control as the worked example; the other five follow the same shape. Open it, choose
+        Take AI&nbsp;Control as the worked example; the other two follow the same shape. Open it, choose
         <b>PCoin</b> in the menu, and you get <b>your own deposit address</b> with a QR code. Send PCN to
-        it and the balance appears on your account after <b>3 confirmations</b>, credited at the rate
-        <a href="https://price.pc.am" rel="noopener">price.pc.am</a> posts at that moment. The address is
+        it and the balance appears on your account after <b>3 confirmations</b>, credited at the PCN index as
+        <a href="https://price.pc.am" rel="noopener">price.pc.am</a> publishes it at that moment. The address is
         yours alone &mdash; that is how a deposit is matched to an account, since a PCN transfer carries
         no sender identity and no memo.
         <br><br>
@@ -1089,8 +1091,9 @@ Linux    pcoin-cli startmining &quot;&lt;your pc1q&hellip; address&gt;&quot; 4</
         recorded the moment they confirm; the balance follows.
         <br><br>
         This is also the honest answer to <em>&ldquo;where can I actually use PCN?&rdquo;</em> &mdash;
-        four places, all run by the same people who build PCoin, at a rate they set. It is a real use,
-        not a market. Anything that calls it a price is overselling it.
+        three places, all run by the same people who build PCoin, crediting at the PCN index. It is a real
+        use. The index comes from a small, young order book that we also run, so anything that calls it a
+        valuation is overselling it.
       </div>
     </div>
   </section>
@@ -1110,13 +1113,25 @@ Linux    pcoin-cli startmining &quot;&lt;your pc1q&hellip; address&gt;&quot; 4</
         counterparty. Read what that is, and is not, below.
       </p>
       <div class="honest-box" style="max-width:100%;margin-bottom:22px">
-        <b>PCoin Exchange &mdash; <a href="https://exchange.pc.am" rel="noopener">exchange.pc.am</a> &mdash; opens today.</b>
+        <b>PCoin Exchange &mdash; <a href="https://exchange.pc.am" rel="noopener">exchange.pc.am</a>.</b>
         A PCN/USD order book where people trade each other directly: limit orders from $5 to $1,000,
-        0.2% per trade, and the house quoting on the same book. You deposit PCN or dollars; withdrawals
-        are sent <b>by hand within 24 hours</b>, $30 minimum, up to $100 of USDT a day. Sign-in is your
-        market.pc.am account. It is <b>closed while the last checks are finished</b>, so the link shows a
-        holding page until it opens &mdash; we will say so on <a href="https://t.me/PCoinPCN" rel="noopener">@PCoinPCN</a>
-        the moment it does.
+        0.2% per trade. Sign-in is your market.pc.am account. You deposit PCN or dollars; withdrawals
+        are sent <b>by hand within 24 hours</b>, and the minimums, fees and daily cap are on the exchange&rsquo;s own page.
+        <br><br>
+        <b>The PCN price comes from this book.</b> The <b>PCN index</b> is the volume-weighted median of
+        real trades between users here. Trades with our own bots or our own accounts never count, and
+        neither do trades between linked accounts or accounts under three days old. It needs at least
+        5 such trades, by 4 different people, worth $25 in all, within its window &mdash; 24 hours,
+        widening to 72 and then 168 when trading is thin. It moves at most 2% per qualifying trade and
+        5% a day, never goes below $0.015 or above $0.10, and with no qualifying trades it holds its
+        last value. Read it live at
+        <a href="https://exchange.pc.am/api/index" rel="noopener">exchange.pc.am/api/index</a>, or at
+        <a href="https://price.pc.am" rel="noopener">price.pc.am</a>, which relays it.
+        <br><br>
+        <b>We quote on the same book.</b> A bot of ours sells PCN at the index plus 3%, up to $120 a day,
+        and buys PCN at 30% below the index, up to $50 a day in five $10 rounds (00:00, 04:48, 09:36,
+        14:24 and 19:12 UTC). Everything else is users trading with users. It is our venue, it is young
+        and thin, and nobody is obliged to buy from you: it is a place to sell, not a promise of a price.
       </div>
       <div class="cta-row" style="margin-bottom:22px">
         <a class="btn btn-primary" href="https://wrapdesk.pc.am/redeem" rel="noopener">Redeem wPCN &rarr; PCN</a>
@@ -1160,24 +1175,22 @@ Linux    pcoin-cli startmining &quot;&lt;your pc1q&hellip; address&gt;&quot; 4</
         <b>neither door is instant</b> &mdash; wrapping waits 100 confirmations, about 17 hours, and
         redeeming means a person sends the PCN by hand;
         <b>wPCN can trade above PCN, and only a limited amount can pull it back down</b> &mdash; because the
-        supply cannot be minted, the only thing that pushes wPCN <i>down</i> to PCN is somebody wrapping more
-        PCN, and that needs unissued wPCN in the desk's allocation; when that runs out, or if the desk is
-        shut again, wPCN can sit at a premium to PCN indefinitely. The other direction has no such limit: wPCN
+        supply cannot be minted, the only thing that pushes wPCN <i>down</i> to PCN is wPCN leaving the desk's
+        unissued inventory, when somebody wraps more PCN or our own bot sells into the pool (below); when that
+        inventory runs out, wPCN can sit at a premium to PCN indefinitely. The other direction has no such limit: wPCN
         below PCN is corrected by anyone who buys it and redeems 1:1. That is the one structural
         difference from wrapped Bitcoin, whose supply is minted on deposit, and it is why the desk now
         asks for returns rather than burns; it is also why the price you pay for wPCN on PancakeSwap can
         be higher than PCN costs at market.pc.am &mdash; check both;
-        <b>we trade this pool ourselves</b>, though less than we used to, and what it defends changed on
-        19 September. Until 9 September a bot bought wPCN whenever the pool fell below the rate we post,
-        which held the two level; defending a price out of a small float is a countdown, not a defence, so
-        that stopped. It now defends one number only: <b>$0.015</b>. Above that the pool is left alone and
-        falls on real selling, and <b>both</b> our numbers follow it down &mdash; the rate our services
-        credit PCN at, and, since 19 September, the price we sell PCN for. Neither goes below $0.015.
-        The sale price is re-anchored at most once an hour, against a 24-hour median rather than the
-        spot price, and by at most 8% in one step or 12% in a day; nothing that happens in the pool can
-        ever push it <i>up</i> &mdash; it rises only when PCN is bought or spent. The bot may still sell
-        into a pool trading above the posted rate. So the price
-        is less ours than it was, and still not one strangers set on their own; and buying wPCN gets you a claim, not coins you can spend on
+        <b>we trade this pool ourselves</b>. Since 25 September a bot of ours holds it within 3% of the
+        PCN index in both directions: it checks every minute, buys wPCN when the pool is more than 3%
+        below the index and sells when it is more than 3% above, in steps of at most $10 or 400 wPCN, and
+        spends at most $50 of USDT and 2,000 wPCN a day &mdash; a move bigger than that budget can outrun
+        it. <b>The pool no longer sets any of our numbers</b>: the PCN price is the index of trades between
+        users on exchange.pc.am, and both the rate our services credit PCN at and the price we sell PCN
+        for are taken from it, whatever the pool does. So the price is less ours than it was &mdash; it
+        comes from what users paid each other &mdash; but it is set on a young, thin book that we run, not
+        by strangers in a venue we do not; and buying wPCN gets you a claim, not coins you can spend on
         the services above.
         <br><br>
         The first atomic swap was between <b>two wallets we control</b>. It exists because Komodo
@@ -1314,8 +1327,9 @@ Linux    pcoin-cli startmining &quot;&lt;your pc1q&hellip; address&gt;&quot; 4</
               is a separate node, so you can confirm a payment against two independent
               sources before you credit anyone.</li>
           <li><b>Pricing</b> &mdash; <a class="mono" href="https://price.pc.am" rel="noopener">price.pc.am</a>
-              returns <span class="mono">serviceRate</span>, the USD value of one PCN. Read it
-              at the moment you credit; never hardcode it.</li>
+              returns <span class="mono">creditRateUsd</span>, the USD value to credit one PCN at:
+              the PCN index. Read it at the moment you credit and never hardcode it; if it cannot
+              be read, hold the deposit rather than guess.</li>
         </ul>
       </div>
 
@@ -1325,7 +1339,7 @@ Linux    pcoin-cli startmining &quot;&lt;your pc1q&hellip; address&gt;&quot; 4</
 curl -s https://explorer.pc.am/api/address/pc1q&hellip;?history=5
 
 # what is a PCN worth right now?
-curl -s https://price.pc.am      # -&gt; {"serviceRate":&lt;USD per PCN&gt;, &hellip;}  read it live, never copy it</pre>
+curl -s https://price.pc.am      # -&gt; {"creditRateUsd":&lt;USD per PCN&gt;, &hellip;}  read it live, never copy it</pre>
         <p class="note">
           Credit after <b>3 confirmations</b>, and key your ledger on
           <span class="mono">(txid,&nbsp;address)</span> &mdash; not on
@@ -1485,7 +1499,7 @@ sudo systemctl stop pcoin-miner
           <a href="https://t.me/MyWebsiteBuilderBot" rel="noopener">@MyWebsiteBuilderBot</a> and
           <a href="https://aicontrol.pc.am" rel="noopener">AI&nbsp;Control</a> all take
           PCN today. Each issues you an address only your account is credited for, waits for
-          confirmations (three), and converts at the rate published by
+          confirmations (three), and converts at the PCN index, published by
           <a href="https://price.pc.am" rel="noopener">price.pc.am</a>. Every deposit is
           checked against <b>two independent block explorers</b> before any balance moves, and a
           deposit that cannot be corroborated is held rather than credited.</p>
@@ -1530,8 +1544,8 @@ sudo systemctl stop pcoin-miner
         <div class="honest-card">
           <h3>Young, experimental chain</h3>
           <p>PCoin launched in August 2026. It is an experiment in fair money creation —
-          <b>not an investment</b>. It trades only on its own young, thin order book at exchange.pc.am &mdash; the rate at price.pc.am is the
-          project's own, not a market price &mdash; and nothing here is
+          <b>not an investment</b>. It trades only on its own young, thin order book at exchange.pc.am, which we run &mdash; the PCN index at price.pc.am is the
+          median of real trades there, not a valuation, and nobody is obliged to buy &mdash; and nothing here is
           financial advice. Treat PCN as
           something you mine and learn with, not something you buy.</p>
         </div>
