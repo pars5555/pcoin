@@ -300,20 +300,23 @@ def main():
                 bad.append((name, url, detail, n))
 
     if bad:
-        lines = ["%d of %d PCoin services are not answering:" % (len(bad), len(good) + len(bad))]
-        for name, url, detail, n in bad:
-            lines.append("  * %-11s %s" % (name, detail))
-            lines.append("    %s  (failing %d checks in a row)" % (url, n))
-        lines.append("")
-        lines.append("Healthy: %s" % (", ".join(good) or "none"))
-        lines.append("")
+        # THE FAILING SERVICES GO LAST. This output reaches the owner only through
+        # pcoin-unit-failed, which keeps the last six journal lines -- and the
+        # old order (failures first, then the healthy list, then a five-line
+        # note) pushed the one line that said WHICH site was down out of the
+        # alert. On 2026-09-25 the channel got "Healthy: pc.am, explorer, ..."
+        # plus the note, and no name. Same facts, reordered so the tail is the
+        # answer; the final NOT ANSWERING line is what the alert quotes.
+        lines = ["Healthy: %s" % (", ".join(good) or "none")]
         # The 2026-09-18 shape, written down so whoever is woken does not have to
         # rediscover it: the process was ALIVE and systemctl said active.
-        lines.append("A service can be 'active' and still refuse connections -- on 2026-09-18")
-        lines.append("the explorer's accept queue was full (ss -lnt showed Recv-Q above the")
-        lines.append("backlog) while the unit looked perfectly healthy. Check the queue before")
-        lines.append("concluding the process is fine, and find what filled it before calling")
-        lines.append("it fixed.")
+        lines.append("Note: 'active' is not proof -- on 2026-09-18 the explorer's accept queue "
+                     "was full (ss -lnt Recv-Q above the backlog) while the unit looked healthy.")
+        for name, url, detail, n in bad:
+            lines.append("  DOWN %-11s %s  %s  (failing %d checks in a row)" % (name, detail, url, n))
+        lines.append("NOT ANSWERING: %d of %d -- %s" % (
+            len(bad), len(good) + len(bad),
+            ", ".join("%s (%s)" % (name, detail) for name, _, detail, _ in bad)))
         text = "\n".join(lines)
         fp = "|".join(sorted(n for n, _, _, _ in bad))
         print()

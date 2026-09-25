@@ -59,14 +59,249 @@ _raw=$(journalctl -u "$UNIT" -n 25 --no-pager -o cat 2>/dev/null)
 TAIL=$(printf '%s\n' "$_raw" \
     | grep -vE '^(Starting|Started|Stopping|Stopped|Finished|Failed to start) ' \
     | grep -vE ': (Triggering OnFailure|Consumed .* CPU time|Deactivated successfully|Scheduled restart|Failed with result|Main process exited|start operation timed out)' \
+    | grep -vE '(pam_unix|pamunix)[(]sudo:session[)]| : PWD=.* ; USER=.* ; COMMAND=' \
     | awk 'NF && $0 != prev { print } { prev = $0 }' \
     | tail -n 6)
 [ -n "$TAIL" ] || TAIL=$(printf '%s\n' "$_raw" | tail -n 4)
 [ -n "$TAIL" ] || TAIL='(nothing in the journal)'
 
-SUBJECT="monitor FAILED: $(clean "$UNIT")"
-BODY=$(printf 'Unit: %s\nResult: %s (exit %s)\n\nLast output:\n%s' \
+# ---- SAY IT IN THE OWNER'S WORDS ------------------------------------------
+#
+# "monitor FAILED: pcoin-service-watch.service" told the owner nothing he could
+# act on: which service, is anything down for customers, does he have to do
+# anything? The unit name is kept (it is the one thing an engineer greps for),
+# but it moved to the trailing tech line. The headline now says what the unit
+# WATCHES and whether it FOUND a problem or itself BROKE -- two different
+# faults that used to arrive as the same words:
+#
+#   KIND=check  the unit is a detector that reports by exiting non-zero. An exit
+#               code in FOUND_CODES means it did its job and found something;
+#               anything else (a timeout, a missing file, a crash) means the
+#               check itself broke and nobody is looking at that thing now.
+#   KIND=job    the unit does work; any failure means the work did not happen.
+#
+# Wording only. The unit, its timer, OnFailure= and pcoin-notify's dedupe are
+# untouched, and the message still carries Result, exit code and the last
+# lines of output, because that is the diagnosis.
+#
+# Severity, the same three colours every PCoin alert uses:
+#   🟢 fine / information   🟡 keep an eye on it   🔴 act now
+NAME=""; WHAT=""; KIND=job; FOUND_CODES="1"
+FOUND_TITLE="found a problem"; IMPACT=""; TODO=""; IMPACT_BROKE=""; TODO_BROKE=""
+SEV_FOUND="🔴"; SEV_BROKE="🟡"
+case "${UNIT%.service}" in
+    pcoin-seed-watch)
+        NAME="Chain check"; KIND=check; SEV_FOUND="🟡"
+        WHAT="checks this server's PCoin node and that new blocks keep arriving"
+        FOUND_TITLE="the node or the chain needs a look"
+        IMPACT="if the chain has stalled, every PCN payment waits for the next block. Nothing is lost."
+        TODO="if it says the chain stalled, wait -- gaps of 1-2 hours are usually luck. If it lasts past 3 hours, check the mining pool." ;;
+    pcoin-service-watch)
+        NAME="Website check"; KIND=check
+        WHAT="opens every public PCoin site and API (pc.am, explorer, market, price, wrap desk, pool, the payment rails)"
+        FOUND_TITLE="a PCoin site is not answering"
+        IMPACT="yes -- anyone using the site named above gets an error."
+        TODO="open the site named above. If it is still down after 15 minutes, restart that service on its server." ;;
+    pcoin-explorer-watch)
+        NAME="Explorer check"; KIND=check
+        WHAT="checks that explorer.pc.am answers; every payment rail reads deposits through it"
+        FOUND_TITLE="explorer.pc.am is not answering"
+        IMPACT="yes -- while it is down, PCN payments are not credited anywhere (they wait; nothing is lost)."
+        TODO="open explorer.pc.am; if it is down, restart pcoin-explorer on the explorer server (the one that also runs the wrap desk)." ;;
+    pcoin-electrumx-watch)
+        NAME="Wallet server check"; KIND=check; SEV_FOUND="🟡"
+        WHAT="checks the Electrum servers (electrum1 and electrum2.pc.am) that light wallets sync from"
+        FOUND_TITLE="a wallet server is not answering"
+        IMPACT="wallets using that server cannot see new balances until it is back; funds are safe."
+        TODO="nothing if the other wallet server is up; otherwise restart ElectrumX on the server named above." ;;
+    pcoin-disk-watch)
+        NAME="Disk space check"; KIND=check; SEV_FOUND="🟡"
+        WHAT="checks free disk space on this server"
+        FOUND_TITLE="this server is running out of disk"
+        IMPACT="not yet -- but a full disk stops the node and every service on this server."
+        TODO="free space on this server (old logs, old backups) before it fills." ;;
+    pcoin-vault-pull)
+        NAME="Backup pull"; KIND=check; SEV_FOUND="🟡"
+        WHAT="copies the pool ledger (hourly) and the market database (daily) into the backup vault"
+        FOUND_TITLE="a backup is behind"
+        IMPACT="no -- customers are unaffected; the backup copy is just older than it should be."
+        TODO="nothing if the next hourly run succeeds. If it repeats, look at the vault server." ;;
+    pcoin-fork-watch|pcoin-fork-day)
+        NAME="Chain-split check"; KIND=check; FOUND_CODES="1 2"
+        WHAT="compares our nodes to make sure they all follow the same chain"
+        FOUND_TITLE="our nodes disagree about the chain"
+        IMPACT="possibly -- a payment confirmed on one side of a split can vanish on the other."
+        TODO="hold large credits by hand and compare getbestblockhash on every seed." ;;
+    pcoin-ask-follow)
+        NAME="Market price follow"; KIND=check; FOUND_CODES="2"; SEV_FOUND="🟡"
+        WHAT="lowers the market.pc.am price toward the wPCN pool once an hour"
+        FOUND_TITLE="it refused to change the market price"
+        IMPACT="no -- the market keeps selling at its current price; this hour's step was skipped on purpose."
+        TODO="nothing if the next hourly run is clean. If it keeps refusing, open admin.pc.am, Pricing." ;;
+    pcnaibot-heartbeat|pcoin-chain-heartbeat)
+        NAME="Heartbeat check"; KIND=check; SEV_FOUND="🟡"
+        WHAT="checks that a background process is still alive"
+        FOUND_TITLE="a background process looks stuck"
+        IMPACT="see the line above -- the process it watches may have stopped."
+        TODO="restart the process named above if it has not recovered on its own within 15 minutes." ;;
+    pcoin-market-watch)
+        NAME="Market check"; KIND=check
+        WHAT="checks that paid market.pc.am orders get delivered and that the site is reachable"
+        FOUND_TITLE="a paid order is stuck or the market is unreachable"
+        IMPACT="yes -- a customer may have paid and not received PCN."
+        TODO="open admin.pc.am, Services, market.pc.am and look at undelivered orders." ;;
+    pcoin-wpcnpay-watch)
+        NAME="wPCN payment verifier check"; KIND=check
+        WHAT="checks wpcnpay.pc.am, the shared service that confirms wPCN payments"
+        FOUND_TITLE="the wPCN payment verifier is down"
+        IMPACT="yes -- no service can accept a wPCN payment while it is down."
+        TODO="restart pcoin-wpcn-pay on the explorer server (the one that also runs the wrap desk)." ;;
+    pcoin-pool-bounty)
+        NAME="Pool bounty scanner"; KIND=check; FOUND_CODES="3"; SEV_FOUND="🟢"
+        WHAT="looks for independent mining pools that qualify for the 500 PCN bounty"
+        FOUND_TITLE="no independent pool qualifies yet"
+        IMPACT="no."
+        TODO="nothing." ;;
+    pcoin-deposit-watch)
+        NAME="Payment-rail watcher"; SEV_BROKE="🔴"
+        WHAT="checks that every service taking PCN (checker, webbuilderbot, aicontrol, webai ...) is crediting deposits"
+        IMPACT_BROKE="nobody is checking that PCN payments get credited until it runs again (the services themselves keep working)." ;;
+    pcoin-payment-report)
+        NAME="Payment reporter"
+        WHAT="posts a message here for every PCN payment a service credits"
+        IMPACT_BROKE="no -- payments are still credited; only the 'payment received' messages are missing." ;;
+    pcoin-rails-daily)
+        NAME="Daily rails report"
+        WHAT="sends the morning summary of the payment rails"
+        IMPACT_BROKE="no -- only today's summary is missing." ;;
+    pcoin-wrapdesk-watch)
+        NAME="Wrap desk watcher"; SEV_BROKE="🔴"
+        WHAT="finds customers who sent PCN to the wrap desk and are owed wPCN"
+        IMPACT_BROKE="nobody is told about wrap customers waiting for wPCN until it runs again." ;;
+    pcoin-redeem-watch)
+        NAME="Return desk watcher"; SEV_BROKE="🔴"
+        WHAT="finds customers who returned wPCN and are owed PCN"
+        IMPACT_BROKE="nobody is told about customers waiting for PCN until it runs again." ;;
+    pcoin-solvency-watch)
+        NAME="wPCN backing check"
+        WHAT="checks that the PCN reserve still covers every wPCN in circulation"
+        IMPACT_BROKE="no customer impact, but the backing is unchecked until it runs again." ;;
+    pcoin-wpcn-keeper)
+        NAME="wPCN keeper"
+        WHAT="trades the wPCN/USDT pool to keep its price next to the PCN price"
+        IMPACT_BROKE="the pool price is not being held until it runs again; nobody's funds are at risk." ;;
+    pcoin-price-watch)
+        NAME="wPCN price watch"
+        WHAT="reports big moves of the wPCN pool price and of the keeper's float"
+        IMPACT_BROKE="no -- only the price-move messages are missing." ;;
+    pcoin-concentration-watch)
+        NAME="Mining concentration check"
+        WHAT="measures how much of the mining goes through one pool or one miner"
+        IMPACT_BROKE="no -- only the concentration report is missing." ;;
+    pcoin-pool-submit-watch)
+        NAME="Pool block check"
+        WHAT="checks that the mining pool finds blocks and gets them onto the chain"
+        IMPACT_BROKE="no immediate impact, but a pool that silently loses blocks would go unnoticed." ;;
+    pcoin-pool-prune-shares)
+        NAME="Pool cleanup"
+        WHAT="deletes old pool shares so the pool database stays fast"
+        IMPACT_BROKE="not yet -- if it keeps failing, the pool slows down and can stop recording shares." ;;
+    pcoin-bootstrap-watch)
+        NAME="Network entry check"
+        WHAT="checks from outside that new nodes can find the network (seed.pc.am and the seed servers)"
+        IMPACT_BROKE="no -- the network is fine; this check just did not run." ;;
+    pcoin-vault-audit)
+        NAME="Key vault audit"
+        WHAT="checks that every payment rail's keys are backed up in the vault"
+        IMPACT_BROKE="no -- only the audit is missing." ;;
+    pcoin-owner-actions)
+        NAME="Needs-you digest"
+        WHAT="collects everything waiting on you into one message"
+        IMPACT_BROKE="no -- but new to-do items (withdrawals to pay, held deposits) are not being announced; look at admin.pc.am." ;;
+    pcoin-ai-report|pcoin-jobs-report)
+        NAME="Admin panel report"
+        WHAT="sends this server's list of timers and AI agents to the admin panel"
+        IMPACT_BROKE="no -- the admin panel's Jobs/Agents page is just out of date."
+        TODO_BROKE="nothing urgent. If it repeats every day, check this server's report token in the admin panel." ;;
+    pcoin-group-watch|pcoin-group-answer|pcoin-approve)
+        NAME="Telegram group helper"
+        WHAT="reads and answers the @PCoinPCNChat group"
+        IMPACT_BROKE="group messages are not relayed or answered until it runs again; nothing else is affected." ;;
+    pcoin-discord-watch|pcoin-discord-banner)
+        NAME="Discord helper"
+        WHAT="reads the PCoin Discord chat and updates its banner"
+        IMPACT_BROKE="no -- only Discord is behind; usually a Discord-side error that clears by itself." ;;
+    pcoin-listing-banner)
+        NAME="Listing banner"
+        WHAT="updates the pinned listing-progress card in the channel"
+        IMPACT_BROKE="no -- the pinned card is just not updated." ;;
+    pcoin-caddy-watchdog)
+        NAME="Web server watchdog"
+        WHAT="restarts the web server if it stops serving"
+        IMPACT_BROKE="the websites on this server are not being watched until it runs again." ;;
+    pcoin-cf-firewall)
+        NAME="Cloudflare firewall refresh"
+        WHAT="refreshes the list of Cloudflare addresses this server accepts"
+        IMPACT_BROKE="not yet -- the old list keeps working." ;;
+    pcnaibot|pcnaibot-watch)
+        NAME="AI bot"; SEV_BROKE="🔴"
+        WHAT="runs the PCoin AI bot and credits its PCN deposits"
+        IMPACT_BROKE="AI bot users may get no replies or deposit credits until it runs again." ;;
+    *)
+        NAME="$(clean "${UNIT%.service}")"
+        WHAT="is one of the PCoin background checks on this server" ;;
+esac
+
+in_list() { case " $2 " in *" $1 "*) return 0 ;; esac; return 1; }
+
+OUTCOME=broke
+HOW=""
+case "$RESULT" in
+    exit-code)
+        if [ "$KIND" = check ] && in_list "$CODE" "$FOUND_CODES"; then
+            OUTCOME=found
+        elif [ "$CODE" = 126 ] || [ "$CODE" = 127 ] || [ "$CODE" = 203 ]; then
+            HOW="it could not start because a program or file it needs is missing or broken (exit $CODE)"
+            # This one never clears on the next run, so "wait for the timer"
+            # would be the wrong advice.
+            TODO_BROKE="this will not fix itself -- the script or a program it calls is missing or damaged on this server (a CRLF line ending in the first line does this). Re-install it."
+        else
+            HOW="it stopped with an error (exit $CODE)"
+        fi ;;
+    timeout)  HOW="it did not finish in time and was stopped" ;;
+    signal|core-dump|watchdog) HOW="it was killed ($RESULT)" ;;
+    *)        HOW="it failed ($RESULT, exit $CODE)" ;;
+esac
+
+# The one line worth reading first: the last line that reports a fault, or
+# simply the last line.
+KEY=$(printf '%s\n' "$TAIL" \
+    | grep -iE 'unhealthy|fail|not answering|stalled|error|refus|denied|eacces|no such file|not found|too long|timed out|unreachable|behind|bad |down' \
+    | tail -n 1)
+[ -n "$KEY" ] || KEY=$(printf '%s\n' "$TAIL" | tail -n 1)
+KEY=$(printf '%s' "$KEY" | sed 's/^ *//' | cut -c1-300)
+
+TECH=$(printf 'tech: %s, %s (exit %s). Last output:\n%s' \
         "$(clean "$UNIT")" "$(clean "$RESULT")" "$(clean "$CODE")" "$(clean "$TAIL")")
+
+if [ "$OUTCOME" = found ]; then
+    SUBJECT="$SEV_FOUND $NAME: $FOUND_TITLE"
+    BODY=$(printf 'It %s. Its last run found a problem:\n  %s\nCustomers affected: %s\nWhat to do: %s\n—\n%s' \
+        "$WHAT" "$(clean "$KEY")" "${IMPACT:-see the line above.}" \
+        "${TODO:-look at the line above; nothing else is known.}" "$TECH")
+else
+    if [ "$KIND" = check ]; then
+        _blind="until it runs again nobody is checking this (the thing it watches may be perfectly fine)"
+    else
+        _blind="its work did not happen this time"
+    fi
+    SUBJECT="$SEV_BROKE $NAME did not run properly"
+    BODY=$(printf 'It %s. Its last run broke: %s, so %s.\nLast thing it said: %s\nCustomers affected: %s\nWhat to do: %s\n—\n%s' \
+        "$WHAT" "$HOW" "$_blind" "$(clean "$KEY")" \
+        "${IMPACT_BROKE:-none known.}" \
+        "${TODO_BROKE:-nothing if the next run passes, it retries on its own timer. If this message repeats, read: journalctl -u $(clean "$UNIT")}" \
+        "$TECH")
+fi
 
 if [ "$SELFTEST" = "1" ]; then
     printf 'would send, and nothing was sent:\n  subject: %s\n  body:\n%s\n' "$SUBJECT" "$BODY"

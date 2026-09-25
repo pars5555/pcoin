@@ -142,6 +142,10 @@ def main():
                   file=sys.stderr)
 
     st = load_state()
+    # (code, text). The CODE is what the change-gate fingerprints ("A.", "B.",
+    # "C.", "C2" -- exactly the two characters the old strings started with, so
+    # a state file written by the previous version still matches). The TEXT is
+    # what the owner reads, in plain words.
     alerts = []
 
     # ---- A: submission failures written since the last run --------------------
@@ -161,10 +165,13 @@ def main():
         st["fails"] += 1
         print("  UNREADABLE: %s (streak %d) -- resolves nothing" % (str(e)[:90], st["fails"]))
         if st["fails"] >= FAIL_STREAK and st["last_alert"] != "unreadable":
-            notify("pool submit watch: CANNOT VERIFY",
-                   "Could not read %s for %d consecutive runs.\n%s\n\nThis is not a "
-                   "statement that submissions are fine -- only that they could not be "
-                   "checked." % (LOG, st["fails"], str(e)[:200]))
+            notify("\U0001F7E1 Pool block check cannot see the pool's log",
+                   "It could not read the pool's log for %d runs in a row, so it cannot tell "
+                   "whether blocks are reaching the chain. That does not mean anything is "
+                   "wrong -- only that it is not being checked.\n"
+                   "What to do: nothing if it clears; if it repeats, check the pool service "
+                   "on this server.\n\u2014\ntech: pool submit watch: CANNOT VERIFY. %s: %s"
+                   % (st["fails"], LOG, str(e)[:200]))
             st["last_alert"] = "unreadable"
         save_state(st)
         return 0
@@ -172,8 +179,9 @@ def main():
     # ---- C: did the process die since the last run? ------------------------
     new_crashes = [l for l in chunk.splitlines() if CRASH.search(l)]
     if new_crashes:
-        alerts.append("C. THE POOL PROCESS CRASHED. systemd restarts it, so the pool looks healthy afterwards and the only evidence is in the log file. A crash loop stops block submission completely."
-                      + '\n' * 2 + '\n'.join(new_crashes[-3:]))
+        alerts.append(("C.", "The pool program CRASHED (it was restarted automatically, so it looks "
+                      "fine now; this log is the only evidence). If it keeps crashing, no blocks "
+                      "reach the chain.\ntech: " + ' | '.join(new_crashes[-3:])))
 
     # A restart with no crash line still matters: something outside this log
     # stopped the service. Seeded on the first run so history never alerts.
@@ -183,19 +191,19 @@ def main():
         n = int((out.stdout or "").strip() or 0)
         prev = st["restarts"]
         if prev is not None and n > prev:
-            alerts.append("C2. pcoin-pool RESTARTED %d time(s) since the last check "
-                          "(NRestarts %d -> %d). It is running now, but it went down."
-                          % (n - prev, prev, n))
+            alerts.append(("C2", "The pool restarted %d time(s) since the last check. It is "
+                          "running now, but it was down for a moment.\ntech: NRestarts %d -> %d"
+                          % (n - prev, prev, n)))
         st["restarts"] = n
     except Exception as e:
         # Unknown is not 'no restart'. Say so and resolve nothing.
         print("  restart count UNAVAILABLE: %s -- resolves nothing" % str(e)[:70])
 
     if new_failures:
-        alerts.append("A. %d BLOCK SUBMISSION(S) FAILED since the last check. Every one is a "
-                      "block found and thrown away -- coins that do not exist and miners "
-                      "paid nothing.\n\n%s"
-                      % (len(new_failures), "\n".join(new_failures[-5:])))
+        alerts.append(("A.", "%d block(s) the pool FOUND were rejected when it tried to add them "
+                      "to the chain. Each one is a lost block: 50 PCN that miners are never "
+                      "paid.\ntech: %s"
+                      % (len(new_failures), " | ".join(new_failures[-5:]))))
 
     submit_broken = False
     # ---- B: work done vs blocks found ----------------------------------------
@@ -225,10 +233,11 @@ def main():
         print("  shares flagged is_block since then: %d" % found)
         if found:
             submit_broken = True
-            alerts.append("B. %d SHARE(S) CLEARED THE NETWORK TARGET since the last recorded "
-                          "block %.0f minutes ago and none is in the blocks table. The block "
-                          "was found and never reached the chain -- that is the submit path, "
-                          "and every one is coins thrown away." % (found, mins))
+            alerts.append(("B.", "The pool found %d block(s) in the last %.0f minutes that never "
+                          "reached the chain. Each one is 50 PCN that miners are never paid -- "
+                          "the step that hands blocks to the node is broken.\ntech: %d share(s) "
+                          "flagged as blocks since the last recorded block, none in the blocks table"
+                          % (found, mins, found)))
         elif expected >= THRESHOLD:
             # THE THIRD CAUSE, WHICH THIS ALERT USED TO RULE OUT BY MISTAKE.
             #
@@ -245,18 +254,14 @@ def main():
             #
             # So the third cause is named, and named FIRST because it is the
             # one that is invisible from here and the one that has happened.
-            alerts.append("B. The pool has done %.1f blocks' worth of work since its last block "
-                          "%.0f minutes ago and found NONE. At %.1f expected the chance of "
-                          "silence is about %.1f%%.\n"
-                          "Check in this order:\n"
-                          "  1. IS IT STILL RECORDING SHARES? If the share table stopped "
-                          "accepting writes, 'no share cleared the target' is what that looks "
-                          "like from here, and it is not about hashrate. This is the "
-                          "2026-09-21 failure -- see pcoin-pool-share-watch, which answers it "
-                          "directly.\n"
-                          "  2. Did hashrate leave?\n"
-                          "  3. Are shares checked against the right target?"
-                          % (expected, mins, expected, 100 * 2.718281828 ** (-expected)))
+            alerts.append(("B.", "The pool has found no block for %.0f minutes, although its "
+                          "miners did enough work for about %.1f. Plain bad luck does this about "
+                          "%.1f%% of the time.\n"
+                          "If it is not luck, check in this order: 1. is the pool still recording "
+                          "shares (pcoin-pool-share-watch -- the 2026-09-21 failure looked exactly "
+                          "like this); 2. did the miners leave; 3. are shares checked against the "
+                          "right target.\ntech: expected %.2f blocks since the last one"
+                          % (mins, expected, 100 * 2.718281828 ** (-expected), expected)))
     except Unknown as e:
         print("  statistical check UNAVAILABLE: %s" % e)
     except Exception as e:
@@ -264,20 +269,43 @@ def main():
 
     # ---- report ---------------------------------------------------------------
     if alerts:
-        fp = "|".join(x[:2] for x in alerts)
+        fp = "|".join(code for code, _ in alerts)
         if st["last_alert"] != fp:          # change, not a timer
-            notify("POOL CANNOT SUBMIT BLOCKS" if (new_failures or submit_broken)
-                   else "POOL IS FINDING NO BLOCKS", "\n\n".join(alerts))
+            losing = bool(new_failures or submit_broken)
+            codes = {code for code, _ in alerts}
+            if losing:
+                subject = "\U0001F534 The pool is losing blocks it found"
+                todo = ("look at the pool now (journalctl -u pcoin-pool on this server) -- every "
+                        "lost block is 50 PCN miners do not get.")
+            elif codes & {"C.", "C2"}:
+                subject = "\U0001F7E1 The pool restarted"
+                todo = "nothing if it stays up; if this repeats, read the pool's log."
+            else:
+                subject = "\U0001F7E1 The pool has found no block for a while"
+                todo = ("nothing if a 'finding blocks again' message follows within the hour. "
+                        "If not, run the checks above.")
+            plain, tech = [], []
+            for _, text in alerts:
+                main, _, t = text.partition("\ntech: ")
+                plain.append(main)
+                if t:
+                    tech.append(t)
+            notify(subject, "\n\n".join(plain)
+                   + "\nCustomers affected: %s\nWhat to do: %s"
+                   % ("yes -- pool miners lose the reward of every lost block." if losing
+                      else "not yet -- miners are paid when the next block is found.", todo)
+                   + ("\n\u2014\ntech: " + " / ".join(tech) if tech else ""))
             st["last_alert"] = fp
         else:
             print("  (same condition as last run -- not re-sending)")
-        for x in alerts:
+        for _, x in alerts:
             print("  !! " + x.splitlines()[0])
     else:
         print("  OK - no failed submissions, and the work/blocks ratio is normal")
         if st["last_alert"] not in ("", "ok"):
-            notify("pool submit watch: RECOVERED",
-                   "Block submission is working again and the work/blocks ratio is normal.")
+            notify("\U0001F7E2 The pool is finding blocks again",
+                   "Blocks are reaching the chain and the pool's luck is back to normal.\n"
+                   "What to do: nothing.")
         st["last_alert"] = "ok"
 
     if not a.dry_run and a.force_expected is None:

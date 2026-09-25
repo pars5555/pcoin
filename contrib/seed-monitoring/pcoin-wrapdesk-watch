@@ -654,6 +654,13 @@ def main() -> int:
     st = load_state()
     now = int(time.time())
     tasks = []          # (key, urgency, text)
+    # The Telegram digest's words for a task, keyed like the task. The task TEXT
+    # above is what the admin panel's wrap desk page parses ("ACTION: send",
+    # "TO :", "--released ...") and is printed unchanged; this is only what the
+    # OWNER reads in the channel: what happened, in plain words, with the
+    # numbers, and no customer address -- the page has the address and the
+    # button. A task with no entry here falls back to its first line.
+    tg = {}
 
     # ---- 1. incoming wraps, and how far along they are --------------------
     #
@@ -683,6 +690,9 @@ def main() -> int:
                       f"Could not read the wrap desk request file ({REQUESTS}): {e}\n"
                       f"Deposits to allocated addresses cannot be seen right now. "
                       f"This is UNKNOWN, not 'nothing pending'."))
+        tg["requests_unreadable"] = ("Could not read the wrap desk's request file, so new wrap "
+                                     "deposits cannot be matched to customers right now. Unknown, "
+                                     "not 'nothing pending'.")
 
     # EVERY setting lives in the systemd unit's Environment= lines, so running
     # this script by hand gets none of them. The one that matters is the floor:
@@ -780,6 +790,9 @@ def main() -> int:
                           f"({', '.join(EXPLORERS)}). "
                           f"Wrap deposits there cannot be checked right now. "
                           f"This is UNKNOWN, not 'nothing pending'.{who}"))
+            tg[f"unreadable:{watch_addr}"] = ("Could not read one wrap deposit address on any "
+                                              "explorer, so deposits there cannot be checked right "
+                                              "now. Unknown, not 'nothing pending'.")
             continue
         conf_items = (addr.get("history") or {}).get("items") or []
         pend_items = (addr.get("unconfirmed_history") or {}).get("items") or []
@@ -834,6 +847,8 @@ def main() -> int:
                               % (amt, txid[:16], amt,
                                  requester or "(no request on file)",
                                  CLOSED_AT_HEIGHT, h, txid, watch_addr)))
+                tg[key] = ("Refund %.2f PCN (tx %s) -- it arrived after the wrap desk closed, so no "
+                           "wPCN is owed. Send the PCN back to whoever sent it." % (amt, txid[:8]))
                 continue
             if confs < CONFIRMATIONS:
                 tasks.append((key, "info",
@@ -897,6 +912,10 @@ def main() -> int:
                                   % (amt, txid[:16], net,
                                      requester or "(no request on file)", breach,
                                      txid, watch_addr)))
+                    tg[key] = ("Do NOT send yet: a customer sent %.2f PCN (tx %s), which would get "
+                               "%.2f wPCN, but that breaks a limit -- %s. Their PCN is safe in the "
+                               "reserve. Decide on the Wrap desk page: raise the limit, refund the "
+                               "extra, or pay it and note why." % (amt, txid[:8], net, breach))
                     per_addr_wpcn[watch_addr] = prior_addr + net
                     continue
                 per_addr_wpcn[watch_addr] = prior_addr + net
@@ -933,6 +952,17 @@ def main() -> int:
                               f"'Mark as sent' box -- paste the BSC hash, it checks the "
                               f"chain and closes this. Or on the host:\n"
                               f"  pcoin-wrapdesk-watch --released {txid}:{watch_addr} <bsc_txhash>"))
+                # The confirmation count stays in: it is what makes this line
+                # change hour to hour, and pcoin-notify suppresses an identical
+                # text for hours -- dropping it would quietly turn the hourly
+                # reminder into a six-hourly one.
+                tg[key] = (f"Send {net:.2f} wPCN -- a customer sent {amt:.2f} PCN, confirmed "
+                           f"({confs} confirmations, tx {txid[:8]}). The {FEE_PCT:g}% fee ({fee:.2f} wPCN) is kept."
+                           + (f" They sent more than the {PER_PERSON:.0f} PCN per-person limit: "
+                              f"wrap {PER_PERSON:.0f} and return the rest, or decide to exceed it."
+                              if amt > PER_PERSON else "")
+                           + ("" if requester else " No request is on file for this deposit -- "
+                              "find out who sent it before paying."))
 
         # accumulate this address's share of the allocation; reported once,
         # after every address has been read, or the figure would be partial.
@@ -996,6 +1026,8 @@ def main() -> int:
                       f"behind this, so the refund box needs an address typed into it.\n"
                       f"Remove every one of these with --clear-test-wraps.\n"
                       f"  pcoin-wrapdesk-watch --released {_k} <bsc_txhash>"))
+        tg[_k] = (f"Send {_amt:.2f} wPCN -- TEST wrap made with --make-test-wrap, not a "
+                  f"customer. Real coins move if you press Send; --clear-test-wraps removes it.")
 
     if used_total > 0 or pending_total > 0:
         left = TOTAL_ALLOC - used_total
@@ -1040,6 +1072,9 @@ def main() -> int:
                       + ("\n*** THE ALLOCATION IS EXHAUSTED. Do not wrap more "
                          "without deciding deliberately to raise it. ***"
                          if min(left, committed_left) <= 0 else "")))
+        tg["allocation"] = ("The wrap allocation is used up: %.2f of %.0f wPCN already promised "
+                            "to customers. New wraps cannot be paid until you decide to raise it."
+                            % (used_total + pending_total, TOTAL_ALLOC))
 
     # ---- PUBLISH the allocation figure so the DESK can refuse on it -------
     #
@@ -1097,6 +1132,9 @@ def main() -> int:
                       "the keeper does not trade and the rails hold. Do not trade the pool "
                       "by hand -- check exchange.pc.am/api/index and the keeper's journal."
                       % (ix.get("state"), ix.get("stale"))))
+        tg["index_unreadable"] = ("Could not read the PCN price (index) from price.pc.am, so the "
+                                  "keeper is not trading and the payment rails are holding. Do not "
+                                  "trade the pool by hand.")
     elif pool and pool.get("price") is not None:
         pp, iv = float(pool["price"]), float(ixv)
         gap = (pp / iv - 1.0) * 100.0
@@ -1120,6 +1158,9 @@ def main() -> int:
                       "Could not read the PancakeSwap pair reserves, so the pool "
                       "price is UNKNOWN and so is its distance from the PCN index. "
                       "Do not assume either direction; do not trade the pool by hand."))
+        tg["pool_unreadable"] = ("Could not read the PancakeSwap pool, so its price and its "
+                                 "distance from the PCN price are unknown. Do not trade the pool "
+                                 "by hand.")
 
     # ---- 3. report, nagging only what is actionable -----------------------
     actions = [t for t in tasks if t[1] == "action"]
@@ -1135,6 +1176,11 @@ def main() -> int:
             due.append((key, text))
 
     if due:
+        # THE OWNER'S VERSION. Each item is one numbered plain line (tg, above),
+        # then who is affected and what to do, then the housekeeping. WHICH items
+        # are due, the hourly nag and the size bound are unchanged -- this is
+        # wording. The full task text still goes to stdout and to the admin page.
+        #
         # TELEGRAM REFUSES A MESSAGE OVER 4,096 CHARACTERS, AND REFUSING IS
         # SILENT FROM HERE. On 2026-09-18 a backlog of 34 items built an
         # 8,005-character digest; it was rejected three hours running with
@@ -1146,21 +1192,62 @@ def main() -> int:
         # So the digest is bounded: full detail while it fits, then a line per
         # item, then a count. It always ends with how to see the rest, because
         # a truncated alert that does not say it was truncated is a lie.
-        full = "\n\n".join(t for _, t in due)
-        footer = (f"\n\n---\nThis repeats every {NAG_SECONDS//60} minutes until the "
-                  f"chain shows it done. Nothing here is marked complete by hand.")
-        if len(full) + len(footer) <= 3600:
-            body = full + footer
+        def _tg(key, text):
+            return tg.get(key) or text.splitlines()[0]
+
+        kinds = set()
+        for key, text in due:
+            first = text.splitlines()[0]
+            if first.startswith("ACTION: send"):
+                kinds.add("test" if "TEST WRAP" in first else "send")
+            elif first.startswith("WITHHELD"):
+                kinds.add("withheld")
+            elif first.startswith("ARRIVED AFTER"):
+                kinds.add("refund")
+            elif key == "allocation":
+                kinds.add("allocation")
+            else:
+                kinds.add("warn")
+        todo = []
+        if kinds & {"send", "test"}:
+            todo.append("open admin.pc.am, Wrap desk, and press Send on each one -- it pays "
+                        "from the keeper and closes the item in one step")
+        if "withheld" in kinds:
+            todo.append("decide each withheld one on the Wrap desk page")
+        if "refund" in kinds:
+            todo.append("refund the PCN from the Wrap desk page")
+        if "allocation" in kinds:
+            todo.append("decide whether to raise the wrap allocation before paying more")
+        if "warn" in kinds:
+            todo.append("for the ones that could not be checked, nothing if the next hourly "
+                        "run reads them; if it repeats, check explorer.pc.am and price.pc.am")
+        owed = kinds & {"send", "withheld", "refund"}
+        who = ("Customers affected: yes -- each one has paid and is waiting."
+               if owed else "Customers affected: not directly.")
+        n_send = sum(1 for _, t in due if t.startswith("ACTION: send")
+                     and "TEST WRAP" not in t.splitlines()[0])
+        if kinds == {"send"}:
+            subject = "\U0001F534 Wrap desk: %d customer(s) waiting for wPCN" % n_send
+        elif owed or kinds & {"allocation", "test"}:
+            subject = "\U0001F534 Wrap desk: %d thing(s) need you" % len(due)
+        else:
+            subject = "\U0001F7E1 Wrap desk: %d thing(s) could not be checked" % len(due)
+        what = "What to do: " + "; ".join(todo) + "."
+        footer = ("\n—\nRepeats every %d minutes until the chain shows it done; nothing "
+                  "here is marked complete by hand. Full detail and the close-out commands: "
+                  "the Wrap desk page, or journalctl -u pcoin-wrapdesk-watch." % (NAG_SECONDS // 60))
+        full = "\n".join("%d. %s" % (i + 1, _tg(k, t)) for i, (k, t) in enumerate(due))
+        if len(full) + len(who) + len(what) + len(footer) <= 3600:
+            body = full + "\n" + who + "\n" + what + footer
         else:
             # One line each: the first line of every item is its headline.
-            lines = [t.splitlines()[0] for _, t in due]
+            lines = ["%d. %s" % (i + 1, t.splitlines()[0]) for i, (_, t) in enumerate(due)]
             brief = "\n".join(lines)
             if len(brief) > 3000:
                 brief = "\n".join(lines[:20]) + f"\n... and {len(lines)-20} more"
-            body = (f"{len(due)} items, too many to show in full here.\n\n{brief}"
-                    f"\n\nOpen the wrap desk page in the admin panel for the detail "
-                    f"-- every one of these has a button there." + footer)
-        notify(f"wrap desk: {len(due)} thing(s) need you", body)
+            body = (f"{len(due)} items -- too many to show in full here.\n{brief}\n"
+                    + who + "\n" + what + footer)
+        notify(subject, body)
         for key, _ in due:
             st["nagged"][key] = now
 

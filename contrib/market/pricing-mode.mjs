@@ -112,8 +112,11 @@ async function refuse(why) {
 async function mismatch(why, undo) {
   console.log('\n  MISMATCH: ' + why);
   console.log('  The setting IS written. Look before acting; to undo:\n    ' + undo);
-  await tell(`🔴 <b>pricing-mode ${esc(mode)}: check FAILED</b> (${esc(who)})\n${esc(why)}\n` +
-             `The setting is written. To undo: <code>${esc(undo)}</code>`);
+  await tell(`🔴 <b>Market pricing switch to "${esc(mode)}" did not check out</b>\n` +
+             `The new setting IS written, but the check after it failed: ${esc(why)}\n` +
+             `What to do: look at market.pc.am's price now; if it is wrong, undo with ` +
+             `<code>${esc(undo)}</code>\n` +
+             `<i>tech: pricing-mode ${esc(mode)}: check FAILED (${esc(who)})</i>`);
   throw new Stop(2);
 }
 
@@ -318,10 +321,15 @@ async function main() {
     console.log('\n  OK. market.pc.am sells at the PCN index' + (premium > 0 ? ` + ${premium}%` : '') + ', flat.'
       + (pausedByOperator ? ' (Sales are paused by the operator.)' : ''));
     console.log('  price.pc.am\'s sellPriceUsd follows within two of its polls (about 2 minutes).');
-    await tell(`🔁 <b>market.pc.am now prices off the PCN index</b> (${esc(who)})\n` +
-               `$${f(got)} a coin = max(index $${f(st1.index.usd)} (seq ${st1.index.seq}) x ` +
-               `${1 + premium / 100}, floor $${f(floor, 4)}), the same for any order size.\n` +
-               `An unknown or stale index now CLOSES the market. Undo: <code>${esc(UNDO)}</code>`);
+    await tell(`🟢 <b>market.pc.am now sells at the PCN price${premium > 0 ? ` + ${premium}%` : ''}</b>\n` +
+               `It sells at $${f(got)} a coin: the PCN price $${f(st1.index.usd)}` +
+               (premium > 0 ? ` plus its ${premium}% markup` : '') +
+               ` (never below the $${f(floor, 4)} floor), the same for any order size. ` +
+               `If the PCN price becomes unknown or stale, the market stops selling until it is back.` +
+               (pausedByOperator ? ' Sales are paused by you right now.' : '') + '\n' +
+               `What to do: nothing. To undo: <code>${esc(UNDO)}</code>\n` +
+               `<i>tech: market.pc.am now prices off the PCN index (seq ${st1.index.seq}), ` +
+               `max(index x ${1 + premium / 100}, floor); run by ${esc(who)}</i>`);
     return;
   }
 
@@ -417,9 +425,13 @@ async function main() {
   console.log('\n  OK. market.pc.am prices on the curve again.');
   console.log('  Nothing maintains ammK until the ask-follow timer runs again. The plan\'s rollback also turns');
   console.log(`  retire-on-spend back on:\n    node set-setting.mjs retireSpentCoins true && systemctl enable --now ${TIMER}`);
-  await tell(`🔁 <b>market.pc.am is back on the curve</b> (${esc(who)})\n` +
-             `ammK re-anchored to $${f(P)} (was k=${oldK}); live $${f(got)}.\n` +
-             `The ask-follow timer and retire-on-spend are separate steps.`);
+  await tell(`🟡 <b>market.pc.am is back on its old pricing curve</b>\n` +
+             `It now sells from $${f(got)} and the price rises as coins are sold, instead of following ` +
+             `the PCN price.\n` +
+             `What to do: if you meant to roll back fully, also turn the hourly price follow and ` +
+             `retire-on-spend back on (they are separate steps).\n` +
+             `<i>tech: market.pc.am is back on the curve; ammK re-anchored to $${f(P)} (was k=${oldK}); ` +
+             `run by ${esc(who)}</i>`);
 }
 
 try {

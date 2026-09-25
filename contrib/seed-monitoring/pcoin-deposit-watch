@@ -70,8 +70,53 @@ log() { logger -t pcoin-deposit-watch -- "$*" 2>/dev/null || printf '%s\n' "$*";
 
 alert() {   # alert <subject> <body>
     PROBLEMS=$((PROBLEMS + 1))
-    log "ALERT: $1 -- $2"
-    [ -x "$NOTIFY" ] && "$NOTIFY" "$1" "$2" >/dev/null 2>&1
+    # Every PCoin alert opens with a severity colour (🟢 fine, 🟡 watch, 🔴 act
+    # now). The common messages below carry their own; anything still worded
+    # the old way gets one from its subject, so no alert arrives uncoloured.
+    local subj="$1"
+    case "$subj" in
+        🟢*|🟡*|🔴*) : ;;
+        *STOPPED*|*STUCK*|*HELD*|*REORG*|*reorg*|*ORPHANED*|*DISABLED*) subj="🔴 $subj" ;;
+        *) subj="🟡 $subj" ;;
+    esac
+    log "ALERT: $subj -- $2"
+    # pcoin-notify sends with Markdown on, and these bodies carry raw reasons
+    # like skipped=explorer_unreachable: one bare underscore made Telegram
+    # refuse the message and pcoin-notify fall back to plain text. Nothing in
+    # these bodies is meant as Markdown, so escape the four markup characters.
+    local body
+    body=$(printf '%s' "$2" | sed 's/[_*`[]/\\&/g')
+    [ -x "$NOTIFY" ] && "$NOTIFY" "$subj" "$body" >/dev/null 2>&1
+}
+
+# plain_reason <raw reason>  ->  PR (plain words), PR_TODO (what to do)
+#
+# The watchers report why they held in their own shorthand -- skipped=
+# explorer_unreachable, index_unhealthy, "explorer ... -> HTTP 502". The owner
+# needs to know WHAT that means and whether it clears by itself. The raw
+# reason still goes into the tech line of every message.
+plain_reason() {
+    local r="$1"
+    case "$r" in
+        *explorer*|*Explorer*)
+            PR="the block explorer (explorer.pc.am) could not be read"
+            PR_TODO="nothing if it clears within the hour -- it credits by itself once the explorer answers. If not, check that explorer.pc.am loads." ;;
+        *index_unhealthy*|*index_stale*|*behind*)
+            PR="the block explorer is behind the chain"
+            PR_TODO="nothing if it clears within the hour; if not, check explorer.pc.am." ;;
+        *rate*|*price*)
+            PR="the PCN price (price.pc.am) could not be read"
+            PR_TODO="nothing if it clears within the hour; if not, check that price.pc.am loads." ;;
+        *disabled*)
+            PR="its payment checker is switched off"
+            PR_TODO="switch the payment checker back on for this service." ;;
+        *node*|*rpc*|*RPC*)
+            PR="the PCoin node could not be reached"
+            PR_TODO="check the PCoin node this service reads." ;;
+        *)
+            PR="it reports: ${r:-no reason recorded}"
+            PR_TODO="read this service's payment-checker log to see why it holds." ;;
+    esac
 }
 
 # ------------------------------------------------- transient tolerance ----
@@ -101,14 +146,22 @@ err_clear() {   # a tick succeeded: the run of failures, if any, is over
     rm -f "$(_err_file "$1")" 2>/dev/null || true
 }
 
-alert_persistent() {   # alert_persistent <key> <subject> <body>
+alert_persistent() {   # alert_persistent <key> <subject> <body> [<tech line> [<what to do>]]
     f=$(_err_file "$1")
     n=$(cat "$f" 2>/dev/null)
     case "$n" in ''|*[!0-9]*) n=0 ;; esac
     n=$((n + 1))
     printf '%s' "$n" > "$f" 2>/dev/null || true
     if [ "$n" -ge "$ERR_MIN_TICKS" ]; then
-        alert "$2" "$3 (failing for $n consecutive checks)"
+        if [ -n "${4:-}" ]; then
+            alert "$2" "$3
+Failing for $n checks in a row (about $((n * 5)) min).${5:+
+What to do: $5}
+—
+$4"
+        else
+            alert "$2" "$3 (failing for $n consecutive checks)"
+        fi
     else
         # Logged, never silent -- the journal carries it and the next tick
         # decides again with a longer streak.
@@ -171,13 +224,21 @@ sqlite_q() {
 check_heartbeat() {
     local label="$1" age="$2" extra="${3:-}"
     if [ -z "$age" ]; then
-        alert "PCN watcher unreadable: $label" \
-              "Could not read $label's heartbeat. This is NOT proof the watcher is down, and NOT proof it is up -- the check itself failed. $extra"
+        alert "🟡 $label: cannot tell whether PCN payments are being credited" \
+              "The monitor could not read the heartbeat of $label's payment checker, so it cannot tell whether that checker is running. It may be perfectly fine -- this check itself failed.
+Customers affected: unknown.
+What to do: nothing if the next check (in 5 min) clears it. If it repeats, look at $label's payment checker.
+—
+tech: PCN watcher unreadable: $label. $extra"
         return
     fi
     if [ "$age" -gt "$STALE_SECONDS" ]; then
-        alert "PCN watcher STOPPED: $label" \
-              "No tick for $((age / 60)) min (threshold $((STALE_SECONDS / 60)) min). Deposits are not being credited. $extra"
+        alert "🔴 $label has stopped crediting PCN payments" \
+              "Its payment checker has not run for $((age / 60)) min (the limit is $((STALE_SECONDS / 60)) min), so PCN deposits to $label are not being credited.
+Customers affected: yes -- anyone paying $label in PCN waits. Nothing is lost; it credits them once the checker runs again.
+What to do: restart the payment checker. $extra
+—
+tech: PCN watcher STOPPED: $label"
     fi
 }
 
@@ -203,8 +264,13 @@ check_holding() {
     [ "${ticks:-0}" -ge "$HOLD_MIN_TICKS" ] || return 0
     if [ "$held" -ge $(( ticks * HOLD_PCT / 100 )) ]; then
         reason=$(printf '%s\n' "$recent" | grep -o 'skipped=[^ ]*' | tail -1)
-        alert "PCN watcher HOLDING: $label" \
-              "$held of the last $ticks ticks credited nothing ($reason). The watcher is alive, exiting clean, and settling no money -- this is what a silent credit outage looks like, not a healthy rail."
+        plain_reason "$reason"
+        alert "🟡 $label is holding PCN payments -- nothing credited lately" \
+              "$held of its last $ticks payment checks credited nothing, because $PR. The checker is running; it is waiting, not broken.
+Customers affected: yes, if anyone pays $label in PCN now -- they wait. Nothing is lost; the payment is credited once this clears.
+What to do: $PR_TODO
+—
+tech: PCN watcher HOLDING: $label ($reason). Alive, exiting clean, settling no money."
     fi
 }
 
@@ -234,8 +300,12 @@ check_deposits() {
         detail=$(mysql_q "$u" "$p" "$db" \
             "SELECT GROUP_CONCAT(CONCAT(LEFT(txid,12),' h',IFNULL(block_height,'?'),' conf',confirmations) SEPARATOR '; ')
                FROM \`$tbl\` WHERE status IN ('seen','confirming') AND \`$seen\` < (NOW() - INTERVAL $STUCK_HOURS HOUR) LIMIT 5;")
-        alert "PCN deposit STUCK: $label" \
-              "$stuck deposit(s) held for over ${STUCK_HOURS}h (status seen or confirming). The watcher may be running and still not settling -- check its log for a hold reason. $detail"
+        alert "🔴 $label: $stuck PCN payment(s) stuck for over ${STUCK_HOURS} h" \
+              "$stuck deposit(s) were seen more than ${STUCK_HOURS} hours ago and are still not credited -- somebody paid $label and has not received their credit.
+Customers affected: yes.
+What to do: open $label's admin and look at these deposits; its payment-checker log says why it holds them.
+—
+tech: PCN deposit STUCK: $label (status seen or confirming). $detail"
     fi
 
     # The three integrations mark a post-credit reorg THREE different ways, and
@@ -298,7 +368,12 @@ check_deposits_sqlite() {
         local detail
         detail=$(sqlite_q "$dbf"             "SELECT group_concat(s, '; ') FROM (SELECT substr(txid,1,12) || ' h' || COALESCE(block_height,'?') || ' ' || status AS s
                FROM $tbl WHERE status NOT IN ('credited','rejected') AND $seen < $cutoff ORDER BY $seen ASC LIMIT 5);")
-        alert "PCN deposit STUCK: $label"               "$stuck deposit(s) open for over ${STUCK_HOURS}h (status not credited or rejected). The watcher may be running and still not settling -- check its log for a hold reason. $detail"
+        alert "🔴 $label: $stuck PCN payment(s) stuck for over ${STUCK_HOURS} h" \
+              "$stuck deposit(s) were seen more than ${STUCK_HOURS} hours ago and are still not credited -- somebody paid $label and has not received their credit.
+Customers affected: yes.
+What to do: open $label's admin and look at these deposits; its payment-checker log says why it holds them.
+—
+tech: PCN deposit STUCK: $label (status not credited or rejected). $detail"
     fi
 
     # This rail marks a post-credit reorg with reorg_flagged_at -- the cleanest
@@ -385,8 +460,11 @@ if [ -r "$AIC" ]; then
         age=""; [ -n "$last" ] && age=$((now - last))
         check_heartbeat "aicontrol" "$age" "In-process setInterval in pm2 'ai-control-server' -- pm2 restart revives it."
         if [ "$okflag" = "False" ]; then
-            alert_persistent "aicontrol-erroring" "PCN watcher ERRORING: aicontrol" \
-                  "aicontrol's watcher is ticking but its last tick threw: $err. Running-and-failing is a different fault from stopped."
+            plain_reason "$err"
+            alert_persistent "aicontrol-erroring" "🟡 aicontrol: its PCN payment checker keeps failing" \
+                  "aicontrol's payment checker runs, but every run fails because $PR.
+Customers affected: yes, if anyone pays aicontrol in PCN now -- they wait. Nothing is lost; it credits once the checker succeeds." \
+                  "tech: PCN watcher ERRORING: aicontrol -- last tick threw: $err" "$PR_TODO"
         elif [ "$okflag" = "True" ]; then
             err_clear "aicontrol-erroring"
         fi
@@ -427,8 +505,11 @@ if [ -r "$WEBAI" ]; then
         fi
 
         if [ "$okflag" = "False" ]; then
-            alert_persistent "webai-erroring" "PCN watcher ERRORING: webai" \
-                  "webai's watcher is ticking but its last tick threw: $err. Running-and-failing is a different fault from stopped."
+            plain_reason "$err"
+            alert_persistent "webai-erroring" "🟡 webai: its PCN payment checker keeps failing" \
+                  "webai's payment checker runs, but every run fails because $PR.
+Customers affected: yes, if anyone pays webai in PCN now -- they wait. Nothing is lost; it credits once the checker succeeds." \
+                  "tech: PCN watcher ERRORING: webai -- last tick threw: $err" "$PR_TODO"
         elif [ "$okflag" = "True" ]; then
             err_clear "webai-erroring"
         fi
@@ -501,7 +582,12 @@ if [ -d "$M3D_DIR" ]; then
                     alert "PCN monitor BROKEN: 3dmodels.pc.am"                           "The held-deposit query returned nothing against the 3dmodels db container. Assume its deposits are UNMONITORED until this is fixed."
                 elif [ "$m3stuck" -gt 0 ]; then
                     m3detail=$(docker exec -i "$m3dbc" sh -lc "mariadb -N -uroot -p\"\$(cat $m3pwf)\" \"$m3db\" -e \"SELECT GROUP_CONCAT(CONCAT(LEFT(txid,12),' ',FORMAT(amount_sat/1e8,2),'PCN ',status) SEPARATOR '; ') FROM pcn_deposits WHERE status IN ('seen','confirming') AND first_seen_at < (NOW() - INTERVAL $STUCK_HOURS HOUR) LIMIT 5;\"" 2>/dev/null)
-                    alert "PCN deposit STUCK: 3dmodels.pc.am"                           "$m3stuck deposit(s) held for over ${STUCK_HOURS}h. Money is recorded and not credited. $m3detail"
+                    alert "🔴 3dmodels.pc.am: $m3stuck PCN payment(s) stuck for over ${STUCK_HOURS} h" \
+                          "$m3stuck deposit(s) were seen more than ${STUCK_HOURS} hours ago and are still not credited -- somebody paid 3dmodels.pc.am and has not received their credit.
+Customers affected: yes.
+What to do: open 3dmodels.pc.am's admin and look at these deposits; its payment-checker log says why it holds them.
+—
+tech: PCN deposit STUCK: 3dmodels.pc.am (held). $m3detail"
                 fi
             fi
         fi
@@ -603,8 +689,12 @@ PYEOF
                 oon_r=$(printf '%s' "$oon_out" | awk '{print $3}')
                 oon_detail=$(printf '%s' "$oon_out" | cut -d' ' -f4-)
                 if [ "${oon_n:-0}" -gt 0 ]; then
-                    alert "PCN deposit STUCK: 3dmodel.oonak.ai" \
-                          "$oon_n deposit(s) held for over ${STUCK_HOURS}h. Money is recorded and not credited. $oon_detail"
+                    alert "🔴 3dmodel.oonak.ai: $oon_n PCN payment(s) stuck for over ${STUCK_HOURS} h" \
+                          "$oon_n deposit(s) were seen more than ${STUCK_HOURS} hours ago and are still not credited -- somebody paid 3dmodel.oonak.ai and has not received their credit.
+Customers affected: yes.
+What to do: open 3dmodel.oonak.ai's admin and look at these deposits; its payment-checker log says why it holds them.
+—
+tech: PCN deposit STUCK: 3dmodel.oonak.ai (held). $oon_detail"
                 fi
                 # Symmetry with every other rail, all of which get a reorg
                 # check. The rail FLAGS and never reverses -- a human decides.
@@ -724,7 +814,11 @@ if [ -r "$PCNAI_CONF" ] || [ -r "$PCNAI_DB" ]; then
     fi
 
     if [ "$okflag" = "False" ]; then
-        alert_persistent "pcnaibot-erroring" "PCN watcher ERRORING: pcnaibot" "pcnaibot's watcher is ticking but its last tick threw: $err. Running-and-failing is a different fault from stopped."
+        plain_reason "$err"
+        alert_persistent "pcnaibot-erroring" "🟡 pcnaibot: its PCN payment checker keeps failing" \
+              "pcnaibot's payment checker runs, but every run fails because $PR.
+Customers affected: yes, if anyone pays pcnaibot in PCN now -- they wait. Nothing is lost; it credits once the checker succeeds." \
+              "tech: PCN watcher ERRORING: pcnaibot -- last tick threw: $err" "$PR_TODO"
     elif [ "$okflag" = "True" ]; then
         err_clear "pcnaibot-erroring"
     fi
@@ -789,7 +883,12 @@ if [ -n "$RAILS_MISSING" ]; then
         printf '%s
 ' "$stamp" > "$STATE_FILE" 2>/dev/null || true
         n=$(printf '%s' "$RAILS_MISSING" | wc -w)
-        alert "PCN rails NOT MONITORED: $n of $(printf '%s' "$RAILS_EXPECTED" | wc -w)"               "No check ran for:$(printf '%s' " $RAILS_MISSING") -- their evidence is not readable from $(hostname 2>/dev/null || echo "this host"). This is NOT a report that those rails are broken, and NOT a report that they are fine: nothing looked. Deposits there could be stuck or uncredited and this watcher would still have said nothing."
+        alert "🟡 $n of $(printf '%s' "$RAILS_EXPECTED" | wc -w) payment rails are not being watched from this server" \
+              "Nothing checked:$(printf '%s' " $RAILS_MISSING") -- their data cannot be read from $(hostname 2>/dev/null || echo "this host"). This does NOT mean they are broken, and does NOT mean they are fine: nobody looked.
+Customers affected: unknown -- stuck payments there would go unnoticed.
+What to do: make sure another monitoring server covers them (RAILS_EXPECTED), or fix access from this one.
+—
+tech: PCN rails NOT MONITORED"
     fi
 else
     rm -f "${STATE_DIR:-/var/lib/pcoin-deposit-watch}/unmonitored" 2>/dev/null || true

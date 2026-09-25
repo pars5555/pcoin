@@ -131,6 +131,30 @@ async function sendAlert(html) {
     return r.ok;
   } catch (e) { console.warn('[price] alert failed:', e.message); return false; }
 }
+// Declared up here, not beside the index code that mostly uses them: the
+// first pollLadder() runs during module evaluation, and its failure branch
+// formats an alert -- a const declared further down would still be in its
+// temporal dead zone and throw, taking the oracle down at start.
+// House style for the owner (every PCoin alert): a severity colour and a plain
+// headline, what it means with the numbers, "What to do", and the exact
+// figures last in <i>tech: ...</i> for whoever checks the arithmetic.
+//   usd6(0.0267481452) -> "$0.026748"   pctMove(a, b) -> "down 2.00%"
+const usd6 = (n) => (n === null || n === undefined || !isFinite(Number(n)) ? 'unknown'
+  : '$' + Number(n).toFixed(6).replace(/0+$/, '').replace(/\.$/, ''));
+function pctMove(from, to) {
+  const a = Number(from), b = Number(to);
+  if (!(a > 0) || !isFinite(b)) return '';
+  const p = ((b - a) / a) * 100;
+  return `${p >= 0 ? 'up' : 'down'} ${Math.abs(p).toFixed(2)}%`;
+}
+// A move that does not survive rounding to a millionth of a dollar is float
+// noise (0.02794430694305964 -> 0.027944306943059636 was announced as a move on
+// 2026-09-24). It is still sent -- every change is, by design -- but it says so.
+const noRealMove = (a, b) => usd6(a) === usd6(b);
+// What the rails do when the index cannot be used, in plain words.
+const indexStakesPlain = () => `Payment services keep crediting at the last good price for up to ` +
+  `${Math.round(st.indexMaxAgeSeconds / 60)} min; after that they HOLD new PCN credits until it is back.`;
+
 // The lowest rate the walk can stand on. Only used to escape serviceRate = 0,
 // which a multiplicative clamp can otherwise never leave.
 const SERVICE_RATE_FLOOR = 1e-8;
@@ -804,10 +828,15 @@ async function pollLadder(force = false) {
       // to look. Do NOT list the rails here: the list said four for days after
       // the fifth went live, and an alert nobody can trust to be complete is
       // worse than one that does not try.
-      await notify(`💱 <b>serviceRate moved</b>\n` +
-        `<code>${before.serviceRate}</code> → <b><code>${tune.serviceRate}</code></b>\n` +
-        `ladder ${st.ladderPrice} · ceiling ${st.serviceCeiling} · max move ${st.serviceMaxMovePct}%\n` +
-        `Every service that credits PCN deposits reads this number and uses the new rate from now on.`);
+      const flat = noRealMove(before.serviceRate, tune.serviceRate);
+      await notify((flat
+        ? `🟢 <b>Credit rate unchanged at ${usd6(tune.serviceRate)}</b> (rounding only)\n`
+        : `🟢 <b>Credit rate moved ${pctMove(before.serviceRate, tune.serviceRate)}: ` +
+          `${usd6(before.serviceRate)} → ${usd6(tune.serviceRate)}</b>\n`) +
+        `Every service that takes PCN now credits customers ${usd6(tune.serviceRate)} per PCN.\n` +
+        `What to do: nothing.\n` +
+        `<i>tech: serviceRate moved <code>${before.serviceRate}</code> → <code>${tune.serviceRate}</code> · ` +
+        `ladder ${st.ladderPrice} · ceiling ${st.serviceCeiling} · max move ${st.serviceMaxMovePct}%</i>`);
     }
     if (indexMode()) watchSellVsCredit();
     return { ok: true, ...tune };
@@ -819,9 +848,13 @@ async function pollLadder(force = false) {
     // every failed poll.
     if (Date.now() - lastPollAlert >= 60 * 60 * 1000) {
       lastPollAlert = Date.now();
-      await notify(`🟠 <b>Ladder unreachable</b>\nThe price is frozen at the last known ` +
-        `figure (${st.ladderPrice}). Nothing is wrong with the number — it is just ` +
-        `no longer being refreshed.\n<code>${String(e.message).slice(0, 200)}</code>`);
+      await notify(`🟡 <b>price.pc.am cannot read market.pc.am</b>\nThe market price it publishes stays at ` +
+        `the last known ${usd6(st.ladderPrice)}. The number is not wrong -- it is just not being refreshed.\n` +
+        'What to do: nothing if it clears within the hour; if not, check that market.pc.am is up.\n' +
+        // Escaped inline: escHtml is declared further down, and this branch
+        // can run during module evaluation (the first pollLadder()).
+        `<i>tech: Ladder unreachable: ${String(e.message).slice(0, 200)
+          .replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))}</i>`);
     }
     return { ok: false, why: e.message };
   }
@@ -871,6 +904,7 @@ let indexPricedAnnounced = true;
 // one unescaped reason would lose the very alert that says the feed is broken.
 const escHtml = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 
+
 // What an index alert's reader needs to know about the stakes. In shadow mode
 // the wording is Phase 2's, unchanged; in index mode it says the rails hold.
 const indexTag = () => (indexMode() ? '(IN USE: the rails credit at it)' : '(shadow)');
@@ -896,14 +930,22 @@ function applyIndexRate(usd, { quiet = false } = {}) {
     // Every move, no throttle, exactly as for the walk. The index moves only
     // on new qualifying fills, so this is bounded by trading, and each one is
     // a change in what every rail credits.
-    notify('💱 <b>serviceRate moved</b> (PCN index)\n' +
-      `<code>${before}</code> → <b><code>${next}</code></b>\n` +
-      `index seq ${st.indexSeq}` + (next !== usd ? ` · clamped from $${usd} to the floor/ceiling` : '') + '\n' +
+    const flat = noRealMove(before, next);
+    notify((flat
+      ? `🟢 <b>PCN price unchanged at ${usd6(next)}</b> (rounding only)\n`
+      : `🟢 <b>PCN price moved ${pctMove(before, next)}: ${usd6(before)} → ${usd6(next)}</b>\n`) +
+      `Every service that takes PCN now credits customers ${usd6(next)} per PCN. It follows the ` +
+      'PCN price on exchange.pc.am, which moves on real trades between customers or when you ' +
+      're-seed it' + (w.trades != null ? ` (${w.trades} trades counted in the last ${w.hours} h)` : '') + '.' +
+      (next !== usd ? ` The exchange said ${usd6(usd)}, but the floor/ceiling setting held it at ${usd6(next)}.` : '') + '\n' +
+      'What to do: nothing.\n' +
+      '<i>tech: serviceRate moved (PCN index) ' +
+      `<code>${before}</code> → <code>${next}</code> · index seq ${st.indexSeq}` +
+      (next !== usd ? ` · clamped from $${usd} to the floor/ceiling` : '') + ' · ' +
       (w.trades != null
         ? `evidence: ${w.trades} fills, ${w.entities} people, $${escHtml(w.countedUsd ?? '?')} in the ${w.hours} h window`
         : 'evidence: the exchange published no window') +
-      (m.limitedBy && m.limitedBy.length ? ` · limited by ${escHtml(m.limitedBy.join(', '))}` : '') + '\n' +
-      'Every service that credits PCN deposits reads this number and uses the new rate from now on.');
+      (m.limitedBy && m.limitedBy.length ? ` · limited by ${escHtml(m.limitedBy.join(', '))}` : '') + '</i>');
   }
   return { moved, serviceRate: next };
 }
@@ -916,12 +958,18 @@ function announceIndexPriced(reading) {
   if (priced === indexPricedAnnounced) return;
   indexPricedAnnounced = priced;
   notify(priced
-    ? `✅ <b>PCN index carries a price again</b>\n<code>$${reading.usd}</code> (seq ${reading.seq}, ` +
-      `${escHtml(reading.state)}). The rails credit at it again.`
-    : `🔴 <b>PCN index is ${escHtml(String(reading.state).toUpperCase())}</b> on exchange.pc.am\n` +
-      'It carries no price, so GET /credit-rate answers 503 and every rail HOLDS new credits until it ' +
-      (st.indexNano !== null ? `does. The last price, $${Number(st.indexNano) / 1e9}, is not used meanwhile.` : 'does.') +
-      (reading.reasons && reading.reasons.length ? `\n<code>${escHtml(reading.reasons[0])}</code>` : ''));
+    ? `🟢 <b>The PCN price is back -- payment services credit again</b>\n` +
+      `The exchange publishes ${usd6(reading.usd)} again, and every service that takes PCN credits at it.\n` +
+      'What to do: nothing.\n' +
+      `<i>tech: PCN index carries a price again: $${reading.usd} (seq ${reading.seq}, ${escHtml(reading.state)})</i>`
+    : `🔴 <b>Payment services are HOLDING PCN credits: the PCN price is ${escHtml(String(reading.state).toUpperCase())}</b>\n` +
+      'exchange.pc.am publishes no PCN price right now, so no service that takes PCN can credit a payment ' +
+      'until it does. Payments wait; nothing is lost.' +
+      (st.indexNano !== null ? ` The last price, ${usd6(Number(st.indexNano) / 1e9)}, is not used meanwhile.` : '') + '\n' +
+      'What to do: open admin.pc.am, Exchange, PCN index, find why it has no price, and re-seed it once you know.\n' +
+      `<i>tech: PCN index is ${escHtml(String(reading.state).toUpperCase())} on exchange.pc.am; ` +
+      'GET /credit-rate answers 503' +
+      (reading.reasons && reading.reasons.length ? `; ${escHtml(reading.reasons[0])}` : '') + '</i>');
 }
 
 // "A rail never credits more for a PCN than the project charges for one"
@@ -941,14 +989,18 @@ function watchSellVsCredit() {
   underAnnounced = under;
   const gap = st.serviceRate > 0 ? ((st.serviceRate - st.ladderPrice) / st.serviceRate) * 100 : 0;
   notify(under
-    ? '⚠️ <b>The rails credit MORE than market.pc.am charges</b>\n' +
-      `serviceRate (the PCN index) <code>$${st.serviceRate}</code>, market.pc.am sells at ` +
-      `<code>$${st.ladderPrice}</code> (${gap.toFixed(2)}% below).\n\nWhile this lasts, buying PCN on ` +
-      'market.pc.am and spending it at a rail gains that gap, paid by the project. In index mode the ' +
-      'market should sell at the index plus its premium (plan Step 3): check its pricingMode. ' +
-      '<code>POST /admin/state {"useIndex":0}</code> puts the walk back, which never credits above the market.'
-    : '✅ <b>market.pc.am sells at or above the credit rate again</b>\n' +
-      `serviceRate <code>$${st.serviceRate}</code>, market <code>$${st.ladderPrice}</code>.`);
+    ? '🔴 <b>Services credit MORE per PCN than market.pc.am charges</b>\n' +
+      `Services credit ${usd6(st.serviceRate)} per PCN, but market.pc.am sells PCN at ${usd6(st.ladderPrice)} ` +
+      `(${gap.toFixed(2)}% less). Anyone can buy on the market and spend at a service for ${gap.toFixed(2)}% ` +
+      'more than they paid, and the project pays that gap.\n' +
+      'What to do: check market.pc.am\'s pricing mode (it should sell at the PCN price plus its markup). ' +
+      'To stop it at once: <code>POST /admin/state {"useIndex":0}</code> on the price primary.\n' +
+      `<i>tech: The rails credit MORE than market.pc.am charges -- serviceRate (the PCN index) ` +
+      `$${st.serviceRate}, market $${st.ladderPrice}</i>`
+    : '🟢 <b>market.pc.am sells at or above the credit rate again</b>\n' +
+      `Services credit ${usd6(st.serviceRate)} per PCN; the market sells at ${usd6(st.ladderPrice)}.\n` +
+      'What to do: nothing.\n' +
+      `<i>tech: serviceRate $${st.serviceRate}, market $${st.ladderPrice}</i>`);
 }
 
 async function pollIndex() {
@@ -971,19 +1023,22 @@ async function pollIndex() {
     st.indexError = { why, at: nowMs };
     if (!indexDownAlerted && nowMs - indexFailingSince >= INDEX_DOWN_ALERT_MS) {
       indexDownAlerted = true;
-      notify(`🟠 <b>PCN index unreachable</b> ${indexTag()}\n` +
-        `price.pc.am has not had a usable index reading from exchange.pc.am for ` +
-        `${Math.round((nowMs - indexFailingSince) / 60000)} min. ` +
-        (indexMode() ? indexStakes()
-          : 'Nothing credits with it yet, so no money is affected; the shadow record has a gap.') +
-        `\n<code>${escHtml(why)}</code>`);
+      notify(`🟡 <b>price.pc.am cannot read the PCN price from exchange.pc.am</b>\n` +
+        `No usable reading for ${Math.round((nowMs - indexFailingSince) / 60000)} min. ` +
+        (indexMode() ? indexStakesPlain()
+          : 'Nothing credits with it yet, so no money is affected; the shadow record has a gap.') + '\n' +
+        'What to do: nothing if a "readable again" message follows soon; if not, check that ' +
+        'exchange.pc.am/api/index loads.\n' +
+        `<i>tech: PCN index unreachable ${indexTag()}: ${escHtml(why)}</i>`);
     }
     try { save(st); } catch (se) { console.warn('[price] index error not saved:', se.message); }
     return { ok: false, why };
   }
   if (indexDownAlerted) {
-    notify(`✅ <b>PCN index readable again</b> ${indexTag()}\n` +
-      `It was unusable for ${Math.round((nowMs - indexFailingSince) / 60000)} min.`);
+    notify(`🟢 <b>price.pc.am can read the PCN price again</b>\n` +
+      `It was unreadable for ${Math.round((nowMs - indexFailingSince) / 60000)} min.\n` +
+      'What to do: nothing.\n' +
+      `<i>tech: PCN index readable again ${indexTag()}</i>`);
   }
   indexFailingSince = 0;
   indexDownAlerted = false;
@@ -1005,13 +1060,15 @@ async function pollIndex() {
     st.indexRefused = { why: speed.why, seq: reading.seq, usd: reading.usd, at: nowMs };
     if (indexRefusalAlerted !== key) {
       indexRefusalAlerted = key;
-      notify(`🔴 <b>PCN index reading REFUSED</b> ${indexTag()}\n` +
-        `exchange.pc.am says <code>$${reading.usd}</code> (seq ${reading.seq}); price.pc.am keeps ` +
-        `<code>$${prev ? prev.nano / 1e9 : 'none'}</code> (seq ${prev ? prev.seq : '-'}).\n` +
-        `<code>${escHtml(speed.why)}</code>\n\nThe exchange caps its own moves, so this is either a bug, a ` +
-        'compromise, or a deliberate re-seed. If you re-seeded it, accept the new value with ' +
-        '<code>POST /admin/index/accept</code> on the primary. ' +
-        (indexMode() ? indexStakes() : 'Nothing credits with the index yet.'));
+      notify(`🔴 <b>price.pc.am refused a new PCN price from the exchange</b>\n` +
+        `The exchange says ${usd6(reading.usd)}, a bigger jump from ${prev ? usd6(prev.nano / 1e9) : 'nothing'} ` +
+        'than its own rules allow, so price.pc.am keeps the old price. ' +
+        (indexMode() ? indexStakesPlain() : 'Nothing credits with the index yet.') + '\n' +
+        'What to do: if you just re-seeded the PCN price, accept it with ' +
+        '<code>POST /admin/index/accept</code> on the price primary. If you did not, find out why the ' +
+        'exchange jumped before accepting anything -- it may be a bug or a break-in.\n' +
+        `<i>tech: PCN index reading REFUSED ${indexTag()}: exchange $${reading.usd} (seq ${reading.seq}), ` +
+        `kept $${prev ? prev.nano / 1e9 : 'none'} (seq ${prev ? prev.seq : '-'}); ${escHtml(speed.why)}</i>`);
     }
     try { save(st); } catch { /* the refusal is in memory and will be re-derived */ }
     return { ok: false, why: speed.why };
@@ -1029,8 +1086,10 @@ async function pollIndex() {
   // they never erase it, and the published block shows no price for them.
   if (reading.nano !== null) {
     if (st.indexRebaseArmed) {
-      notify(`✅ <b>PCN index re-based</b> ${indexTag()}\n` +
-        `price.pc.am accepted <code>$${reading.usd}</code> (seq ${reading.seq}) as its new baseline.`);
+      notify(`🟢 <b>price.pc.am accepted the new PCN price ${usd6(reading.usd)}</b>\n` +
+        'It is the new starting point for future checks.\n' +
+        'What to do: nothing.\n' +
+        `<i>tech: PCN index re-based ${indexTag()}: $${reading.usd} (seq ${reading.seq})</i>`);
       st.indexHistory = [];
     }
     st.indexNano = String(reading.nano);
@@ -1491,16 +1550,19 @@ createServer(async (req, res) => {
       if (wasIndex !== toIndex) { underPending = null; underPolls = 0; underAnnounced = false; }
       save(st);
       if (toIndex && !wasIndex) {
-        notify('🔀 <b>The rails now credit at the PCN index</b>\n' +
-          `serviceRate <code>${beforeRate}</code> → <b><code>${st.serviceRate}</code></b> ` +
-          `(index seq ${st.indexSeq}; the walk was ${check.gapPct}% away)` +
-          (check.forced ? '\n<b>FORCED</b> past the 0.5% and sell-price checks.' : '') + '\n' +
-          'The walk is off; every confirmed index reading now sets the rate. ' +
-          'Rollback: <code>POST /admin/state {"useIndex":0}</code>.');
+        notify('🟢 <b>Payment services now credit at the exchange\'s PCN price</b>\n' +
+          `The credit rate went ${usd6(beforeRate)} → ${usd6(st.serviceRate)}. From now on it follows the ` +
+          'PCN price on exchange.pc.am, and nothing else moves it.' +
+          (check.forced ? ' <b>This was FORCED past the safety checks.</b>' : '') + '\n' +
+          'What to do: nothing. To undo: <code>POST /admin/state {"useIndex":0}</code> on the price primary.\n' +
+          `<i>tech: The rails now credit at the PCN index; serviceRate ${beforeRate} → ${st.serviceRate} ` +
+          `(index seq ${st.indexSeq}; the walk was ${check.gapPct}% away)</i>`);
       } else if (wasIndex && !toIndex) {
-        notify('↩️ <b>The rails are back on the legacy walk</b>\n' +
-          `It resumes from <code>${st.serviceRate}</code> (the last index value) and takes its first ` +
-          `step no sooner than ${st.serviceRetuneIntervalHours} h after the last index reading.`);
+        notify('🟡 <b>Payment services are back on the old credit rate rule</b>\n' +
+          `The credit rate no longer follows the exchange's PCN price. It stays at ${usd6(st.serviceRate)} ` +
+          `and starts moving on its own again after ${st.serviceRetuneIntervalHours} h.\n` +
+          'What to do: nothing, if you switched it back on purpose.\n' +
+          `<i>tech: The rails are back on the legacy walk, from ${st.serviceRate}</i>`);
       }
       return json(res, 200, { ok: true, price: postedPrice(), applied: pending,
         ...(wasIndex !== toIndex ? { useIndex: toIndex ? 1 : 0, serviceRate: st.serviceRate, check } : {}) });

@@ -80,22 +80,23 @@ emit() {  # emit <product> <who> <addr> <sat> <usd> <rate> <credited> <unit> <tx
   drift=""
   if [ -n "$RATE_NOW" ] && [ "$(awk -v r="$rate" 'BEGIN{print (r>0)?1:0}')" = "1" ]; then
     drift=$(awk -v n="$RATE_NOW" -v r="$rate" 'BEGIN{
-      d=(n-r)/r*100; if (d>=1||d<=-1) printf "\nRate now:    $%.6f  (%+.1f%% vs the rate they were credited at)", n, d }')
+      d=(n-r)/r*100; if (d>=1||d<=-1) printf "\nThe PCN rate is now $%.6f (%+.1f%% since this was credited).", n, d }')
   fi
 
-  title="PCN payment: $pcn PCN (\$$usd) to $prod"
-  body="Service:     $prod
-Account:     $who
-Address:     $addr
-
-Received:    $pcn PCN
-Credited:    \$$usd  =  $credited $unit
-Rate used:   \$$rate per PCN  (stamped on the deposit row)$drift
-
-Block:       $height    confirmations at credit: $confs
-Txid:        $txid
-Explorer:    https://explorer.pc.am/tx/$txid
-Credited at: $when UTC"
+  # The customer is named the way the owner recognises them, but an email is
+  # masked (k…@gmail.com) and the deposit address is left out: this is a
+  # chat, and both are one tap away on the explorer link below. The label is
+  # also Markdown-escaped -- pcoin-notify sends with Markdown on, and a
+  # username with an underscore would otherwise lose the bold headline.
+  local shown pcnshort
+  shown=$(printf '%s' "$who" | sed -E 's/^([^@])[^@]*@/\1…@/; s/[_*`[]/\\&/g')
+  pcnshort=$(awk -v s="$sat" 'BEGIN{v=sprintf("%.8f", s/100000000); sub(/0+$/, "", v); sub(/[.]$/, "", v); print v}')
+  title="🟢 Payment received: $pcnshort PCN (\$$usd) on $prod"
+  body="A customer ($shown) paid $pcnshort PCN and was credited \$$usd ($credited $unit) at \$$rate per PCN.$drift
+What to do: nothing -- $prod credited it automatically.
+—
+tech: block $height, $confs confirmations at credit, credited $when UTC
+https://explorer.pc.am/tx/$txid"
 
   if [ "$DRY" = "1" ]; then
     echo "--- would send ---"; echo "$title"; echo "$body"; echo "---"; return 0
@@ -199,8 +200,11 @@ for want in $RAILS_EXPECTED; do
       if [ "$DRY" = "1" ]; then
         printf 'WOULD ALERT: payment reporting blind for %s\n' "$want"
       elif [ -x "$NOTIFY" ]; then
-        "$NOTIFY" "PCN payment reporting BLIND: $want" \
-          "pcoin-payment-report on $(hostname) is configured to report $want but could not read its database this run, so no credit on that rail will be reported until it can. The rail itself may be perfectly healthy: this says the REPORTING is blind, which is a different fault from the money being stuck. Check the config file is readable and the credentials still work." >/dev/null 2>&1
+        "$NOTIFY" "🟡 Payment messages for $want are missing" \
+          "The payment reporter could not read $want's database this run, so its 'payment received' messages will not come until it can. Payments themselves are probably fine -- only the reporting is blind.
+What to do: check that the reporter's config and database login on $(hostname) still work.
+—
+tech: PCN payment reporting BLIND: $want (pcoin-payment-report)" >/dev/null 2>&1
       fi
       ;;
   esac

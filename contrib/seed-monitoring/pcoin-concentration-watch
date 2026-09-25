@@ -266,18 +266,25 @@ def main():
         reason = send_decision(state.get("solo"), level, top_addr, tp, remind_s, now)
         if reason:
             body = (
-                "One address is finding %.1f%% of blocks (95%% CI %.0f-%.0f%%),\n"
-                "measured over %d blocks, heights %d-%d.\n\n"
-                "  address: %s\n"
-                "  pool share over the same window: %.1f%%\n\n"
-                "A party above 50%% can reorganise recent blocks and reverse a payment\n"
-                "that already looked settled. Confirmation depth does not fix this --\n"
-                "it buys time, not safety.\n\n"
-                "Re-alert because: %s. Next reminder in %.0fh unless it changes.\n"
-                "  https://explorer.pc.am"
-                % (tp, tlo, thi, n, lo, tip, top_addr or "?", pp, reason, a.remind_hours)
+                "One miner (a single payout address) found %.1f%% of the last %d blocks\n"
+                "(heights %d-%d; 95%% range %.0f-%.0f%%). Our pool found %.1f%% in the same blocks.\n"
+                "Why it matters: a miner above 50%% can rewrite recent blocks and reverse a\n"
+                "payment that already looked settled. Waiting for more confirmations buys\n"
+                "time, not safety.\n"
+                "What to do: %s\n"
+                "\u2014\n"
+                "tech: address %s. Re-alert because: %s. Next reminder in %.0fh unless it\n"
+                "changes. https://explorer.pc.am"
+                % (tp, n, lo, tip, tlo, thi, pp,
+                   ("hold large PCN credits for extra confirmations until it drops, and "
+                    "look at who owns that address." if level == "CRITICAL" else
+                    "nothing yet -- watch it. At 50% it becomes a real risk."),
+                   top_addr or "?", reason, a.remind_hours)
             )
-            notify("PCoin %s: hashrate concentration %.0f%%" % (level, tp), body, a.dry_run)
+            notify("%s One miner has %.0f%% of recent blocks (%s)"
+                   % ("\U0001F534" if level == "CRITICAL" else "\U0001F7E1", tp,
+                      "above 50%" if level == "CRITICAL" else "watch"),
+                   body, a.dry_run)
             state["solo"] = {"level": level, "addr": top_addr, "value": tp, "at": now}
             dirty = True
         else:
@@ -288,10 +295,11 @@ def main():
         # The all-clear is a state change too, and the one people stop watching
         # for. It is sent exactly once, because the state that caused it is
         # deleted in the same breath.
-        notify("PCoin OK: hashrate concentration cleared",
-               "Top solo address is now %.1f%% (95%% CI %.0f-%.0f%%) over the last %d\n"
-               "blocks -- below the %.0f%% warning line. Previous condition: %s at %.1f%%."
-               % (tp, tlo, thi, n, a.warn,
+        notify("\U0001F7E2 No single miner dominates any more",
+               "The biggest single miner now has %.1f%% of the last %d blocks (95%% range\n"
+               "%.0f-%.0f%%) -- below the %.0f%% warning line. It was %s at %.1f%%.\n"
+               "What to do: nothing."
+               % (tp, n, tlo, thi, a.warn,
                   state["solo"].get("level"), state["solo"].get("value", 0.0)), a.dry_run)
         del state["solo"]
         dirty = True
@@ -304,38 +312,27 @@ def main():
         reason = send_decision(state.get("pool"), "WARNING", None, pp, remind_s, now)
         if reason:
             miners = pool_miner_count()
-            who = ("`%d` miners are connected to it right now" % miners
+            who = ("%d miners are connected to it right now" % miners
                    if miners is not None
                    else "the connected-miner count could not be read just now")
-            notify("PCoin: our pool mined %.0f%% of the last %d blocks" % (pp, n),
-                   "pool.pc.am found *%.1f%%* of the last %d blocks (95%% CI %.0f-%.0f%%),\n"
+            notify("\U0001F7E1 Our pool found %.0f%% of recent blocks" % pp,
+                   "pool.pc.am found *%.1f%%* of the last %d blocks (95%% range %.0f-%.0f%%),\n"
                    "and %s.\n"
-                   "\n"
-                   "*What this is NOT.* It is not one party holding %.0f%% of the hashrate.\n"
-                   "Almost none of that is ours -- the pool is a crowd of independent\n"
-                   "miners, and the biggest single one is a few percent of the network.\n"
-                   "Nobody on this chain is in a position to reorganise it.\n"
-                   "\n"
-                   "*What it IS.* %.0f%% of the network coordinates through ONE endpoint\n"
-                   "we operate. If `pool.pc.am` were compromised or went down, that whole\n"
-                   "share is affected at once. That is an availability and trust risk,\n"
-                   "not an ownership one.\n"
-                   "\n"
-                   "*What you can do.* Very little on your own -- the hashrate is not ours\n"
-                   "to move, so switching our own miners off would barely change this\n"
-                   "number. The lever is a SECOND pool: `198.244.169.49:3333` already\n"
-                   "exists and there is a 500 PCN bounty for independent pools. Pointing\n"
-                   "miners at an alternative is the only thing that lowers it.\n"
-                   "\n"
-                   "Re-alert because: %s."
-                   % (pp, n, plo, phi, who, pp, pp, reason), a.dry_run)
+                   "Not an attack risk: those are many independent miners, the biggest a few\n"
+                   "percent. The risk is that %.0f%% of the network runs through ONE server we\n"
+                   "operate -- if pool.pc.am goes down, all of that mining stops at once.\n"
+                   "What to do: nothing today. Only a second pool lowers this -- one already\n"
+                   "exists (198.244.169.49:3333) and there is a 500 PCN bounty for more.\n"
+                   "\u2014\n"
+                   "tech: re-alert because: %s."
+                   % (pp, n, plo, phi, who, pp, reason), a.dry_run)
             state["pool"] = {"level": "WARNING", "addr": None, "value": pp, "at": now}
             dirty = True
     elif state.get("pool"):
-        notify("PCoin OK: our pool is back under the threshold",
-               "pool.pc.am is now *%.1f%%* of the last %d blocks (95%% CI %.0f-%.0f%%).\n"
-               "More of the network is being mined outside our pool than before, which\n"
-               "is the direction we want."
+        notify("\U0001F7E2 Our pool is back under half of the blocks",
+               "pool.pc.am now finds *%.1f%%* of the last %d blocks (95%% range %.0f-%.0f%%).\n"
+               "More of the network is mined outside our pool -- the direction we want.\n"
+               "What to do: nothing."
                % (pp, n, plo, phi), a.dry_run)
         del state["pool"]
         dirty = True

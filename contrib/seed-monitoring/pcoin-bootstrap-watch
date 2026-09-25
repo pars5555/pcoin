@@ -46,8 +46,12 @@ if [ -z "$IPS" ]; then
     [ -n "$IPS" ] && log "note: 1.1.1.1 returned nothing, 8.8.8.8 did"
 fi
 if [ -z "$IPS" ]; then
-    alert "PCoin BOOTSTRAP DOWN: $NAME does not resolve" \
-          "Two independent resolvers returned no A record for $NAME. No new node can find the network. Existing nodes keep running, so nothing else will look wrong."
+    alert "🔴 New nodes cannot find the network: $NAME does not resolve" \
+          "Two independent DNS resolvers (1.1.1.1 and 8.8.8.8) returned no address for $NAME, the name every new PCoin node looks up first.
+Customers affected: new users installing a node or wallet may not connect. Everyone already running keeps working, so nothing else will look wrong.
+What to do: check the $NAME record in Cloudflare DNS (it must exist and be DNS-only, grey cloud).
+—
+tech: PCoin BOOTSTRAP DOWN, no A record for $NAME"
     exit 0
 fi
 
@@ -57,8 +61,11 @@ fi
 for ip in $IPS; do
     case "$ip" in
         104.2*|172.6[4-9].*|172.7[01].*|188.114.*|162.159.*|104.1[6-9].*)
-            alert "PCoin BOOTSTRAP BROKEN: $NAME is Cloudflare-PROXIED" \
-                  "$NAME resolves to $ip, a Cloudflare edge address. Port $PORT is the P2P protocol, not HTTP, so a proxied record cannot carry it. Every seed will still report healthy. Set the record back to DNS-only (grey cloud)."
+            alert "🔴 New nodes cannot find the network: $NAME is behind the Cloudflare proxy" \
+                  "$NAME points at a Cloudflare address ($ip). Nodes talk on port $PORT, which Cloudflare's proxy cannot carry, so new nodes cannot connect -- while every seed still reports healthy.
+What to do: set the $NAME record back to DNS-only (grey cloud) in Cloudflare.
+—
+tech: PCoin BOOTSTRAP BROKEN: proxied record"
             exit 0 ;;
     esac
 done
@@ -71,10 +78,16 @@ EXTRA=""
 for got in $IPS; do
     echo "$EXPECTED" | tr ' ' '\n' | grep -qx "$got" || EXTRA="$EXTRA $got"
 done
-[ -n "$MISSING" ] && alert "PCoin seed DNS changed: records missing" \
-    "$NAME no longer lists:$MISSING . Currently: $(echo $IPS). Bootstrap still works while at least one seed answers, but the redundancy is gone."
-[ -n "$EXTRA" ] && alert "PCoin seed DNS changed: unexpected record" \
-    "$NAME lists an address not in the expected set:$EXTRA . Currently: $(echo $IPS). If this is intentional, update EXPECTED in $0."
+[ -n "$MISSING" ] && alert "🟡 A seed server dropped out of $NAME" \
+    "$NAME no longer lists:$MISSING . It lists: $(echo $IPS). New nodes still find the network while one seed answers, but there is less spare capacity.
+What to do: add the missing address back to the $NAME record if the server is still meant to be a seed.
+—
+tech: PCoin seed DNS changed: records missing"
+[ -n "$EXTRA" ] && alert "🟡 $NAME lists an unexpected server" \
+    "$NAME now includes an address that is not one of our seeds:$EXTRA . It lists: $(echo $IPS).
+What to do: if you added it on purpose, add it to EXPECTED in $0; if not, remove it from DNS.
+—
+tech: PCoin seed DNS changed: unexpected record"
 
 # ── 3. can a stranger actually open 9444? ──
 # The real test. `listening` inside the box proves the socket is bound; only a
@@ -90,11 +103,17 @@ done
 
 TOTAL=$(echo $EXPECTED | wc -w)
 if [ "$UP" -eq 0 ]; then
-    alert "PCoin BOOTSTRAP DOWN: no seed accepts $PORT" \
-          "All $TOTAL seeds refused a connection to $PORT from outside:$DOWN . NO NEW NODE CAN JOIN THE NETWORK. Existing nodes are unaffected and every seed's own health check may still pass, which is why this check runs off-box."
+    alert "🔴 New nodes cannot join: no seed server accepts connections" \
+          "All $TOTAL seed servers refused a connection on port $PORT from outside:$DOWN . No new node can join the network. Nodes already running are unaffected, and each seed's own check may still look fine.
+What to do: check the PCoin node and the firewall on the seed servers named above.
+—
+tech: PCoin BOOTSTRAP DOWN: no seed accepts $PORT"
 elif [ -n "$DOWN" ]; then
-    alert "PCoin seed unreachable on $PORT (redundancy reduced)" \
-          "$UP of $TOTAL seeds still accept $PORT. Unreachable from outside:$DOWN . Bootstrap still works; fix before another one goes."
+    alert "🟡 A seed server is unreachable ($UP of $TOTAL still answer)" \
+          "$UP of $TOTAL seed servers still accept new nodes on port $PORT. Unreachable from outside:$DOWN . New nodes can still join.
+What to do: check the PCoin node and firewall on that server before another one goes.
+—
+tech: PCoin seed unreachable on $PORT (redundancy reduced)"
 else
     log "bootstrap ok: $NAME -> $(echo $IPS | tr '\n' ' '), $UP/$TOTAL seeds accept $PORT"
 fi

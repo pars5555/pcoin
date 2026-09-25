@@ -122,7 +122,9 @@ function instruction(item) {
   if (t.includes('stopped running')) {
     return 'The exchange has stopped refreshing its balance check. Look at its tick loop and its log.';
   }
-  return item.detail;
+  // No specific instruction: an 'info' item is a note, not a task, so say so
+  // rather than printing its description after "What to do:".
+  return item.sev === 'info' ? `nothing yet. ${item.detail}` : item.detail;
 }
 
 function render(items) {
@@ -144,21 +146,23 @@ function render(items) {
       // because these are the lines that cost money if skipped.
       lines.push('');
       lines.push(`*${n}. ${it.title}*`);
-      lines.push(`    ${instruction(it)}`);
+      lines.push(`    What to do: ${instruction(it)}`);
+      // A plain URL, not `code`: Telegram makes a bare link tappable and a
+      // code span not, and the whole point of this line is one tap.
       lines.push(ADMIN_URL
-        ? `    Where: *${label}*  →  \`${ADMIN_URL}${path}\``
-        : `    Where: *${label}*  (admin panel)`);
+        ? `    Where: ${label} → ${ADMIN_URL}${path}`
+        : `    Where: ${label} (admin panel)`);
     }
   };
 
-  block(actions, '\u{1F534} *DO THIS*');
-  block(checks,  '\u{1F7E1} *CHECK THIS*');
-  block(todo,    '\u{1F4DD} *ON THE LIST*');
+  block(actions, '\u{1F534} *Do this now*');
+  block(checks,  '\u{1F7E1} *Check when you can*');
+  block(todo,    '\u{1F4DD} *On the list (no hurry)*');
 
   lines.push('');
   lines.push('—');
-  lines.push('This is every open item in one place. It is re-sent when the list');
-  lines.push('changes, and repeated every ' + REMIND_HOURS + 'h while anything is still open.');
+  lines.push('Everything waiting on you, in one message. A new copy comes when the list');
+  lines.push('changes, and a reminder every ' + REMIND_HOURS + ' h while anything is still open.');
   return lines.join('\n').replace(/^\n+/, '');
 }
 
@@ -220,8 +224,8 @@ async function main() {
         ? st.titles.map(t => `• ${t}`).join('\n')
         : `the ${st.count || ''} item(s) in the message sent at `
           + `${st.at ? new Date(st.at * 1000).toISOString().slice(11, 16) + ' UTC' : 'the last run'}`;
-      const subject = 'PCoin: nothing needs you now';
-      const body = `Cleared since the last message:\n${was}\n\n—\n`
+      const subject = '\u{1F7E2} PCoin: nothing needs you now';
+      const body = `Done since the last message:\n${was}\nWhat to do: nothing.\n\n—\n`
         + 'The next message comes when something new needs you.';
       if (DRY) {
         console.log('--- DRY RUN, nothing sent ---');
@@ -256,9 +260,14 @@ async function main() {
   }
 
   const nAct = items.filter(i => i.sev === 'action').length;
+  const nWarn = items.filter(i => i.sev === 'warn').length;
+  // One item: its own title is the headline. Several: how many, and how urgent.
+  const only = items.length === 1 ? `: ${items[0].title}` : '';
   const subject = nAct
-    ? `PCoin: ${nAct} thing(s) need you to act`
-    : `PCoin: ${items.length} thing(s) to check`;
+    ? `\u{1F534} PCoin needs you${only || `: ${nAct} thing(s) to do now`}`
+    : nWarn
+      ? (only ? `\u{1F7E1} PCoin, please check${only}` : `\u{1F7E1} PCoin: ${items.length} thing(s) to check`)
+      : (only ? `\u{1F7E2} PCoin, no hurry${only}` : `\u{1F7E2} PCoin: ${items.length} thing(s) on the list, no hurry`);
   const body = render(items);
 
   if (DRY) {

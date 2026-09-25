@@ -164,17 +164,38 @@ export function makePriceWatch({ pool, ladder, notify, log = console }) {
       if (dSold < 0 || dRetired < 0) causes.push(`⚠️ counters went DOWN — the ladder was edited or rebuilt`);
     }
 
-    const dir = now.price === null ? '🔚'
-              : pct === null ? '📊'
-              : pct > 0 ? '📈' : '📉';
+    // House style: severity colour and a plain headline first, then what it
+    // means, then "What to do", then the exact figures for whoever checks.
+    // 🟢 an ordinary move; 🟡 the move came with a warning (an edit, a
+    // mismatch with the payment ledger); 🔴 nothing is left to sell.
+    const warned = causes.some(c => c.includes('⚠️'));
+    const sev = now.price === null ? '🔴' : warned ? '🟡' : '🟢';
+    const way = pct === null ? '' : pct > 0 ? ' up' : ' down';
+    const pctTxt = pct === null ? '' : ` ${Math.abs(pct).toFixed(2)}%`;
+    const short = n => (n === null || n === undefined ? 'unknown'
+      : '$' + Number(n).toFixed(6).replace(/0+$/, '').replace(/\.$/, ''));
+    const premium = Number(st.premiumPct) || 0;
+    const what = now.price === null
+      ? `<b>market.pc.am has nothing left to sell.</b>`
+      : indexMode
+        ? `market.pc.am now sells PCN at <b>${short(now.price)}</b>` +
+          (st.index && st.index.usd != null
+            ? ` = the PCN price ${short(st.index.usd)}${premium ? ` + its ${premium}% markup` : ''}` : '') +
+          `. Sales do not move it; only the PCN price does.`
+        : `market.pc.am now sells PCN from <b>${short(now.price)}</b>. Why it moved:\n` +
+          causes.map(c => `• ${c}`).join('\n');
+    const todo = now.price === null ? 'refill the ladder, or turn sales off until you do.'
+      : warned ? 'look at the warning above -- the ladder was changed by something other than a sale.'
+      : 'nothing.';
 
     await notify(
-      `${dir} <b>${indexMode ? 'Market' : 'Ladder'} price moved</b>\n` +
-      `${money(last.price)} → <b>${money(now.price)}</b>` +
-      (pct === null ? '' : `  (${pct > 0 ? '+' : ''}${pct.toFixed(2)}%)`) + `\n` +
-      causes.map(c => `• ${c}`).join('\n') + `\n` +
-      `${pcn(now.remaining)} PCN left on the ladder` +
-      (now.price === null ? `\n<b>The ladder is empty — there is nothing left to sell.</b>` : '')
+      `${sev} <b>${indexMode ? 'Market' : 'Ladder'} price moved${way}${pctTxt}</b>: ` +
+      `${short(last.price)} → ${short(now.price)}\n` +
+      what + `\n` +
+      `${pcn(now.remaining)} PCN left to sell.\n` +
+      `What to do: ${todo}\n` +
+      `<i>tech: ${money(last.price)} → ${money(now.price)}` +
+      (indexMode ? `; ${causes.join('; ')}` : '') + `</i>`
     ).catch(e => log.warn('[pricewatch] alert failed:', e.message));
 
     // Written only AFTER the alert is attempted. If this process dies between

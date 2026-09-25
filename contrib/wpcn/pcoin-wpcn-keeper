@@ -279,6 +279,15 @@ NAG_SECONDS = int(os.environ.get("KEEPER_NAG_SECONDS", 21600))  # 6 hours
 FEE_NUM, FEE_DEN = 9975, 10000                                  # PancakeSwap 0.25%
 
 
+def md_plain(text):
+    """Escape the four characters that start Markdown in pcoin-notify's send.
+
+    Setting names like daily_usdt_cap carry underscores, and one unpaired
+    underscore makes Telegram refuse the message -- pcoin-notify then resends
+    it as plain text, so it still arrives, just without the bold headline."""
+    return "".join("\\" + c if c in "_*`[" else c for c in str(text))
+
+
 def notify(subject, body):
     if not os.path.exists(NOTIFY):
         print(f"[no notifier] {subject}\n{body}")
@@ -625,11 +634,13 @@ def main() -> int:
     # nobody chose, which is worse than not trading at all.
     if TUNING_ERROR:
         write_effective()
-        notify_throttled("tuning_broken", "keeper: TUNING FILE IS BROKEN -- not trading",
-                         f"{TUNING_ERROR}\n\nThe keeper will not trade until this is "
-                         f"fixed. It has NOT fallen back to defaults: running a bot that "
-                         f"spends money on settings nobody chose is worse than it standing "
-                         f"still. Fix or delete {TUNING_FILE}.")
+        notify_throttled("tuning_broken", "\U0001F534 wPCN keeper stopped: its settings file is broken",
+                         "The keeper that holds the wPCN pool next to the PCN price is not "
+                         "trading, because its settings file cannot be read. It will not guess "
+                         "settings nobody chose.\n"
+                         "What to do: fix it in the admin panel (Keeper settings), or delete the "
+                         "file to go back to the defaults.\n"
+                         f"\u2014\ntech: {md_plain(TUNING_ERROR)} ({md_plain(TUNING_FILE)})")
         print(f"REFUSING: {TUNING_ERROR}", file=sys.stderr)
         return 2
 
@@ -667,17 +678,21 @@ def main() -> int:
         write_effective({"anchor": anchor, "hold": why, "index": pinfo.get("index")})
         if anchor == "index":
             notify_throttled("index_unusable",
-                   "keeper: PCN index unusable -- not trading",
-                   f"{why}.\n\nanchor_index is on, so the keeper aims at the PCN index "
-                   f"and at nothing else. An index it cannot use is UNKNOWN: it holds, "
-                   f"and it does NOT fall back to the ladder price. It resumes by itself "
-                   f"on the first run that reads a fresh live, held or frozen index.")
+                   "\U0001F7E1 wPCN keeper paused: it cannot read the PCN price",
+                   "The keeper aims the wPCN pool at the PCN price only, and that price is "
+                   "unreadable or unknown right now, so it is not trading. It starts again by "
+                   "itself as soon as the price is back.\n"
+                   "What to do: nothing, unless the PCN price stays unknown -- then look at "
+                   "admin.pc.am, Exchange, PCN index.\n"
+                   f"\u2014\ntech: PCN index unusable: {md_plain(why)}")
             print(f"UNVERIFIED: {why} -- holding, nothing traded")
         else:
             notify_throttled("posted_unreadable",
-                   "keeper: price.pc.am unreadable",
-                   "Could not read the posted rate, so the target price is UNKNOWN. "
-                   "Not trading. This is a hold, not a decision that the pool is fine.")
+                   "\U0001F7E1 wPCN keeper paused: price.pc.am unreadable",
+                   "It could not read the PCN price from price.pc.am, so it does not know what "
+                   "to aim at and is not trading. This is a pause, not a sign the pool is fine.\n"
+                   "What to do: nothing if it clears; if it lasts, check that price.pc.am loads.\n"
+                   f"\u2014\ntech: posted rate unreadable: {md_plain(why)}")
             print(f"UNVERIFIED: posted rate unreadable ({why}) -- holding")
         return 2
 
@@ -700,8 +715,11 @@ def main() -> int:
             w_res, u_res = r1 / 1e8, r0 / 10 ** USDT_DECIMALS
     except Exception as e:
         notify_throttled("pool_unreadable",
-               "keeper: pool unreadable",
-               f"getReserves() failed: {e}\nNot trading. UNKNOWN, not 'no gap'.")
+               "\U0001F7E1 wPCN keeper paused: it cannot read the pool",
+               "It could not read the PancakeSwap wPCN/USDT pool, so it does not know the "
+               "pool price and is not trading.\n"
+               "What to do: nothing if it clears; it usually is a BSC node hiccup.\n"
+               f"\u2014\ntech: getReserves() failed: {md_plain(e)}")
         print(f"UNVERIFIED: pool unreadable: {e}")
         return 2
 
@@ -742,10 +760,11 @@ def main() -> int:
     ratio = max(pool, posted) / min(pool, posted)
     if ratio > SANITY_RATIO:
         notify_throttled("implausible_gap",
-               "keeper: IMPLAUSIBLE GAP -- holding",
-               f"pool ${pool:.8f} vs posted ${posted:.8f} ({ratio:.1f}x apart).\n"
-               f"That is more likely a broken price feed than a real market, so "
-               f"nothing was traded. Check price.pc.am and the pair by hand.")
+               "\U0001F534 wPCN keeper stopped: pool and PCN price are %.1fx apart" % ratio,
+               f"The pool says ${pool:.6f} and the PCN price is ${posted:.6f}. A gap that big is "
+               f"more likely a broken price feed than a real market, so it traded nothing.\n"
+               f"What to do: compare price.pc.am with the pool on PancakeSwap by hand.\n"
+               f"\u2014\ntech: pool ${pool:.8f} vs posted ${posted:.8f} (sanity ratio {SANITY_RATIO})")
         print(f"HOLD: gap {ratio:.1f}x exceeds sanity ratio {SANITY_RATIO}")
         return 1
 
@@ -817,14 +836,14 @@ def main() -> int:
         # and it is worth saying once, not every ten minutes -- notify_throttled
         # reports the onset and the clearing, never the persistence.
         notify_throttled("floor_defence",
-               "keeper: DEFENDING THE $%.4f FLOOR" % buy_target,
-               f"pool ${pool:.8f} has fallen to {buy_gap*100:+.2f}% of the "
-               f"${buy_target:.8f} floor, so the keeper is buying wPCN back up to "
-               f"it.\nThe {anchor} is ${posted:.8f}; everything above the floor was "
-               f"left alone deliberately.\nThis spends the USDT float. Watch it: "
-               f"when it is gone nothing holds the floor IN THE POOL, and only "
-               f"the code floors (rateFloorUsd, ladderMinPriceUsd) still hold "
-               f"what PCN itself is credited and sold at.")
+               "\U0001F7E1 wPCN keeper is defending the $%.4f floor" % buy_target,
+               f"The wPCN pool fell to ${pool:.6f} ({buy_gap*100:+.2f}% against the ${buy_target:.4f} "
+               f"floor), so the keeper is buying wPCN to lift it back. The PCN price is "
+               f"${posted:.6f}; above the floor it leaves the pool alone on purpose.\n"
+               f"This spends the keeper's USDT. When that runs out, nothing holds the floor "
+               f"in the pool (PCN itself is still never credited or sold below it).\n"
+               f"What to do: watch the keeper's USDT; top it up if you want the floor held.\n"
+               f"\u2014\ntech: pool ${pool:.8f}, floor ${buy_target:.8f}, {anchor} ${posted:.8f}")
     # The budget, per-run cap included, is `run_budget()` -- pure, and tested
     # in test_keeper_anchor.py.
     if buying:
@@ -872,13 +891,17 @@ def main() -> int:
         else:
             why = "nothing to trade"
             fix = "No action: the gap is already inside the dead band."
+        plain_why = {"daily cap reached": "today's spending limit is used up",
+                     f"{need_label} float at or below floor": f"it has run out of {need_label}",
+                     f"max_{unit.lower()}_per_run is 0": f"its per-run {unit} limit is set to 0",
+                     "nothing to trade": "nothing needs trading"}.get(why, why)
         notify_throttled("blocked",
-               f"keeper: cannot close the gap -- {why}",
-               f"pool ${pool:.8f} vs posted ${posted:.8f} ({gap*100:+.2f}%).\n"
-               f"Needs {want:,.4f} {unit}, none available: {why}.\n"
-               f"cap: {cap_txt}\n"
-               f"floor: {floor_txt}\n"
-               f"{fix}")
+               f"\U0001F7E1 wPCN keeper cannot hold the price: {plain_why}",
+               f"The pool is at ${pool:.6f}, {gap*100:+.2f}% against the PCN price ${posted:.6f}. "
+               f"Closing that needs {want:,.2f} {unit}, and the keeper cannot spend it: {plain_why}.\n"
+               f"Customers affected: no -- only the pool price drifts.\n"
+               f"What to do: {md_plain(fix)}\n"
+               f"\u2014\ntech: {md_plain(why)}; cap {md_plain(cap_txt)}; {md_plain(floor_txt)}")
         print(f"BLOCKED: {why}  (cap: {cap_txt}; {floor_txt})")
         return 1
 
@@ -946,15 +969,17 @@ def main() -> int:
         w2, u2 = r1 / 1e8, r0 / 10 ** USDT_DECIMALS
     after = u2 / w2
     print(f"\npool ${pool:.8f} -> ${after:.8f}  (target ${target:.8f})")
-    notify("keeper: traded",
-           (f"Spent {budget:,.6f} USDT buying wPCN." if buying
-            else f"Sold {budget:,.6f} wPCN for USDT.") + "\n"
-           f"pool ${pool:.8f} -> ${after:.8f}, target ${target:.8f}, "
-           f"{anchor} ${posted:.8f}\n"
-           + (f"A {budget:,.2f} {unit} step, held there by the per-run cap: the next "
-              f"run re-reads the pool and carries on only if the gap is still there.\n"
-              if bound_by == "per-run cap" else "")
-           + f"float before this trade {have_usdt:,.4f} USDT / {have_wpcn:,.2f} wPCN.")
+    notify(("\U0001F7E2 wPCN keeper bought wPCN for %s USDT" % f"{budget:,.2f}") if buying
+           else ("\U0001F7E2 wPCN keeper sold %s wPCN" % f"{budget:,.2f}"),
+           ("It bought wPCN on PancakeSwap" if buying else "It sold wPCN on PancakeSwap")
+           + f" to keep the pool next to the PCN price: pool ${pool:.6f} -> ${after:.6f} "
+           f"(aiming at ${target:.6f}).\n"
+           + (f"That was its per-run limit; the next run re-reads the pool and carries on "
+              f"only if the gap is still there.\n" if bound_by == "per-run cap" else "")
+           + f"Its money before this trade: {have_usdt:,.2f} USDT and {have_wpcn:,.2f} wPCN.\n"
+           "What to do: nothing.\n"
+           f"\u2014\ntech: {'spent' if buying else 'sold'} {budget:,.6f} {unit}; pool ${pool:.8f} -> "
+           f"${after:.8f}, target ${target:.8f}, {anchor} ${posted:.8f}")
     return 0
 
 
