@@ -875,9 +875,11 @@ const qrFor = (text) => {
   try { return `<div class="qr">${qrSvg(text, { scale: 5, margin: 2 })}</div>`; } catch { return ''; }
 };
 
-// Copy buttons: any element with data-copy. Falls back to a prompt the reader can
-// copy from, because a clipboard API that is refused must not lose the address.
-const COPY_JS = `document.addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('[data-copy]');if(!b)return;var t=b.getAttribute('data-copy');var done=function(){var o=b.textContent;b.textContent='Copied';setTimeout(function(){b.textContent=o;},1400);};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(done,function(){window.prompt('Copy this:',t);});}else{window.prompt('Copy this:',t);}});`;
+// Copy buttons: any element with data-copy. If the clipboard API is refused it tries
+// the older copy command, then shows the text selected in a box under the button --
+// never the browser's prompt() (owner, 2026-09-25: no alert or prompt JS), and never
+// losing the address.
+const COPY_JS = `document.addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('[data-copy]');if(!b)return;var t=b.getAttribute('data-copy');var done=function(){var o=b.textContent;b.textContent='Copied';setTimeout(function(){b.textContent=o;},1400);};var fallback=function(){var a=document.createElement('textarea');a.value=t;a.setAttribute('readonly','');a.style.position='fixed';a.style.opacity='0';document.body.appendChild(a);a.select();var ok=false;try{ok=document.execCommand('copy');}catch(x){}document.body.removeChild(a);if(ok){done();return;}var n=b.nextElementSibling;var box=(n&&n.classList&&n.classList.contains('copy-fallback'))?n:null;if(!box){box=document.createElement('input');box.className='copy-fallback';box.readOnly=true;box.style.cssText='display:block;width:100%;margin-top:6px;font-family:ui-monospace,monospace;font-size:13px;padding:6px 8px;border-radius:6px';b.insertAdjacentElement('afterend',box);}box.value=t;box.focus();box.select();var o=b.textContent;b.textContent='Copy it from the box below';setTimeout(function(){b.textContent=o;},2500);};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(done,fallback);}else{fallback();}});`;
 
 // ── one-click "add wPCN to my wallet" (EIP-747) ──────────────────────────────
 // wPCN is on no token list, so every wallet treats it as unknown and every user
