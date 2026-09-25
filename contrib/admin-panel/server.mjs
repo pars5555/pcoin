@@ -52,6 +52,7 @@ import { needsYou, needsYouCard } from './needs-you.mjs';
 import { programsPage, programsData, programsAction } from './programs.mjs';
 import { reportsPage, loadReports, saveReports, answeredReplies } from './reports.mjs';
 import { cachedVerdicts, verdictCell, vtKey } from './virustotal.mjs';
+import { CONFIRM_CSS, CONFIRM_JS } from './confirm-modal.mjs';
 
 const PORT   = Number(process.env.ADMIN_PORT || 8795);
 const PREFIX = (process.env.ADMIN_PREFIX || '').replace(/^\/*|\/*$/g, '');
@@ -374,7 +375,9 @@ color:var(--muted);white-space:nowrap}
 details>summary{list-style:none}details>summary::-webkit-details-marker{display:none}
 @media(max-width:760px){.layout{flex-direction:column}.sidebar{width:100%}
 .main{padding:20px 16px}.logout-btn{top:20px;right:16px}}
+${CONFIRM_CSS}
 </style>
+<script>${CONFIRM_JS}</script>
 <script>
 /* LIVE FILTERING. Owner, 2026-09-20: "when i change the sorting it should sort
    instantly i should not click on filter button ... even search no need".

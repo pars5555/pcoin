@@ -569,8 +569,9 @@ function workCard(w) {
   const isTest = (i) => /TEST WRAP/.test(String(i.title || ''));
   const sendForm = (i) => (i.kind !== 'send' || !i.key ? '' :
     `<form method="post" style="margin-top:10px"`
-    + ` onsubmit="return confirm('${reqNo(i) ? `Request ${esc(reqNo(i))}: s` : 'S'}end ${esc(amountOf(i) || '')} wPCN from the keeper`
-    + ` now? This moves real money and cannot be undone.')">`
+    + ` data-danger data-confirm-ok="Send ${esc(amountOf(i) || '')} wPCN"`
+    + ` data-confirm="${reqNo(i) ? `Request ${esc(reqNo(i))}: s` : 'S'}end ${esc(amountOf(i) || '')} wPCN from the keeper`
+    + ` now? This moves real money and cannot be undone.">`
     + `<input type="hidden" name="action" value="send">`
     + `<input type="hidden" name="key" value="${esc(i.key)}">`
     + `<button style="background:var(--accent,#2dd4bf);color:#0b1020;border:0;`
@@ -614,8 +615,9 @@ function workCard(w) {
     const amt = String(Number(f.pcn));
     return summary
       + `<form method="post" style="margin-top:8px"`
-      + ` onsubmit="return confirm('${reqNo(i) ? `Request ${esc(reqNo(i))}: r` : 'R'}efund ${esc(amt)} PCN to ${esc(f.sender)} from the market wallet now? `
-      + `This moves real money and cannot be undone.')">`
+      + ` data-danger data-confirm-ok="Refund ${esc(amt)} PCN"`
+      + ` data-confirm="${reqNo(i) ? `Request ${esc(reqNo(i))}: r` : 'R'}efund ${esc(amt)} PCN to ${esc(f.sender)} from the market wallet now? `
+      + `This moves real money and cannot be undone.">`
       + `<input type="hidden" name="action" value="refund">`
       + `<input type="hidden" name="key" value="${esc(i.key)}">`
       + `<button style="background:var(--yellow);color:#0b1020;border:0;border-radius:999px;`
@@ -643,8 +645,8 @@ function workCard(w) {
     + `font-weight:700;list-style:none">`
     + `&#8617; Refund PCN instead &mdash; tap to open</summary>`
     + `<form method="post" style="margin-top:8px"`
-    + ` onsubmit="return confirm('Send this PCN back from the market wallet now? `
-    + `This moves real money and cannot be undone.')">`
+    + ` data-danger data-confirm-ok="Send it back" data-confirm="Send this PCN back from the market wallet now? `
+    + `This moves real money and cannot be undone.">`
     + `<input type="hidden" name="action" value="refund">`
     + `<input type="hidden" name="key" value="${esc(i.key)}">`
     + `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">`
