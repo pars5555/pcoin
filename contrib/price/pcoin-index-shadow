@@ -128,8 +128,20 @@ def digest(now):
     hist = get(HISTORY) or {}
     moves = [pt for pt in (hist.get("points") or []) if pt.get("seq") not in (None, 0)]
     last = rows[-1] if rows else {}
+    # Step 4 puts the rails on the index (price.pc.am useIndex = 1), after which
+    # "nothing uses it yet" would be a false line in a message the owner reads
+    # every morning. Read from the live feed; an unreadable feed is its own
+    # answer, never "shadow" by default.
+    pb = get(PRICE)
+    in_use = ((pb.get("index") or {}).get("inUse")) if isinstance(pb, dict) else None
+    if in_use is True:
+        title = "PCN index -- IN USE: the rails credit at it (day %d since the shadow began)" % day
+    elif in_use is False:
+        title = "PCN index -- shadow day %d of 7 (nothing uses it yet)" % day
+    else:
+        title = "PCN index -- day %d (could not read whether the rails use it)" % day
     lines = [
-        "PCN index -- shadow day %d of 7 (nothing uses it yet)" % day,
+        title,
         "",
         "Index: %s -> %s, low %s, high %s" % (usd(known[0] if known else None), usd(known[-1] if known else None),
                                               usd(min(known) if known else None), usd(max(known) if known else None)),

@@ -2,7 +2,9 @@
 // Every refusal in index-relay.mjs is proved to FIRE here, and every healthy
 // reading is proved to pass: a guard only ever seen passing is untested.
 import assert from 'node:assert/strict';
-import { INDEX_RULES, validateIndexBody, confirmTwice, speedCheck, remember } from './index-relay.mjs';
+import { INDEX_RULES, validateIndexBody, confirmTwice, speedCheck, remember,
+         indexUsable, rateFromIndex, switchCheck, indexLadder, indexNote } from './index-relay.mjs';
+import { loadConsumers, fetchOf, PCNAIBOT_BOUNDS, EXCHANGE_STALE_SECONDS } from './test-consumers.mjs';
 
 const NOW = 1790250000;
 const body = (o = {}) => ({
@@ -145,4 +147,164 @@ check('remember keeps every change, one point per 10 min otherwise, and 25 h at 
 });
 
 assert.equal(INDEX_RULES.floorUsd, 0.015);
+
+// ── Step 4: the credit rate IS the index ───────────────────────────────────
+console.log('  -- step 4 (useIndex = 1)');
+
+check('the exchange\'s published caps are relayed, and odd ones become null rather than a guess', () => {
+  const v = validateIndexBody(body({ rules: { perTradePct: 2, perDayPct: 5, bandPct: 25, floorUsd: '0.015000000' } }), { nowS: NOW });
+  assert.deepEqual(v.reading.rules, { perTradePct: 2, perDayPct: 5 });
+  assert.equal(validateIndexBody(body(), { nowS: NOW }).reading.rules, null, 'absent');
+  assert.deepEqual(validateIndexBody(body({ rules: { perTradePct: '2', perDayPct: 500 } }), { nowS: NOW }).reading.rules,
+    { perTradePct: null, perDayPct: null }, 'a string or an absurd value is not a cap');
+});
+
+// The published block, as server.mjs indexBlock() builds it.
+const block = (o = {}) => ({ usd: 0.027335212, state: 'held', seq: 0, ageSeconds: 14, stale: false,
+  lastMoveAt: null, window: null, limitedBy: [], reasons: [], refused: null, inUse: true,
+  source: 'https://exchange.pc.am/api/index', ...o });
+
+check('a usable index is fresh AND priced; unknown, disabled, stale and absent are not', () => {
+  for (const state of ['held', 'live', 'frozen']) assert.equal(indexUsable(block({ state })), true, state);
+  assert.equal(indexUsable(block({ stale: true, ageSeconds: 668 })), false, 'stale (the live state on 2026-09-25)');
+  assert.equal(indexUsable(block({ state: 'unknown', usd: null, seq: null })), false, 'a FRESH unknown still holds');
+  assert.equal(indexUsable(block({ state: 'disabled', usd: null, seq: null })), false);
+  assert.equal(indexUsable(block({ state: 'unknown' })), false, 'a no-price state is unusable even with a number attached');
+  assert.equal(indexUsable(null), false);
+  assert.equal(indexUsable(block({ stale: undefined })), false, 'stale must be literally false');
+  assert.equal(indexUsable(block({ usd: 0 })), false);
+});
+
+check('the credit rate is the index, clamped to the floor and the ceiling -- the ceiling winning', () => {
+  const b = { floorUsd: 0.015, ceilingUsd: 10 };
+  assert.equal(rateFromIndex(0.027335212, b), 0.027335212, 'in range: the index itself, to the last digit');
+  assert.equal(rateFromIndex(0.012, b), 0.015, 'below the floor');
+  assert.equal(rateFromIndex(0.05, { floorUsd: 0.015, ceilingUsd: 0.02 }), 0.02, 'above the ceiling');
+  assert.equal(rateFromIndex(0.05, { floorUsd: 0.03, ceilingUsd: 0.02 }), 0.02, 'crossed bounds: the ceiling wins, as in the walk');
+  assert.equal(rateFromIndex(0.027, { floorUsd: 0.015, ceilingUsd: 0 }), 0.027, 'a zero ceiling is no ceiling, never a zero rate');
+  for (const x of [null, undefined, NaN, 0, -1, '0.02']) assert.equal(rateFromIndex(x, b), null, String(x));
+});
+
+check('the switch refuses a stale, unknown, absent or refused index -- even when forced', () => {
+  const args = { serviceRate: 0.027335, sellPriceUsd: 0.0282, force: true };
+  assert.match(switchCheck({ ...args, block: block({ stale: true, ageSeconds: 668 }) }).why, /stale/);
+  assert.match(switchCheck({ ...args, block: block({ state: 'unknown', usd: null }) }).why, /"unknown"/);
+  assert.match(switchCheck({ ...args, block: null }).why, /never had an index reading/);
+  assert.match(switchCheck({ ...args, block: block({ refused: { why: 'moved 9%' } }) }).why, /refusing the latest/);
+});
+
+check('the switch refuses a gap of 0.5% or more, unless forced', () => {
+  // 2026-09-25 11:16 UTC, live: creditRateUsd 0.026748145, index 0.027335212 -> 2.148%.
+  const live = switchCheck({ block: block(), serviceRate: 0.026748145216180963, sellPriceUsd: 0.0282 });
+  assert.equal(live.ok, false); assert.match(live.why, /2\.148% from the index/); assert.equal(live.gapPct, 2.1477);
+  const at = (rate) => switchCheck({ block: block({ usd: 0.02 }), serviceRate: rate, sellPriceUsd: 0.03 });
+  assert.equal(at(0.02 * 1.0049).ok, true, '0.49% above');
+  assert.equal(at(0.02 * 0.9951).ok, true, '0.49% below');
+  // Not the exact 0.5% point: 0.02 x 1.005 is 0.4999...% in binary floating point.
+  assert.equal(at(0.02 * 1.0051).ok, false, '0.51% above');
+  assert.equal(at(0.02 * 0.9949).ok, false, '0.51% below');
+  assert.equal(at(NaN).ok, false, 'an unknown rate is not a small gap');
+  const forced = switchCheck({ block: block(), serviceRate: 0.026748145, sellPriceUsd: 0.0282, force: true });
+  assert.equal(forced.ok, true); assert.equal(forced.forced, true);
+});
+
+check('the switch refuses while market.pc.am sells BELOW the index, unless forced', () => {
+  // Also the live case: the market curve sat at 0.026748 under an index of 0.027335.
+  const under = switchCheck({ block: block(), serviceRate: 0.027335, sellPriceUsd: 0.026748145 });
+  assert.equal(under.ok, false); assert.match(under.why, /below the index/);
+  assert.equal(switchCheck({ block: block(), serviceRate: 0.027335, sellPriceUsd: null }).ok, false, 'unknown sell price');
+  assert.equal(switchCheck({ block: block(), serviceRate: 0.027335, sellPriceUsd: 0.027335212 }).ok, true, 'equal is allowed');
+  assert.equal(switchCheck({ block: block(), serviceRate: 0.027335, sellPriceUsd: 0.028155268 }).ok, true, 'index x 1.03 (Step 3)');
+});
+
+check('the ladder compatibility block: price = sellPriceUsd, clock and stale flag = the index', () => {
+  const l = indexLadder({ block: block(), sellPriceUsd: 0.028155268, soldPcn: 38571.36624107, remainingPcn: 16387.70607446 });
+  assert.deepEqual(l, { price: 0.028155268, soldPcn: 38571.36624107, remainingPcn: 16387.70607446, ageSeconds: 14, stale: false });
+  assert.equal(indexLadder({ block: block({ stale: true, ageSeconds: 668 }), sellPriceUsd: 1 }).stale, true);
+  assert.equal(indexLadder({ block: block({ state: 'unknown', usd: null }), sellPriceUsd: 1 }).stale, true,
+    'a fresh unknown is stale HERE, so every rail that honours ladder.stale holds');
+  assert.deepEqual([indexLadder({ block: null, sellPriceUsd: 1 }).stale, indexLadder({ block: null, sellPriceUsd: 1 }).ageSeconds], [true, null]);
+});
+
+check('the index-mode note: what the price is, its caps, floor and ceiling -- and no exit', () => {
+  const note = indexNote({ floorUsd: 0.015, rules: { perTradePct: 2, perDayPct: 5 }, maxAgeS: 600, buybackOpen: false });
+  for (const re of [/volume-weighted median/, /user-to-user trades on exchange\.pc\.am/, /at most 2% per trade and 5% in 24 hours/,
+                    /floor of \$0\.0150/, /ceiling of \$0\.10/, /more than 10 minutes old/, /503/,
+                    /ladder block is kept only so older integrations keep working/, /not buying PCN back/]) {
+    assert.match(note, re);
+  }
+  // Never advertise wrapping and selling as the way out (plan §0; the Phase 2
+  // note was fixed for exactly this).
+  for (const re of [/wrapdesk/i, /redeem/i, /way out/i, /sell (the|that|on) pool/i, /`/]) assert.doesNotMatch(note, re);
+  const bare = indexNote({ floorUsd: 0.015, rules: null, maxAgeS: 600 });
+  assert.match(bare, /in capped steps/); assert.doesNotMatch(bare, /\d% per trade/, 'no rules relayed: no invented figures');
+});
+
+// ── the contract: what the rails and the exchange will actually do with it ──
+// A synthetic index-mode body, built in the server's exact key order from the
+// same helpers server.mjs calls, with today's live figures (2026-09-25 11:16
+// UTC). server-test.mjs then runs the REAL server and checks its real body.
+const { validateRateBody, RateInsane, fetchSellPrice, exchangeSource } = await loadConsumers();
+console.log(`  -- contract (exchange fetchSellPrice: ${exchangeSource})`);
+
+function indexModeBody({ ix = block(), sellPriceUsd = 0.028155268, pool = { spotUsd: 0.0272, medianUsd: 0.02675, windowHours: 6, samples: 2000, ageSeconds: 59, rateHeldAboveBy: null } } = {}) {
+  const rate = 0.027335212;   // serviceRate, as pollIndex() set it from the index
+  return {
+    price: sellPriceUsd, serviceRate: rate, creditRateUsd: rate, sellPriceUsd,
+    rateFieldToUse: 'creditRateUsd', rateFollowsPoolDown: false, rateFloorUsd: 0.015, pool, index: ix,
+    currency: 'USD', buybackOpen: false, buybackPrice: null, buybackRemainingToday: 0,
+    ladder: indexLadder({ block: ix, sellPriceUsd, soldPcn: 38571.36624107, remainingPcn: 16387.70607446 }),
+    note: indexNote({ floorUsd: 0.015, rules: { perTradePct: 2, perDayPct: 5 }, maxAgeS: 600, buybackOpen: false }),
+    role: 'replica', stale: false, stateAgeSeconds: 5, at: new Date().toISOString(),
+  };
+}
+const text = (o) => JSON.stringify(o, null, 2);   // exactly how server.mjs json() serialises
+const LEGACY_RATE = { rate: 0.026748145216180963 }; // pcnaibot's last accepted, before the switch
+let pending = 0;
+const acheck = async (name, fn) => { await fn(); n += 1; pending += 1; console.log('  ok  ', name); };
+
+await acheck('pcnaibot\'s REAL validateRateBody accepts the index-mode body and credits the index', async () => {
+  const r = validateRateBody(text(indexModeBody()), PCNAIBOT_BOUNDS, LEGACY_RATE);
+  assert.equal(r.rate, 0.027335212); assert.equal(r.rateText, '0.027335212');
+  assert.equal(r.rateE12, 27335212000n, 'floor-quantised from the TEXT, as the rail credits it');
+  assert.equal(r.fieldUsed, 'creditRateUsd'); assert.equal(r.fieldNamed, 'creditRateUsd'); assert.equal(r.diverged, false);
+});
+
+await acheck('...and does not need the pool once rateFollowsPoolDown is false (the sampler may die)', async () => {
+  assert.equal(validateRateBody(text(indexModeBody({ pool: null })), PCNAIBOT_BOUNDS, LEGACY_RATE).rate, 0.027335212);
+});
+
+await acheck('...and REFUSES a stale or unknown index through ladder.stale -- it holds, it never credits the last number', async () => {
+  for (const ix of [block({ stale: true, ageSeconds: 668 }), block({ state: 'unknown', usd: null, seq: null })]) {
+    assert.throws(() => validateRateBody(text(indexModeBody({ ix })), PCNAIBOT_BOUNDS, LEGACY_RATE),
+      (e) => e instanceof RateInsane && /ladder\.stale is true/.test(e.reason));
+  }
+  assert.throws(() => validateRateBody(text(indexModeBody({ ix: null })), PCNAIBOT_BOUNDS, LEGACY_RATE),
+    (e) => e instanceof RateInsane && /ladder\.ageSeconds is absent/.test(e.reason), 'no index at all');
+});
+
+await acheck('the exchange\'s fetchSellPrice accepts it: stale false, ladder.stale false, sellPriceUsd > 0, fresh `at`', async () => {
+  const r = await fetchSellPrice({ url: 'http://x/', fetchImpl: fetchOf(text(indexModeBody())), staleSeconds: EXCHANGE_STALE_SECONDS, attempts: 1 });
+  assert.equal(r.usable, true, r.reason); assert.equal(r.kind, 'ok');
+  assert.equal(r.sellPriceUsd, '0.028155268', 'the market price, not the credit rate');
+});
+
+await acheck('...and pulls the bots (kind "bad") when the index is stale or unknown', async () => {
+  for (const ix of [block({ stale: true, ageSeconds: 668 }), block({ state: 'unknown', usd: null, seq: null })]) {
+    const r = await fetchSellPrice({ url: 'http://x/', fetchImpl: fetchOf(text(indexModeBody({ ix }))), staleSeconds: EXCHANGE_STALE_SECONDS, attempts: 1 });
+    assert.equal(r.usable, false); assert.equal(r.kind, 'bad'); assert.match(r.reason, /ladder\.stale/);
+  }
+});
+
+await acheck('every other rail\'s field reads the index: creditRateUsd, serviceRate, and the fallbacks they use', async () => {
+  const j = JSON.parse(text(indexModeBody()));
+  assert.equal(j.rateFieldToUse, 'creditRateUsd');
+  assert.equal(j.creditRateUsd, j.index.usd);
+  assert.equal(Number(j.creditRateUsd ?? j.serviceRate), 0.027335212, 'wpcn-pay: creditRateUsd ?? serviceRate');
+  assert.equal(Number(j.serviceRate), 0.027335212, 'webai, the pc.am web app, payment-report: serviceRate');
+  assert.equal(Number(j.serviceRate ?? j.price), 0.027335212, 'pcnearner: serviceRate ?? price');
+  assert.equal(j.rateFollowsPoolDown, false);
+});
+
+assert.equal(pending, 6);
 console.log(`ALL ${n} CHECKS PASSED`);

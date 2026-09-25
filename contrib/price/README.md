@@ -151,7 +151,8 @@ Two changes close it:
 | `GET /quote/buy?usd=` `GET /quote/sell?pcn=` | AMM quotes — `sell` is the live buyback |
 | `GET /history` | recent curve movements |
 | `POST /execute` | move the curve. **Primary only**, admin token |
-| `POST /admin/state` | set curve and damping parameters. **Primary only**, admin token |
+| `POST /admin/state` | set curve and damping parameters. **Primary only**, admin token. `{"useIndex":1}` makes the credit rate the PCN index (price plan Step 4) and is **refused** unless the index is fresh and priced, the walk is within 0.5% of it and market.pc.am sells at or above it (`"force": true` skips the last two); `{"useIndex":0}` is the rollback |
+| `POST /admin/index/accept` | accept a deliberately re-seeded index as the new baseline. **Primary only**, admin token |
 | `POST /admin/retune` | force one `serviceRate` step now — refreshes the ladder first, then applies the clamp and ceiling. **Primary only**, admin token |
 
 `/admin/retune` is the operator's throttle for the walk. It bypasses the

@@ -30,6 +30,11 @@
 // but is damped and capped: every mined coin is a claim on those services, so
 // letting an unbounded curve set that number would let a price spike multiply a
 // liability nobody paid for. Damping is the seatbelt.
+//
+// UNLESS `useIndex` IS 1 (price plan Phase 3 Step 4). Then serviceRate is the
+// PCN index -- the capped median of exchange.pc.am user-to-user fills, relayed
+// and re-checked below -- and the walk is off. The damping then lives in the
+// index's own caps (2% a fill, 5% a day) and in this side's speed check.
 
 import { createServer } from 'node:http';
 import { request as httpsRequest, Agent as HttpsAgent } from 'node:https';
@@ -37,7 +42,8 @@ import { readFileSync, writeFileSync, existsSync, renameSync,
          openSync, closeSync, fsyncSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { timingSafeEqual, createHash, X509Certificate } from 'node:crypto';
-import { validateIndexBody, confirmTwice, speedCheck, remember } from './index-relay.mjs';
+import { validateIndexBody, confirmTwice, speedCheck, remember,
+         indexUsable, rateFromIndex, switchCheck, indexLadder, indexNote } from './index-relay.mjs';
 
 const STATE = '/opt/pcoin-price/state.json';
 const PORT = 8788;
@@ -244,7 +250,12 @@ async function pollPool() {
     // same figures. They hold no samples and must never recompute -- an empty
     // window would answer null and read as "the pool cannot be reached".
     st.poolMedian = poolMedianUsd();
-    st.poolHeldBy = poolStatus().limitedBy;
+    // In index mode the pool drives nothing -- the rate is the index -- so "the
+    // rate is held above the pool by a brake" would describe a mechanism that is
+    // switched off. Published as null and never alerted (the plan retires that
+    // alert at Step 4). The samples are still taken: they show how well the
+    // keeper holds the pool to the index.
+    st.poolHeldBy = indexMode() ? null : poolStatus().limitedBy;
 
     // Alert on CHANGE, and only once the new state has survived a few polls.
     //
@@ -253,7 +264,7 @@ async function pollPool() {
     // eight hours and taught everyone to ignore it. The confirmation count is
     // for the boundary: a pool sitting exactly on a brake would otherwise flip
     // between held and not-held every minute and alert on each flip.
-    {
+    if (!indexMode()) {
       const held = st.poolHeldBy;
       if (held === heldPending) heldPendingPolls += 1;
       else { heldPending = held; heldPendingPolls = 1; }
@@ -393,19 +404,29 @@ const DEFAULTS = {
   // clearance that never happened.
   poolHeldAnnounced: null,
 
-  // THE PCN INDEX, relayed in SHADOW (price plan Phase 2). Read by the primary
-  // from exchange.pc.am every 60 s, checked again here (index-relay.mjs), and
-  // published as an `index` block that nothing credits with yet. There is
-  // deliberately no switch that would make it the rate: that arrives with the
-  // code that uses it, because a setting that does nothing reads as switched.
+  // THE PCN INDEX (price plan Phase 2, then Step 4). Read by the primary from
+  // exchange.pc.am every 60 s, checked again here (index-relay.mjs), and
+  // published as an `index` block.
+  //
+  // `useIndex` is the switch that makes it THE rate. Phase 2 deliberately had
+  // no switch, because a setting that does nothing reads as switched; it
+  // arrived with the code that reads it. 0 = the legacy walk, byte-for-byte.
+  // 1 = creditRateUsd = serviceRate = the index (plan Step 4): no walk, the
+  // `ladder` block becomes a compatibility block whose stale flag follows the
+  // index, and GET /credit-rate answers 503 whenever the index is not usable.
+  // Set ONLY through POST /admin/state, which refuses while the precondition
+  // does not hold. The owner decided on 2026-09-25 to switch now.
+  useIndex: 0,
   indexUrl: 'https://exchange.pc.am/api/index',
-  indexMaxAgeSeconds: 600,  // older than this and the published block says stale
+  // Older than this and the published block says stale -- and in index mode
+  // the rails HOLD: /credit-rate answers 503 and ladder.stale is true.
+  indexMaxAgeSeconds: 600,
   indexState: null,         // null = never polled; else held|live|frozen|unknown|disabled
   indexNano: null,          // the last ACCEPTED price, as a string of nano-USD
   indexSeq: null,
   indexComputedAt: null,    // seconds, the exchange's computation time
   indexAt: 0,               // ms, when this side last accepted a reading
-  indexMeta: null,          // { lastMoveAt, window, limitedBy, reasons }
+  indexMeta: null,          // { lastMoveAt, window, limitedBy, reasons, rules }
   indexRefused: null,       // { why, seq, usd, at } while a reading is being refused
   indexError: null,         // { why, at } while the endpoint cannot be read
   indexHistory: [],         // [{t, nano}] accepted, 25 h -- for the speed check; not replicated
@@ -464,6 +485,10 @@ function save(s) {
 }
 
 let st = load();
+
+// Step 4 is on. Strictly 1: anything else -- absent, 0, a hand-edited `true` --
+// is the legacy walk, which is today's behaviour and the safe way to be wrong.
+function indexMode() { return st.useIndex === 1; }
 
 // 'primary' owns the curve. 'replica' mirrors it and refuses writes.
 const ROLE = st.role;
@@ -784,6 +809,7 @@ async function pollLadder(force = false) {
         `ladder ${st.ladderPrice} · ceiling ${st.serviceCeiling} · max move ${st.serviceMaxMovePct}%\n` +
         `Every service that credits PCN deposits reads this number and uses the new rate from now on.`);
     }
+    if (indexMode()) watchSellVsCredit();
     return { ok: true, ...tune };
   } catch (e) {
     console.warn('[price] ladder poll failed, keeping last known price:', e.message);
@@ -814,7 +840,7 @@ if (ROLE === 'primary') {
 // answer with the same number. A replica that polled the ladder itself could
 // not reach it anyway -- the market runs on the primary's loopback.
 
-// ── the PCN index, relayed in shadow ───────────────────────────────────────
+// ── the PCN index: relayed, in shadow or in use ────────────────────────────
 // Only the primary polls, for the same reason as the ladder: three origins
 // polling on their own could disagree about what the exchange said.
 //
@@ -823,11 +849,107 @@ if (ROLE === 'primary') {
 // exchange's own rules allow is REFUSED and alerted -- once per reading -- and
 // the last accepted one stays. After a deliberate re-seed on the exchange, an
 // operator accepts the new value with POST /admin/index/accept.
+//
+// In index mode (useIndex = 1) those same rules decide what every rail
+// credits. A confirmed, speed-checked, priced reading becomes serviceRate.
+// Anything else leaves serviceRate exactly where it is and lets the reading
+// AGE; once it is older than indexMaxAgeSeconds the rails hold (/credit-rate
+// 503, ladder.stale true). No unconfirmed or refused reading ever moves it.
 const INDEX_DOWN_ALERT_MS = 10 * 60 * 1000;
 let indexPending = null;          // transient guard, in memory like seenLadder
 let indexFailingSince = 0;
 let indexDownAlerted = false;
 let indexRefusalAlerted = null;
+// Whether the last accepted reading carried a price, as last ANNOUNCED. In
+// memory and optimistic, like the held state: after a restart an unpriced
+// index is announced once and a priced one is not.
+let indexPricedAnnounced = true;
+
+// Exchange-supplied text goes into HTML-mode Telegram messages, and Telegram
+// REJECTS a message whose markup does not parse -- silently, from our side. A
+// JSON.parse error on an HTML error page reads "Unexpected token '<'...", so
+// one unescaped reason would lose the very alert that says the feed is broken.
+const escHtml = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+
+// What an index alert's reader needs to know about the stakes. In shadow mode
+// the wording is Phase 2's, unchanged; in index mode it says the rails hold.
+const indexTag = () => (indexMode() ? '(IN USE: the rails credit at it)' : '(shadow)');
+const indexStakes = () => 'The rails credit at this index. They keep the last accepted value, and once ' +
+  `it is more than ${st.indexMaxAgeSeconds} s old GET /credit-rate answers 503 and every rail HOLDS new credits.`;
+
+/** Step 4: set serviceRate from an accepted index price. Called for every
+ *  confirmed priced reading in index mode, and once by the switch itself. */
+function applyIndexRate(usd, { quiet = false } = {}) {
+  const next = rateFromIndex(usd, { floorUsd: st.poolFloorUsd, ceilingUsd: st.serviceCeiling });
+  if (next === null) return { moved: false, serviceRate: st.serviceRate };
+  const before = st.serviceRate;
+  st.serviceRate = next;
+  // Stamped on EVERY confirmed reading, not only on a move. serviceRateAt is
+  // the walk's clock: if the switch is turned back off, the legacy walk must
+  // wait a full serviceRetuneIntervalHours from the last index reading before
+  // its first step, so it resumes FROM the index and never jumps off it.
+  st.serviceRateAt = Date.now();
+  const moved = next !== before;
+  if (moved && !quiet) {
+    console.log(`[price] serviceRate -> ${next} (PCN index seq ${st.indexSeq})`);
+    const m = st.indexMeta || {}, w = m.window || {};
+    // Every move, no throttle, exactly as for the walk. The index moves only
+    // on new qualifying fills, so this is bounded by trading, and each one is
+    // a change in what every rail credits.
+    notify('💱 <b>serviceRate moved</b> (PCN index)\n' +
+      `<code>${before}</code> → <b><code>${next}</code></b>\n` +
+      `index seq ${st.indexSeq}` + (next !== usd ? ` · clamped from $${usd} to the floor/ceiling` : '') + '\n' +
+      (w.trades != null
+        ? `evidence: ${w.trades} fills, ${w.entities} people, $${escHtml(w.countedUsd ?? '?')} in the ${w.hours} h window`
+        : 'evidence: the exchange published no window') +
+      (m.limitedBy && m.limitedBy.length ? ` · limited by ${escHtml(m.limitedBy.join(', '))}` : '') + '\n' +
+      'Every service that credits PCN deposits reads this number and uses the new rate from now on.');
+  }
+  return { moved, serviceRate: next };
+}
+
+/** Index mode: say so when the exchange's index stops (or starts again)
+ *  carrying a price. `unknown` or `disabled` stops every rail at once, and the
+ *  exchange-side watcher stays quiet about an index that is switched off. */
+function announceIndexPriced(reading) {
+  const priced = reading.nano !== null;
+  if (priced === indexPricedAnnounced) return;
+  indexPricedAnnounced = priced;
+  notify(priced
+    ? `✅ <b>PCN index carries a price again</b>\n<code>$${reading.usd}</code> (seq ${reading.seq}, ` +
+      `${escHtml(reading.state)}). The rails credit at it again.`
+    : `🔴 <b>PCN index is ${escHtml(String(reading.state).toUpperCase())}</b> on exchange.pc.am\n` +
+      'It carries no price, so GET /credit-rate answers 503 and every rail HOLDS new credits until it ' +
+      (st.indexNano !== null ? `does. The last price, $${Number(st.indexNano) / 1e9}, is not used meanwhile.` : 'does.') +
+      (reading.reasons && reading.reasons.length ? `\n<code>${escHtml(reading.reasons[0])}</code>` : ''));
+}
+
+// "A rail never credits more for a PCN than the project charges for one"
+// (13195a7) was enforced by the outer min() in retuneTarget(), which belongs to
+// the walk -- and in index mode the walk is off. The plan makes it true BY
+// CONSTRUCTION instead (Step 3: market.pc.am sells at index x 1.03), and a
+// construction is exactly the kind of thing that stops being true without
+// telling anyone: Step 3 rolled back, the premium set to 0, a market bug. So
+// it is WATCHED: alerted on change, after HELD_CONFIRM_POLLS agreeing ladder
+// polls, the same shape as the held-state alert it replaces.
+let underPending = null, underPolls = 0, underAnnounced = false;
+function watchSellVsCredit() {
+  const under = ladderKnown() && st.ladderPrice < st.serviceRate;
+  if (under === underPending) underPolls += 1;
+  else { underPending = under; underPolls = 1; }
+  if (underPolls < HELD_CONFIRM_POLLS || under === underAnnounced) return;
+  underAnnounced = under;
+  const gap = st.serviceRate > 0 ? ((st.serviceRate - st.ladderPrice) / st.serviceRate) * 100 : 0;
+  notify(under
+    ? '⚠️ <b>The rails credit MORE than market.pc.am charges</b>\n' +
+      `serviceRate (the PCN index) <code>$${st.serviceRate}</code>, market.pc.am sells at ` +
+      `<code>$${st.ladderPrice}</code> (${gap.toFixed(2)}% below).\n\nWhile this lasts, buying PCN on ` +
+      'market.pc.am and spending it at a rail gains that gap, paid by the project. In index mode the ' +
+      'market should sell at the index plus its premium (plan Step 3): check its pricingMode. ' +
+      '<code>POST /admin/state {"useIndex":0}</code> puts the walk back, which never credits above the market.'
+    : '✅ <b>market.pc.am sells at or above the credit rate again</b>\n' +
+      `serviceRate <code>$${st.serviceRate}</code>, market <code>$${st.ladderPrice}</code>.`);
+}
 
 async function pollIndex() {
   if (ROLE !== 'primary') return { ok: false, why: 'not the primary' };
@@ -849,16 +971,18 @@ async function pollIndex() {
     st.indexError = { why, at: nowMs };
     if (!indexDownAlerted && nowMs - indexFailingSince >= INDEX_DOWN_ALERT_MS) {
       indexDownAlerted = true;
-      notify('🟠 <b>PCN index unreachable</b> (shadow)\n' +
+      notify(`🟠 <b>PCN index unreachable</b> ${indexTag()}\n` +
         `price.pc.am has not had a usable index reading from exchange.pc.am for ` +
-        `${Math.round((nowMs - indexFailingSince) / 60000)} min. Nothing credits with it yet, so ` +
-        `no money is affected; the shadow record has a gap.\n<code>${why}</code>`);
+        `${Math.round((nowMs - indexFailingSince) / 60000)} min. ` +
+        (indexMode() ? indexStakes()
+          : 'Nothing credits with it yet, so no money is affected; the shadow record has a gap.') +
+        `\n<code>${escHtml(why)}</code>`);
     }
     try { save(st); } catch (se) { console.warn('[price] index error not saved:', se.message); }
     return { ok: false, why };
   }
   if (indexDownAlerted) {
-    notify('✅ <b>PCN index readable again</b> (shadow)\n' +
+    notify(`✅ <b>PCN index readable again</b> ${indexTag()}\n` +
       `It was unusable for ${Math.round((nowMs - indexFailingSince) / 60000)} min.`);
   }
   indexFailingSince = 0;
@@ -881,12 +1005,13 @@ async function pollIndex() {
     st.indexRefused = { why: speed.why, seq: reading.seq, usd: reading.usd, at: nowMs };
     if (indexRefusalAlerted !== key) {
       indexRefusalAlerted = key;
-      notify('🔴 <b>PCN index reading REFUSED</b> (shadow)\n' +
+      notify(`🔴 <b>PCN index reading REFUSED</b> ${indexTag()}\n` +
         `exchange.pc.am says <code>$${reading.usd}</code> (seq ${reading.seq}); price.pc.am keeps ` +
         `<code>$${prev ? prev.nano / 1e9 : 'none'}</code> (seq ${prev ? prev.seq : '-'}).\n` +
-        `<code>${speed.why}</code>\n\nThe exchange caps its own moves, so this is either a bug, a ` +
+        `<code>${escHtml(speed.why)}</code>\n\nThe exchange caps its own moves, so this is either a bug, a ` +
         'compromise, or a deliberate re-seed. If you re-seeded it, accept the new value with ' +
-        '<code>POST /admin/index/accept</code> on the primary. Nothing credits with the index yet.');
+        '<code>POST /admin/index/accept</code> on the primary. ' +
+        (indexMode() ? indexStakes() : 'Nothing credits with the index yet.'));
     }
     try { save(st); } catch { /* the refusal is in memory and will be re-derived */ }
     return { ok: false, why: speed.why };
@@ -897,13 +1022,14 @@ async function pollIndex() {
   st.indexComputedAt = reading.computedAt;
   st.indexAt = nowMs;
   st.indexMeta = { lastMoveAt: reading.lastMoveAt ?? null, window: reading.window ?? null,
-                   limitedBy: reading.limitedBy ?? [], reasons: reading.reasons ?? [] };
+                   limitedBy: reading.limitedBy ?? [], reasons: reading.reasons ?? [],
+                   rules: reading.rules ?? null };
   // 'unknown' and 'disabled' carry no price. They are relayed as states and
   // leave the last accepted price in place as the speed check's baseline --
   // they never erase it, and the published block shows no price for them.
   if (reading.nano !== null) {
     if (st.indexRebaseArmed) {
-      notify('✅ <b>PCN index re-based</b> (shadow)\n' +
+      notify(`✅ <b>PCN index re-based</b> ${indexTag()}\n` +
         `price.pc.am accepted <code>$${reading.usd}</code> (seq ${reading.seq}) as its new baseline.`);
       st.indexHistory = [];
     }
@@ -911,7 +1037,10 @@ async function pollIndex() {
     st.indexSeq = reading.seq;
     st.indexHistory = remember(st.indexHistory, { t: nowS, nano: reading.nano });
     st.indexRebaseArmed = false;
+    // Step 4: the accepted index IS the credit rate.
+    if (indexMode()) applyIndexRate(reading.usd);
   }
+  if (indexMode()) announceIndexPriced(reading);
   try { save(st); } catch (e) { console.warn('[price] index reading not saved:', e.message); }
   return { ok: true, confirmed: true, state: reading.state };
 }
@@ -939,7 +1068,7 @@ function indexBlock() {
     limitedBy: m.limitedBy ?? [],
     reasons: m.reasons ?? [],
     refused: st.indexRefused ? { why: st.indexRefused.why, seq: st.indexRefused.seq, usd: st.indexRefused.usd } : null,
-    inUse: false,
+    inUse: indexMode(),
     source: st.indexUrl,
   };
 }
@@ -1002,8 +1131,14 @@ function applySell(pcn) {
  *    - the +/-10% per-step clamp, which is about one rung
  *    - the minimum interval between steps, so polling every 60s does not turn
  *      "10% per step" into "10% per minute"
- *    - the hard ceiling, which is the ladder's terminal price */
+ *    - the hard ceiling, which is the ladder's terminal price
+ *
+ *  In index mode (useIndex = 1) there is no walk: the rate IS the index, set by
+ *  pollIndex(), and a walk running beside it would pull it toward the ladder
+ *  and the pool again. So it returns before touching anything -- not even the
+ *  clock, which applyIndexRate() owns while the switch is on. */
 function retuneServiceRate(force = false) {
+  if (indexMode()) return { moved: false, target: null, serviceRate: st.serviceRate, indexMode: true };
   const target = retuneTarget();
   // A target that is not a usable number resolves nothing. Walking toward NaN
   // makes every comparison false and would silently freeze the rate forever
@@ -1085,9 +1220,16 @@ createServer(async (req, res) => {
     // hours old is not a rate, and an integrator who gets 503 here holds the
     // credit instead of crediting at a number nobody stands behind -- which is
     // the estate's oldest rule: a failed read resolves nothing.
+    //
+    // In index mode the rate IS the index, so a remembered index is a
+    // remembered rate. Once the index is older than indexMaxAgeSeconds -- or the
+    // exchange says `unknown`, or it is switched off there -- this answers 503
+    // and the rails hold (plan §2.4 and §2.6), rather than credit at the last
+    // number while the one source of it cannot be heard.
     if (p === '/credit-rate') {
       const rate = st.serviceRate;
-      if (!Number.isFinite(rate) || rate <= 0 || (ROLE === 'replica' && !syncOk)) {
+      if (!Number.isFinite(rate) || rate <= 0 || (ROLE === 'replica' && !syncOk)
+          || (indexMode() && !indexUsable(indexBlock()))) {
         return res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8',
                                     'Cache-Control': 'no-store' })
           && res.end('unavailable\n');
@@ -1099,6 +1241,17 @@ createServer(async (req, res) => {
 
     if (p === '/' || p === '/price') {
       const ladderAgeS = st.ladderAt ? Math.floor((Date.now() - st.ladderAt) / 1000) : null;
+      // Step 4 (useIndex = 1) changes exactly five things in this body, every
+      // other byte is the legacy body: serviceRate/creditRateUsd carry the
+      // index (set by pollIndex, not here), rateFollowsPoolDown is false, the
+      // `ladder` block becomes the compatibility block (index-relay.mjs
+      // indexLadder), `index.inUse` is true, and the `note` says what the price
+      // now is. Same field names on purpose: seven rail codebases read them, and
+      // renaming one would be nine deploys (plan §7). sellPriceUsd and `price`
+      // stay what market.pc.am charges -- read from its ladder state exactly as
+      // before, which after plan Step 3 is the index x (1 + premium).
+      const ixMode = indexMode();
+      const ix = indexBlock();
       return json(res, 200, {
         // The posted price is the ladder's marginal rung -- the price at which
         // the next PCN can actually be bought. `buybackPrice` is the AMM curve
@@ -1131,7 +1284,10 @@ createServer(async (req, res) => {
         // What the rate is tracking, and what is holding it up. Published
         // because "why is the credit rate below the ladder price" has to be
         // answerable from the feed itself, not from a server log.
-        rateFollowsPoolDown: !!st.poolFollow,
+        //
+        // False in index mode: the pool is no input to the rate any more, and
+        // this flag is what tells pcnaibot to demand a fresh pool reading.
+        rateFollowsPoolDown: ixMode ? false : !!st.poolFollow,
         rateFloorUsd: st.poolFloorUsd,
         pool: st.poolFollow ? {
           spotUsd: st.poolPrice,
@@ -1141,10 +1297,11 @@ createServer(async (req, res) => {
           ageSeconds: st.poolAt ? Math.floor((Date.now() - st.poolAt) / 1000) : null,
           rateHeldAboveBy: st.poolHeldBy ?? null,
         } : null,
-        // SHADOW DATA. The exchange-anchored PCN index (price plan Phase 2),
-        // published so it can be judged beside creditRateUsd for a week before
-        // anything uses it. `inUse` is false and nothing here reads it.
-        index: indexBlock(),
+        // The exchange-anchored PCN index. In shadow (Phase 2) it is published
+        // so it can be judged beside creditRateUsd, and `inUse` is false. In
+        // index mode (Step 4) `inUse` is true and creditRateUsd IS this `usd`;
+        // `stale` and `state` then say whether the rails may credit at all.
+        index: ix,
         currency: 'USD',
         // BUYBACK. Every field below describes selling PCN back to us, and it
         // is CLOSED unless `buybackOpen` is true. When it is closed the price
@@ -1170,7 +1327,15 @@ createServer(async (req, res) => {
         // the exchange -- and not one of them read any of the three. If a
         // future integrator needs the curve's internals, publish them under a
         // name that says what they are, not under the old desk's vocabulary.
-        ladder: ladderKnown() ? {
+        //
+        // In index mode this is the COMPATIBILITY block of plan §2.6: pcnaibot,
+        // docs.pc.am integrations and the exchange's fetchSellPrice() all refuse
+        // a feed unless ladder.stale === false, so the flag follows the INDEX
+        // (the number they now credit at) and `price` is sellPriceUsd.
+        ladder: ladderKnown() ? (ixMode ? indexLadder({
+          block: ix, sellPriceUsd: Number(postedPrice().toFixed(9)),
+          soldPcn: st.ladderSoldPcn, remainingPcn: st.ladderRemainingPcn,
+        }) : {
           price: st.ladderPrice,
           soldPcn: st.ladderSoldPcn,
           remainingPcn: st.ladderRemainingPcn,
@@ -1178,11 +1343,17 @@ createServer(async (req, res) => {
           // Remembered rather than current. Still the best answer available --
           // but say so, rather than let a consumer assume it is fresh.
           stale: ladderAgeS === null || ladderAgeS > 600,
-        } : null,
+        }) : null,
         // Stated so nobody mistakes a posted price for a market price.
         // Taken from the same field the response publishes, never retyped: this
         // sentence and rateFloorUsd disagreeing would be worse than either alone.
-        note: 'Posted from a finite 100,000 PCN order-book ladder, not discovered on a market. ' +
+        //
+        // In index mode the note is rewritten (index-relay.mjs indexNote): the
+        // price is the index of exchange.pc.am user-to-user fills, its caps,
+        // floor and ceiling -- each read from what is enforced or relayed.
+        note: ixMode ? indexNote({ floorUsd: st.poolFloorUsd, rules: (st.indexMeta || {}).rules,
+                                   maxAgeS: st.indexMaxAgeSeconds, buybackOpen: !!st.buybackOpen }) :
+              'Posted from a finite 100,000 PCN order-book ladder, not discovered on a market. ' +
               // "not exchange traded" stood here until 2026-09-24, long after
               // exchange.pc.am opened; the pc.am mini app shows this text to users.
               'PCN also trades on exchange.pc.am, a small order book the project runs, and its ' +
@@ -1270,20 +1441,69 @@ createServer(async (req, res) => {
         serviceRetuneIntervalHours: { min: 0,  max: 8760 },
         serviceRateAt:              { min: 0,  max: 4e12 },
         indexMaxAgeSeconds:         { min: 60, max: 3600 },
+        // THE SWITCH (plan Step 4). An integer, not a truthy value: 0.5, true
+        // or "yes" is a typo, and a typo must not decide what every rail
+        // credits at.
+        useIndex:                   { min: 0,  max: 1, int: true },
       };
       const pending = {};
       for (const [key, bound] of Object.entries(BOUNDS)) {
         if (b[key] === undefined) continue;
         const n = Number(b[key]);
-        if (!isFinite(n) || n < bound.min || n > bound.max) {
+        if (!isFinite(n) || n < bound.min || n > bound.max || (bound.int && !Number.isInteger(n))
+            || (bound.int && typeof b[key] !== 'number')) {
           return json(res, 400, {
-            error: `${key} must be a finite number in [${bound.min}, ${bound.max}], got ${JSON.stringify(b[key])}` });
+            error: `${key} must be ${bound.int ? 'an integer' : 'a finite number'} in [${bound.min}, ${bound.max}], got ${JSON.stringify(b[key])}` });
         }
         pending[key] = n;
       }
+
+      // Switching the rails onto the index is REFUSED unless the plan's Step 4
+      // precondition holds right now (index-relay.mjs switchCheck): a fresh,
+      // priced, unrefused index; the walk within 0.5% of it; market.pc.am
+      // selling at or above it. `"force": true` skips the last two only.
+      // Switching back off is never refused -- it is the rollback, and the
+      // walk resumes from the index's value without a jump.
+      const wasIndex = indexMode();
+      const toIndex = pending.useIndex === undefined ? wasIndex : pending.useIndex === 1;
+      let check = null;
+      if (toIndex && !wasIndex) {
+        check = switchCheck({ block: indexBlock(), serviceRate: st.serviceRate,
+                              sellPriceUsd: ladderKnown() ? st.ladderPrice : null, force: b.force === true });
+        if (!check.ok) return json(res, 409, { error: check.why, check });
+      }
+      // While the rails credit at the index, a hand-typed rate would be
+      // published for up to a minute and then silently overwritten. The rate
+      // IS the index; to set one by hand, switch off in the same call.
+      if (toIndex && (pending.serviceRate !== undefined || pending.serviceRateAt !== undefined)) {
+        return json(res, 409, { error: 'serviceRate follows the PCN index while useIndex is 1; ' +
+          'send {"useIndex":0} with it to set the rate by hand' });
+      }
+
+      const beforeRate = st.serviceRate;
       Object.assign(st, pending);       // all-or-nothing: never a half-applied write
+      if (toIndex && !wasIndex) {
+        // Applied now rather than at the next poll, so the switch's own answer
+        // (and every origin within one sync) already shows the index. Quiet:
+        // the switch alert below says it once, with the precondition's numbers.
+        applyIndexRate(indexBlock().usd, { quiet: true });
+      }
+      if (wasIndex !== toIndex) { underPending = null; underPolls = 0; underAnnounced = false; }
       save(st);
-      return json(res, 200, { ok: true, price: postedPrice(), applied: pending });
+      if (toIndex && !wasIndex) {
+        notify('🔀 <b>The rails now credit at the PCN index</b>\n' +
+          `serviceRate <code>${beforeRate}</code> → <b><code>${st.serviceRate}</code></b> ` +
+          `(index seq ${st.indexSeq}; the walk was ${check.gapPct}% away)` +
+          (check.forced ? '\n<b>FORCED</b> past the 0.5% and sell-price checks.' : '') + '\n' +
+          'The walk is off; every confirmed index reading now sets the rate. ' +
+          'Rollback: <code>POST /admin/state {"useIndex":0}</code>.');
+      } else if (wasIndex && !toIndex) {
+        notify('↩️ <b>The rails are back on the legacy walk</b>\n' +
+          `It resumes from <code>${st.serviceRate}</code> (the last index value) and takes its first ` +
+          `step no sooner than ${st.serviceRetuneIntervalHours} h after the last index reading.`);
+      }
+      return json(res, 200, { ok: true, price: postedPrice(), applied: pending,
+        ...(wasIndex !== toIndex ? { useIndex: toIndex ? 1 : 0, serviceRate: st.serviceRate, check } : {}) });
     }
 
     // Force one retune step now, ignoring the interval but NOT the +/-10% clamp
@@ -1293,6 +1513,12 @@ createServer(async (req, res) => {
     if (p === '/admin/retune' && req.method === 'POST') {
       if (ROLE !== 'primary') return json(res, 409, { error: 'this is a replica; write to the primary' });
       if (!isAdmin(req)) return json(res, 401, { error: 'admin token required' });
+      // There is no walk to step while the rails credit at the index, and an
+      // answer of `moved: false` would read as "already converged".
+      if (indexMode()) {
+        return json(res, 409, { error: 'the credit rate follows the PCN index (useIndex is 1); there is no ' +
+          'walk to step. POST /admin/state {"useIndex":0} to go back to it.' });
+      }
       // Refresh the ladder FIRST. Retuning against a ladder price that is up to
       // a minute old steps the rate toward a number the market has already left
       // behind -- and an operator pressing this expects "use what the ladder
@@ -1354,6 +1580,11 @@ createServer(async (req, res) => {
         'poolSampleCount','poolFloorUsd','poolTwapHours','poolWpcn','poolUsdt',
         'indexUrl','indexMaxAgeSeconds','indexState','indexNano','indexSeq',
         'indexComputedAt','indexAt','indexMeta','indexRefused','indexError',
+        // The replicas serve most traffic and build their own responses from
+        // this list. Without the switch here they would keep publishing the
+        // legacy body -- rateFollowsPoolDown true, the market-clock `ladder` --
+        // around a serviceRate that is already the index.
+        'useIndex',
       ];
       const pub = {};
       for (const kk of PUBLIC_STATE) if (st[kk] !== undefined) pub[kk] = st[kk];

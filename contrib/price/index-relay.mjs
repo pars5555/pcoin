@@ -7,6 +7,12 @@
 // a week of it can be judged beside the rate the rails really credit at. Nothing
 // credits with it in this phase.
 //
+// STEP 4 (plan Phase 3, the bottom of this file): with `useIndex = 1` on the
+// primary, the index IS the credit rate. Everything that decides what the rails
+// then see -- is the index usable, the clamp, the switch's precondition, the
+// `ladder` compatibility block, the `note` -- is here and pure for the same
+// reason as the rest: so each rule is proved to fire, not hoped.
+//
 // Everything here is pure: no clock, no network, no state. The server hands in
 // the time and the previous reading, and gets back a decision. That is what lets
 // every refusal below be proved to fire (index-relay-test.mjs) instead of hoped.
@@ -34,6 +40,17 @@ const NANO = 1e9;
 
 const short = (xs, n = 5, len = 200) =>
   (Array.isArray(xs) ? xs : []).filter((x) => typeof x === 'string').slice(0, n).map((x) => x.slice(0, len));
+
+// The exchange's own speed caps, as it publishes them in `rules`. Relayed so the
+// index-mode `note` can quote them instead of retyping them: a number on a
+// public page is a promise, and a copy of a setting that lives on another box
+// goes stale the day somebody changes the setting. Absent or odd -> null, and
+// the note then says "capped" without a figure rather than inventing one.
+function rulesOf(r) {
+  if (!r || typeof r !== 'object' || Array.isArray(r)) return null;
+  const pct = (x) => (typeof x === 'number' && Number.isFinite(x) && x > 0 && x <= 100 ? x : null);
+  return { perTradePct: pct(r.perTradePct), perDayPct: pct(r.perDayPct) };
+}
 
 function windowOf(w) {
   if (!w || typeof w !== 'object') return null;
@@ -71,6 +88,7 @@ export function validateIndexBody(j, { nowS, rules = INDEX_RULES } = {}) {
     state: j.state, computedAt: at,
     lastMoveAt: Number.isSafeInteger(Number(j.lastMoveAt)) && j.lastMoveAt !== null ? Number(j.lastMoveAt) : null,
     window: windowOf(j.window), limitedBy: short(j.limitedBy), reasons: short(j.reasons, 3),
+    rules: rulesOf(j.rules),
   };
   if (j.state === 'unknown') return { ok: true, reading: { ...base, nano: null, usd: null, seq: null } };
 
@@ -136,4 +154,129 @@ export function remember(history, { t, nano }) {
   const last = xs[xs.length - 1];
   if (!last || last.nano !== nano || t - last.t >= 600) xs.push({ t, nano });
   return xs.slice(-400);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Step 4 -- the credit rate IS the index (useIndex = 1)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The owner decided on 2026-09-25 to switch now. From then on creditRateUsd =
+// serviceRate = the relayed index, with no walk, and every rail reads the same
+// fields it read before: only the SOURCE of the value changes (plan §7).
+
+/** Is the relayed `index` block (server.mjs indexBlock()) usable as THE price?
+ *
+ *  Fresh on this side's clock AND in a priced state. `index.stale` alone is not
+ *  enough: a fresh `unknown` reading is not stale -- it is the exchange saying,
+ *  correctly and just now, that it has no price -- and plan §2.4 says the rails
+ *  HOLD on unknown. A remembered price must never stand in for "no price". */
+export function indexUsable(block) {
+  return !!block && typeof block === 'object' && block.stale === false && PRICED.has(block.state)
+    && typeof block.usd === 'number' && Number.isFinite(block.usd) && block.usd > 0;
+}
+
+/** The credit rate for an index price, clamped to [floorUsd, ceilingUsd].
+ *
+ *  The ceiling is applied LAST, so it wins if the two ever cross -- the same
+ *  order retuneServiceRate() applies them in. A bound that is not a positive
+ *  number is no bound (a zero ceiling would publish a rate of zero, which is an
+ *  answer-shaped unknown). null for anything that is not a positive price: the
+ *  caller then leaves the rate where it is. */
+export function rateFromIndex(usd, { floorUsd, ceilingUsd } = {}) {
+  if (!(typeof usd === 'number' && Number.isFinite(usd) && usd > 0)) return null;
+  let r = usd;
+  if (Number.isFinite(floorUsd) && floorUsd > 0) r = Math.max(r, floorUsd);
+  if (Number.isFinite(ceilingUsd) && ceilingUsd > 0) r = Math.min(r, ceilingUsd);
+  return r;
+}
+
+export const SWITCH_MAX_GAP_PCT = 0.5;
+
+/** May the rails be switched onto the index NOW? Plan Step 4's precondition,
+ *  ENFORCED by the switch rather than left in a runbook: "a check that only
+ *  prints is not a check. Make it refuse" (CLAUDE.md §7.12).
+ *
+ *    1. the index is usable -- fresh, priced, and no reading being refused.
+ *       `force` does NOT skip this: switching onto an index that cannot be read
+ *       stops every rail at once (/credit-rate 503), which nobody means to do.
+ *    2. |serviceRate - index| / index < 0.5%, so the flip is invisible to rails.
+ *    3. market.pc.am sells at or above the index. The rule since 13195a7 is that
+ *       a rail never credits more for a PCN than the project charges for one;
+ *       once the walk is off nothing else enforces it, and the plan relies on
+ *       Step 3 (market = index x 1.03) having happened first.
+ *
+ *  `force` skips 2 and 3 only: the operator saying "I have looked at it
+ *  myself", the same meaning it has on /admin/retune. */
+export function switchCheck({ block, serviceRate, sellPriceUsd, force = false, maxGapPct = SWITCH_MAX_GAP_PCT }) {
+  if (!indexUsable(block)) {
+    const why = !block ? 'price.pc.am has never had an index reading'
+      : block.stale !== false ? `the index is stale (computed ${block.ageSeconds ?? '?'} s ago; the limit is indexMaxAgeSeconds)`
+      : `the index is "${block.state}", which carries no price`;
+    return { ok: false, why: `refused: ${why}. Switching now would make every rail hold (GET /credit-rate 503).` };
+  }
+  if (block.refused) {
+    return { ok: false, why: `refused: price.pc.am is refusing the latest index reading (${block.refused.why}). Resolve that first.` };
+  }
+  const gapPct = (Math.abs(serviceRate - block.usd) / block.usd) * 100;
+  const facts = { indexUsd: block.usd, indexSeq: block.seq, serviceRate, sellPriceUsd,
+                  gapPct: Number.isFinite(gapPct) ? Number(gapPct.toFixed(4)) : null };
+  if (!force) {
+    if (!(gapPct < maxGapPct)) {
+      return { ok: false, ...facts, why: `refused: the credit rate ${serviceRate} is ` +
+        `${Number.isFinite(gapPct) ? gapPct.toFixed(3) : '?'}% from the index ${block.usd}; the switch needs under ` +
+        `${maxGapPct}% so the rails see no jump. Wait for the walk to close it, or pass "force": true.` };
+    }
+    if (!(typeof sellPriceUsd === 'number' && Number.isFinite(sellPriceUsd) && sellPriceUsd >= block.usd)) {
+      return { ok: false, ...facts, why: `refused: market.pc.am sells at ${sellPriceUsd ?? 'an unknown price'}, below ` +
+        `the index ${block.usd}, so the rails would credit more than the project charges. Put the market on the ` +
+        'index first (plan Step 3), or pass "force": true.' };
+    }
+  }
+  return { ok: true, ...facts, forced: !!force };
+}
+
+/** The `ladder` block in index mode (plan §2.6): a COMPATIBILITY block.
+ *
+ *  pcnaibot (lib/rate.mjs), every docs.pc.am integration ("ladder.stale is
+ *  honoured") and the exchange's fetchSellPrice() all REQUIRE
+ *  `ladder.stale === false` before they use this feed. In index mode the number
+ *  the rails credit at is the index, so the flag they gate on follows the index:
+ *  stale whenever the index is not usable (stale, unknown, disabled, absent).
+ *  `price` is sellPriceUsd, what market.pc.am charges -- never a credit rate. */
+export function indexLadder({ block, sellPriceUsd, soldPcn, remainingPcn }) {
+  return {
+    price: sellPriceUsd,
+    soldPcn,
+    remainingPcn,
+    ageSeconds: block && Number.isFinite(block.ageSeconds) ? block.ageSeconds : null,
+    stale: !indexUsable(block),
+  };
+}
+
+/** The `note` in index mode. Plain words, no code formatting: the pc.am mini
+ *  app shows it to users. Every figure is read from what this service enforces
+ *  or relays (floor = rateFloorUsd, ceiling = the relay's own refusal bound,
+ *  caps = the exchange's published rules), never retyped. And it names no
+ *  exit: this field once ended by telling holders their way out was to wrap and
+ *  sell the pool, and on a pool that thin saying so shaped behaviour. */
+export function indexNote({ floorUsd, ceilingUsd = INDEX_RULES.ceilingUsd, rules, maxAgeS, buybackOpen }) {
+  const perTrade = rules && rules.perTradePct, perDay = rules && rules.perDayPct;
+  const caps = perTrade && perDay
+    ? `by at most ${perTrade}% per trade and ${perDay}% in 24 hours`
+    : 'in capped steps (the limits are published at https://exchange.pc.am/api/index)';
+  const mins = Math.max(1, Math.round(Number(maxAgeS) / 60) || 10);
+  return 'The PCN price is the PCN index: the volume-weighted median price of real user-to-user trades ' +
+    'on exchange.pc.am, a small order book the project runs. Trades with the project\'s own bots, and ' +
+    `trades between linked accounts, do not count. It moves only when new qualifying trades arrive, ${caps}, ` +
+    'and when there is too little trading it holds its last value. It never goes below a floor of $' +
+    Number(floorUsd).toFixed(4) + ' or above a ceiling of $' + Number(ceilingUsd).toFixed(2) + '. ' +
+    'What PCoin services credit one PCN at (creditRateUsd, also published as serviceRate) is the index ' +
+    'itself. sellPriceUsd is what market.pc.am charges for PCN, and it never credits anything. ' +
+    `If the index is more than ${mins} minute${mins === 1 ? '' : 's'} old, or the exchange reports it as ` +
+    'unknown, GET /credit-rate answers 503 and ladder.stale is true: hold the credit and try again later, ' +
+    'never guess a rate. The wPCN PancakeSwap pool is not an input to this price. The ladder block is kept ' +
+    'only so older integrations keep working: its price is sellPriceUsd and its stale flag follows the index. ' +
+    (buybackOpen
+      ? 'Buying PCN back is a separate constant-product curve at a much lower price.'
+      : 'This service is not buying PCN back at present.');
 }
