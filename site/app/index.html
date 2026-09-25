@@ -462,8 +462,17 @@ async function lookup(addr) {
 
 $('a-go').addEventListener('click', () => lookup($('a-in').value));
 $('a-in').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup($('a-in').value); });
+// No browser alert() (owner, 2026-09-25): outside Telegram the scan button says
+// so in a note under itself, and the address can be pasted instead.
+function scanHint(btn) {
+  let n = btn.nextElementSibling;
+  if (!n || !n.classList.contains('scan-hint')) {
+    n = document.createElement('p'); n.className = 'note scan-hint'; btn.insertAdjacentElement('afterend', n);
+  }
+  n.textContent = 'QR scanning works inside the Telegram app. Paste the address instead.';
+}
 $('a-scan').addEventListener('click', () => {
-  if (!tg || !tg.showScanQrPopup) { alert('QR scanning works inside Telegram.'); return; }
+  if (!tg || !tg.showScanQrPopup) { scanHint($('a-scan')); return; }
   tg.showScanQrPopup({ text: 'Scan a PCoin address' }, (t) => {
     $('a-in').value = String(t || '').replace(/^pcoin:/i, '').split('?')[0];
     tg.closeScanQrPopup();
@@ -546,7 +555,7 @@ $('s-go').addEventListener('click', () => {
 });
 
 $('s-scan').addEventListener('click', () => {
-  if (!tg || !tg.showScanQrPopup) { alert('QR scanning works inside Telegram.'); return; }
+  if (!tg || !tg.showScanQrPopup) { scanHint($('s-scan')); return; }
   tg.showScanQrPopup({ text: 'Scan the address to pay' }, (t) => {
     const raw = String(t || '');
     const parsed = raw.replace(/^pcoin:/i, '');
