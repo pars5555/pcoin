@@ -878,6 +878,11 @@ async function pollLadder(force = false) {
     return { ok: false, why: e.message };
   }
 }
+// Declared HERE, before the first await pollLadder() below: pollLadder calls
+// watchSellVsCredit(), and a `let` further down the module is still in its
+// temporal dead zone when that first poll runs -- every restart's first ladder
+// poll threw "Cannot access 'underPending' before initialization" (2026-09-25).
+let underPending = null, underPolls = 0, underAnnounced = false;
 if (ROLE === 'primary') {
   await pollLadder();
   setInterval(pollLadder, 60000);
@@ -999,7 +1004,8 @@ function announceIndexPriced(reading) {
 // telling anyone: Step 3 rolled back, the premium set to 0, a market bug. So
 // it is WATCHED: alerted on change, after HELD_CONFIRM_POLLS agreeing ladder
 // polls, the same shape as the held-state alert it replaces.
-let underPending = null, underPolls = 0, underAnnounced = false;
+// (underPending / underPolls / underAnnounced are declared above the startup
+// poll: watchSellVsCredit runs inside the first pollLadder().)
 function watchSellVsCredit() {
   const under = ladderKnown() && st.ladderPrice < st.serviceRate;
   if (under === underPending) underPolls += 1;
