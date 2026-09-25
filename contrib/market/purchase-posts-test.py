@@ -450,7 +450,8 @@ class PayoutAnnounce(unittest.TestCase):
         self.assertIn("https://explorer.pc.am/tx/" + "ab" * 32, t)
         self.assertNotIn("Paid out", t)
         self.assertIn("--source", self.fake.calls[0])
-        self.assertEqual(self.fake.calls[0][self.fake.calls[0].index("--source") + 1], "pcoin-payout-announce")
+        # Owner 2026-09-25: purchase posts publish without review.
+        self.assertEqual(self.fake.calls[0][self.fake.calls[0].index("--source") + 1], "exchange-purchase")
 
     def test_other_payouts_keep_todays_text(self):
         rc, _ = self.run_with([self.p(2, purchase=False), self.p(3, asset="USD", sent="45.540000"),

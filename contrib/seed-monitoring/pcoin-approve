@@ -230,7 +230,12 @@ DESTS = {
 # an amount, every figure published is read back off explorer.pc.am here, and
 # every other character is a literal in this file. There is no field an upstream
 # can put a sentence in.
-AUTO_SOURCES = {"market-purchase", "wrapdesk"}
+# "exchange-purchase" (owner, 2026-09-25: "it should autoapprove no need manual
+# approve") qualifies the same way: pcoin-payout-announce's purchase_text() is a
+# literal template filled only with an integer count and a transaction id it has
+# proven is 64 hex characters, and it is posted only when a buyer's PCN
+# withdrawal is PAID -- never per trade. USD payout posts keep the owner's review.
+AUTO_SOURCES = {"market-purchase", "wrapdesk", "exchange-purchase"}
 
 AGENT_FLAGS = os.environ.get("AGENT_FLAG_DIR", "/etc/pcoin/agents")
 

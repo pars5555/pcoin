@@ -47,6 +47,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.error
@@ -146,9 +147,15 @@ def purchase_text(p, n):
         "That’s %d purchase%s on the road to a listing. Every one counts, and it’s real people "
         "choosing PCN that gets us there." % (n, "" if n == 1 else "s"),
     ]
-    if WITH_TXID and p.get("txid"):
+    # THIS TEXT PUBLISHES WITHOUT REVIEW (source exchange-purchase is in
+    # pcoin-approve's AUTO_SOURCES, owner 2026-09-25: "it should autoapprove no
+    # need manual approve"). So nothing from the feed may reach it except a
+    # number and a transaction id proven to be one: a PCN txid is exactly 64 lower
+    # hex characters, and anything else drops the link rather than print it.
+    txid = str(p.get("txid") or "")
+    if WITH_TXID and p.get("network") == "PCN" and re.fullmatch(r"[0-9a-f]{64}", txid):
         # Same proof, same switch as every other payout post.
-        lines += ["", "Check it on the chain:", EXPLORER.get(p["network"], "%s") % p["txid"]]
+        lines += ["", "Check it on the chain:", "https://explorer.pc.am/tx/%s" % txid]
     lines += ["", "exchange.pc.am is open if you’d like to be next."]
     return "\n".join(lines)
 
@@ -288,14 +295,16 @@ def main():
                     held = "payout %s is a purchase and the purchase count cannot be read: %s" % (p["id"], why)
                     break
             text = purchase_text(p, n)
+            source = "exchange-purchase"      # auto-published, like market purchases
         else:
             text = post_text(p, total)
+            source = "pcoin-payout-announce"  # still shown to the owner first
         if DRY:
             print("  would queue payout %s:\n%s\n" % (p["id"], text))
             done += 1
             continue
         r = subprocess.run(
-            [APPROVE, "submit", "--dest", DEST, "--source", "pcoin-payout-announce",
+            [APPROVE, "submit", "--dest", DEST, "--source", source,
              "--key", "payout-%s" % p["id"], "--text", text],
             capture_output=True, text=True, timeout=60)
         if r.returncode != 0:
