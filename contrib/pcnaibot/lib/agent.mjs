@@ -242,7 +242,7 @@ export class AgentClient {
   //   { type: 'tool',  name, phase: 'started'|'finished', ok, summary }
   //   { type: 'run',   run }        the finished AgentRun
   //   { type: 'end',   ok, aborted }
-  async *streamRun({ sessionId = null, message, model = null, maxTurns = null, title = null, system = null }, { abortSignal = null, idleTimeoutMs = 180000 } = {}) {
+  async *streamRun({ sessionId = null, message, model = null, maxTurns = null, title = null, system = null, effort = null }, { abortSignal = null, idleTimeoutMs = 180000 } = {}) {
     const path = sessionId
       ? `/v1/agent/sessions/${encodeURIComponent(sessionId)}/runs`
       : '/v1/agent/runs';
@@ -253,6 +253,7 @@ export class AgentClient {
     // Standing instructions (OonaCode's `system`, 2026-09-25): appended to the agent's own system
     // prompt and kept on the session, instead of pasted into every message the user sends.
     if (typeof system === 'string') body.system = system;
+    if (typeof effort === 'string' && effort) body.effort = effort;
 
     const ctrl = new AbortController();
     const onAbort = () => ctrl.abort();

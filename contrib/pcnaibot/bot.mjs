@@ -131,6 +131,11 @@ const ALLOW_OVERDRAFT = cfg.bool('ALLOW_OVERDRAFT', false);
 // 403 ("this is an API key for /v1/messages"), and vice versa.
 const AGENT_ENABLED = cfg.bool('AGENT_ENABLED', false);
 const AGENT_MAX_TURNS = cfg.int('AGENT_MAX_TURNS', 12);
+// Reasoning effort per model, "model:level,..." -- sent on each run. ONLY for models that take
+// one: every other model answers 400 "takes no effort level" (probed 2026-09-25: only gpt-5 and
+// gpt-5-mini accept it). gpt-5-mini at its default spent 27 s and 2,776 tokens thinking before a
+// 369-character answer; at `low` the same question ran in 4.3 s instead of 10.4 s, for less.
+const AGENT_EFFORT = new Map(cfg.list('AGENT_EFFORT').map((p) => p.split(':').map((s) => s.trim())).filter(([m, e]) => m && e));
 // The reservation ceiling for one agentic run, in CREDITS. Unlike a plain turn
 // there is no max_tokens to price a worst case from -- an agent may make many
 // model calls -- so the ceiling is declared rather than derived, and max_turns
@@ -929,6 +934,13 @@ You were charged $${escapeHtml(microUsdToString(actual, 6))} for this.`;
     //
     // The answer is Markdown as the model wrote it; Telegram gets its HTML dialect.
     await tg.sendLong(chatId, (answer ? mdToHtml(answer) : (out.cancelled ? '<i>stopped before it wrote anything</i>' : '(the agent returned no text)')) + note, { reply_markup: quickKeyboard(u) });
+    if (r.timing) {
+      const t = r.timing; const ms = (x) => (x === null ? null : x - t.start);
+      log.info('agent turn timing', {
+        model: row.model, stream_ms: ms(t.stream), first_text_ms: ms(t.firstText),
+        run_done_ms: ms(t.runDone), answer_sent_ms: Date.now() - t.start, chars: answer.length,
+      });
+    }
 
     // WHAT THE AGENT MADE, not just what it said about it.
     //
@@ -1115,9 +1127,16 @@ const TOOL_VERBS = {
   Glob: 'Looking through files', Grep: 'Searching', LS: 'Looking through files',
   WebFetch: 'Reading a page', WebSearch: 'Searching the web',
   TodoWrite: 'Planning', Task: 'Working', Agent: 'Working',
+  // OonaCode's media tools (2026-09-25). They arrive MCP-prefixed -- mcp__oonacode__generate_image
+  // -- and each takes a while (an image ~70 s, a video minutes), so the status says what and
+  // roughly how long rather than a bare "Working".
+  generate_image: 'Drawing the picture (about a minute)',
+  generate_video: 'Making the video (a few minutes)',
+  check_video: 'Finishing the video',
 };
 function toolVerb(name) {
-  return TOOL_VERBS[name] ?? 'Working';
+  const bare = String(name).replace(/^mcp__[^_]+(?:_[^_]+)*?__/, '');
+  return TOOL_VERBS[name] ?? TOOL_VERBS[bare] ?? 'Working';
 }
 
 const SANDBOX_RETRIES = 3;
@@ -1190,17 +1209,29 @@ async function runTurnAgentic({ chatId, updateId, model, text, resv, attachments
     const s = Math.floor((Date.now() - startedMs) / 1000);
     return s < 60 ? `${s}s` : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
   };
+  // HOLD THE FIRST SECONDS OF TEXT BACK FROM THE DRAFT. Telegram animates a draft's text as if
+  // it were being typed, at its own pace -- about 50 characters a second in Telegram Web. A
+  // short answer arrives from the model in one burst of ~1.5 s, so streaming it into the draft
+  // made a finished answer spend another 4-6 s typing itself out (measured 2026-09-25: the run
+  // done at +5.4 s, the text still growing at +9.7 s). The final sendMessage shows at once. So
+  // text goes into the draft only once it has been arriving for TEXT_HOLD_MS -- an answer
+  // short enough to finish inside that window is delivered whole, and a long one still streams.
+  const TEXT_HOLD_MS = 2500;
+  let textFirstAt = null;
+  const holdingText = () => textFirstAt === null || Date.now() - textFirstAt < TEXT_HOLD_MS;
   const render = () => {
-    if (shown !== '') return escapeHtml(shown);
-    return `<i>${escapeHtml(activity ?? 'Thinking')}… ${elapsed()}</i>`;
+    if (shown !== '' && !holdingText()) return escapeHtml(shown);
+    return `<i>${escapeHtml(activity ?? (shown !== '' ? 'Writing' : 'Thinking'))}… ${elapsed()}</i>`;
   };
+  // Per-turn timings, logged when the turn ends: where a slow answer's seconds went.
+  const timing = { start: startedMs, stream: null, firstText: null, runDone: null };
   // A Telegram draft expires after ~30 s of silence, and a single model call on a slow model
   // takes 40 s and more (measured 2026-09-14: qwen3.8-flash up to 43 s, glm-5.3 up to 127 s)
   // -- so the status vanished mid-call and the chat looked stuck ("it still thinking, why it
   // is so slow"). Re-push it every 15 s while the run works; it is the same line with the
   // clock moved on, and it stops the moment real text streams or the run ends.
   const keepalive = setInterval(() => {
-    if (shown === '') draft.push(render()).catch(() => undefined);
+    if (shown === '' || holdingText()) draft.push(render()).catch(() => undefined);
   }, 15000);
 
   // STOPPING MEANS INTERRUPTING THE RUN, NOT DROPPING THE STREAM. Aborting our fetch left the
@@ -1345,8 +1376,10 @@ async function runTurnAgentic({ chatId, updateId, model, text, resv, attachments
       maxTurns: AGENT_MAX_TURNS,
       title: sess ? null : `pcnaibot ${chatId}`,
       system,
+      effort: AGENT_EFFORT.get(model) ?? null,
     }, { abortSignal: hardAbort.signal })) {
       if (ev.type === 'session') {
+        if (timing.stream === null) timing.stream = Date.now();
         // WRITE THE ID DOWN THE MOMENT WE LEARN IT. A session id we lose is a
         // sandbox on their server we can never delete.
         sessionIdSeen = ev.sessionId;
@@ -1359,7 +1392,8 @@ async function runTurnAgentic({ chatId, updateId, model, text, resv, attachments
         else if (!stopTarget) stopTarget = ev.sessionId;
       } else if (ev.type === 'text') {
         shown += ev.delta;
-        await draft.maybePush(render());
+        if (textFirstAt === null) { textFirstAt = Date.now(); timing.firstText = textFirstAt; }
+        if (!holdingText()) await draft.maybePush(render());
       } else if (ev.type === 'tool') {
         // Only `started` sets the status; finishing simply clears it.
         //
@@ -1376,6 +1410,7 @@ async function runTurnAgentic({ chatId, updateId, model, text, resv, attachments
       }
     }
   } finally {
+    timing.runDone = Date.now();
     clearInterval(keepalive);
     clearInterval(lockTimer);
     activeStreams.delete(chatId);
@@ -1417,7 +1452,7 @@ async function runTurnAgentic({ chatId, updateId, model, text, resv, attachments
     );
   }
 
-  return { draft, out, sessionId: sessionIdSeen, text: shown };
+  return { draft, out, sessionId: sessionIdSeen, text: shown, timing };
 }
 
 // ---------------------------------------------------------------------------

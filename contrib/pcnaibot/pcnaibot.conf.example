@@ -275,6 +275,9 @@ OONACODE_AGENT_KEY=REPLACE - an OonaCode key of kind "agent"
 # stopped early, not a failure.
 # 30 is OonaCode's per-run maximum. 12 cut a logo off mid-fix (2026-09-24).
 AGENT_MAX_TURNS=30
+# Reasoning effort per model, sent on each run. Only gpt-5 and gpt-5-mini take one (probed
+# 2026-09-25); any other model listed here would be refused with a 400. low = much faster.
+AGENT_EFFORT=gpt-5-mini:low,gpt-5:low
 # The reservation ceiling for one run, in CREDITS (1000 credits = $1). There is
 # no max_tokens to derive a worst case from here, so it is declared; max_turns
 # is what actually bounds the run. Measured: a trivial run costs 1.1-2.7.
