@@ -1,0 +1,418 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""pcoin-purchase-announce -- post market.pc.am's "someone bought PCN" thank-you, as ROOT.
+
+    pcoin-purchase-announce              one pass; run from its timer
+    pcoin-purchase-announce --dry-run    check and render, submit nothing, remove nothing
+    pcoin-purchase-announce --status     what is waiting in the spool, touching nothing
+
+WHY THIS EXISTS. Every purchase post market.pc.am tried to make failed, from at
+least 2026-09-17 until this replaced it: the market runs as `pcoin-market` under
+ProtectSystem=strict and shelled out to pcoin-approve, whose queue
+(/var/lib/pcoin-approve, root 0700) it cannot write. The owner asked on
+2026-09-25 for the posts to be ON, and for every exchange.pc.am purchase too
+(that half is pcoin-payout-announce).
+
+The obvious fix -- give the market write access to the queue -- was refused on
+purpose. That queue publishes to @PCoinPCN by itself ("market-purchase" is in
+pcoin-approve's AUTO_SOURCES), so the internet-facing process would be one bug
+away from posting anything it liked to the public channel. Instead:
+
+    market (pcoin-market)                    this (root, every minute)
+    ---------------------                    -------------------------
+    paid $20+ order                          read purchase-<id>.json
+      -> announce-spool/purchase-<id>.json     -> re-read the order from the DB
+         {"v":1,"source":"market-purchase",    -> N from pcoin-listing-banner
+          "orderId":"<id>"}                    -> render the FIXED text here
+                                               -> pcoin-approve submit --key purchase-<id>
+                                               -> remove the request
+
+THE MARKET CANNOT POST TEXT. A request carries an order id and nothing else.
+The text is a literal in this file, the number comes from the banner's own
+count, and the order is re-checked in the database: paid, in a status that
+counts, $20 or more. The most a compromised market can do through the spool is
+ask for a real order to be thanked for -- and a bogus order would have to exist
+in the database, where the banner already counts it.
+
+THE SPOOL IS HOSTILE INPUT, so it is read like it: the directory is opened
+without following links and every file through that handle; a file must be a
+regular file owned by the market's user, with one link, under a few hundred
+bytes, named for the order it names. Nothing read from it is ever printed.
+
+FAILURES ARE LOUD. The last version logged its failure and carried on, which is
+how eight days of purchases went unannounced with nothing saying so. Here a
+submit the queue refuses, an unreadable database, or a request held longer than
+HOLD_ALERT_SECONDS fails the run, and OnFailure= pages ops. The request stays
+in the spool and is retried; nothing is lost and nothing posts twice (the
+queue's --key refuses a key it has seen).
+
+NO BACKLOG. Only requests written by the new market code are drained. Orders
+paid while the old path was broken are not in the spool and are not announced
+late -- they are already in the banner's count.
+"""
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+import time
+
+SPOOL = os.environ.get("PURCHASE_SPOOL", "/var/lib/pcoin-market/announce-spool")
+SPOOL_OWNER = os.environ.get("PURCHASE_SPOOL_OWNER", "pcoin-market")
+BANNER = os.environ.get("LISTING_BANNER", "/usr/local/bin/pcoin-listing-banner")
+APPROVE = os.environ.get("PCOIN_APPROVE", "/usr/local/bin/pcoin-approve")
+# `channel` is @PCoinPCN. Overridable ONLY to the private test destinations, so
+# the loop can be proven end to end before subscribers see it. Any other value
+# is refused -- a destination is never an arbitrary parameter (pcoin-approve's
+# own rule, property 4).
+DEST = os.environ.get("PURCHASE_ANNOUNCE_DEST", "channel")
+ALLOWED_DESTS = ("channel", "test", "selftest")
+# The source name is what makes the post publish without review: pcoin-approve
+# lists "market-purchase" in AUTO_SOURCES (owner, 2026-09-14/25: purchase posts
+# ON). A fixed template is the only thing that may carry it.
+SOURCE = "market-purchase"
+MAX_PER_RUN = int(os.environ.get("PURCHASE_ANNOUNCE_MAX", "3"))
+MAX_SCAN = 200            # directory entries looked at per run
+MAX_BYTES = 512           # a real request is ~70 bytes
+HOLD_ALERT_SECONDS = int(os.environ.get("PURCHASE_HOLD_ALERT_SECONDS", "1800"))
+TMP_MAX_AGE = 3600        # the market's own half-written temp files, if it died mid-write
+
+# Kept in step with ANNOUNCEABLE / COUNTED_MIN_USD in delivery.mjs and with the
+# banner's count. If one changes, all three change, or a post thanks somebody
+# for a purchase the bar does not count.
+ANNOUNCEABLE = ("awaiting_delivery", "sending", "delivered")
+
+NAME_RE = re.compile(r"^purchase-([A-Za-z0-9_-]{1,64})\.json$")
+ORDER_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+DRY = "--dry-run" in sys.argv
+# --status reads and reports; like --dry-run it removes nothing.
+TOUCH_NOTHING = DRY or "--status" in sys.argv
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
+def warn(msg):
+    print(msg, file=sys.stderr, flush=True)
+
+
+# ----------------------------------------------------------------- the text --
+def render(n):
+    """The post. The owner's wording from 2026-09-14, unchanged except that N is
+    now the banner's number (market + exchange), not the market's alone.
+
+    Plain text on purpose: pcoin-approve sends plain text unless told Markdown,
+    and a message with nothing to balance cannot be refused for not balancing.
+    """
+    n = int(n)
+    return ("Someone just bought PCN on market.pc.am \u2014 thank you. \U0001F389\n\n"
+            "That\u2019s %d purchase%s on the road to a listing. Every one counts, and it\u2019s "
+            "real people choosing PCN that gets us there.\n\n"
+            "market.pc.am is open if you\u2019d like to be next." % (n, "" if n == 1 else "s"))
+
+
+# ----------------------------------------------------------------- the spool -
+class Bad(Exception):
+    """A request that can never be posted. Removed, and said so."""
+
+
+def check_stat(st, owner_uid, max_bytes=MAX_BYTES):
+    """Refuse anything that is not a small regular file the market wrote.
+
+    Owner and link count matter because this runs as root: a symlink or a hard
+    link planted in the spool is how a writer that is not root gets root to read
+    a file it cannot. O_NOFOLLOW stops the first; nlink == 1 and the owner check
+    stop the second.
+    """
+    if not stat.S_ISREG(st.st_mode):
+        raise Bad("not a regular file")
+    if owner_uid is not None and st.st_uid != owner_uid:
+        raise Bad("not owned by %s" % SPOOL_OWNER)
+    if st.st_nlink != 1:
+        raise Bad("has %d links" % st.st_nlink)
+    if st.st_size > max_bytes:
+        raise Bad("is %d bytes" % st.st_size)
+
+
+def parse_record(raw, expected_id):
+    """The order id out of one request, or Bad. Exactly three keys, no more."""
+    try:
+        rec = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        raise Bad("is not JSON")
+    if not isinstance(rec, dict) or set(rec) != {"v", "source", "orderId"}:
+        raise Bad("does not have exactly v, source and orderId")
+    if rec["v"] != 1 or isinstance(rec["v"], bool):
+        raise Bad("is not version 1")
+    if rec["source"] != SOURCE:
+        raise Bad("names an unknown source")
+    oid = rec["orderId"]
+    if not isinstance(oid, str) or not ORDER_RE.match(oid):
+        raise Bad("carries an order id of unexpected shape")
+    if oid != expected_id:
+        raise Bad("names a different order than its file name")
+    return oid
+
+
+# The directory is opened once, without following a link, and every entry is
+# reached through that handle -- so swapping the spool for a symlink between
+# listing and reading changes nothing. POSIX only; the fallback exists so the
+# pure checks above can be exercised on a Windows workstation, and it is never
+# what runs on the server.
+_DIRFD = (os.open in os.supports_dir_fd and os.unlink in os.supports_dir_fd
+          and os.listdir in os.supports_fd and hasattr(os, "O_NOFOLLOW"))
+
+
+class Spool:
+    def __init__(self, path, owner_uid):
+        self.path, self.owner_uid, self.fd = path, owner_uid, None
+        if _DIRFD:
+            self.fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            st = os.fstat(self.fd)
+        else:
+            st = os.stat(path)
+        if not stat.S_ISDIR(st.st_mode):
+            raise OSError("spool is not a directory")
+        # Owner and mode together, and only where there IS an owner: on the
+        # server owner_uid is always set (pwd exists); it is None only on a
+        # Windows workstation, whose directories report 0o777 regardless.
+        if owner_uid is not None:
+            if st.st_uid != owner_uid:
+                raise OSError("spool is not owned by %s" % SPOOL_OWNER)
+            if st.st_mode & 0o022:
+                raise OSError("spool is group- or world-writable")
+
+    def names(self):
+        return sorted(os.listdir(self.fd if self.fd is not None else self.path))[:MAX_SCAN]
+
+    def read(self, name):
+        """(bytes, mtime). Raises Bad for anything that is not a plain request."""
+        if self.fd is not None:
+            try:
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=self.fd)
+            except OSError as e:
+                raise Bad("cannot be opened safely (%s)" % (e.strerror or type(e).__name__))
+        else:
+            fd = os.open(os.path.join(self.path, name), os.O_RDONLY | getattr(os, "O_BINARY", 0))
+        try:
+            st = os.fstat(fd)
+            check_stat(st, self.owner_uid)
+            raw = os.read(fd, MAX_BYTES + 1)
+        finally:
+            os.close(fd)
+        if len(raw) > MAX_BYTES:
+            raise Bad("grew while being read")
+        return raw, st.st_mtime
+
+    def lstat(self, name):
+        if self.fd is not None:
+            return os.stat(name, dir_fd=self.fd, follow_symlinks=False)
+        return os.lstat(os.path.join(self.path, name))
+
+    def remove(self, name):
+        try:
+            if self.fd is not None:
+                os.unlink(name, dir_fd=self.fd)
+            else:
+                os.unlink(os.path.join(self.path, name))
+        except FileNotFoundError:
+            pass
+
+
+def safe_name(name):
+    """A spool entry's name, fit for a log line: it is attacker-chosen text."""
+    return repr(name[:80])
+
+
+# ----------------------------------------------------------------- the order -
+def order_row(lb, order_id):
+    """(status, usd, paid) for one order, or None if there is none.
+
+    Raises lb.Unreadable when the database cannot be asked -- which HOLDS the
+    request, never drops it. The id is interpolated into SQL only after
+    ORDER_RE has allowed it: letters, digits, dash and underscore, nothing a
+    quote can be made of. The mysql client takes no bound parameters, so the
+    allow-list IS the escaping.
+    """
+    if not ORDER_RE.match(order_id):
+        raise ValueError("order id of unexpected shape")
+    out = lb.market_query("SELECT status, usd, paid_at IS NOT NULL FROM orders "
+                          "WHERE order_id = '%s' LIMIT 1;" % order_id)
+    line = out.split("\n", 1)[0].rstrip("\r")
+    if not line:
+        return None
+    parts = line.split("\t")
+    if len(parts) != 3:
+        raise lb.Unreadable("unexpected mysql output for one order")
+    try:
+        return parts[0], float(parts[1]), parts[2] == "1"
+    except ValueError:
+        raise lb.Unreadable("mysql output for one order is not numeric")
+
+
+def qualifies(row, min_usd):
+    """Is this an order the banner counts? Same test, same order of reasons."""
+    if row is None:
+        return False, "no such order"
+    status, usd, paid = row
+    if not paid:
+        return False, "not paid"
+    if status not in ANNOUNCEABLE:
+        return False, "status is %s" % status
+    if not (usd >= min_usd):
+        return False, "$%.2f is under $%g" % (usd, min_usd)
+    return True, None
+
+
+# ----------------------------------------------------------------- plumbing --
+def load_module(name, path):
+    """Load a script that has no .py suffix. argv is swapped for the duration
+    so the banner's `--dry-run in sys.argv` reads ITS argv, not ours."""
+    spec = importlib.util.spec_from_loader(name, importlib.machinery.SourceFileLoader(name, path))
+    m = importlib.util.module_from_spec(spec)
+    argv, sys.argv = sys.argv, [path]
+    try:
+        spec.loader.exec_module(m)
+    finally:
+        sys.argv = argv
+    return m
+
+
+def owner_uid():
+    try:
+        import pwd
+    except ImportError:            # Windows: tests only, where there is no owner to check
+        return None
+    try:
+        return pwd.getpwnam(SPOOL_OWNER).pw_uid
+    except KeyError:
+        return -1                  # matches nothing: every file is refused, loudly
+
+
+def submit(order_id, text):
+    """(ok, detail). ok is True for a new item AND for "already queued".
+
+    A timeout is NOT a refusal and not a success: the submit may have landed.
+    It is reported as not-ok, so the request stays and the next run submits
+    again -- which the queue's --key turns into "already queued" if it did."""
+    try:
+        r = subprocess.run([APPROVE, "submit", "--dest", DEST, "--source", SOURCE,
+                            "--key", "purchase-" + order_id, "--text", text],
+                           capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        return False, "pcoin-approve did not answer within 60 s"
+    except OSError as e:
+        return False, "pcoin-approve did not run: %s" % (e.strerror or type(e).__name__)
+    return r.returncode == 0, (r.stdout or r.stderr or "").strip()[:200]
+
+
+# ----------------------------------------------------------------- main -----
+def main():
+    if DEST not in ALLOWED_DESTS:
+        sys.exit("PURCHASE_ANNOUNCE_DEST=%r is not one of %s; refusing." % (DEST, ", ".join(ALLOWED_DESTS)))
+
+    uid = owner_uid()
+    try:
+        sp = Spool(SPOOL, uid)
+    except FileNotFoundError:
+        # The market unit's StateDirectory= creates it. Absent means the drop-in
+        # is not installed -- and then the market is logging "not spooled".
+        log("no spool at %s -- is the pcoin-market StateDirectory drop-in installed? nothing to do" % SPOOL)
+        return 0
+    except OSError as e:
+        sys.exit("REFUSING to read the spool %s: %s" % (SPOOL, e))
+
+    now = time.time()
+    pending, removed = [], 0
+    for name in sp.names():
+        if name.startswith("."):
+            # The market's own temp files. Left alone while it may still be
+            # writing one; cleared once clearly abandoned.
+            try:
+                if now - sp.lstat(name).st_mtime > TMP_MAX_AGE and not TOUCH_NOTHING:
+                    sp.remove(name)
+            except OSError:
+                pass
+            continue
+        m = NAME_RE.match(name)
+        try:
+            if not m:
+                raise Bad("is not a request name")
+            raw, mtime = sp.read(name)
+            oid = parse_record(raw, m.group(1))
+            pending.append((mtime, name, oid))
+        except Bad as e:
+            warn("removing spool entry %s: it %s" % (safe_name(name), e))
+            removed += 1
+            if not TOUCH_NOTHING:
+                sp.remove(name)
+
+    if "--status" in sys.argv:
+        log("  spool       : %s" % SPOOL)
+        log("  destination : %s" % DEST)
+        log("  waiting     : %d" % len(pending))
+        for mtime, name, oid in sorted(pending):
+            log("    %s  waiting %ds" % (oid, int(now - mtime)))
+        return 0
+
+    if not pending:
+        return 1 if removed and not DRY else 0
+
+    pending.sort()
+    lb = load_module("pcoin_listing_banner", BANNER)
+    failed, held, n = [], [], None
+    for mtime, name, oid in pending[:MAX_PER_RUN]:
+        try:
+            row = order_row(lb, oid)
+        except lb.Unreadable as e:
+            # Unknown is not "no". The request stays; the DB being unreadable
+            # is a fault the banner would fail on too.
+            failed.append("the market database could not be read (%s)" % e.reason)
+            break
+        ok, why = qualifies(row, lb.MIN_USD)
+        if not ok:
+            log("not announcing %s: %s; request removed" % (oid, why))
+            if not DRY:
+                sp.remove(name)
+            continue
+        if n is None:
+            try:
+                n = lb.post_number()
+            except lb.Unreadable as e:
+                held.append((mtime, oid, e.reason))
+                break
+        text = render(n)
+        if DRY:
+            log("would submit purchase-%s to %s:\n%s\n" % (oid, DEST, text))
+            continue
+        good, detail = submit(oid, text)
+        if not good:
+            # Kept for the next run: an unqueued post must be retried.
+            failed.append("pcoin-approve refused purchase-%s: %s" % (oid, detail))
+            break
+        sp.remove(name)
+        log("queued purchase-%s for %s (N=%d): %s" % (oid, DEST, n, detail))
+
+    for mtime, oid, why in held:
+        log("holding purchase-%s: the purchase count cannot be read (%s)" % (oid, why))
+    oldest = min(m for m, _, _ in pending)
+    if failed:
+        for f in failed:
+            warn(f)
+        return 1
+    if held and now - oldest > HOLD_ALERT_SECONDS:
+        warn("a purchase post has been held for %d minutes because the count cannot be read"
+             % ((now - oldest) // 60))
+        return 1
+    if removed and not DRY:
+        return 1               # something unexpected was in the spool; ops should know
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

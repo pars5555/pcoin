@@ -2,11 +2,28 @@
 # -*- coding: utf-8 -*-
 """pcoin-listing-banner -- a PINNED, self-updating progress card in a Telegram channel.
 
-What it shows: how many $20+ purchases market.pc.am has DELIVERED, against a
-public target. When the target is reached PCoin lists on a tracked exchange.
-The number is read from the market's own database every run; nothing here is
-typed in by hand, so the banner cannot drift from the truth the way a number on
-a page does (CLAUDE.md 8b: a number on a public page is a promise).
+What it shows: how many $20+ purchases PCoin has made, against a public
+target. When the target is reached PCoin lists on a tracked exchange. Two
+sources, added together:
+
+  * market.pc.am -- PAID orders of $20+, read from the market's own database;
+  * exchange.pc.am -- PAID PCN withdrawals that were purchases: the buyer had
+    bought at least that much PCN on the book, for $20+, and took it to their
+    own wallet (owner, 2026-09-25: "every purchase in exchange should be
+    reported if user withdrawal the pcn"). Read as `total.purchases` from the
+    exchange's public /api/payouts; the rule itself lives in the exchange repo,
+    lib/views.mjs purchaseWithdrawals().
+
+Nothing here is typed in by hand, so the banner cannot drift from the truth the
+way a number on a page does (CLAUDE.md 8b: a number on a public page is a
+promise).
+
+ONE SOURCE OF TRUTH FOR "N PURCHASES". The purchase posts quote the same number
+the pinned bar shows: pcoin-purchase-announce (market orders) and
+pcoin-payout-announce (exchange purchases) load THIS file as a module and call
+post_number(), which counts exactly the way main() does and never answers less
+than the bar already says. Two programs counting separately is how two public
+numbers come to disagree.
 
 Shape of one run:
 
@@ -34,6 +51,11 @@ Deliberate properties, each of which guards a real failure:
   channel. A banner showing 0 because MySQL was down for a minute is a lie that
   readers would remember. But a genuine count of ZERO is a number, not a
   failure, and must render (see parse_row).
+* THE NUMBER NEVER GOES DOWN IN PUBLIC. An unreadable exchange feed keeps the
+  last exchange figure read (kept in state.json, not zero), and a total smaller
+  than the one already published is REFUSED -- nothing is edited and the run
+  fails so OnFailure= pages ops. A count that falls means the data changed
+  under us, and a human should find out why before any number moves.
 * NO SECRET EVER REACHES AN ERROR MESSAGE. The DB password is passed in the
   environment, never on argv (/proc/<pid>/cmdline is world-readable), and no
   exception object that could carry argv or the token URL is ever stringified
@@ -63,7 +85,6 @@ being the newest message, which is what KEEP_AT_BOTTOM does.
 """
 
 import errno
-import fcntl
 import io
 import json
 import os
@@ -88,10 +109,13 @@ FONT_REG       = os.environ.get("BANNER_FONT_REGULAR", "/usr/share/fonts/truetyp
 CHAT_ID        = os.environ.get("BANNER_CHAT_ID", "").strip()       # NO default. See docstring.
 TARGET         = int(os.environ.get("BANNER_TARGET", "1000"))
 MIN_USD        = float(os.environ.get("BANNER_MIN_USD", "20"))
-# exchange.pc.am counts too, since 2026-09-16: a $20+ PURCHASE of PCN by a person
-# on the order book is the same event as a $20 order delivered by the market.
+# exchange.pc.am counts too. Since 2026-09-16 it was every $20+ buy FILL
+# (/api/listing-purchases); since 2026-09-25 it is a $20+ purchase the buyer
+# WITHDREW to their own wallet -- `total.purchases` of the public payout feed,
+# the owner's rule (see the docstring). limit=1 because only the totals are
+# read: they cover every paid payout, not just the ones listed.
 # Empty turns it off without touching this file.
-EXCHANGE_URL   = os.environ.get("BANNER_EXCHANGE_URL", "https://exchange.pc.am/api/listing-purchases").strip()
+EXCHANGE_URL   = os.environ.get("BANNER_EXCHANGE_URL", "https://exchange.pc.am/api/payouts?limit=1").strip()
 MAX_STALE_H    = float(os.environ.get("BANNER_MAX_STALE_H", "6"))
 ALLOW_PUBLIC   = os.environ.get("BANNER_ALLOW_PUBLIC", "0") == "1"
 MARKET_URL     = os.environ.get("BANNER_MARKET_URL", "https://market.pc.am")
@@ -180,6 +204,11 @@ def read_token():
 def take_lock():
     """One run at a time. A hand run overlapping a timer run posts TWO banners
     on the first run and races the state file on every later one."""
+    # Imported here, not at the top: fcntl is Unix-only, and this file is now
+    # also loaded AS A MODULE by the two purchase announcers -- and by their
+    # tests, on Windows -- none of which ever take this lock. A top-level import
+    # made the whole file unloadable there (pcoin-approve made the same move).
+    import fcntl
     os.makedirs(os.path.dirname(LOCK_PATH), exist_ok=True)
     fh = open(LOCK_PATH, "a+")
     try:
@@ -192,6 +221,25 @@ def take_lock():
 
 
 # ----------------------------------------------------------------- the count -
+class Unreadable(Exception):
+    """A figure that could not be read. NEVER a zero (CLAUDE.md 7.1).
+
+    `contract` separates weather from a fault: an exchange that did not answer
+    is weather and the last figure stands; an exchange that ANSWERED without the
+    fields this reads, or with a different $20 threshold, is a broken contract
+    that a human must hear about even while the last figure keeps the bar up.
+
+    Raised rather than exiting because the purchase announcers call these
+    functions too, and a helper that calls sys.exit() inside somebody else's
+    program takes that program down with it.
+    """
+
+    def __init__(self, reason, contract=False):
+        super().__init__(reason)
+        self.reason = reason
+        self.contract = contract
+
+
 def parse_row(out):
     """Parse one tab-separated mysql row into (count, usd, last_day).
 
@@ -204,18 +252,79 @@ def parse_row(out):
     row = out.split("\n", 1)[0].rstrip("\r")
     parts = row.split("\t")
     if len(parts) != 3:
-        die("unexpected mysql output: %r" % out[:120])
+        raise Unreadable("unexpected mysql output: %r" % out[:120])
     try:
         return int(parts[0]), float(parts[1]), parts[2]
     except ValueError:
-        die("mysql output not numeric: %r" % out[:120])
+        raise Unreadable("mysql output not numeric: %r" % out[:120])
+
+
+def market_db():
+    """(argv, env) for a read-only mysql client against the market database.
+
+    The password goes in the ENVIRONMENT, never on argv: /proc/<pid>/cmdline is
+    readable by every uid on this shared host, and any exception carrying argv
+    would otherwise reach the journal and, through OnFailure=, the ops channel.
+    Shared with pcoin-purchase-announce, which checks one order the same way.
+    """
+    try:
+        with open(MARKET_CONFIG) as f:
+            db = json.load(f)["db"]
+    except (OSError, KeyError, ValueError) as e:
+        raise Unreadable("cannot read market config %s: %s" % (MARKET_CONFIG, type(e).__name__))
+
+    user = str(db.get("user", ""))
+    pw   = str(db.get("password") or db.get("pass") or "")
+    name = str(db.get("database") or db.get("name") or "")
+    host = str(db.get("host", "127.0.0.1"))
+    port = str(db.get("port") or "")
+    sock = str(db.get("socketPath") or db.get("socket") or "")
+    if not (user and name):
+        raise Unreadable("market config has no db user/name")
+    if not pw:
+        # An empty password makes the client PROMPT, which under systemd means a
+        # 30 s hang and then a timeout that reads as a database problem.
+        raise Unreadable("market config has no db password; refusing to run a client that would prompt")
+    argv = ["mysql"]
+    if sock:
+        argv += ["--protocol=SOCKET", "--socket", sock]
+    else:
+        argv += ["--protocol=TCP", "-h", host] + (["-P", port] if port else [])
+    argv += ["-u", user, "-N", "-B", name]
+    return argv, dict(os.environ, MYSQL_PWD=pw)
+
+
+def market_query(sql):
+    """Run one read-only statement; return stdout. Raises Unreadable."""
+    argv, env = market_db()
+    try:
+        r = subprocess.run(argv + ["-e", sql], capture_output=True, text=True, timeout=30, env=env)
+    except subprocess.TimeoutExpired:
+        # NEVER "% e": TimeoutExpired.__str__ embeds the full argv list.
+        raise Unreadable("mysql did not answer within 30 s")
+    except OSError as e:
+        raise Unreadable("mysql did not run: %s" % e.strerror)
+    if r.returncode != 0:
+        # stderr from mysql never contains the password; it echoes host/user only
+        raise Unreadable("mysql failed (rc %d): %s" % (r.returncode, r.stderr.strip()[:200]))
+    return r.stdout
 
 
 def count_orders():
+    """Die-on-failure wrapper for main(): the banner's own run treats an
+    unreadable market database as fatal (see the module docstring)."""
+    try:
+        return market_figures()
+    except Unreadable as e:
+        die(e.reason)
+
+
+def market_figures():
     """PAID orders worth at least MIN_USD, plus the dollars they represent.
 
     Read-only, through the mysql client so this script carries no driver
-    dependency. A failure here is fatal on purpose -- see the module docstring.
+    dependency. Raises Unreadable; main() makes that fatal on purpose -- see the
+    module docstring.
 
     Counted from PAYMENT, not from delivery (changed 2026-09-14, owner's
     instruction). Those are the same instant for an automatic delivery and hours
@@ -225,90 +334,133 @@ def count_orders():
     allow-list rather than the paid_at test that keeps our own tests out;
     'needs_review' is an undecided payment and counts for neither side yet.
     """
-    try:
-        with open(MARKET_CONFIG) as f:
-            db = json.load(f)["db"]
-    except (OSError, KeyError, ValueError) as e:
-        die("cannot read market config %s: %s" % (MARKET_CONFIG, type(e).__name__))
-
-    user = str(db.get("user", ""))
-    pw   = str(db.get("password") or db.get("pass") or "")
-    name = str(db.get("database") or db.get("name") or "")
-    host = str(db.get("host", "127.0.0.1"))
-    port = str(db.get("port") or "")
-    sock = str(db.get("socketPath") or db.get("socket") or "")
-    if not (user and name):
-        die("market config has no db user/name")
-    if not pw:
-        # An empty password makes the client PROMPT, which under systemd means a
-        # 30 s hang and then a timeout that reads as a database problem.
-        die("market config has no db password; refusing to run a client that would prompt")
-
-    # Statuses kept in step with ANNOUNCEABLE in /opt/pcoin-market/delivery.mjs.
-    # If you change one, change the other, or the pinned bar and the channel
-    # post will quote different numbers for the same event.
+    # Statuses kept in step with ANNOUNCEABLE in /opt/pcoin-market/delivery.mjs
+    # and in pcoin-purchase-announce. If you change one, change the others, or
+    # the pinned bar and the channel post will quote different numbers for the
+    # same event.
     sql = ("SELECT COUNT(*), COALESCE(ROUND(SUM(usd),2),0), "
            "COALESCE(DATE_FORMAT(MAX(delivered_at), '%%Y-%%m-%%d'), '') "
            "FROM orders WHERE paid_at IS NOT NULL AND usd >= %s "
            "AND status IN ('awaiting_delivery','sending','delivered');" % (MIN_USD,))
-
-    # The password goes in the ENVIRONMENT, never on argv: /proc/<pid>/cmdline is
-    # readable by every uid on this shared host, and any exception carrying argv
-    # would otherwise reach the journal and, through OnFailure=, the ops channel.
-    argv = ["mysql"]
-    if sock:
-        argv += ["--protocol=SOCKET", "--socket", sock]
-    else:
-        argv += ["--protocol=TCP", "-h", host] + (["-P", port] if port else [])
-    argv += ["-u", user, "-N", "-B", name, "-e", sql]
-    env = dict(os.environ, MYSQL_PWD=pw)
-
-    try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=30, env=env)
-    except subprocess.TimeoutExpired:
-        # NEVER "% e": TimeoutExpired.__str__ embeds the full argv list.
-        die("mysql did not answer within 30 s")
-    except OSError as e:
-        die("mysql did not run: %s" % e.strerror)
-    if r.returncode != 0:
-        # stderr from mysql never contains the password; it echoes host/user only
-        die("mysql failed (rc %d): %s" % (r.returncode, r.stderr.strip()[:200]))
-    return parse_row(r.stdout)
+    return parse_row(market_query(sql))
 
 
-def count_exchange():
-    """$20+ purchases on exchange.pc.am: the count, and the dollars they paid.
+def parse_exchange_feed(j):
+    """(purchases, usd) out of exchange.pc.am's /api/payouts body. Raises Unreadable.
 
-    UNREADABLE IS NOT ZERO. A purchase count only ever goes up, so if the
-    exchange cannot be reached the last figure we read still stands and the bar
-    stays truthful, a few minutes stale at worst. If we have never read it, the
-    run is abandoned instead of publishing a total we know is short — the same
-    rule the market DB failure follows, for the same reason: a number on a public
-    card is a promise, and one that goes DOWN is the promise most people notice.
+    Every check here is a CONTRACT check -- the exchange answered, so the fault
+    is not weather: missing fields (an exchange still on the code from before
+    2026-09-25), a negative or non-integer count, or a threshold that is not
+    ours. Adding two different kinds of "purchase" together would publish a
+    number nobody could define, so a different minimum is refused, never mixed.
     """
-    if not EXCHANGE_URL:
-        return 0, 0.0
-    cache = os.path.join(STATE_DIR, "exchange-last.json")
+    t = j.get("total") if isinstance(j, dict) else None
+    if not isinstance(t, dict) or "purchases" not in t or "purchasesUsd" not in t:
+        raise Unreadable("the exchange feed has no total.purchases/purchasesUsd -- is exchange.pc.am "
+                         "running the 2026-09-25 code?", contract=True)
+    c = t["purchases"]
+    if isinstance(c, bool) or not isinstance(c, int) or c < 0:
+        raise Unreadable("the exchange feed's total.purchases is not a count: %r" % (c,), contract=True)
+    try:
+        u = float(t["purchasesUsd"])
+        m = float(t.get("purchaseMinUsd"))
+    except (TypeError, ValueError):
+        raise Unreadable("the exchange feed's purchase dollars or minimum are not numbers", contract=True)
+    if u < 0:
+        raise Unreadable("the exchange feed's purchasesUsd is negative", contract=True)
+    if abs(m - MIN_USD) > 1e-6:
+        raise Unreadable("the exchange counts purchases of $%g+ and this banner counts $%g+; refusing to "
+                         "add two different kinds of purchase together" % (m, MIN_USD), contract=True)
+    return c, round(u, 2)
+
+
+def read_exchange():
+    """The exchange's figures, fresh. Raises Unreadable."""
     try:
         req = urllib.request.Request(EXCHANGE_URL, headers={"accept": "application/json"})
         with urllib.request.urlopen(req, timeout=15) as r:
             j = json.load(r)
-        c, u = int(j["purchases"]), float(j["totalUsd"])
-        os.makedirs(STATE_DIR, exist_ok=True)
-        tmp = cache + ".tmp"
-        with open(tmp, "w") as fh:
-            json.dump({"purchases": c, "usd": u}, fh)
-        os.replace(tmp, cache)
-        return c, u
-    except Exception as e:                     # noqa: BLE001 - every failure is the same answer
-        try:
-            with open(cache) as fh:
-                j = json.load(fh)
-            log("exchange.pc.am unreadable (%s); keeping its last figure of %d purchases"
-                % (type(e).__name__, int(j["purchases"])))
-            return int(j["purchases"]), float(j["usd"])
-        except Exception:                      # noqa: BLE001
-            die("exchange.pc.am unreadable and never read before; not publishing a total that is short", 0)
+    except Exception as e:                     # noqa: BLE001 - every transport failure is weather
+        raise Unreadable("exchange.pc.am unreadable (%s)" % type(e).__name__)
+    return parse_exchange_feed(j)
+
+
+def exchange_figures(st, feed=None):
+    """(purchases, usd, fresh, fault) for exchange.pc.am. Raises Unreadable.
+
+    `fresh` is False when the figure is the remembered one. `fault` is None, or
+    the reason a CONTRACT check failed while the remembered figure was used: the
+    number is safe to show, and the banner still fails its run so ops hears.
+
+    `feed` is a body the caller already fetched (pcoin-payout-announce reads the
+    same feed for its own list, and one snapshot must serve both). Otherwise the
+    feed is read here.
+
+    UNREADABLE IS NOT ZERO. A purchase count only ever goes up, so if the
+    exchange cannot be read the last figure read still stands and the bar stays
+    truthful, a few minutes stale at worst. That figure lives in the banner's
+    state (st["exchange"]), tagged with the URL it came from: the cache from
+    before 2026-09-25 (exchange-last.json) counted buy FILLS, a different
+    thing, and is deliberately never read. If there is no figure for this URL,
+    this raises -- and the caller refuses to publish a total it knows is short.
+
+    Never writes. Only the banner's own run persists what was read
+    (remember_exchange), so the announcers cannot race its state file.
+    """
+    if not EXCHANGE_URL:
+        return 0, 0.0, True, None
+    try:
+        c, u = parse_exchange_feed(feed) if feed is not None else read_exchange()
+        return c, u, True, None
+    except Unreadable as e:
+        last = (st or {}).get("exchange")
+        if isinstance(last, dict) and last.get("url") == EXCHANGE_URL \
+                and isinstance(last.get("purchases"), int) and not isinstance(last.get("purchases"), bool):
+            log("%s; keeping its last figure of %d purchase(s) read at %s UTC"
+                % (e.reason, last["purchases"],
+                   time.strftime("%Y-%m-%d %H:%M", time.gmtime(float(last.get("read_at") or 0)))))
+            return (last["purchases"], float(last.get("usd") or 0.0), False,
+                    e.reason if e.contract else None)
+        raise Unreadable("%s, and no earlier figure from %s is on record; not publishing a total "
+                         "that is short" % (e.reason, EXCHANGE_URL), contract=e.contract)
+
+
+def remember_exchange(st, purchases, usd):
+    """Record a FRESH exchange reading in the banner's state (in memory; the
+    caller saves). Only the banner's own run calls this."""
+    st["exchange"] = {"url": EXCHANGE_URL, "purchases": int(purchases), "usd": float(usd),
+                      "read_at": int(time.time())}
+
+
+def fresh_total(st, feed=None):
+    """What the banner would count right now. Raises Unreadable.
+
+    Returns a dict: market_count, market_usd, last_day, exchange_count,
+    exchange_usd, exchange_fresh, exchange_fault, count, usd.
+    """
+    m_count, m_usd, last_day = market_figures()
+    e_count, e_usd, e_fresh, e_fault = exchange_figures(st, feed)
+    return {"market_count": m_count, "market_usd": m_usd, "last_day": last_day,
+            "exchange_count": e_count, "exchange_usd": e_usd,
+            "exchange_fresh": e_fresh, "exchange_fault": e_fault,
+            "count": m_count + e_count, "usd": round(m_usd + e_usd, 2)}
+
+
+def post_number(feed=None):
+    """THE number a purchase post quotes: the one the pinned bar shows, or is
+    about to show. Raises Unreadable.
+
+    Counted exactly as main() counts, then floored at what the bar already
+    published: the banner refuses to publish a smaller number, so a post that
+    quoted one would disagree with the pin above it. Reads the banner's state,
+    never writes it.
+    """
+    st = load_state()
+    n = fresh_total(st, feed)["count"]
+    last = st.get("last_count")
+    if isinstance(last, int) and not isinstance(last, bool) and last > n:
+        return last
+    return n
 
 
 # ----------------------------------------------------------------- state ----
@@ -328,6 +480,7 @@ def load_state():
     s.setdefault("last_usd", None)
     s.setdefault("last_edit", 0)
     s.setdefault("poll_id", None)        # the fun vote, posted once and never again
+    s.setdefault("exchange", None)       # last FRESH exchange reading: {url, purchases, usd, read_at}
     return s
 
 
@@ -346,8 +499,10 @@ def save_state(s):
             os.fsync(dfd)             # ...and so does the directory entry
         finally:
             os.close(dfd)
-    except OSError:
-        pass                          # best effort; the rename itself is still atomic
+    except (OSError, AttributeError):
+        # best effort; the rename itself is still atomic. AttributeError is
+        # Windows (no os.O_DIRECTORY), where only the tests ever run this.
+        pass
 
 
 def touch_heartbeat():
@@ -463,7 +618,8 @@ def caption(count, usd, target, as_of_utc):
     return (
         "<b>%s</b>\n"
         "%s  <b>%s</b> / %s\n\n"
-        "Every <b>$20+</b> purchase on exchange.pc.am or <a href=\"%s\">market.pc.am</a> counts as one. "
+        "Every <b>$20+</b> purchase counts as one: on <a href=\"%s\">market.pc.am</a>, or on exchange.pc.am "
+        "once the PCN is withdrawn to your own wallet. "
         "At <b>%s</b>, PCoin goes on a tracked exchange.\n"
         "<i>%s purchases · $%s bought · as of %s UTC · read live, not typed in · "
         "no price promises</i>"
@@ -510,8 +666,12 @@ def widget_text(count, usd, target, as_of_utc):
     return (
         "%s <b>%.1f%%</b> \u2014 %s\n"
         "<b>%s</b> / %s purchases  \u00b7  <b>$%s</b> bought  \u00b7  as of %s UTC\n"
-        "<i>Every $20+ purchase on exchange.pc.am or <a href=\"%s\">market.pc.am</a> counts. "
-        "No price promises.  \u00b7  "
+        # "once withdrawn" is not decoration: since 2026-09-25 an exchange
+        # purchase counts when the buyer takes the PCN to their own wallet, and
+        # a line saying every exchange purchase counts would be a promise the
+        # number does not keep.
+        "<i>Every $20+ purchase counts: on <a href=\"%s\">market.pc.am</a>, or on exchange.pc.am once "
+        "the PCN is withdrawn to your own wallet. No price promises.  \u00b7  "
         "<a href=\"https://t.me/PCoinPCNChat\">Questions? Ask in the chat</a></i>"
     ) % (bar, pct, BANNER_MARKER, format(count, ","), format(target, ","),
          format(usd, ",.0f"), as_of_utc, MARKET_URL)
@@ -722,12 +882,39 @@ def main():
     if not DRY_RUN:
         lock = take_lock()           # noqa: F841 -- held open for the life of the process
 
+    # State first: the remembered exchange figure lives in it, and so does the
+    # number already published, which is the floor checked below.
+    st = load_state()
+
     count, usd, last_day = count_orders()
-    ex_count, ex_usd = count_exchange()
-    if ex_count:
-        log("exchange.pc.am adds %d purchase(s), $%.2f" % (ex_count, ex_usd))
+    try:
+        ex_count, ex_usd, ex_fresh, ex_fault = exchange_figures(st)
+    except Unreadable as e:
+        # Never read under this URL: abandon the run rather than publish a total
+        # known to be short. Weather exits 0 (as it always has -- the next run is
+        # ten minutes away); a broken contract exits 1 so ops hears about it.
+        die(e.reason, 1 if e.contract else 0)
+    if ex_fresh and not DRY_RUN:
+        remember_exchange(st, ex_count, ex_usd)
+    log("exchange.pc.am adds %d purchase(s), $%.2f%s"
+        % (ex_count, ex_usd, "" if ex_fresh else " (its last known figure)"))
     count += ex_count
-    usd += ex_usd
+    usd = round(usd + ex_usd, 2)
+
+    # NEVER A SMALLER NUMBER THAN THE ONE ALREADY UP. Checked against the state
+    # of THIS chat only: a banner that moved channels starts again from nothing.
+    last = st.get("last_count")
+    if st.get("chat_id") == CHAT_ID and isinstance(last, int) and not isinstance(last, bool) and count < last:
+        msg = ("REFUSING to publish %d purchases: the banner already shows %d, and a public count "
+               "does not go down. Market %d + exchange %d%s. Find out what changed (an order "
+               "re-statused? an exchange payout reclassified?) before anything is edited."
+               % (count, last, count - ex_count, ex_count, "" if ex_fresh else " (last known)"))
+        if DRY_RUN:
+            log("DRY RUN -- " + msg)
+            return 0
+        save_state(st)          # keep the fresh exchange reading; the banner is untouched
+        die(msg)
+
     as_of = time.strftime("%Y-%m-%d %H:%M", time.gmtime())
     text = widget_text(count, usd, TARGET, as_of)
     png = render_card(count, usd, TARGET, as_of) if STYLE == "card" else None
@@ -747,7 +934,6 @@ def main():
         return 0
 
     token = read_token()
-    st = load_state()
 
     # A state file from a different chat is not this banner: start fresh rather
     # than edit a message in the wrong channel. Say so loudly -- the OLD channel
@@ -758,8 +944,9 @@ def main():
             log("WARNING: the banner has MOVED from chat %s to %s. Message %s is still pinned in "
                 "the old channel, is now frozen, and still says it updates itself -- delete it by hand."
                 % (st["chat_id"], CHAT_ID, st["message_id"]))
+        # The exchange reading is about the exchange, not the chat: carried over.
         st = {"chat_id": CHAT_ID, "message_id": None, "last_count": None,
-              "last_usd": None, "last_edit": 0}
+              "last_usd": None, "last_edit": 0, "exchange": st.get("exchange")}
 
     # A lost sendPhoto RESPONSE is not a failed send (CLAUDE.md 7.6). Before
     # posting a first banner, look at what is actually pinned: if it is one of
@@ -779,8 +966,10 @@ def main():
     if st["message_id"] and unchanged and fresh_enough:
         log("no change (count=%d, $%.2f) and banner is %.1fh old; not editing"
             % (count, usd, (now - float(st["last_edit"])) / 3600))
+        if ex_fresh:
+            save_state(st)      # so the remembered exchange figure is this run's
         touch_heartbeat()
-        return 0
+        return 1 if ex_fault else 0
 
     figures_changed = (st["last_count"] != count or st["last_usd"] != usd)
 
@@ -895,6 +1084,12 @@ def main():
     st["last_edit"] = now
     save_state(st)
     touch_heartbeat()
+    if ex_fault:
+        # Published on the remembered exchange figure, which is safe. The feed
+        # answering in a shape this cannot read is not weather, so the run
+        # still fails and OnFailure= says so.
+        log("exchange feed contract broken: %s" % ex_fault)
+        return 1
     return 0
 
 

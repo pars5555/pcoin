@@ -1,6 +1,9 @@
 [Unit]
 Description=PCoin — queue a payout announcement for the owner's approval
 After=network-online.target
+# A held purchase post (N unreadable) or a refused submit exits 1; without this
+# nobody hears about it. In [Unit], never [Service] -- there it is ignored.
+OnFailure=pcoin-alert@%n.service
 
 [Service]
 Type=oneshot
@@ -9,4 +12,11 @@ ExecStart=/usr/local/bin/pcoin-payout-announce
 # It is proof anybody can check, and it also publishes the recipient's address
 # next to "a PCoin user" -- which is why it is off unless chosen.
 Environment=PAYOUT_ANNOUNCE_TXID=1
+# A payout that was a PURCHASE quotes the listing banner's "N purchases", which
+# this script gets by calling pcoin-listing-banner's own count. Reading the
+# banner's settings too means N is counted with the configuration the pinned
+# bar uses (BANNER_MIN_USD, BANNER_EXCHANGE_URL), not with defaults that could
+# drift from it. "-": the defaults are right, and a missing file must not stop
+# payout posts.
+EnvironmentFile=-/etc/default/pcoin-listing-banner
 Nice=10

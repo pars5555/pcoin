@@ -15,7 +15,7 @@
 // loads mysql2 from (so the copy finds it too), removed at the end. Every
 // '/opt/pcoin-market/' in server.mjs points there, the Telegram config at a file that does not exist
 // (alerts go to stdout, never to Telegram), and delivery.mjs's public purchase
-// announcement at a program that does not exist. Each patch is counted and the
+// announcement at a spool directory that does not exist. Each patch is counted and the
 // test refuses to start if one did not apply. The config it writes points every
 // service at 127.0.0.1, with test-only secrets. The price watch still reads the
 // public price.pc.am once at startup, as the server always does. Run it on a
@@ -71,7 +71,10 @@ patch('server.mjs', [
   ['const PORT  = 8789;', `const PORT  = ${WEBPORT};`, 1],
   ["readNotifyConfig('/etc/pcoin/alert.conf')", `readNotifyConfig('${APPP}no-such-alert.conf')`, 1],
 ]);
-patch('delivery.mjs', [["'/usr/local/bin/pcoin-approve'", `'${APPP}no-such-pcoin-approve'`, 1]]);
+// The purchase post is a request file in a spool a root timer drains
+// (delivery.mjs ANNOUNCE_SPOOL). Aimed at a directory that does not exist, the
+// write fails, is logged, and nothing is announced.
+patch('delivery.mjs', [["'/var/lib/pcoin-market/announce-spool'", `'${APPP}no-such-announce-spool'`, 1]]);
 // Nothing the server loads may still name a production path it would act on.
 {
   const seen = new Set(), todo = ['server.mjs'];
@@ -81,7 +84,7 @@ patch('delivery.mjs', [["'/usr/local/bin/pcoin-approve'", `'${APPP}no-such-pcoin
     seen.add(f);
     const s = readFileSync(join(APP, f), 'utf8');
     for (const m of s.matchAll(/from '\.\/([\w-]+\.mjs)'/g)) todo.push(m[1]);
-    for (const bad of ['/opt/pcoin-market', '/etc/pcoin/', '/usr/local/bin/']) {
+    for (const bad of ['/opt/pcoin-market', '/etc/pcoin/', '/usr/local/bin/', '/var/lib/pcoin-market/']) {
       if (s.split('\n').some(l => l.includes(bad) && !/^\s*(\/\/|\*)/.test(l))) {
         throw new Error(`REFUSING: ${f} still names ${bad} after patching`);
       }

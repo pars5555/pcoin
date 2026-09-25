@@ -1,0 +1,15 @@
+[Unit]
+Description=Drain market.pc.am purchase posts every minute
+
+[Timer]
+# A minute, because the owner asked for the post when the payment lands
+# (2026-09-14: "once payment received on nowpayment it should post on
+# channel"). An empty spool costs one directory listing: no database read, no
+# network.
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Unit=pcoin-purchase-announce.service
+
+[Install]
+WantedBy=timers.target

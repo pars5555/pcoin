@@ -1,0 +1,35 @@
+[Unit]
+Description=PCoin -- post market.pc.am purchase thank-yous from the market's spool (as root)
+Documentation=https://github.com/pars5555/pcoin/blob/main/contrib/market/pcoin-purchase-announce
+After=network-online.target mariadb.service
+Wants=network-online.target
+
+# Fires when a post could not be queued, the market database could not be read,
+# the spool held something that is not a request, or a post has been held for
+# half an hour. The previous version of this path failed on EVERY purchase for
+# eight days and said so only in a journal nobody read.
+OnFailure=pcoin-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pcoin-purchase-announce
+
+# The banner's settings (BANNER_MIN_USD, BANNER_EXCHANGE_URL), so the number in
+# the post is counted with exactly the configuration the pinned bar uses. The
+# "-" because the defaults are right; a missing file must not stop the posts.
+EnvironmentFile=-/etc/default/pcoin-listing-banner
+
+# ROOT, deliberately: it reads the market's database credentials (root-only
+# /opt/pcoin-market/config.json, as the banner does) and hands the post to
+# pcoin-approve, whose queue is root's. It is NOT hardened with
+# ProtectSystem=strict + ReadWritePaths=: it shells into pcoin-approve, which
+# writes its queue and, through pcoin-notify, that tool's own state, and a
+# ReadWritePaths list that drifts from what pcoin-approve touches would make the
+# post path fail silently -- the exact failure being fixed. pcoin-payout-announce
+# runs the same way for the same reason.
+NoNewPrivileges=true
+PrivateTmp=true
+StateDirectory=pcoin-purchase-announce
+Nice=10
+MemoryMax=128M
+TimeoutStartSec=180

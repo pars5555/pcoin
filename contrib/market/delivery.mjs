@@ -30,6 +30,9 @@
 //      resent.
 
 import { readFileSync } from 'node:fs';
+import { writeFile, rename, unlink, access } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
+import { join } from 'node:path';
 
 export const AUTO_MAX_USD   = 25;      // at or below this, the server sends
 export const FLOAT_TARGET   = 30000;   // PCN — top the hot wallet up to here
@@ -44,6 +47,26 @@ export const OWNER_BAL_MAX_AGE_MS = 30 * 60 * 1000;   // stop selling past this
 // the post's number and the pinned progress bar can never disagree.
 const ANNOUNCEABLE = ['awaiting_delivery', 'sending', 'delivered'];
 const COUNTED_MIN_USD = 20;   // must match BANNER_MIN_USD in pcoin-listing-banner
+
+// WHERE A PURCHASE POST IS ASKED FOR. Not the approval queue.
+//
+// This process used to run /usr/local/bin/pcoin-approve itself, and every
+// attempt since at least 2026-09-17 failed: it runs as `pcoin-market` under
+// ProtectSystem=strict and the queue (/var/lib/pcoin-approve, root 0700) is not
+// its to write. The fix is deliberately NOT to let it write there. That queue
+// publishes to @PCoinPCN by itself, so the internet-facing process -- checkout,
+// the IPN, the admin panel -- would be one bug away from posting anything it
+// liked to the public channel.
+//
+// So it drops a request here, in a directory it owns (the unit's
+// StateDirectory=pcoin-market/announce-spool), and a ROOT timer on the same box
+// (contrib/market/pcoin-purchase-announce) drains it: it re-reads the order from
+// the database, renders the owner-approved text itself, and only then submits.
+// The request carries an ORDER ID and nothing else -- no text, no number -- so
+// the most a compromised market can do through it is ask for a real, paid,
+// $20+ order to be thanked for.
+export const ANNOUNCE_SPOOL = '/var/lib/pcoin-market/announce-spool';
+const SPOOL_ORDER_ID = /^[A-Za-z0-9_-]{1,64}$/;   // the root side refuses anything else
 
 /** Minimal JSON-RPC client for the local node.
  *
@@ -97,7 +120,8 @@ export function makeNodeRpc({ url, cookiePath, walletName, rpcAuth = null }) {
   };
 }
 
-export function makeDelivery({ pool, node, notify, settings = null, log = console }) {
+export function makeDelivery({ pool, node, notify, settings = null, log = console,
+                               announceSpool = ANNOUNCE_SPOOL }) {
   const q = async (sql, args = []) => (await pool.query(sql, args))[0];
   // Limits are live settings when a store is wired in, and the module constants
   // otherwise. The constants stay meaningful: they are what a fresh install
@@ -411,63 +435,69 @@ export function makeDelivery({ pool, node, notify, settings = null, log = consol
    *  (the usual one, owner's instruction 2026-09-14 -- "once payment received on
    *  nowpayment it should post on channel"), and recordSent() when the coins go
    *  out, which covers an order delivered without ever passing through an IPN.
-   *  `pcoin-approve --key purchase-<id>` dedupes, so whichever fires first
-   *  publishes and the other does nothing.
+   *  Both only ever produce ONE post: the spool file is named for the order, so
+   *  a second request for it is the same file, and the root drainer submits
+   *  with `pcoin-approve --key purchase-<id>`, which refuses a key it has seen.
    *
    *  EVERY qualifying purchase is announced, the project's own accounts
    *  included -- owner's decision, same day. An earlier guard suppressed
    *  own-account buys; it was removed deliberately, so do not reinstate it
    *  without asking him.
    *
+   *  WHAT THIS DOES NOT DO ANY MORE: write the text or count the purchases.
+   *  Both moved to the root drainer (see ANNOUNCE_SPOOL above), so the post's
+   *  "N purchases" is the number the pinned banner shows -- market AND
+   *  exchange.pc.am -- counted by the one program that counts it.
+   *
    *  Never throws. An announcement must not be able to affect a delivery, and
    *  must not turn an IPN into a non-200 that makes NOWPayments retry a payment
    *  we have already recorded.
    */
   async function announcePurchase(orderId) {
+    let tmp = null;
     try {
+      const id = String(orderId);
+      // A name that could leave the directory, or that the root side would
+      // refuse anyway, is never written. Order ids are 'M' + base36 + hex.
+      if (!SPOOL_ORDER_ID.test(id)) {
+        log.error('[announce] refusing to spool an order id of unexpected shape: ' + JSON.stringify(id).slice(0, 80));
+        return;
+      }
       // Re-read rather than trust the caller. The IPN branch that calls this
       // may have moved the order to needs_review a few lines earlier -- an
       // UNBACKED reservation or an UNDERPAYMENT -- and neither is a sale.
-      // Keeping the test here means every future caller inherits it.
+      // Keeping the test here means every future caller inherits it. (The root
+      // drainer checks again, from the database, before anything is posted.)
       // `q` already unwraps mysql2's [rows, fields], so this is ONE level of
       // destructuring, not two. `const [[o]]` here threw on every call.
       const [o] = await q(
-        `SELECT status, usd FROM orders WHERE order_id=?`, [orderId]);
-      if (!o) { log.error('[announce] no such order ' + orderId); return; }
+        `SELECT status, usd FROM orders WHERE order_id=?`, [id]);
+      if (!o) { log.error('[announce] no such order ' + id); return; }
       if (!ANNOUNCEABLE.includes(o.status)) {
-        log.info?.('[announce] not announcing ' + orderId + ': status ' + o.status);
+        log.info?.('[announce] not announcing ' + id + ': status ' + o.status);
         return;
       }
       if (!(Number(o.usd) >= COUNTED_MIN_USD)) return;
 
-      const [c] = await q(
-        `SELECT COUNT(*) AS n FROM orders
-          WHERE paid_at IS NOT NULL AND usd >= ?
-            AND status IN (${ANNOUNCEABLE.map(() => '?').join(',')})`,
-        [COUNTED_MIN_USD, ...ANNOUNCEABLE]);
-      const n = Number(c?.n || 0);
-      const text =
-        'Someone just bought PCN on market.pc.am \u2014 thank you. \uD83C\uDF89\n\n' +
-        'That\u2019s ' + n + ' purchase' + (n === 1 ? '' : 's') +
-        ' on the road to a listing. Every one counts, and it\u2019s real people ' +
-        'choosing PCN that gets us there.\n\n' +
-        'market.pc.am is open if you\u2019d like to be next.';
-      const { execFile } = await import('node:child_process');
-      await new Promise(resolve => {
-        execFile('/usr/local/bin/pcoin-approve',
-          ['submit', '--dest', 'channel', '--source', 'market-purchase',
-           // Keyed on the order, so neither caller can queue the same
-           // thank-you twice.
-           '--key', 'purchase-' + orderId, '--text', text],
-          { timeout: 20000 },
-          (err, out, errOut) => {
-            if (err) log.error('[announce] purchase post failed: ' + (errOut || err.message));
-            else log.info?.('[announce] queued purchase post for ' + orderId);
-            resolve();
-          });
-      });
+      const final = join(announceSpool, 'purchase-' + id + '.json');
+      // Already asked for and not yet drained: nothing to add.
+      if (await access(final).then(() => true, () => false)) {
+        log.info?.('[announce] purchase post for ' + id + ' is already spooled');
+        return;
+      }
+      // Written under a dot-name and renamed into place, so the drainer can
+      // never read a half-written request. The drainer ignores dot-names.
+      tmp = join(announceSpool, '.purchase-' + id + '.' + randomBytes(4).toString('hex') + '.tmp');
+      await writeFile(tmp, JSON.stringify({ v: 1, source: 'market-purchase', orderId: id }) + '\n',
+                      { flag: 'wx', mode: 0o600 });
+      await rename(tmp, final);
+      tmp = null;
+      log.info?.('[announce] spooled purchase post for ' + id);
     } catch (e) {
-      log.error('[announce] purchase post threw: ' + e.message);
+      // Loud in the journal, never thrown. A missing spool directory lands here
+      // too: it means the unit's StateDirectory= drop-in is not installed.
+      log.error('[announce] purchase post not spooled for ' + String(orderId).slice(0, 80) + ': ' + e.message);
+      if (tmp) await unlink(tmp).catch(() => {});
     }
   }
 

@@ -31,7 +31,20 @@ argument for a project whose main criticism is that there is no way out.
 
 NO BACKLOG ON FIRST RUN. The first pass records what already exists and announces
 none of it, so installing this cannot post a month of history at once.
+
+A PCN PAYOUT THAT WAS A PURCHASE IS THANKED FOR, NOT JUST REPORTED. Owner,
+2026-09-25: "every purchase in exchange should be reported if user withdrawal
+the pcn". The exchange marks such a payout `purchase: true` (the buyer had
+bought at least that much PCN on the book, for $20+, before asking to take it
+out -- its lib/views.mjs purchaseWithdrawals has the whole rule), and this posts
+the same thank-you market.pc.am's buyers get, with the SAME "N purchases" the
+pinned banner shows: N comes from pcoin-listing-banner's own post_number(), fed
+this run's snapshot of the payout feed, never from a count of our own. If N
+cannot be read, the post is HELD (not sent without it, not sent as a plain
+payout) and retried next run. Any other payout keeps the plain text.
 """
+import importlib.machinery
+import importlib.util
 import json
 import os
 import subprocess
@@ -46,6 +59,8 @@ APPROVE = os.environ.get("PCOIN_APPROVE", "/usr/local/bin/pcoin-approve")
 DEST = os.environ.get("PAYOUT_ANNOUNCE_DEST", "channel")
 WITH_TXID = os.environ.get("PAYOUT_ANNOUNCE_TXID", "0") == "1"
 MAX_PER_RUN = int(os.environ.get("PAYOUT_ANNOUNCE_MAX", "3"))
+# The one program that counts purchases (see the docstring).
+BANNER = os.environ.get("LISTING_BANNER", "/usr/local/bin/pcoin-listing-banner")
 
 DRY = "--dry-run" in sys.argv
 
@@ -110,9 +125,69 @@ def _total(x, places):
     return out.rstrip("0").rstrip(".") if "." in out else out
 
 
+def is_purchase(p):
+    """A PCN payout the exchange says was a purchase. `is True`, not truthiness:
+    a feed from before 2026-09-25 has no field, and a missing field is "no"."""
+    return p.get("asset") == "PCN" and p.get("purchase") is True
+
+
+def purchase_text(p, n):
+    """The thank-you for a purchase taken out of exchange.pc.am.
+
+    The market's wording (pcoin-purchase-announce), with the venue and the one
+    thing that makes it count here -- the buyer took the PCN to their own
+    wallet. N is the banner's number, passed in, never counted here. Plain text,
+    for the same reason as post_text.
+    """
+    n = int(n)
+    lines = [
+        "Someone bought PCN on exchange.pc.am and took it to their own wallet — thank you. \U0001F389",
+        "",
+        "That’s %d purchase%s on the road to a listing. Every one counts, and it’s real people "
+        "choosing PCN that gets us there." % (n, "" if n == 1 else "s"),
+    ]
+    if WITH_TXID and p.get("txid"):
+        # Same proof, same switch as every other payout post.
+        lines += ["", "Check it on the chain:", EXPLORER.get(p["network"], "%s") % p["txid"]]
+    lines += ["", "exchange.pc.am is open if you’d like to be next."]
+    return "\n".join(lines)
+
+
+def load_module(name, path):
+    """Load a script that has no .py suffix, with its OWN argv (so the banner's
+    `--dry-run in sys.argv` does not read ours)."""
+    spec = importlib.util.spec_from_loader(name, importlib.machinery.SourceFileLoader(name, path))
+    m = importlib.util.module_from_spec(spec)
+    argv, sys.argv = sys.argv, [path]
+    try:
+        spec.loader.exec_module(m)
+    finally:
+        sys.argv = argv
+    return m
+
+
+def banner_number(feed):
+    """(N, None) or (None, why). N is what the pinned bar shows or is about to.
+
+    `feed` is this run's snapshot, handed to the banner so the exchange half of
+    N is the very feed this payout came from -- not a second read a moment
+    later that might disagree. Anything that goes wrong is a reason to HOLD.
+    """
+    try:
+        lb = load_module("pcoin_listing_banner", BANNER)
+    except Exception as e:                                   # noqa: BLE001
+        return None, "cannot load %s (%s)" % (BANNER, type(e).__name__)
+    try:
+        return lb.post_number(feed), None
+    except lb.Unreadable as e:
+        return None, e.reason
+    except SystemExit as e:                                  # a helper that still dies
+        return None, "the banner's count exited (%s)" % (e.code,)
+
+
 def post_text(p, total):
     """The post. Plain facts, no adjectives doing work the numbers should do."""
-    amount = ("$%s" % p["sent"].rstrip("0").rstrip(".")) if p["asset"] == "USD" else ("%s PCN" % p["sent"].rstrip("0").rstrip("."))
+    amount =("$%s" % p["sent"].rstrip("0").rstrip(".")) if p["asset"] == "USD" else ("%s PCN" % p["sent"].rstrip("0").rstrip("."))
     # PLAIN TEXT, no markup. pcoin-approve can send Markdown or nothing, and
     # Telegram REFUSES a message whose Markdown does not balance -- this estate
     # has already had alerts silently dropped that way, and a refused post is
@@ -199,9 +274,22 @@ def main():
         print("  nothing new")
         return 0
 
-    done = 0
+    done, held = 0, None
+    n = None
     for p in fresh[:MAX_PER_RUN]:
-        text = post_text(p, total)
+        if is_purchase(p):
+            if n is None:
+                n, why = banner_number(feed)
+                if n is None:
+                    # HELD, not downgraded to a plain payout post: the owner asked
+                    # for purchases to be reported AS purchases. Not recorded, so
+                    # the next run tries again; later payouts wait behind it so
+                    # the channel keeps its order.
+                    held = "payout %s is a purchase and the purchase count cannot be read: %s" % (p["id"], why)
+                    break
+            text = purchase_text(p, n)
+        else:
+            text = post_text(p, total)
         if DRY:
             print("  would queue payout %s:\n%s\n" % (p["id"], text))
             done += 1
@@ -223,6 +311,10 @@ def main():
         st["announced"] = st["announced"][-500:]
         save(st)
     print("  %d queued, %d waiting for the next run" % (done, max(0, len(fresh) - done)))
+    if held:
+        # Exit non-zero so a held post is not a quiet success in the journal.
+        print("  HELD: %s" % held, file=sys.stderr)
+        return 1
     return 0
 
 
