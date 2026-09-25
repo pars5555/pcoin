@@ -23,6 +23,7 @@ import { qrSvg } from './qr.mjs';
 import { makeLister, listParams, cleanListQs, pill } from './exchange-lists.mjs';
 import { createHash } from 'node:crypto';
 import { marketSend, hotBalance, appendLog } from './send.mjs';
+import { keeperStatus, keeperSend, usdToMicro } from './keeper-pay.mjs';
 
 const VIEWS = [
   ['overview', 'Overview'], ['activity', 'Activity'], ['withdrawals', 'Withdrawals'], ['deposits', 'Deposits'], ['settings', 'Settings'],
@@ -85,7 +86,11 @@ export function exchangeCall(ex, actor, method, path, { body = null, code = null
   });
 }
 
-export function exchangeSection({ base, creds, actor, sendLogPath = null }) {
+export function exchangeSection({ base, creds, actor, sendLogPath = null,
+  keeper = { status: keeperStatus, send: keeperSend } }) {
+  // Its own log beside the PCN one: sends.json totals PCN, and a USDT row in it
+  // would be summed as PCN.
+  const keeperLogPath = sendLogPath ? sendLogPath.replace(/sends\.json$/, 'keeper-sends.json') : null;
   const ex = creds && creds.exchange ? creds.exchange : null;
   const self = `${base}/exchange`;
 
@@ -287,7 +292,35 @@ export function exchangeSection({ base, creds, actor, sendLogPath = null }) {
       ${form('pay_hot', hidden('id', w.id), `Pay ${w.amount} PCN from market-hot`)}</div>`;
   }
 
-  function withdrawalCard(w, hot = null) {
+  // ONE CLICK TO PAY A USDT (BNB Smart Chain) WITHDRAWAL FROM THE KEEPER
+  // (owner, 2026-09-25). Same shape as market-hot above: one code approves,
+  // sends and records; amount and address come from the exchange's record;
+  // pcoin-keeper-pay's own ledger makes a second press return the same
+  // transaction. TRON withdrawals cannot be paid from here: the keeper is a
+  // BNB Smart Chain wallet.
+  const keeperPayable = (w) => w && w.network === 'BEP20' && (w.status === 'requested' || w.status === 'approved');
+  const usd2 = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  function payFromKeeperBox(w, k) {
+    if (!keeperPayable(w)) return '';
+    const amt = Number(w.amount);
+    let bal;
+    if (!k || !k.ok) {
+      bal = `<span class="warn">the keeper's balance could not be read (${esc((k && k.error) || 'unknown')}); the tool checks it again before sending.</span>`;
+    } else {
+      const left = k.usdt - amt;
+      bal = left >= k.min_usdt
+        ? `<span class="ok">the keeper holds ${esc(usd2(k.usdt))} USDT — enough; ${esc(usd2(left))} stays for defending the floor.</span>`
+        : `<span class="bad">the keeper holds only ${esc(usd2(k.usdt))} USDT — paying ${esc(usd2(amt))} would take it under its own ${esc(usd2(k.min_usdt))} USDT floor, so the tool will refuse.</span>`;
+      if (k.busy) bal += ` <span class="warn">${esc(k.busy)} — wait a minute before pressing.</span>`;
+      if (Number(k.bnb) < 0.001) bal += ` <span class="bad">Only ${esc(k.bnb)} BNB for gas.</span>`;
+    }
+    return `<div style="border:1px solid var(--yellow);border-radius:8px;padding:10px 12px;margin:0 0 12px">
+      <p style="margin:0 0 6px"><b>Pay from keeper</b> — ${bal}</p>
+      <p class="muted" style="margin:0 0 8px">One click, one code: ${w.status === 'requested' ? 'approves it, ' : ''}sends exactly <b>${esc(w.amount)} USDT on BNB Smart Chain</b> to the address above from the keeper wallet${k && k.address ? ` (<code>${esc(k.address)}</code>)` : ''}, and records the transaction here. It can never pay this withdrawal twice. The keeper's USDT is also what buys wPCN when the pool falls below $0.015, so every dollar paid here is a dollar it cannot defend the floor with.</p>
+      ${form('pay_keeper', hidden('id', w.id), `Pay ${w.amount} USDT from keeper`)}</div>`;
+  }
+
+  function withdrawalCard(w, hot = null, kst = null) {
     const amount = w.network === 'PCN' ? `${w.amount} PCN` : `${w.amount} USDT`;
     const net = { TRC20: 'TRON (TRC20)', BEP20: 'BNB Smart Chain (BEP20)', PCN: 'PCoin' }[w.network];
     return `<div class="card" style="border-left:4px solid var(--blue)">
@@ -309,6 +342,7 @@ export function exchangeSection({ base, creds, actor, sendLogPath = null }) {
         </table>
         <div style="margin-top:12px">
         ${payFromHotBox(w, hot)}
+        ${payFromKeeperBox(w, kst)}
         ${w.status === 'requested' ? form('approve', hidden('id', w.id), 'Approve') + form('reject', `${hidden('id', w.id)}<input name="reason" type="text" placeholder="reason" required>`, 'Reject and return the funds') : ''}
         ${w.status === 'approved' ? `<p>Send it from your own wallet, then paste the transaction id. It is marked paid only once the chain confirms the amount and address match.</p>
           ${form('txid', `${hidden('id', w.id)}<input name="txid" type="text" placeholder="transaction id" required style="min-width:28em">`, 'Record payment')}
@@ -345,7 +379,8 @@ export function exchangeSection({ base, creds, actor, sendLogPath = null }) {
       else if (q.json.rows.length) w = q.json.rows[0];
     }
     const hot = hotPayable(w) && creds && creds.market && creds.market.sendToken ? await hotBalance(creds) : null;
-    const focus = queueUnknown || (w ? withdrawalCard(w, hot) :'<div class="card"><p class="ok"><b>Nothing waiting.</b> Every withdrawal has been paid or rejected.</p></div>');
+    const kst = keeperPayable(w) ? await keeper.status() : null;
+    const focus = queueUnknown || (w ? withdrawalCard(w, hot, kst) :'<div class="card"><p class="ok"><b>Nothing waiting.</b> Every withdrawal has been paid or rejected.</p></div>');
     const keep = listParams(url, WD_DEFAULTS).toString().replace(/&/g, '&amp;');
     const L = await listPage(url, {
       view: 'withdrawals', list: 'withdrawals', title: 'the withdrawal list',
@@ -719,6 +754,11 @@ Fund it below; the balance is the whole budget and cannot go negative, so a bug 
       try { wid = id(); } catch (e) { return { url: back('withdrawals'), flash: { ok: false, text: e.message } }; }
       return payFromHot(wid, String(f.get('code') || '').trim(), back);
     }
+    if (act === 'pay_keeper') {
+      let wid;
+      try { wid = id(); } catch (e) { return { url: back('withdrawals'), flash: { ok: false, text: e.message } }; }
+      return payFromKeeper(wid, String(f.get('code') || '').trim(), back);
+    }
     const specs = {
       referral_refuse: () => ['/admin/api/referrals/refuse', { id: Number(id()), reason: reason() }, 'referrals'],
       setting: () => ['/admin/api/settings', { key: f.get('key'),
@@ -821,6 +861,61 @@ Fund it below; the balance is the whole budget and cannot go negative, so a bug 
       return done(true, `Sent (transaction ${s.txid}); #${wid} already had its transaction recorded.`);
     }
     return done(false, `SENT ${w.amount} PCN (transaction ${s.txid}) but recording it on #${wid} failed: ${said(t)}. Press "Pay" again with a new code -- it will not send again, it will only record -- or paste the transaction id in Record payment.`);
+  }
+
+  // The keeper twin of payFromHot: the same four steps, the same one code.
+  async function payFromKeeper(wid, code, back) {
+    const done = (ok, text) => ({ url: back('withdrawals', wid), flash: { ok, text } });
+    const said = (r) => (r.json && r.json.error) || r.reason || `HTTP ${r.status}`;
+
+    const r0 = await call('GET', `/admin/api/withdrawals/${wid}`);
+    if (!ok(r0)) return done(false, `Nothing was sent: withdrawal #${wid} could not be read (${said(r0)}).`);
+    if (r0.json.network !== 'BEP20') return done(false, 'Only a USDT withdrawal on BNB Smart Chain (BEP20) can be paid from the keeper. Nothing was sent.');
+    if (!keeperPayable(r0.json)) return done(false, `Withdrawal #${wid} is ${r0.json.status}, so there is nothing to pay. Nothing was sent.`);
+
+    // 1. the code, proved by the exchange before anything moves
+    const a = await call('POST', `/admin/api/withdrawals/${wid}/approve`, { body: {}, code });
+    if (!a.readable) return done(false, `UNKNOWN: the exchange did not answer the approval (${a.reason}). Nothing was sent. Reload and check before trying again.`);
+    if (a.status === 401) return done(false, `Refused: ${said(a)}. Nothing was sent.`);
+    const alreadyApproved = a.status === 422 && a.json && a.json.code === 'not_requested' && r0.json.status === 'approved';
+    if (a.status !== 200 && !alreadyApproved) return done(false, `Refused at approval (${a.status}): ${said(a)}. Nothing was sent.`);
+
+    // 2. re-read: what to send and where
+    const r1 = await call('GET', `/admin/api/withdrawals/${wid}`);
+    if (!ok(r1)) return done(false, `Approved, but the withdrawal could not be re-read (${said(r1)}). Nothing was sent; press the button again.`);
+    const w = r1.json;
+    const micro = usdToMicro(w.amount);
+    if (w.status !== 'approved' || w.network !== 'BEP20' || !micro || !/^0x[0-9a-fA-F]{40}$/.test(String(w.address))) {
+      return done(false, `Withdrawal #${wid} is not in a payable state (${w.status}, ${w.amount} to ${w.address}). Nothing was sent.`);
+    }
+    const nowS = Math.floor(Date.now() / 1000);
+    if (w.approveExpiresAt && Number(w.approveExpiresAt) - nowS < 300) {
+      return done(false, `The approval of #${wid} expires in under 5 minutes, and a payment recorded after it expires is refused. Nothing was sent; wait for it to lapse back to "requested", then press the button again.`);
+    }
+
+    // 3. send, keyed to this withdrawal so it can never be paid twice
+    const key = `exwd${wid}-${createHash('sha256').update(`${wid}|${w.address}|${w.amount}`).digest('hex').slice(0, 12)}`;
+    const note = `exchange withdrawal #${wid}`;
+    const s = await keeper.send({ key, to: String(w.address), micro, note });
+    const paid = s.state === 'sent' || s.state === 'already';
+    const entry = { at: new Date().toISOString(), key, to: String(w.address), usdt: Number(w.amount), from: 'keeper', note,
+      result: s.state, txid: s.txid || null, error: paid ? null : (s.message || null) };
+    try { if (keeperLogPath) appendLog(keeperLogPath, entry); } catch { /* the log must never block a payout */ }
+    if (!paid) {
+      return done(false, s.state === 'unknown'
+        ? `UNKNOWN: ${s.message} Press "Pay from keeper" again with a new code: it cannot pay #${wid} twice.`
+        : `NOT sent: ${s.message}`);
+    }
+
+    // 4. record it. A failure here leaves money SENT and unrecorded -- say so plainly.
+    const t = await call('POST', `/admin/api/withdrawals/${wid}/txid`, { body: { txid: s.txid }, code });
+    if (ok(t)) {
+      return done(true, `PAID: ${w.amount} USDT sent from the keeper to ${w.address} on BNB Smart Chain, transaction ${s.txid}${s.state === 'already' ? ' (sent earlier under this withdrawal; nothing new went out)' : ''}. Recorded on #${wid}; it settles once the chain confirms it.`);
+    }
+    if (t.status === 422 && t.json && t.json.code === 'already_recorded') {
+      return done(true, `Sent (transaction ${s.txid}); #${wid} already had its transaction recorded.`);
+    }
+    return done(false, `SENT ${w.amount} USDT (transaction ${s.txid}) but recording it on #${wid} failed: ${said(t)}. Press "Pay from keeper" again with a new code -- it will not send again, it will only record -- or paste the transaction id in Record payment.`);
   }
 
   return { page, action };

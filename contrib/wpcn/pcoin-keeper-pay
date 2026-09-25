@@ -1,0 +1,426 @@
+#!/usr/bin/env python3
+"""Pay an exchange USDT withdrawal on BNB Smart Chain from the KEEPER wallet.
+
+    pcoin-keeper-pay --status
+    pcoin-keeper-pay --send KEY TO USD_MICRO [--note TEXT] [--dry-run]
+
+Owner, 2026-09-25: "if keeper has 251.94 then can you send user exchange
+withdrawals from keeper ... by 1 click? i dont want you do that" -- so this is
+the tool behind the admin panel's "Pay from keeper" button, and the owner is
+the one who presses it. It pays ONLY what the exchange's own record says (the
+panel reads amount and address back from the exchange after approving) and
+prints ONE JSON object on stdout; everything human goes to stderr.
+
+WHY THE KEEPER. It already holds a server-side key (/etc/pcoin/keeper.conf) and
+already signs BSC transactions every day -- the wrap desk pays wPCN from it the
+same way. Paying USDT from it adds no custody that was not already taken. What
+it does spend is the keeper's defence money: the USDT it buys wPCN with below
+the $0.015 floor. So this refuses to take the float under the keeper's own
+`min_usdt`, the one number the keeper itself promises never to cross.
+
+IT CANNOT PAY A KEY TWICE, and the order of operations is what makes that true:
+
+  1. the transaction is SIGNED, and its hash and raw bytes are written to the
+     ledger BEFORE anything is broadcast;
+  2. only then is it broadcast;
+  3. a retry of the same key never signs again while that transaction could
+     still mine. It re-broadcasts the IDENTICAL bytes (same nonce, same hash --
+     idempotent by construction) and waits for that hash's receipt.
+
+A new transaction is signed for a key only when the old one provably cannot
+mine: it reverted, the node refused it and does not know it, or its nonce was
+consumed by a different transaction that did mine. Two transactions with the
+same nonce can never both mine, so even a mistake in that judgement cannot pay
+twice unless the nonces differ -- and a new nonce is only ever taken after the
+old hash is proven dead.
+
+Exit codes: 0 paid (or already paid), 2 refused and NOTHING was sent,
+3 unknown -- it may have been sent; press again (it will not sign a second
+transaction) or look at the hash on BscScan.
+"""
+import fcntl
+import json
+import os
+import subprocess
+import sys
+import time
+
+KEEPER_CONF = os.environ.get("KEEPER_CONF", "/etc/pcoin/keeper.conf")
+WPCN_DIR = os.environ.get("WPCN_DIR", "/opt/wpcn")
+TUNING_FILE = os.environ.get("KEEPER_TUNING", "/etc/pcoin/control/keeper-tuning.json")
+# Beside the wrap desk's own ledger: the admin panel runs ProtectSystem=strict
+# and this is a directory it may already write, so no unit had to be widened.
+LEDGER = os.environ.get("KEEPER_PAY_LEDGER", "/var/lib/pcoin-wrapdesk/keeper-usdt-payouts.json")
+NOTIFY = os.environ.get("PCOIN_NOTIFY", "/usr/local/bin/pcoin-notify")
+KEEPER_UNIT = os.environ.get("KEEPER_UNIT", "pcoin-wpcn-keeper.service")
+
+USDT = "0x55d398326f99059fF775485246999027B3197955"   # Binance-Peg BSC-USD
+USDT_DECIMALS = 18                                      # 18 on BSC, NOT 6
+TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+
+# A bug that pays one withdrawal twice is recoverable; one that pays a hundred
+# is not. The exchange itself caps USDT at $100 per account per day.
+PER_SEND_MAX_USD = float(os.environ.get("KEEPER_PAY_MAX_USD", "500"))
+DAILY_MAX_USD = float(os.environ.get("KEEPER_PAY_DAILY_USD", "500"))
+RECEIPT_WAIT = int(os.environ.get("KEEPER_PAY_RECEIPT_WAIT", "180"))
+
+
+def say(*a):
+    print(*a, file=sys.stderr)
+
+
+def result(state, code, **kw):
+    print(json.dumps(dict(state=state, **kw)))
+    sys.exit(code)
+
+
+def read_conf(path):
+    """KEY=VALUE config. Values are never printed."""
+    out = {}
+    with open(path) as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            out[k.strip()] = v.strip()
+    return out
+
+
+def min_usdt_floor():
+    """The keeper's own `min_usdt`. Unreadable is an error, not a zero floor."""
+    try:
+        with open(TUNING_FILE) as fh:
+            v = json.load(fh).get("min_usdt", 5.0)
+        v = float(v)
+        if v < 0:
+            raise ValueError("negative")
+        return v
+    except FileNotFoundError:
+        return 5.0
+    except Exception as e:                                   # noqa: BLE001
+        raise RuntimeError(f"{TUNING_FILE} could not be read ({e}); the keeper's floor is unknown")
+
+
+def keeper_busy():
+    """True while the keeper's own run is signing from the same key.
+    Unknown is treated as busy: two signers guessing at one nonce is the
+    thing this check exists to prevent."""
+    try:
+        st = subprocess.run(["systemctl", "is-active", KEEPER_UNIT], capture_output=True,
+                            text=True, timeout=15).stdout.strip()
+    except Exception as e:                                   # noqa: BLE001
+        return f"could not tell whether the keeper is trading ({e})"
+    if st in ("active", "activating", "reloading", "deactivating"):
+        return "the keeper is trading right now (its run is %s)" % st
+    return None
+
+
+def connect():
+    sys.path.insert(0, WPCN_DIR)
+    from web3 import Web3
+    from web3.middleware import ExtraDataToPOAMiddleware
+    key = read_conf(KEEPER_CONF).get("KEEPER_PRIVATE_KEY")
+    if not key:
+        raise RuntimeError(f"no KEEPER_PRIVATE_KEY in {KEEPER_CONF}")
+    cfg = read_conf(os.path.join(WPCN_DIR, "wpcn.conf"))
+    if not cfg.get("RPC"):
+        raise RuntimeError(f"{WPCN_DIR}/wpcn.conf has no RPC")
+    w3 = Web3(Web3.HTTPProvider(cfg["RPC"], request_kwargs={"timeout": 60}))
+    w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+    if not w3.is_connected():
+        raise RuntimeError(f"cannot reach {cfg['RPC']}")
+    if w3.eth.chain_id != 56:
+        raise RuntimeError(f"WRONG CHAIN: chain_id {w3.eth.chain_id}, expected 56")
+    acct = w3.eth.account.from_key(key)
+    abi = [{"constant": False, "inputs": [{"name": "to", "type": "address"}, {"name": "value", "type": "uint256"}],
+            "name": "transfer", "outputs": [{"name": "", "type": "bool"}], "type": "function"},
+           {"constant": True, "inputs": [{"name": "a", "type": "address"}],
+            "name": "balanceOf", "outputs": [{"name": "", "type": "uint256"}], "type": "function"}]
+    usdt = w3.eth.contract(address=Web3.to_checksum_address(USDT), abi=abi)
+    return w3, acct, usdt
+
+
+# ---- the ledger -------------------------------------------------------------
+
+def load_ledger():
+    try:
+        with open(LEDGER) as fh:
+            d = json.load(fh)
+        if not isinstance(d, dict):
+            raise ValueError("not an object")
+    except FileNotFoundError:
+        d = {}
+    # A ledger that exists and does not parse is NOT an empty ledger: treating
+    # it as one would forget every payout and allow all of them again.
+    d.setdefault("payouts", {})
+    if not isinstance(d["payouts"], dict):
+        raise RuntimeError(f"{LEDGER} is damaged (payouts is not an object)")
+    return d
+
+
+def save_ledger(d):
+    os.makedirs(os.path.dirname(LEDGER), exist_ok=True)
+    tmp = LEDGER + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(d, fh, indent=1)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, LEDGER)
+
+
+def take_lock():
+    fh = open(LEDGER + ".lock", "w")
+    for _ in range(60):
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fh
+        except BlockingIOError:
+            time.sleep(0.5)
+    raise RuntimeError("another keeper payout is in progress; try again in a minute")
+
+
+def sent_today_micro(d):
+    day = time.strftime("%Y-%m-%d", time.gmtime())
+    return sum(int(r.get("micro") or 0) for r in d["payouts"].values()
+               if r.get("day") == day and r.get("state") in ("signed", "confirmed"))
+
+
+# ---- the chain ----------------------------------------------------------------
+
+def verify_receipt(w3, acct, rec, receipt):
+    """The same thing the exchange checks: a USDT Transfer, from the keeper, to
+    exactly this address, for exactly this many units."""
+    units = int(rec["micro"]) * 10 ** (USDT_DECIMALS - 6)
+    want_to = rec["to"].lower()[2:].rjust(64, "0")
+    want_from = acct.address.lower()[2:].rjust(64, "0")
+    for lg in receipt["logs"]:
+        topics = [t.hex() if hasattr(t, "hex") else str(t) for t in lg["topics"]]
+        topics = [t if t.startswith("0x") else "0x" + t for t in topics]
+        if str(lg["address"]).lower() != USDT.lower() or len(topics) < 3:
+            continue
+        if topics[0].lower() != TRANSFER_TOPIC or topics[1].lower()[-64:] != want_from \
+                or topics[2].lower()[-64:] != want_to:
+            continue
+        data = lg["data"].hex() if hasattr(lg["data"], "hex") else str(lg["data"])
+        if int(data if data.startswith("0x") else "0x" + data, 16) == units:
+            return True
+    return False
+
+
+def receipt_of(w3, h):
+    from web3.exceptions import TransactionNotFound
+    try:
+        return w3.eth.get_transaction_receipt(h)
+    except TransactionNotFound:
+        return None
+
+
+def known_to_node(w3, h):
+    from web3.exceptions import TransactionNotFound
+    try:
+        w3.eth.get_transaction(h)
+        return True
+    except TransactionNotFound:
+        return False
+
+
+def settle(w3, acct, d, key, rec, wait):
+    """Wait for rec's hash; record the outcome. Exits."""
+    deadline = time.time() + wait
+    r = receipt_of(w3, rec["hash"])
+    while r is None and time.time() < deadline:
+        time.sleep(3)
+        r = receipt_of(w3, rec["hash"])
+    if r is None:
+        result("unknown", 3, txid=rec["hash"],
+               message=f"Broadcast {rec['hash']} but no receipt yet. Press again: it will not sign a "
+                       f"second transaction, it will wait for this one.")
+    if r["status"] != 1:
+        rec["state"] = "reverted"
+        rec["block"] = r["blockNumber"]
+        save_ledger(d)
+        result("refused", 2, txid=rec["hash"],
+               message=f"The transaction REVERTED in block {r['blockNumber']}; no USDT moved (only gas). "
+                       f"Pressing again signs a fresh one.")
+    if not verify_receipt(w3, acct, rec, r):
+        rec["state"] = "mined_unverified"
+        rec["block"] = r["blockNumber"]
+        save_ledger(d)
+        result("unknown", 3, txid=rec["hash"],
+               message=f"Mined in block {r['blockNumber']} but the USDT Transfer to {rec['to']} for the exact "
+                       f"amount was not found in it. Look at it on BscScan before doing anything else.")
+    first = rec.get("state") != "confirmed"
+    rec.update(state="confirmed", block=r["blockNumber"], confirmed_at=int(time.time()))
+    save_ledger(d)
+    if first:
+        notify("keeper paid an exchange withdrawal",
+               f"{int(rec['micro']) / 1e6:,.2f} USDT (BSC) to {rec['to']} for {rec.get('note') or key}.\n"
+               f"tx {rec['hash']} (block {r['blockNumber']})")
+    return r
+
+
+def notify(subject, body):
+    try:
+        if os.path.exists(NOTIFY):
+            subprocess.run([NOTIFY, subject, body], timeout=60)
+    except Exception as e:                                   # noqa: BLE001
+        say(f"[warn] notify failed: {e}")
+
+
+# ---- commands ---------------------------------------------------------------
+
+def status():
+    out = {"per_send_max_usd": PER_SEND_MAX_USD, "daily_max_usd": DAILY_MAX_USD}
+    try:
+        out["min_usdt"] = min_usdt_floor()
+        d = load_ledger()
+        out["sent_today_usd"] = sent_today_micro(d) / 1e6
+        w3, acct, usdt = connect()
+        out["address"] = acct.address
+        out["usdt"] = usdt.functions.balanceOf(acct.address).call() / 10 ** USDT_DECIMALS
+        out["bnb"] = w3.eth.get_balance(acct.address) / 1e18
+        out["busy"] = keeper_busy()
+        out["ok"] = True
+    except Exception as e:                                   # noqa: BLE001
+        out["ok"] = False
+        out["error"] = str(e)[:300]
+    print(json.dumps(out))
+    return 0
+
+
+def send(key, to, micro_s, note, dry):
+    from web3 import Web3
+    if not key or len(key) > 120 or not all(c.isalnum() or c in "-_:" for c in key):
+        result("refused", 2, message="bad key")
+    if not Web3.is_address(to) or not to.startswith("0x"):
+        result("refused", 2, message=f"{to!r} is not a BNB Smart Chain address")
+    to = Web3.to_checksum_address(to)
+    if not micro_s.isdigit() or int(micro_s) <= 0:
+        result("refused", 2, message=f"bad amount {micro_s!r} (whole micro-dollars expected)")
+    micro = int(micro_s)
+    usd = micro / 1e6
+
+    try:
+        lock = take_lock()                                   # noqa: F841 -- held until exit
+        d = load_ledger()
+    except Exception as e:                                   # noqa: BLE001
+        result("refused", 2, message=str(e))
+
+    rec = d["payouts"].get(key)
+    if rec and (rec.get("to", "").lower() != to.lower() or int(rec.get("micro") or 0) != micro):
+        result("refused", 2, message=f"{key} was already used for {int(rec.get('micro') or 0) / 1e6:,.2f} USDT to "
+                                     f"{rec.get('to')}; it will not be reused for anything else.")
+    if rec and rec.get("state") == "confirmed":
+        result("already", 0, txid=rec["hash"], message=f"Already paid under {key} in block {rec.get('block')}.")
+    if rec and rec.get("state") == "mined_unverified":
+        result("unknown", 3, txid=rec["hash"], message="A previous attempt mined but did not verify. Look at it on BscScan first.")
+
+    try:
+        w3, acct, usdt = connect()
+    except Exception as e:                                   # noqa: BLE001
+        result("refused", 2, message=f"could not connect: {e}. Nothing was sent.")
+
+    # ---- a transaction for this key already exists: never sign a second one while it can mine
+    if rec and rec.get("state") == "signed":
+        say(f"resuming {key}: {rec['hash']} (nonce {rec['nonce']})")
+        r = receipt_of(w3, rec["hash"])
+        if r is None:
+            latest = w3.eth.get_transaction_count(acct.address, "latest")
+            if latest > int(rec["nonce"]):
+                # The nonce is used and our hash has no receipt: a different
+                # transaction took that slot, so ours can never mine.
+                time.sleep(3)
+                if receipt_of(w3, rec["hash"]) is None:
+                    rec["state"] = "dead"
+                    save_ledger(d)
+                    say(f"{rec['hash']} can never mine (nonce {rec['nonce']} was used by another transaction)")
+                    rec = None
+            else:
+                if not dry:
+                    try:
+                        w3.eth.send_raw_transaction(bytes.fromhex(rec["raw"][2:]))
+                        say("re-broadcast the identical signed transaction")
+                    except Exception as e:                   # noqa: BLE001
+                        say(f"re-broadcast answered: {e} (normal if it is already known)")
+        if rec is not None:
+            if dry:
+                result("unknown", 3, txid=rec["hash"], message="DRY RUN: a signed transaction exists for this key; would wait for it.")
+            settle(w3, acct, d, key, rec, RECEIPT_WAIT)
+            result("sent", 0, txid=rec["hash"], message=f"Paid {usd:,.2f} USDT to {to}.")
+
+    # ---- a fresh payment
+    if usd > PER_SEND_MAX_USD + 1e-9:
+        result("refused", 2, message=f"{usd:,.2f} USDT is above the {PER_SEND_MAX_USD:,.2f} per-payout ceiling. Nothing was sent.")
+    today = sent_today_micro(d) / 1e6
+    if today + usd > DAILY_MAX_USD + 1e-9:
+        result("refused", 2, message=f"{today:,.2f} USDT already left the keeper today; this would make "
+                                     f"{today + usd:,.2f}, over the {DAILY_MAX_USD:,.2f} daily ceiling. Nothing was sent.")
+    busy = keeper_busy()
+    if busy:
+        result("refused", 2, message=f"{busy}. Nothing was sent; press again in a minute.")
+    try:
+        floor = min_usdt_floor()
+    except Exception as e:                                   # noqa: BLE001
+        result("refused", 2, message=f"{e}. Nothing was sent.")
+    units = micro * 10 ** (USDT_DECIMALS - 6)
+    have = usdt.functions.balanceOf(acct.address).call()
+    if have - units < int(floor * 10 ** USDT_DECIMALS):
+        result("refused", 2, message=f"the keeper holds {have / 10 ** USDT_DECIMALS:,.2f} USDT; paying {usd:,.2f} would "
+                                     f"leave it under its own {floor:,.2f} USDT floor. Nothing was sent.")
+
+    tx = usdt.functions.transfer(to, units).build_transaction({"from": acct.address})
+    tx["nonce"] = w3.eth.get_transaction_count(acct.address, "pending")
+    tx["chainId"] = 56
+    tx.pop("maxFeePerGas", None)
+    tx.pop("maxPriorityFeePerGas", None)
+    tx.setdefault("gasPrice", w3.eth.gas_price)
+    tx["gas"] = int(w3.eth.estimate_gas(tx) * 1.25)
+    if w3.eth.get_balance(acct.address) < tx["gas"] * tx["gasPrice"]:
+        result("refused", 2, message="the keeper does not have enough BNB for gas. Nothing was sent.")
+    if dry:
+        result("dry-run", 0, message=f"DRY RUN: would pay {usd:,.2f} USDT to {to} from {acct.address} "
+                                     f"(holds {have / 10 ** USDT_DECIMALS:,.2f}, floor {floor:,.2f}, nonce {tx['nonce']}).")
+
+    signed = acct.sign_transaction(tx)
+    h = signed.hash.hex()
+    h = h if h.startswith("0x") else "0x" + h
+    rec = {"to": to, "micro": micro, "note": note, "day": time.strftime("%Y-%m-%d", time.gmtime()),
+           "created": int(time.time()), "nonce": tx["nonce"], "hash": h,
+           "raw": "0x" + bytes(signed.raw_transaction).hex(), "state": "signed"}
+    d["payouts"][key] = rec
+    save_ledger(d)                                           # BEFORE the broadcast
+    say(f"signed {h} (nonce {tx['nonce']}); broadcasting")
+    try:
+        w3.eth.send_raw_transaction(signed.raw_transaction)
+    except Exception as e:                                   # noqa: BLE001
+        try:
+            known = known_to_node(w3, h)
+        except Exception:                                    # noqa: BLE001
+            result("unknown", 3, txid=h, message=f"The broadcast failed ({e}) and the node could not be asked "
+                                                 f"whether it has the transaction. Press again: it will not sign twice.")
+        if not known:
+            rec["state"] = "rejected"
+            rec["error"] = str(e)[:300]
+            save_ledger(d)
+            result("refused", 2, message=f"The node refused the transaction ({e}). Nothing was sent.")
+    settle(w3, acct, d, key, rec, RECEIPT_WAIT)
+    result("sent", 0, txid=h, message=f"Paid {usd:,.2f} USDT to {to}.")
+
+
+def main():
+    a = sys.argv[1:]
+    if a[:1] == ["--status"]:
+        return status()
+    if a[:1] == ["--send"] and len(a) >= 4:
+        note = ""
+        if "--note" in a:
+            i = a.index("--note")
+            note = a[i + 1] if i + 1 < len(a) else ""
+        send(a[1], a[2], a[3], note[:200], "--dry-run" in a)
+    print(__doc__, file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
