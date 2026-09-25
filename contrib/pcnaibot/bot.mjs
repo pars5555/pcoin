@@ -1228,9 +1228,11 @@ async function runTurnAgentic({ chatId, updateId, model, text, resv, attachments
   // -- so the status vanished mid-call and the chat looked stuck ("it still thinking, why it
   // is so slow"). Re-push it every 15 s while the run works; it is the same line with the
   // clock moved on, and it stops the moment real text streams or the run ends.
+  // Every 5 s, not 15: the clock is what tells a waiting user the run is alive, and a status
+  // frozen at "Thinking… 0s" for fifteen seconds reads as a stall all over again.
   const keepalive = setInterval(() => {
     if (shown === '' || holdingText()) draft.push(render()).catch(() => undefined);
-  }, 15000);
+  }, 5000);
 
   // STOPPING MEANS INTERRUPTING THE RUN, NOT DROPPING THE STREAM. Aborting our fetch left the
   // run going on the server -- their docs: a dropped stream never stops a run -- so /stop and
@@ -1264,7 +1266,11 @@ async function runTurnAgentic({ chatId, updateId, model, text, resv, attachments
     catch (e) { log.warn('could not refresh the per-user lock', errFields(e)); }
   }, 60000);
 
-  await draft.push('');
+  // THE FIRST FRAME IS THE STATUS LINE, NOT AN EMPTY DRAFT. An empty text was meant to show
+  // Telegram's own "Thinking..." placeholder, and Telegram Web shows NOTHING for it (checked
+  // 2026-09-25: an empty draft left the chat blank, a text draft appeared at once). So a turn
+  // began with up to 20 s of no sign of life -- mimo-v2.5's first step came at +20 s.
+  await draft.push(render());
 
   // A MODEL SWITCH KEEPS THE CONVERSATION (owner, 2026-09-25: "i changed model and history was
   // gone ... it should continue on previous session until user clears it"). A session keeps the
@@ -1488,9 +1494,9 @@ async function runTurnStreamed({ chatId, updateId, row, upstream, priceRow, isFr
     catch (e) { log.warn('could not refresh the per-user lock', errFields(e)); }
   }, 60000);
 
-  // An empty first frame renders as Telegram's own "Thinking..." placeholder,
-  // which is a better opening than a blank bubble while the prompt is read.
-  await draft.push('');
+  // A visible first frame. An empty one was meant to render as Telegram's own
+  // "Thinking..." placeholder; Telegram Web renders nothing at all for it.
+  await draft.push('<i>Thinking…</i>');
 
   // OUR OWN stop control, on a real message.
   //

@@ -19,9 +19,10 @@
 //    DM-only anyway, so that costs nothing -- but it means the draft path can
 //    never be the only path.
 //
-// 3. An EMPTY text is legal and shows a "Thinking..." placeholder, which is a
-//    better first frame than an empty bubble while the model is still reading
-//    the prompt.
+// 3. An EMPTY text is legal, and was believed to show a "Thinking..." placeholder.
+//    Telegram Web shows NOTHING for it (checked 2026-09-25: an empty draft left the
+//    chat blank; a text draft appeared at once). So the first frame is always a
+//    real status line -- never ''.
 //
 // `can_stop: true` gives the user a stop button; pressing it delivers an
 // Update carrying `stopped_message_generation` (Bot API 10.3). That update type
