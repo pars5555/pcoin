@@ -95,7 +95,13 @@ def live_rate(url):
                          "A card outlives the moment it was built, so a guessed "
                          "number would be wrong in public for as long as it "
                          "circulates." % (url, exc))
-    rate = d.get("serviceRate") or d.get("price")
+    # The PCN rate is creditRateUsd (the PCN index since 2026-09-25; serviceRate
+    # is its older name). Never `price`: that is what market.pc.am charges, the
+    # index + 3%, and a card quoting it as "the PCN price" would be 3% wrong. A
+    # stale index is no rate at all -- refuse rather than print it.
+    rate = d.get("creditRateUsd") or d.get("serviceRate")
+    if (d.get("ladder") or {}).get("stale") is not False:
+        raise SystemExit("REFUSING TO BUILD: %s says the rate is stale (ladder.stale)" % url)
     if not rate or float(rate) <= 0:
         raise SystemExit("REFUSING TO BUILD: %s answered without a usable rate (%r)"
                          % (url, d))
