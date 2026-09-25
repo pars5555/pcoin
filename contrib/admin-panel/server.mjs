@@ -233,7 +233,7 @@ const NAV = [
   // the Overview summarises all of them on one screen.
   ['Overview',      [['', '\u{1F4CA} Overview']]],
   ['Money & price', [['pricing', '\u{1F4B2} Price'],
-                     ['pcn-index', '\u{1F4C8} PCN index (shadow)', 'sub'],
+                     ['pcn-index', '\u{1F4C8} PCN index', 'sub'],
                      ['services/market', '\u{1F6D2} Market'],
                      ['exchange', '\u{1F3E6} Exchange'],
                      ['wrapdesk', '\u{1F504} Wrap desk'],
@@ -1076,7 +1076,7 @@ async function handle(req, res) {
     return send(res, 200, shell2('dependencies', 'Dependencies', dependenciesPage(loadDependencies())));
   }
   if (sub === '/pcn-index') {
-    return send(res, 200, shell2('pcn-index', 'PCN index (shadow)',
+    return send(res, 200, shell2('pcn-index', 'PCN index',
                                  pcnIndexPage(await pcnIndexData({ creds: upstreamCreds() }))));
   }
   if (sub === '/miners') {

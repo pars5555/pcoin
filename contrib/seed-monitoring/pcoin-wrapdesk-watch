@@ -2,13 +2,15 @@
 """Tell the operator what to DO about the wrap desk, hourly, until it is done.
 
 This is not a health check. It is a task list that nags. Every wrap has manual
-steps spread over hours -- wait for confirmations, send wPCN, and (only while
-the keeper is buying) sell the PCN and buy wPCN back -- and a step forgotten
-halfway is how a desk ends up with a customer paid nothing.
+steps spread over hours -- wait for confirmations, then send wPCN -- and a step
+forgotten halfway is how a desk ends up with a customer paid nothing.
 
-Whether that last pair applies is READ from the keeper's unit, never assumed:
-see keeper_buys(). It was hardcoded once and went stale two days after the
-owner switched buying off.
+There is no manual buy-back step any more. Until 2026-09-08 each wrap ended
+"sell the PCN, buy wPCN back from the pool", read from the keeper's KEEPER_BUY
+flag (keeper_buys(), now removed). Since 2026-09-25 the keeper holds the pool
+to the PCN INDEX in both directions by itself, every minute, within its daily
+budget, so this script only reports how far the pool is from the index -- the
+peg's temperature, never an instruction to trade by hand.
 
 WHAT "DONE" MEANS HERE.
 
@@ -94,56 +96,23 @@ EXPLORERS = [e for e in (os.environ.get("PCOIN_EXPLORER", ""),
 RESERVE = os.environ.get("WRAP_RESERVE", "pc1q7hhzmdkkx0zjtzj6qkwmuvhlgwfqjrc6j2dk52")
 
 
-def keeper_buys():
-    """Is the keeper actually buying wPCN back?  True / False / None(unknown).
-
-    THIS WAS HARDCODED ONCE AND IT WENT STALE. Every ACTION this script printed
-    said "sell the PCN, buy wPCN back from the pool". On 2026-09-08 the owner
-    turned exactly that off -- KEEPER_BUY=off on pcoin-wpcn-keeper -- so the
-    pool is allowed to fall on real selling instead of our own USDT holding a
-    number still. The advice outlived the decision, and an operator following
-    it would have quietly undone the thing it was changed to do.
-
-    So read the keeper's own unit rather than asserting either answer, and
-    return None when it cannot be read. Unknown is its own state: advising
-    "buy" or "do not buy" off a failed read is precisely how a stale
-    instruction re-establishes itself.
-    """
-    try:
-        r = subprocess.run(["systemctl", "show", "pcoin-wpcn-keeper",
-                            "-p", "Environment", "--value"],
-                           capture_output=True, text=True, timeout=10)
-    except Exception:
-        return None
-    if r.returncode != 0 or not r.stdout.strip():
-        return None
-    # systemd prints Environment as one space-separated line of KEY=VALUE.
-    # Split rather than regex: this file does not import re, and an import for
-    # one lookup is a worse trade than three lines of string work.
-    for tok in r.stdout.split():
-        if tok.startswith("KEEPER_BUY="):
-            return tok.split("=", 1)[1].strip().lower() not in ("0", "off", "false", "no")
-    return True              # flag absent means the keeper's own ON default
+# The keeper's dead band, for the pool-vs-index line only. It is the keeper's
+# setting (dead_band in /etc/pcoin/control/keeper-tuning.json, 3% since
+# 2026-09-25); this copy only decides whether the line says "within" or
+# "OUTSIDE", so a drift here mislabels a report and moves no money.
+KEEPER_BAND_PCT = float(os.environ.get("KEEPER_BAND_PCT", 3.0))
 
 
 def cycle_advice(amt):
-    """The second half of the cycle, phrased from what is TRUE right now.
+    """What to do with the wrap's PCN after the wPCN is sent: nothing by hand.
 
-    Always ends in a newline so the caller can drop it in unconditionally.
+    Since 2026-09-25 the keeper holds the pool to the PCN index in both
+    directions on its own, so there is no manual buy-back. Always ends in a
+    newline so the caller can drop it in unconditionally.
     """
-    buys = keeper_buys()
-    if buys is False:
-        return ("Do NOT buy wPCN back: KEEPER_BUY=off on the keeper, a standing "
-                "decision that the pool is allowed to fall on real selling rather "
-                "than be held up with our own USDT. Selling the %.2f PCN is "
-                "optional and separate.\n" % amt)
-    if buys is None:
-        return ("Whether to buy wPCN back is UNKNOWN -- the keeper's KEEPER_BUY "
-                "setting could not be read. Check the unit before doing either; "
-                "do not assume the old advice.\n")
-    return ("Then: sell the %.2f PCN on market.pc.am, and use the proceeds to buy "
-            "wPCN back from the pool -- but ONLY while the pool trades BELOW "
-            "price.pc.am.\n" % amt)
+    return ("Do NOT buy wPCN back by hand: the keeper holds the pool to the PCN "
+            "index in both directions on its own, every minute, within its daily "
+            "budget. Selling the %.2f PCN is optional and separate.\n" % amt)
 
 # wrapdesk.pc.am writes every allocated deposit address here, with the BSC
 # address that asked for it. Without this the watcher can see that PCN arrived
@@ -1109,54 +1078,48 @@ def main() -> int:
         "at": int(time.time()),
     }
 
-    # ---- 2. is the cycle worth running right now? -------------------------
+    # ---- 2. the pool against the PCN index ---------------------------------
+    # Since 2026-09-25 the keeper holds the pool to the PCN INDEX in both
+    # directions, every minute, within its daily budget. There is no manual
+    # buy-back cycle: this line is the peg's temperature, never an instruction.
+    # The index is read from price.pc.am's `index` block and counts only when it
+    # is fresh and priced (held is a price; unknown is not).
     price = get("https://price.pc.am")
     pool = pool_price()
-    rate = (price or {}).get("serviceRate")
-    if rate is None:
-        tasks.append(("rate_unreadable", "warn",
-                      "Could not read price.pc.am. Cannot tell whether the buy-back "
-                      "cycle should be running. Do not guess -- check by hand before "
-                      "buying wPCN."))
+    ix = (price or {}).get("index")
+    ix = ix if isinstance(ix, dict) else {}
+    ixv = (ix.get("usd") if ix.get("stale") is False
+           and ix.get("state") in ("live", "held", "frozen") else None)
+    if ixv is None:
+        tasks.append(("index_unreadable", "warn",
+                      "Could not read a usable PCN index from price.pc.am (state %s, stale %s). "
+                      "Cannot tell how far the pool is from it, and while it is unknown "
+                      "the keeper does not trade and the rails hold. Do not trade the pool "
+                      "by hand -- check exchange.pc.am/api/index and the keeper's journal."
+                      % (ix.get("state"), ix.get("stale"))))
     elif pool and pool.get("price") is not None:
-        pp = float(pool["price"])
-        buys = keeper_buys()
-        if buys is False:
-            # The arithmetic is still worth printing -- it is the peg's
-            # temperature -- but it must not read as an instruction while
-            # buying is switched off by a standing decision.
-            side = "below" if pp < float(rate) else "at or above"
-            tasks.append(("cycle_off", "info",
-                          f"Pool ${pp:.6f} is {side} price.pc.am ${float(rate):.6f}. "
-                          f"Buying back is OFF (KEEPER_BUY=off) -- a standing decision "
-                          f"that the pool is allowed to fall on real selling. This is "
-                          f"the peg's temperature, not something to act on."))
-        elif buys is None:
-            tasks.append(("cycle_unknown", "warn",
-                          f"Pool ${pp:.6f} vs price.pc.am ${float(rate):.6f}, but the "
-                          f"keeper's KEEPER_BUY setting could NOT be read, so whether to "
-                          f"buy wPCN back is UNKNOWN. Check the unit before doing either."))
-        elif pp < float(rate):
-            tasks.append(("cycle_open", "info",
-                          f"Cycle is OPEN: pool ${pp:.6f} is below price.pc.am "
-                          f"${float(rate):.6f}. Buying wPCN back is profitable and "
-                          f"pushes the peg the right way."))
-        else:
-            tasks.append(("cycle_shut", "info",
-                          f"Cycle is SHUT: pool ${pp:.6f} is at or above price.pc.am "
-                          f"${float(rate):.6f}. Do NOT buy wPCN back -- it would cost "
-                          f"more than the PCN you sold."))
+        pp, iv = float(pool["price"]), float(ixv)
+        gap = (pp / iv - 1.0) * 100.0
+        inside = abs(gap) <= KEEPER_BAND_PCT
+        where = "within" if inside else "OUTSIDE"
+        tasks.append(("pool_vs_index", "info",
+                      f"Pool ${pp:.6f} is {gap:+.2f}% against the PCN index ${iv:.6f} -- "
+                      f"{where} the keeper's {KEEPER_BAND_PCT:g}% "
+                      f"band. The keeper holds the pool to the index in both directions on "
+                      f"its own; nothing to do by hand."
+                      + ("" if inside else
+                         " If it is still outside on the next run, read the keeper's journal: "
+                         "it may be out of daily budget, out of float, or refusing.")))
     else:
-        # THIS BRANCH IS LOAD-BEARING. Without it, a readable rate plus an
+        # THIS BRANCH IS LOAD-BEARING. Without it, a readable index plus an
         # unreadable pool appended NOTHING -- the script printed only "nothing
         # outstanding" and looked perfectly healthy while it was blind. That is
         # exactly the failure this project has a rule against: unknown must be
         # its own state, never silence that reads as fine.
         tasks.append(("pool_unreadable", "warn",
                       "Could not read the PancakeSwap pair reserves, so the pool "
-                      "price is UNKNOWN. Cannot say whether the buy-back cycle "
-                      "should be running -- do not assume either direction. "
-                      "Check the pair by hand before buying or selling wPCN."))
+                      "price is UNKNOWN and so is its distance from the PCN index. "
+                      "Do not assume either direction; do not trade the pool by hand."))
 
     # ---- 3. report, nagging only what is actionable -----------------------
     actions = [t for t in tasks if t[1] == "action"]

@@ -30,6 +30,15 @@
 //     ladder inventory, X falls, and the price rises. No separate mechanism.
 //
 // The rungs still exist and still record inventory. They no longer set price.
+//
+// AND THEN, ON 2026-09-25, THE CURVE WAS RETIRED TOO. The PCN price is now the
+// PCN INDEX: the volume-weighted median of qualifying user-to-user fills on
+// exchange.pc.am (price plan Phase 3). market.pc.am sells at index x (1 +
+// premium), flat at every size; price.pc.am's creditRateUsd IS the index; the
+// keeper holds the pool to it both ways; the exchange bots quote off it.
+// indexPage() below renders that. The curve rendering is kept, unchanged, for
+// a rollback: the page picks one from the LIVE pricingMode / index.inUse, never
+// from a constant.
 import { esc, num, N, USD, PCT, card, note, kv, tbl, tiles, failed, DASH } from './ui.mjs';
 import { upstreamCreds } from './services.mjs';
 
@@ -95,6 +104,13 @@ export function pricingPage(d) {
   const ask    = s ? Number(s.marginalPrice) : (p ? Number(p.sellPriceUsd) : null);
   const credit = p ? Number(p.creditRateUsd) : null;
   const premium = (pool > 0 && ask > 0) ? (ask / pool - 1) * 100 : null;
+
+  // Index mode is read, not assumed: the market's own pricingMode (plan Step
+  // 3) or price.pc.am's index.inUse (Step 4). Either one on means the curve
+  // below no longer describes what customers are charged.
+  if ((s && s.pricingMode === 'index') || (p && p.index && p.index.inUse === true)) {
+    return indexPage(d, { p, s, pool, ask, credit });
+  }
 
   const top = tiles([
     ['PCN — you pay now',     USD(ask, 8)],
@@ -220,9 +236,107 @@ export function pricingPage(d) {
 
   const shadow = card('Coming: one price from real trades', note(
     'A PCN index built from user-to-user fills on exchange.pc.am has run in <b>shadow</b> since '
-    + '2026-09-24: computed, relayed by price.pc.am, used by nothing. See <b>PCN index (shadow)</b> '
+    + '2026-09-24: computed, relayed by price.pc.am, used by nothing. See <b>PCN index</b> '
     + 'in the menu for the number, the fills behind it and every move.'));
 
   return top + shadow + sizeCard + curve + cases + anchor + limits + gotchas
+    + note('Read live from price.pc.am and market.pc.am at page load.');
+}
+
+// ── index mode (price plan Phase 3, since 2026-09-25) ──────────────────────
+// A missing number stays missing: Number(null) is 0, and a $0 tile on the page
+// that explains the price would be the worst kind of wrong.
+const numOrNull = (x) => (x === null || x === undefined || x === '' || !isFinite(Number(x)) ? null : Number(x));
+
+function indexPage(d, { p, s, pool, credit }) {
+  const ix = p && p.index ? p.index : null;
+  const idx = ix ? numOrNull(ix.usd) : null;
+  const ask = s ? numOrNull(s.marginalPrice) : (p ? numOrNull(p.sellPriceUsd) : null);
+  const railsOnIndex = !!(ix && ix.inUse === true);
+  const marketOnIndex = !!(s && s.pricingMode === 'index');
+  const usable = !!(ix && ix.stale === false && ['live', 'held', 'frozen'].includes(ix.state) && idx > 0);
+  const poolGap = (pool > 0 && idx > 0) ? (pool / idx - 1) * 100 : null;
+
+  const top = tiles([
+    ['PCN index', USD(idx, 8)],
+    ['PCN — you pay now', USD(ask, 8)],
+    ['PCN — rails credit at', USD(credit, 8)],
+    ['wPCN pool vs index', poolGap === null ? DASH : (poolGap >= 0 ? '+' : '') + PCT(poolGap, 2)],
+  ]);
+
+  const warn = usable ? '' : card('THE INDEX IS NOT USABLE RIGHT NOW', note(
+    `<b class="bad">state ${esc(ix ? ix.state : 'not relayed')}${ix && ix.stale ? ', stale' : ''}.</b> `
+    + (railsOnIndex ? '<code>/credit-rate</code> answers 503 and every rail HOLDS new credits. ' : '')
+    + (marketOnIndex ? 'market.pc.am does not sell until it is back. ' : '')
+    + 'Nothing falls back to a guessed price. The PCN index page shows why.'));
+
+  const how = card('How the PCN price is set (since 2026-09-25)', kv([
+    ['The PCN index', USD(idx, 8),
+     (ix ? `state <b>${esc(ix.state)}</b>${ix.stale ? ' — <b class="bad">STALE</b>' : ''}, computed `
+         + `${esc(ix.ageSeconds ?? '—')} s ago. ` : 'not relayed by price.pc.am. ')
+     + 'The volume-weighted median of qualifying user-to-user fills on exchange.pc.am: house bots, our own '
+     + 'accounts, linked accounts and accounts under 3 days old never count. At most 2% per qualifying fill '
+     + 'and 5% a day, within $0.015–$0.10, and it HOLDS when the evidence is thin. The fills behind it are on '
+     + 'the <b>PCN index</b> page.'],
+    ['market.pc.am sells at', USD(ask, 8),
+     marketOnIndex
+       ? `index × (1 + ${esc(s.premiumPct ?? '—')}%), one flat price at every order size. An unknown or stale `
+         + 'index closes the sale; it never falls back to the curve.'
+       : '<b class="bad">still on the curve</b> (pricingMode is not index), so the market is priced as before.'],
+    ['Rails credit at (creditRateUsd)', USD(credit, 8),
+     railsOnIndex
+       ? '= the index. <code>/credit-rate</code> answers 503 while the index is unknown or stale, and every rail holds.'
+       : '<b class="bad">not the index yet</b> (useIndex is 0): the legacy walk still sets it.'],
+    ['Exchange house bots', 'ask index + 3% · bid index − 30%',
+     'Ask up to $120 a day; bid up to $50 a day in five $10 rounds (00:00, 04:48, 09:36, 14:24, 19:12 UTC). '
+     + 'House fills never count toward the index. Live state: the Exchange page.'],
+    ['Keeper (wPCN pool)', USD(pool, 8),
+     'Held within its dead band (3%) of the index in BOTH directions when <code>anchor_index</code> is on, every '
+     + 'minute, at most $10 / 400 wPCN a run and $50 / 2,000 wPCN a day. The pool is NOT an input to the price. '
+     + 'Settings: the Keeper page.'],
+  ]));
+
+  const rows = (d.quotes || []).map(({ usd, r }) => {
+    if (!r.ok || r.data?.error) {
+      return [`$${usd}`, `<span class="bad">${esc(String(r.data?.error || r.error))}</span>`, '', ''];
+    }
+    const q = r.data;
+    return [`$${usd}`, N(q.pcn, 2) + ' PCN', USD(q.effectivePrice, 8), q.newPrice ? USD(q.newPrice, 8) : DASH];
+  });
+  const sizeCard = card('What each order size costs, right now', tbl(
+    ['Order', 'PCN you get', 'Price you pay', 'Price the NEXT buyer pays'], rows,
+    'No quote could be read.')
+    + note('Live quotes from market.pc.am, fetched when this page loaded. <b>In index mode every row shows the '
+           + 'same price</b> &mdash; the index plus the premium, flat at every size. A row that differs means the '
+           + 'market is not in index mode, or that quote failed.'));
+
+  const limits = s ? card('Live limits', kv([
+    ['Minimum order', USD(s.minOrderUsd, 2), ''],
+    ['Maximum order', USD(s.maxOrderUsd, 2),
+     'or ' + N(s.maxOrderPcn, 0) + ' PCN — whichever binds first.'],
+    ['Released automatically up to', USD(s.autoMaxUsd, 2), 'Anything larger is delivered BY HAND.'],
+    ['PCN still for sale', N(s.remainingPcn, 2) + ' PCN',
+     'The rung table is now only the inventory ledger; its prices are unused.'],
+    ['Sold', N(s.soldPcn, 2) + ' PCN', PCT(s.pctSold, 2) + ' of the original 100,000'],
+  ])) : '';
+
+  const gotchas = card('Mistakes this page exists to prevent', note(
+    '<ul>'
+    + '<li><b>Held is not stale.</b> A held index is still the price: it is re-published every tick with a '
+    + 'fresh time. Only <code>stale</code>, state <i>unknown</i>, or a 503 from <code>/credit-rate</code> stops the rails.</li>'
+    + '<li><b>The index and the last trade are different numbers.</b> The index is a capped median that can hold '
+    + 'still for days; the exchange\'s last trade is one fill.</li>'
+    + '<li><b>A credit-rate move now comes from an index move</b>, not from the pool. The PCN index page shows the '
+    + 'fills behind every move.</li>'
+    + '<li><b>The market rounds cost UP to the next cent</b> (<code>Math.ceil(n*100)/100</code>), so a quote is '
+    + 'never below what is charged.</li>'
+    + '<li><b>Retired, not deleted:</b> the curve, retire-on-spend, the hourly ask-follow and the divergence sale '
+    + 'gate. They come back only on a rollback (<code>pricing-mode.mjs curve</code>, <code>useIndex 0</code>), and '
+    + 'this page then shows the curve again.</li>'
+    + '<li><b>Never wire the ask to the pool.</b> Built and reverted on 2026-09-11 (a 98.6% write-down for about a '
+    + 'dollar). The index takes the pool out of the price altogether.</li>'
+    + '</ul>'));
+
+  return top + warn + how + sizeCard + limits + gotchas
     + note('Read live from price.pc.am and market.pc.am at page load.');
 }

@@ -982,11 +982,23 @@ def main():
         stx = x.get("stats") or {}
         la = d.get("ladder") or {}
         pool = p.get("pool") or {}
-        for v in (p.get("creditRateUsd"), p.get("sellPriceUsd"), p.get("rateFloorUsd"),
+        # THE PCN INDEX (since 2026-09-25 the PCN price). Quotable only when
+        # price.pc.am says it is fresh and priced -- the same test pcoin-facts
+        # applies before printing it. While the index is IN USE but unknown,
+        # the credit rate and the market price are not quotable either: the
+        # rails hold and the market is closed, and a remembered number is the
+        # thing this list exists to stop.
+        ix = p.get("index") if isinstance(p.get("index"), dict) else {}
+        ix_ok = (ix.get("stale") is False and ix.get("state") in ("live", "held", "frozen")
+                 and ix.get("usd") is not None)
+        priced = ix_ok or ix.get("inUse") is not True
+        for v in ((p.get("creditRateUsd") if priced else None),
+                  (p.get("sellPriceUsd") if priced else None),
+                  (ix.get("usd") if ix_ok else None), p.get("rateFloorUsd"),
                   pool.get("spotUsd"), pool.get("medianUsd"),
                   stx.get("bestBidUsd"), stx.get("bestAskUsd"),
                   stx.get("lastPriceUsd"), stx.get("highUsd"), stx.get("lowUsd"),
-                  la.get("marginalPrice")):
+                  (la.get("marginalPrice") if priced else None)):
             try:
                 if v is not None:
                     LIVE_RATES.append(float(v))

@@ -54,19 +54,30 @@ export function pcnIndexPage(d) {
   const gap = idx > 0 && credit > 0 ? (idx / credit - 1) * 100 : null;
   const state = a ? a.state : rel ? rel.state : null;
 
+  // In use once price.pc.am says so (useIndex = 1, plan Step 4, 2026-09-25).
+  // Read from the relay, never assumed: a rollback puts `inUse` back to false
+  // and this page goes back to calling it a shadow.
+  const inUse = !!(rel && rel.inUse);
   const top = tiles([
-    ['PCN index (shadow)', USD(idx, 6)],
+    [inUse ? 'PCN index' : 'PCN index (shadow)', USD(idx, 6)],
     ['Rails credit at now', USD(credit, 6)],
     ['Index vs credit rate', gap === null ? DASH : (gap >= 0 ? '+' : '') + PCT(gap, 2)],
     ['Market sells at', USD(sell, 6)],
   ]);
 
-  const banner = card('What this is', note(
-    '<b>Shadow only. Nothing uses this number yet.</b> The bots quote from price.pc.am (<code>bot_price_source = '
-    + esc(a && a.settings ? a.settings.bot_price_source : 'oracle') + '</code>), the rails credit at '
-    + '<code>creditRateUsd</code>, and price.pc.am publishes the index with <code>inUse: false</code>. '
-    + 'The switch is judged on at least 7 days of this page: at least 15 new qualifying fills, zero '
-    + '<i>unknown</i> states, every move explained by the fills below, and the owner\'s yes.'));
+  const botSrc = esc(a && a.settings ? a.settings.bot_price_source : 'oracle');
+  const banner = card('What this is', note(inUse
+    ? '<b>This is the PCN price.</b> price.pc.am publishes it with <code>inUse: true</code>, so '
+      + '<code>creditRateUsd</code> is the index and the rails credit at it; market.pc.am sells at it plus its '
+      + 'premium; the keeper holds the pool to it when <code>anchor_index</code> is on; the exchange bots quote '
+      + 'from <code>bot_price_source = ' + botSrc + '</code>. If it goes <i>unknown</i> or stale, '
+      + '<code>/credit-rate</code> answers 503 and the rails hold. Every move should still be explained by the '
+      + 'fills below.'
+    : '<b>Shadow only. Nothing uses this number yet.</b> The bots quote from price.pc.am (<code>bot_price_source = '
+      + botSrc + '</code>), the rails credit at '
+      + '<code>creditRateUsd</code>, and price.pc.am publishes the index with <code>inUse: false</code>. '
+      + 'The switch is judged on at least 7 days of this page: at least 15 new qualifying fills, zero '
+      + '<i>unknown</i> states, every move explained by the fills below, and the owner\'s yes.'));
 
   let where = '';
   if (a) {
@@ -98,7 +109,7 @@ export function pcnIndexPage(d) {
     ['Age', age(rel.ageSeconds), rel.stale ? '<b class="bad">stale</b>' : 'fresh'],
     ['Refused reading', rel.refused ? `<b class="bad">${esc(rel.refused.why)}</b>` : 'none',
       rel.refused ? 'If this was a deliberate re-seed, accept it with POST /admin/index/accept on the price primary.' : ''],
-    ['Used for', rel.inUse ? '<b class="bad">IN USE</b>' : 'nothing (shadow)', ''],
+    ['Used for', rel.inUse ? '<b>IN USE</b>: the credit rate' : 'nothing (shadow)', ''],
   ]) : note(p ? 'price.pc.am is not publishing an index block.' : 'price.pc.am could not be read: ' + esc(d.price && d.price.error)));
 
   let fills = '', people = '', hist = '', rules = '';

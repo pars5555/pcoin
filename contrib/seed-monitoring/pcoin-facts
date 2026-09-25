@@ -441,13 +441,53 @@ def block(c):
     else:
         p = d["price"]
         pool = p.get("pool") or {}
-        out.append("PRICE: credit rate $%s per PCN. This is what the AI services CREDIT, and it "
-                   "is not a market price. Ladder sell price $%s. wPCN pool spot $%s.%s"
-                   % (n(p.get("creditRateUsd"), 6), n(p.get("sellPriceUsd"), 6),
-                      n(pool.get("spotUsd"), 6),
-                      (" Both the credit rate and the sale price follow the wPCN pool DOWN and "
-                       "stop at a published floor of $%s." % n(p.get("rateFloorUsd")))
-                      if p.get("rateFollowsPoolDown") and p.get("rateFloorUsd") else ""))
+        # THE PCN INDEX, as price.pc.am relays it (the source is
+        # exchange.pc.am/api/index; both are public). Since 2026-09-25 it IS the
+        # PCN price. It may be quoted only when price.pc.am says it is not stale
+        # AND its state is a price -- held is a price, unknown is not. Anything
+        # else is UNKNOWN and must never become a number (CLAUDE.md 7.1).
+        ix = p.get("index") if isinstance(p.get("index"), dict) else {}
+        ist = ix.get("state") or "missing"
+        in_use = ix.get("inUse") is True
+        ix_ok = ix.get("stale") is False and ist in ("live", "held", "frozen") and ix.get("usd") is not None
+        if ix_ok:
+            w = ix.get("window") if isinstance(ix.get("window"), dict) else {}
+            evidence = ""
+            if w.get("hours"):
+                evidence = ("; its window is the last %s hours, with %s counted trades from %s people"
+                            % (w.get("hours"), w.get("trades"), w.get("entities")))
+            try:
+                moved = "last moved %s" % time.strftime("%Y-%m-%d %H:%M UTC",
+                                                        time.gmtime(_epoch(ix.get("lastMoveAt"))))
+            except Exception:
+                moved = "it has not moved since it started"
+            gloss = (" (too little new qualifying trading to move it; a held index is still the price)"
+                     if ist == "held" else "")
+            if in_use:
+                credit = " It is what PCoin services CREDIT one PCN at (creditRateUsd $%s)." % n(p.get("creditRateUsd"), 6)
+            else:
+                credit = (" price.pc.am says it is NOT yet the credit rate: services credit $%s per PCN."
+                          % n(p.get("creditRateUsd"), 6))
+            out.append("PRICE: the PCN index is $%s per PCN, state %s%s%s; %s. It is the "
+                       "volume-weighted median of qualifying user-to-user trades on exchange.pc.am, "
+                       "not a valuation.%s"
+                       % (n(ix.get("usd"), 6), ist, gloss, evidence, moved, credit))
+        elif in_use:
+            out.append("PRICE: the PCN index is UNKNOWN right now (state %s, stale %s) -- do NOT quote "
+                       "any PCN price. The services hold new credits until it is readable again; "
+                       "nothing is lost." % (ist, ix.get("stale")))
+        else:
+            out.append("PRICE: the PCN index cannot be read (state %s). Services credit $%s per PCN."
+                       % (ist, n(p.get("creditRateUsd"), 6)))
+        if ix_ok or not in_use:
+            out.append("MARKET SELL PRICE (what market.pc.am charges; it never credits anything): $%s. "
+                       "wPCN pool spot $%s -- the pool is NOT an input to the PCN price."
+                       % (n(p.get("sellPriceUsd"), 6), n(pool.get("spotUsd"), 6)))
+        else:
+            # market.pc.am closes when the index is unknown; a remembered sale
+            # price here would contradict the MARKET.PC.AM line below.
+            out.append("MARKET SELL PRICE: not quoted while the PCN index is unknown -- market.pc.am "
+                       "does not sell without it.")
         out.append("BUYBACK: %s. The project itself does not buy PCN back at price.pc.am."
                    % ("OPEN" if p.get("buybackOpen") else "closed"))
 
@@ -492,10 +532,24 @@ def block(c):
                    % (n(st.get("bestBidUsd"), 6), n(st.get("bestAskUsd"), 6),
                       n(st.get("lastPriceUsd"), 6), n(st.get("volumePcn"), 0),
                       st.get("trades24h")))
-        out.append("HOUSE BID BOT: %s, budget $%s a day, $%s left today%s."
-                   % ("on" if hb.get("enabled") else "off", n(hb.get("dailyBudgetUsd"), 2),
-                      n(hb.get("leftTodayUsd"), 2),
-                      ", spent out for today" if hb.get("spentOut") else ""))
+        # What the house bots quote from: the PCN index, or price.pc.am before
+        # the switch. Named by the exchange itself (referenceSource).
+        ref_name = "the PCN index" if x.get("referenceSource") == "index" else "the price.pc.am rate"
+        sl = hb.get("slots") if isinstance(hb.get("slots"), dict) else None
+        rounds = ""
+        if sl:
+            try:
+                nxt = "%d min" % (int(sl.get("nextInSeconds")) // 60)
+            except Exception:
+                nxt = "unknown"
+            rounds = (" in %s rounds of $%s ($%s left in this round; the next round opens in %s)"
+                      % (sl.get("perDay"), n(sl.get("slotUsd"), 2), n(sl.get("leftThisSlotUsd"), 2), nxt))
+        spent = ""
+        if hb.get("spentOut"):
+            spent = ", spent out for this round" if hb.get("spentFor") == "slot" else ", spent out for today"
+        out.append("HOUSE BID BOT: %s, buys at %s%% below %s, budget $%s a day%s, $%s left today%s."
+                   % ("on" if hb.get("enabled") else "off", n(hb.get("discountPercent")), ref_name,
+                      n(hb.get("dailyBudgetUsd"), 2), rounds, n(hb.get("leftTodayUsd"), 2), spent))
         if ref.get("enabled"):
             out.append("REFERRAL: %s PCN, paid once the person you introduced deposits at least "
                        "$%s and buys, held %s days."
@@ -506,10 +560,24 @@ def block(c):
         out.append("MARKET.PC.AM: UNREADABLE (%s)" % bad["ladder"])
     else:
         la = d["ladder"]
-        out.append("MARKET.PC.AM ladder: $%s per PCN, %s PCN left of %s, orders $%s to $%s."
-                   % (n(la.get("marginalPrice"), 6), n(la.get("remainingPcn"), 0),
-                      n(la.get("totalPcn"), 0), n(la.get("minOrderUsd"), 0),
-                      n(la.get("maxOrderUsdNow"), 0)))
+        if la.get("pricingMode") == "index":
+            # Since 2026-09-25: one flat price, the PCN index plus a premium. No
+            # price (index unknown or stale) means the market is closed, and that
+            # must never be rendered as a number.
+            if la.get("priceUnavailable") or la.get("marginalPrice") is None:
+                out.append("MARKET.PC.AM: no sale price right now (%s) -- do not quote one."
+                           % (la.get("priceUnavailable") or "nothing left to sell"))
+            else:
+                out.append("MARKET.PC.AM sells at $%s per PCN, one flat price for any order size "
+                           "(the PCN index plus %s%%), %s PCN left of %s, orders $%s to $%s."
+                           % (n(la.get("marginalPrice"), 6), n(la.get("premiumPct")),
+                              n(la.get("remainingPcn"), 0), n(la.get("totalPcn"), 0),
+                              n(la.get("minOrderUsd"), 0), n(la.get("maxOrderUsdNow"), 0)))
+        else:
+            out.append("MARKET.PC.AM ladder: $%s per PCN, %s PCN left of %s, orders $%s to $%s."
+                       % (n(la.get("marginalPrice"), 6), n(la.get("remainingPcn"), 0),
+                          n(la.get("totalPcn"), 0), n(la.get("minOrderUsd"), 0),
+                          n(la.get("maxOrderUsdNow"), 0)))
 
     wd = d.get("withdrawals")
     if isinstance(wd, dict):

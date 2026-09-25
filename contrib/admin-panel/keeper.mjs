@@ -95,9 +95,12 @@ const srcPill = (s) => {
 export function keeperPage(d, flash, flashBad) {
   const out = [];
   out.push('<h1>wPCN price keeper</h1>');
-  out.push('<p class="muted">The bot that holds the PancakeSwap wPCN price against the '
-    + 'PCN ladder ask. It runs on a timer every 10 minutes, compares the two prices, and '
-    + 'trades only if the gap is bigger than the dead band below.</p>');
+  out.push('<p class="muted">The bot that holds the PancakeSwap wPCN price to its anchor: '
+    + 'the <b>PCN index</b>, in both directions, when <code>anchor_index</code> is on (since '
+    + '2026-09-25), otherwise the market.pc.am ask &mdash; the settings below say which. It runs '
+    + 'on a timer (every minute since 2026-09-25, every 10 minutes before), compares the two '
+    + 'prices, and trades only if the gap is bigger than the dead band below, within its per-run '
+    + 'and daily caps.</p>');
 
   if (flash) out.push(`<div class="card" style="border-left:4px solid var(--${flashBad ? 'red' : 'green'})"><p>${esc(flash)}</p></div>`);
 

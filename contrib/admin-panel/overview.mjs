@@ -86,15 +86,19 @@ function indexCard(base, p) {
     return { status: 'unknown', html: card({ icon: '&#128200;', title: 'PCN index (shadow)', href: `${base}/pcn-index`,
       status: 'unknown', primary: '&mdash;', plabel: 'from real exchange trades', why: 'price.pc.am is not relaying the index' }) };
   }
-  const status = ix.refused || ix.state === 'unknown' ? 'alert' : ix.stale ? 'watch' : 'ok';
+  // In use (price.pc.am useIndex = 1, since 2026-09-25) a stale index means the
+  // rails are holding every credit, so it is an alert, not a watch.
+  const inUse = ix.inUse === true;
+  const status = ix.refused || ix.state === 'unknown' ? 'alert' : ix.stale ? (inUse ? 'alert' : 'watch') : 'ok';
   const credit = Number(p.creditRateUsd);
   const gap = ix.usd > 0 && credit > 0 ? (ix.usd / credit - 1) * 100 : null;
-  return { status, html: card({ icon: '&#128200;', title: 'PCN index (shadow)', href: `${base}/pcn-index`, status,
-    primary: usd(ix.usd, 6), plabel: 'from real exchange trades — used by nothing yet',
+  return { status, html: card({ icon: '&#128200;', title: inUse ? 'PCN index' : 'PCN index (shadow)', href: `${base}/pcn-index`, status,
+    primary: usd(ix.usd, 6), plabel: inUse ? 'from real exchange trades — THE credit rate' : 'from real exchange trades — used by nothing yet',
     lines: [['State', t(ix.state)], ['vs credit rate', gap === null ? '&mdash;' : (gap >= 0 ? '+' : '') + fmt(gap, 2) + '%'],
       ['Evidence', ix.window ? `${t(ix.window.trades)} fills, ${t(ix.window.entities)} people, $${t(ix.window.countedUsd)}` : '&mdash;'],
       ['Computed', ago(ix.ageSeconds) + ' ago']],
-    why: ix.refused ? 'price.pc.am REFUSED the latest reading: ' + ix.refused.why : ix.state === 'unknown' ? 'the exchange reports the index as unknown' : '' }) };
+    why: ix.refused ? 'price.pc.am REFUSED the latest reading: ' + ix.refused.why : ix.state === 'unknown' ? 'the exchange reports the index as unknown'
+      : ix.stale && inUse ? 'the index is stale: /credit-rate answers 503 and the rails hold' : '' }) };
 }
 
 function marketCard(base, svcs) {

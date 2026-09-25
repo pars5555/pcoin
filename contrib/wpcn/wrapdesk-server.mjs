@@ -973,16 +973,17 @@ on their chains and the wallet each one paid is one click from the post. Treat a
 wrap as public, not private.</p>
 <p class="notice bad"><b>The market for wPCN is small.</b> The PancakeSwap pool holds
 only a few hundred dollars of liquidity, so even a small trade moves its price
-sharply; <b>we trade that pool ourselves</b> (a bot buys wPCN when the pool falls
-well below the rate posted at price.pc.am, within a small daily budget), and the
+sharply; <b>we trade that pool ourselves</b> (a bot holds it within 3% of the PCN
+index in both directions, within a small daily budget), and the
 <b>liquidity is not locked</b> — the project holds the LP tokens. Only send what
 you can afford to lose.</p>
-<p class="notice warn"><b>wPCN can trade above PCN, and nothing can pull it back.</b> The
+<p class="notice warn"><b>wPCN can trade above PCN, and only a limited amount can pull it back.</b> The
 supply is fixed at 50,000 and cannot be minted. Arbitrage can always push wPCN
-<i>up</i> to PCN (buy wPCN, redeem, sell PCN), but it can only push wPCN <i>down</i>
-to PCN by wrapping more PCN — and once the desk's inventory of wPCN is gone,
-nobody can. Redeeming by <a href="/redeem">return</a> instead of burn keeps that
-inventory in existence; it does not remove the limit.</p></div></details>`;
+<i>up</i> to PCN (buy wPCN, redeem, sell PCN), but wPCN is only pushed <i>down</i>
+to PCN by wPCN leaving the desk's inventory — somebody wrapping more PCN, or our
+bot selling into the pool — and once that inventory is gone, nobody can.
+Redeeming by <a href="/redeem">return</a> instead of burn keeps that inventory in
+existence; it does not remove the limit.</p></div></details>`;
 
 const HOW = (signedIn) => `<details class="more"><summary>How it works</summary><div><ol class="steps">
 ${signedIn ? '' : '<li>Sign in with your market.pc.am account — the same one as the market and the exchange. No account? Create one on the sign-in page.</li>'}
@@ -1897,13 +1898,13 @@ need a PCoin address, from the <a href="https://pc.am/#download">PCoin wallet
 app</a> or a node.</p></div>
 
 <h2>Is the PancakeSwap price the PCN price?</h2><div class="card">
-<p class="muted">No. The PCN price is the one posted at
-<a href="https://price.pc.am">price.pc.am</a>, and that is what every service
-that accepts PCN charges against. The pool is small and a bot of ours buys wPCN
-when it falls well below that rate, within a small daily budget; when the pool
-falls on real selling the credit rate follows it down to a published floor, and
-the pool is never allowed to push that rate <i>up</i>. Do not read the pool as
-the market's verdict on PCN.</p></div>
+<p class="muted">No. The PCN price is the <b>PCN index</b>: the median price of
+real trades between users on <a href="https://exchange.pc.am">exchange.pc.am</a>,
+published at <a href="https://price.pc.am">price.pc.am</a>. That is what every
+service that accepts PCN credits at, and market.pc.am sells at it plus 3%. The
+pool is not an input to it. A bot of ours holds the pool within 3% of the index
+in both directions, within a small daily budget, so a big move can outrun it.
+Do not read the pool as the market's verdict on PCN.</p></div>
 
 <h2>How do I get PCN back?</h2><div class="card"><p class="muted">Through the
 <a href="/redeem">redeem page</a>, 1 PCN for every 1 wPCN, no fee on that side,
@@ -1926,14 +1927,14 @@ permanent on-chain record.</p></div>
 Yes, and the two directions are not symmetric. If wPCN trades <i>below</i> PCN,
 anyone can buy wPCN, redeem it 1:1 and end up with cheaper PCN — that pulls wPCN
 back up, and it works without limit. If wPCN trades <i>above</i> PCN, the only
-thing that pulls it back down is somebody wrapping PCN into wPCN and selling it,
-which needs wPCN in the desk's inventory to hand out. So wPCN can sit at a
-<b>premium</b> to PCN whenever the desk has no inventory or wrapping is closed,
-and no bot or contract can fix that. The rate PCoin's own services credit PCN at
-is never raised by the pool (they credit the lower of the posted rate and the
-pool), so a premium costs nobody who spends PCN — but somebody buying wPCN on
-PancakeSwap may be paying more than PCN costs at market.pc.am. Check both before
-you buy.</p></div>
+thing that pulls it back down is wPCN coming out of the desk's inventory:
+somebody wrapping PCN and selling the wPCN, or our bot selling into the pool
+when it is more than 3% above the PCN index (up to 2,000 wPCN a day). So wPCN can
+sit at a <b>premium</b> to PCN once that inventory is gone, and no bot or contract
+can fix that. The rate PCoin's own services credit PCN at is the PCN index, which
+the pool does not move, so a premium costs nobody who spends PCN — but somebody
+buying wPCN on PancakeSwap may be paying more than PCN costs at market.pc.am.
+Check both before you buy.</p></div>
 
 <h2>Who runs this?</h2><div class="card"><p class="muted">The PCoin project. The
 same people who run <a href="https://pc.am">pc.am</a>, the explorer and the
