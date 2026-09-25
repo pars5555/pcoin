@@ -38,7 +38,7 @@ import QRCode from 'qrcode';
 import { extractSvgs, svgToPng, unknownBlockTypes } from './lib/render.mjs';
 import { newDeliverables, deliverFiles, noteUploaded } from './lib/deliver.mjs';
 import { AgentClient, AgentUnavailable, AgentRefused, creditsToMicroUsd, runOutcome } from './lib/agent.mjs';
-import { liveSession, recordSession, touchSession, retireSession, sweepDeletions, reconcileRemote } from './lib/agentstore.mjs';
+import { liveSession, recordSession, setSessionModel, touchSession, retireSession, sweepDeletions, reconcileRemote } from './lib/agentstore.mjs';
 import { streamMessages, StreamStage } from './lib/stream.mjs';
 import { mdToHtml } from './lib/markdown.mjs';
 import { DraftStream } from './lib/drafts.mjs';
@@ -518,7 +518,7 @@ function setModel(chatId, model) {
     msg: `Model set to <b>${escapeHtml(row.model)}</b> — ${escapeHtml(price)}.`
       + `
 
-The agent starts a fresh session on your next message, because a session keeps the model it was created with.`,
+The conversation continues on the new model — its history and files are kept. Use <b>New chat</b> to start over.`,
   };
 }
 
@@ -1237,20 +1237,18 @@ async function runTurnAgentic({ chatId, updateId, model, text, resv, attachments
 
   await draft.push('');
 
-  // A SESSION KEEPS THE MODEL IT WAS CREATED WITH -- their own docs: "the
-  // session keeps it for later runs". So a user who picks a new model and keeps
-  // talking would still be answered by the OLD one, which is exactly what was
-  // reported: nvidia selected, mimo replied.
-  //
-  // The check compares the SESSION'S model against the user's current choice,
-  // rather than remembering that a switch happened. An in-memory note would not
-  // survive a restart, and the fact is already in the database.
+  // A MODEL SWITCH KEEPS THE CONVERSATION (owner, 2026-09-25: "i changed model and history was
+  // gone ... it should continue on previous session until user clears it"). A session keeps the
+  // model it last ran on only when a run names none -- so every run below names the user's
+  // current choice, OonaCode switches the same session to it (its host resumes the history on the
+  // new model), and here the switch is only a note in our own row. It used to retire the session
+  // and start a new one, which threw the whole conversation away on every switch.
   {
     const cur = liveSession(db, chatId);
     if (cur && cur.model !== model) {
-      log.info('model changed; replacing the agent session', { from: cur.model, to: model });
-      try { await retireSession(db, agent, chatId, { reason: `model ${cur.model} -> ${model}` }); }
-      catch (e) { log.warn('could not retire the session after a model change', errFields(e)); }
+      log.info('model changed; the session continues on the new model', { from: cur.model, to: model });
+      try { setSessionModel(db, cur.session_id, model); }
+      catch (e) { log.warn('could not record the model switch', errFields(e)); }
     }
   }
 
@@ -1325,21 +1323,28 @@ async function runTurnAgentic({ chatId, updateId, model, text, resv, attachments
   }
   // The agent cannot see this bot, so it does not know that what it saves is delivered: asked
   // for a picture it made one and then said "I can't transmit files anywhere from here"
-  // (2026-09-14). One line, every run, and it stops apologising.
-  message += '\n\n(Note: you are the assistant behind the PCoin AI Telegram bot; the user talks to you from Telegram and can send you photos, documents, voice notes and video, which land in your workspace. Any file you save in the workspace is sent to the user automatically as an attachment: when asked for a picture, chart, document or file, make it and name it in your answer, and never say you cannot send it. Do not create files nobody asked for. Answer as a general assistant, not as a coding tool, unless the user is coding.'
+  // (2026-09-14). Since 2026-09-25 this rides as the run's SYSTEM instructions (OonaCode keeps
+  // them on the session and puts them in the agent's own system prompt) instead of being pasted
+  // under every message the user typed.
+  const system = 'You are the assistant behind the PCoin AI Telegram bot; the user talks to you from Telegram and can send you photos, documents, voice notes and video, which land in your workspace. Any file you save in the workspace is sent to the user automatically as an attachment: when asked for a picture, chart, document or file, make it and name it in your answer, and never say you cannot send it. Do not create files nobody asked for. Answer as a general assistant, not as a coding tool, unless the user is coding.'
+    // Real pictures (2026-09-25): asked for "a realistic picture", an agent scraped Wikimedia and
+    // collaged stock photos for twenty minutes. The sandbox now has image and video models.
+    + ' For any picture, photo, illustration, logo or video, use the generate_image and generate_video tools — they make real AI-generated images and videos — never stock photos from the web or drawings in code, unless the user asks for that.'
     // THE STEP BUDGET, SAID OUT LOUD. Asked for a logo (2026-09-24), qwen3.8-flash made one, saw
     // its curved text was off, and spent every remaining step debugging the arc maths -- the run
     // hit the limit mid-fix after six minutes and the user got the broken first draft. A model
     // that knows it has N steps delivers something good early and refines within them.
-    + ` You have at most ${AGENT_MAX_TURNS} tool steps for this message: produce a good result early, refine only while steps remain, and always finish with a short answer to the user. The user is waiting on a phone, so prefer the simplest approach that works.)`;
+    + ` You have at most ${AGENT_MAX_TURNS} tool steps per message: produce a good result early, refine only while steps remain, and always finish with a short answer to the user. The user is waiting on a phone, so prefer the simplest approach that works.`;
 
   try {
     for await (const ev of agent.streamRun({
       sessionId: sess?.session_id ?? null,
       message,
-      model: sess ? null : model,
+      // Always: a run that names the model is how a switch reaches an existing session.
+      model,
       maxTurns: AGENT_MAX_TURNS,
       title: sess ? null : `pcnaibot ${chatId}`,
+      system,
     }, { abortSignal: hardAbort.signal })) {
       if (ev.type === 'session') {
         // WRITE THE ID DOWN THE MOMENT WE LEARN IT. A session id we lose is a

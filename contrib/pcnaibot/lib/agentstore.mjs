@@ -55,6 +55,14 @@ export function recordSession(db, chatId, { sessionId, model, expiresAt = null }
   });
 }
 
+// The model a session runs on, as the user last chose it. OonaCode takes `model` on every run and
+// switches the SAME conversation to it (the host resumes the history on the new model), so a
+// switch is a column update here -- not a new session (owner, 2026-09-25: "i changed model and
+// history was gone ... it should continue on previous session until user clears it").
+export function setSessionModel(db, sessionId, model) {
+  db.prepare('UPDATE agent_sessions SET model = ? WHERE session_id = ?').run(model, sessionId);
+}
+
 export function touchSession(db, sessionId, { credits = null, failed = false } = {}) {
   const row = db.prepare('SELECT * FROM agent_sessions WHERE session_id = ?').get(sessionId);
   if (!row) return null;
