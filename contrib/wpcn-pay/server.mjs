@@ -240,6 +240,13 @@ async function usdRate() {
   if (!Number.isFinite(rate) || rate <= 0) throw new Error('price feed gave no usable credit rate');
   // The feed says so itself when it is serving a remembered number. Rule 3.
   if (j.stale === true) throw new Error('price feed reports itself stale');
+  // AND THE RATE ITSELF MUST BE FRESH. Since 2026-09-25 the credit rate is the
+  // PCN index (price.pc.am useIndex). When the index goes stale or unknown the
+  // top-level `stale` stays false -- the ORACLE is fine, its number is not --
+  // and only `ladder.stale` turns true. Every PCN rail already holds on it;
+  // this one kept crediting wPCN at the last index. Absent or anything but
+  // false is a hold: an unreadable freshness flag is not a fresh rate.
+  if (!j.ladder || j.ladder.stale !== false) throw new Error('price feed: the rate is stale');
   return rate;
 }
 
