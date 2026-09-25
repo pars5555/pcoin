@@ -198,6 +198,76 @@ function validAddress(addr) {
   return chk === 1 || chk === 0x2bc830a3;         // bech32 or bech32m
 }
 
+// ── the PCN index (price plan Step 3) ──────────────────────────────────────
+// With `pricingMode = index` every PCN is sold at the PCN index from
+// exchange.pc.am x (1 + marketPremiumPct/100) -- the owner's one anchor, "the
+// average price of real trading on exchange.pc.am" (2026-09-24). The market
+// does not read the exchange itself. price.pc.am's primary, on THIS box, already
+// polls it every 60 s and checks each reading on its own terms -- fresh on its
+// own clock, two polls agreeing, a speed cap per step and per day, the floor and
+// ceiling (contrib/price/index-relay.mjs) -- and publishes what it accepted as
+// the `index` block of /price. One checked number, not two readers that could
+// come to disagree.
+//
+// Cached, refreshed every 30 s, and read SYNCHRONOUSLY by ladder.mjs on every
+// quote. A failed refresh resolves NOTHING: the last reading stays, and
+// getIndex() adds the time since it was taken to its age, so an unreachable
+// relay turns the reading stale on its own and, past indexMaxAgeSeconds, the
+// market closes. It never keeps selling on a number nobody is confirming.
+//
+// Declared ABOVE makeLadder on purpose. The price watch below calls
+// ladderState() while this module is still evaluating -- across its top-level
+// awaits -- and a `let` declared further down would still be in its temporal
+// dead zone when that call lands. This file has been caught by that ordering
+// more than once already (see the notes at makeLadder and at watchGate).
+const INDEX_URL = `${PRICE}/price`;
+const INDEX_REFRESH_MS = 30_000;
+let _index = { block: null, at: 0, error: 'not read yet' };
+let _indexLoggedError = null;
+async function refreshIndex() {
+  try {
+    const r = await fetch(INDEX_URL, { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) throw Object.assign(new Error(`HTTP ${r.status}`), { said: `price.pc.am answered HTTP ${r.status}` });
+    const j = await r.json();
+    const b = j && j.index;
+    // No index block is an ANSWER, not a failure: the relay is up and has no
+    // index to give. The old reading is dropped rather than aged, because the
+    // relay has just said it no longer vouches for it.
+    _index = (b && typeof b === 'object')
+      ? { block: { usd: b.usd, state: b.state, seq: b.seq, ageSeconds: b.ageSeconds, stale: b.stale },
+          at: Date.now(), error: null }
+      : { block: null, at: Date.now(), error: 'price.pc.am publishes no index' };
+  } catch (e) {
+    // The text reaches the public gate reason, so it names the service, never
+    // the loopback address or port.
+    const said = e.said || (e.name === 'TimeoutError' ? 'price.pc.am did not answer within 5 s'
+                                                      : 'price.pc.am could not be read');
+    _index = { ..._index, error: said };
+    if (_indexLoggedError !== said) console.warn('[index]', said, '--', e.message);
+  }
+  // Transitions only: a relay that stays down must not write a line every 30 s.
+  if (_index.error !== _indexLoggedError) {
+    if (!_index.error) console.log('[index] readable again');
+    _indexLoggedError = _index.error;
+  }
+}
+/** The last index reading, aged to NOW. Synchronous: ladder.mjs prices with it. */
+function getIndex() {
+  const b = _index.block;
+  if (!b) return { state: null, error: _index.error };
+  const since = (Date.now() - _index.at) / 1000;
+  const relayAge = (b.ageSeconds === null || b.ageSeconds === undefined) ? NaN : Number(b.ageSeconds);
+  return { usd: b.usd, state: b.state, seq: b.seq, stale: b.stale,
+           ageSeconds: Number.isFinite(relayAge) ? relayAge + since : null,
+           error: _index.error };
+}
+// Awaited once, so the first quote after a restart is not refused for want of
+// a read that was about to land. Bounded by the 5 s timeout and it cannot
+// throw; a relay that is down only means the market starts closed in index
+// mode, which is the correct state for it to be in.
+await refreshIndex();
+setInterval(() => { refreshIndex().catch(() => {}); }, INDEX_REFRESH_MS).unref?.();
+
 // ── the ladder ─────────────────────────────────────────────────────────────
 // The engine lives in ladder.mjs so it can be exercised against a real database
 // without starting an HTTP server or touching NOWPayments. The race it has to
@@ -218,7 +288,7 @@ import { makeWaivers, lossOnSpendPct } from './waivers.mjs';
 // `getSetting` is a function for the same reason `notify` is: S is declared
 // below, so passing the binding itself would throw at startup.
 const L = makeLadder(pool, { notify: (...args) => notify(...args),
-                             getSetting: k => S.get(k) });
+                             getSetting: k => S.get(k), getIndex });
 setInterval(L.sweepExpiredOrders, 15 * 60 * 1000).unref?.();
 const W = makeWaivers(pool);
 await W.ensureTable();
@@ -366,7 +436,9 @@ function tooMuchPcn(rungs, pcn) {
   const atCap = L.walkPcn(rungs, cap);
   return `the most one order may take is ${cap.toLocaleString()} PCN — about ` +
          `$${atCap.cost.toFixed(2)} at today's prices. Larger holdings are built up over ` +
-         `several orders, so no single buyer takes the ladder at the floor.`;
+         (S.get('pricingMode') === 'index'
+           ? `several orders, so no single buyer takes the whole stock at once.`
+           : `several orders, so no single buyer takes the ladder at the floor.`);
 }
 
 // ── retire-on-spend ────────────────────────────────────────────────────────
@@ -461,6 +533,29 @@ async function saleGate(usd = null, email = null) {
     return { open: false, reason: 'sales are paused by the operator.' };
   }
   const st = await L.ladderState();
+
+  // INDEX MODE (price plan Step 3). No divergence branch: the market price and
+  // the credit rate come from the same index by construction, so the question
+  // it exists to ask -- "will what you buy here be worth the same to the
+  // services?" -- has no gap left to measure (plan section 3). What closes the market
+  // instead is an index nobody can vouch for. Checked BEFORE sold-out, because
+  // both publish marginalPrice as null and they need different words.
+  if (st.pricingMode === 'index') {
+    if (st.priceUnavailable) {
+      return { open: false, pricingMode: 'index', index: st.index, reason:
+        `sales are paused: the PCN price cannot be confirmed right now \u2014 ${st.priceUnavailable}. ` +
+        `The price here is the PCN index from exchange.pc.am, and nothing is sold at a price that ` +
+        `cannot be confirmed. This clears itself once the index is current again.` };
+    }
+    if (st.marginalPrice === null) {
+      return { open: false, pricingMode: 'index',
+               reason: 'the market is sold out \u2014 there is no more PCN to sell here.' };
+    }
+    return { open: true, pricingMode: 'index', judgedPrice: st.marginalPrice,
+             marginalPrice: st.marginalPrice, nextFillPrice: st.nextFillPrice,
+             premiumPct: st.premiumPct, index: st.index };
+  }
+
   if (st.marginalPrice === null) {
     return { open: false, reason: 'the ladder is sold out \u2014 there is no more PCN to sell here.' };
   }
@@ -949,6 +1044,9 @@ createServer(async (req, res) => {
       // amount only to be refused at the click that matters.
       const gate = await saleGate(usd, email);
       return json(res, 200, {
+        // So the page can describe the price it is showing: in index mode there
+        // are no steps of a ladder to talk about, only one price.
+        pricingMode: S.get('pricingMode') === 'index' ? 'index' : 'curve',
         // Names kept from the AMM response so nothing downstream has to change.
         pcn: w.pcn,
         effectivePrice: w.avgPrice,
@@ -1116,6 +1214,8 @@ createServer(async (req, res) => {
           sellableNowPcn: (hr.ok && Number.isFinite(Number(st.v.remainingPcn)))
             ? Math.min(Number(st.v.remainingPcn), hr.v.pcn) : null,
           pctSold: st.v.pctSold,
+          pricingMode: st.v.pricingMode, premiumPct: st.v.premiumPct,
+          index: st.v.index, priceUnavailable: st.v.priceUnavailable,
         } : null,
         ladderError: st.ok ? null : st.e,
 
@@ -1138,6 +1238,8 @@ createServer(async (req, res) => {
           maxDivergencePct: S.get('maxDivergencePct'),
           ladderMaxPriceUsd: S.get('ladderMaxPriceUsd'),
           ladderMinPriceUsd: S.get('ladderMinPriceUsd'),
+          pricingMode: S.get('pricingMode'), marketPremiumPct: S.get('marketPremiumPct'),
+          indexMaxAgeSeconds: S.get('indexMaxAgeSeconds'),
         },
       });
     }
@@ -1213,12 +1315,28 @@ createServer(async (req, res) => {
       };
 
       // Everything the PUBLIC may see. Anything not on this list is ours.
+      // pricingMode, premiumPct and index are public on purpose: in index mode
+      // the price IS "the index x a published constant" (plan §2.1), and the page
+      // builds its description of the price from them rather than hardcoding 3%.
       const PUBLIC_FIELDS = [
         'at', 'marginalPrice', 'floorPrice', 'topPrice', 'rungCount', 'stepPct',
         'totalPcn', 'pctSold', 'remainingPcn', 'ladderRemainingPcn', 'sellableNowPcn',
         'buybackOpen', 'minOrderUsd', 'maxOrderUsd', 'maxOrderPcn', 'maxOrderUsdNow',
-        'autoMaxUsd',
+        'autoMaxUsd', 'pricingMode', 'premiumPct', 'index', 'priceUnavailable',
       ];
+      // INDEX MODE, NO PRICE: 503 to OUR OWN callers, a normal 200 to the public.
+      //
+      // price.pc.am polls this over loopback and reads `marginalPrice: null` as
+      // "the ladder is sold out, the last rung's price stands" -- it keeps the
+      // old price AND refreshes its age, so it would go on publishing a fresh-
+      // looking sellPriceUsd for a market that is closed. A failed poll is what
+      // it treats as "no longer refreshed": the last price stays, `ladder.stale`
+      // turns true after 10 minutes, and consumers that require a fresh ladder
+      // (the exchange's fetchSellPrice, pcnaibot) stand down. That is plan §2.4's
+      // `unknown` row. The public page still gets its limits and the reason.
+      if (internal && full.pricingMode === 'index' && full.priceUnavailable) {
+        return json(res, 503, { ...full, error: `no price: ${full.priceUnavailable}` });
+      }
       if (internal) return json(res, 200, full);
       const pub = {};
       for (const k of PUBLIC_FIELDS) if (k in full) pub[k] = full[k];
@@ -1239,7 +1357,9 @@ createServer(async (req, res) => {
       if (!(pcn > 0)) return json(res, 400, { error: 'amount must be positive' });
       const st = await L.ladderState();
       const w = L.walkPcn(await L.rungsWithStock(), pcn);
+      const flat = st.pricingMode === 'index';
       return json(res, 200, {
+        pricingMode: st.pricingMode,
         requestedPcn: pcn,
         filledPcn: w.pcn,
         unfilledPcn: w.pcnUnfilled,          // > 0 means the ladder ran out
@@ -1264,7 +1384,10 @@ createServer(async (req, res) => {
         // have before this order. Small orders genuinely do not move it, and
         // saying "moves the price from $0.015 to $0.015" reads as a bug even
         // though it is arithmetically true.
-        priceMoves: w.marginalAfter !== null && w.marginalAfter !== st.nextFillPrice,
+        // Index mode is flat by definition. Comparing the two numbers there
+        // would report a "move" whenever the 30-second index refresh happened
+        // to land between the state read and the walk.
+        priceMoves: !flat && w.marginalAfter !== null && w.marginalAfter !== st.nextFillPrice,
         exhausted: w.exhausted,
       });
     }
@@ -1458,8 +1581,13 @@ createServer(async (req, res) => {
         return json(res, 429, {
           error: `you already have ${pendingOrders.length} unpaid order` +
             `${pendingOrders.length === 1 ? '' : 's'}. Finish paying it, or cancel it, before ` +
-            `starting another — an unpaid order holds PCN nobody else can buy, including you: ` +
-            `your next order would be quoted from dearer rungs because of it.`,
+            (S.get('pricingMode') === 'index'
+              // One price for everyone in index mode, so there are no "dearer
+              // rungs" to be quoted from; the hold on the coins is the whole cost.
+              ? `starting another — an unpaid order holds PCN nobody else can buy until it is ` +
+                `paid, cancelled or expires.`
+              : `starting another — an unpaid order holds PCN nobody else can buy, including you: ` +
+                `your next order would be quoted from dearer rungs because of it.`),
           pendingOrders,
         });
       }
@@ -1578,6 +1706,9 @@ createServer(async (req, res) => {
       } catch (e) {
         await conn.rollback();
         if (e.code === 409) return json(res, 409, { error: e.message });
+        // Index mode: the index went stale between the gate and the reservation.
+        // Rolled back above, so nothing is held and nothing will be invoiced.
+        if (e.pricingRefusal && e.code === 503) return json(res, 503, { error: e.message, saleOpen: false });
         throw e;
       } finally { conn.release(); }
 
@@ -1739,6 +1870,17 @@ createServer(async (req, res) => {
     }
     return json(res, 404, { error: 'not found' });
   } catch (e) {
+    // A REFUSAL from the pricing engine, not a crash: in index mode ladder.mjs
+    // throws code 503 when the index cannot be vouched for (and 400 for an
+    // amount it cannot price). The buyer gets that answer, and the operator is
+    // not paged "request crashed on a money path" for what is the market
+    // correctly declining to sell -- the gate watcher already reports the
+    // closure itself, once, with the reason. Keyed on ladder.mjs's own tag, not
+    // on the number: anything else that happens to carry a code still falls
+    // through to the crash alert below.
+    if (e.pricingRefusal && (e.code === 503 || e.code === 400)) {
+      return json(res, e.code, { error: e.message, ...(e.code === 503 ? { saleOpen: false } : {}) });
+    }
     console.error('[market]', e.stack || e.message);
     // A throw inside /ipn is the expensive one: the money path. It can land
     // between recording the payment and delivering, leaving a paid order that

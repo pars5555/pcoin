@@ -3,7 +3,8 @@
 //
 //   node ladder-floor-test.mjs
 //
-// PURE. It calls `ammWalk` directly with synthetic rungs, touches no database
+// PURE. It calls `ammWalk` directly with synthetic rungs (and, in section 7,
+// makeLadder over an in-memory stand-in for the pool), touches no database
 // and cannot move the live posted price -- deliberately unlike ladder-test.mjs
 // next door, which does both and carries an explicit opt-in for it.
 //
@@ -14,7 +15,7 @@
 // test is what stops that being true again, so every case below is also run
 // against a deliberately unfloored walk at the end: a floor test that cannot
 // fail is the same shape as the bug it is testing for.
-import { ammWalk, UNITS } from './ladder.mjs';
+import { ammWalk, makeLadder, UNITS } from './ladder.mjs';
 
 const FLOOR = 0.015;
 let failed = 0;
@@ -121,6 +122,43 @@ console.log('\n  curve floor  --  floor $' + FLOOR.toFixed(4) +
      huge.usdUnfilled > 0, `$${huge.usdUnfilled.toFixed(2)} unfilled`);
   ok('a giant order is charged only for what it got',
      huge.cost < 10_000_000, `$${huge.cost.toFixed(2)}`);
+}
+
+// ---- 7. the floor is WIRED, on both pricing paths ------------------------
+// Adapted for price plan Step 3 (index mode). The original bug was never that
+// the floor arithmetic was wrong -- it was that the floor lived on a path the
+// live code did not take. Sections 1-6 test the arithmetic; this one goes
+// through makeLadder, the way server.mjs does, with ladderMinPriceUsd set as a
+// SETTING, on the curve and on the index. And each is run once with the floor
+// off, as the control: a wiring test that passes either way proves nothing.
+{
+  const setting = (over) => k => ({ ladderMinPriceUsd: FLOOR, ammK: CHEAP_K, ammVirtualPcn: VIRT,
+                                    ladderMaxPriceUsd: 0, marketPremiumPct: 3,
+                                    indexMaxAgeSeconds: 900, ...over })[k];
+  // An index under the floor: $0.006 x 1.03 = $0.00618.
+  const LOW = () => ({ usd: 0.006, state: 'held', seq: 1, ageSeconds: 10, stale: false });
+  // ladderState() only needs the four aggregate SELECTs answered.
+  const pool = { query: async sql => {
+    const s = String(sql);
+    if (/SUM\(qty_total\)/.test(s)) return [[{ tot: REM, sold: 0, resv: 0, retd: 0 }]];
+    if (/MIN\(price\)/.test(s)) return [[{ lo: 0.05, hi: 0.05, n: 3, p1: 0.05, p2: 0.05 }]];
+    return [[{ price: 0.05 }]];
+  } };
+
+  for (const [path, over] of [['curve', { pricingMode: 'curve' }], ['index', { pricingMode: 'index' }]]) {
+    const held = makeLadder(pool, { getSetting: setting(over), getIndex: LOW });
+    const free = makeLadder(pool, { getSetting: setting({ ...over, ladderMinPriceUsd: 0 }), getIndex: LOW });
+    const hw = held.walkUsd(RUNGS, 100), fw = free.walkUsd(RUNGS, 100);
+    ok(`${path}: control -- with the floor setting at 0, $100 buys under the floor`,
+       fw.avgPrice < FLOOR, `$${fw.avgPrice.toFixed(6)}/PCN`);
+    ok(`${path}: with ladderMinPriceUsd set, $100 pays no less than the floor`,
+       hw.avgPrice >= FLOOR - 1e-9 && hw.pcn <= 100 / FLOOR + 1e-8, `$${hw.avgPrice.toFixed(8)}/PCN`);
+    const hp = held.walkPcn(RUNGS, 5000);
+    ok(`${path}: 5,000 PCN costs at least 5,000 x floor`, hp.cost >= 5000 * FLOOR - 1e-9, `$${hp.cost.toFixed(6)}`);
+    const st = await held.ladderState();
+    ok(`${path}: the PUBLISHED price is floored too`,
+       st.marginalPrice >= FLOOR - 1e-12 && st.nextFillPrice >= FLOOR - 1e-12, `$${st.marginalPrice}`);
+  }
 }
 
 console.log('');

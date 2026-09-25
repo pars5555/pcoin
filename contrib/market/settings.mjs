@@ -131,6 +131,43 @@ export const DEFS = {
           'after the wPCN pool on a schedule, that pool holds about $650, pushing it down is ' +
           'cheap and reversible, and this number is the bound on what that can cost. Raise it ' +
           'to be more conservative; only lower it deliberately. 0 disables it — do not.' },
+  // ── price plan Step 3: the market prices off the PCN index ──────────────
+  // D:\pc.am\PCOIN-PRICE-EXCHANGE-ANCHOR-PLAN.md §5 Step 3. Owner, 2026-09-24:
+  // one anchor, "the average price of real trading on exchange.pc.am", with
+  // every other price the index times a published constant. For this market
+  // that constant is 1.03 (decision D10: "index x 1.03, the same as the
+  // exchange ask").
+  //
+  // All three MUST stay registered here. reload() skips a stored row whose key
+  // is not in DEFS, so an unregistered pricingMode would sit in the table
+  // reading 'index' while the server priced on the curve -- the same silent
+  // fallback that once made an ammK write look like it had not worked.
+  pricingMode:         { type: 'str', def: 'curve', max: 5, re: /^(curve|index)$/,
+    // A closed list, not just the regex: coerce() lets an EMPTY string past
+    // `re`, and an empty pricingMode reads as 'curve' -- a silent switch back to
+    // a curve nobody re-anchored. The admin form renders these as a <select>.
+    options: ['curve', 'index'],
+    label: 'Pricing mode \u2014 curve or index',
+    help: 'curve: the constant-product curve, price = ammK / X^2, re-anchored by the ask-follow ' +
+          'timer. index: every PCN at ONE price, the PCN index from exchange.pc.am (relayed ' +
+          'by price.pc.am on this box) x (1 + marketPremiumPct/100), never below ' +
+          'ladderMinPriceUsd, the same for any order size. In index mode an unknown or stale ' +
+          'index CLOSES the market; it never falls back to the curve. Switch with ' +
+          '`node pricing-mode.mjs index|curve`, not here: going back to curve needs ammK ' +
+          're-anchored first, or the price jumps to wherever the old curve was left.' },
+  marketPremiumPct:    { type: 'num', def: 0, min: 0, max: 20, step: 0.01,
+    label: 'Premium over the PCN index (%) \u2014 index mode only',
+    help: 'What this market adds to the PCN index. The owner approved 3 (plan decision D10): ' +
+          'one house selling price, equal to the exchange\u2019s house ask, which also covers ' +
+          'NOWPayments and network costs. Read on every quote; nothing else uses it.' },
+  indexMaxAgeSeconds:  { type: 'num', def: 900, min: 60, max: 7200,
+    label: 'PCN index max age (seconds) \u2014 index mode only',
+    help: 'An index reading older than this closes the market rather than prices it. The age ' +
+          'is the exchange\u2019s own computation time plus however long ago this server last ' +
+          'read price.pc.am, so an unreachable relay ages the reading by itself. price.pc.am ' +
+          'also marks the index stale after its OWN limit (600 s on 2026-09-24), and either ' +
+          'one closes the market: this setting can make the market stricter than the relay, ' +
+          'never looser.' },
   retireSystems:       { type: 'list', def: '', max: 20, kind: 'names',
     label: 'Systems whose spending counts',
     help: 'Which address pools count as customers SPENDING. The market’s own pool must never ' +
@@ -219,6 +256,11 @@ export function makeSettings(pool, log = console) {
       const v = String(raw ?? '').trim();
       if (v.length > (d.max || 200)) throw new Error(`${key} must be at most ${d.max || 200} characters`);
       if (d.re && v && !d.re.test(v)) throw new Error(`${key} does not look right`);
+      // A closed list of values. Checked even when `v` is empty, which the
+      // line above deliberately lets through for optional strings.
+      if (d.options && !d.options.includes(v)) {
+        throw new Error(`${key} must be one of: ${d.options.join(', ')}`);
+      }
       return v;
     }
     const n = Number(raw);

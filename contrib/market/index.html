@@ -34,11 +34,13 @@ border:1px solid var(--border,#2a3346);background:transparent;color:inherit}
 
   <h1 id="title">Buy PCoin with crypto</h1>
   <p id="ssoNote"></p>
+  <!-- Deliberately true however the price is set: the script below replaces it
+       with the description of the pricing actually in force, read from
+       /api/ladder/state (pricingMode), so the page is right before and after
+       the market switches, and after a rollback. -->
   <p class="lede" id="lede">Pay in USDT or any coin NOWPayments accepts. PCN is sold
-  from a fixed ladder of coins in steps, each dearer than the one below it. Nothing is
-  held back and nothing is added: when the ladder is empty there is no more to sell
-  here. Large orders climb several steps, so <b>the average price you pay is higher
-  than the price on this page</b>. Work it out before you order.</p>
+  here from a fixed stock of coins: nothing is added, and when it is sold there is no
+  more to sell here. Check what your order costs below before you pay.</p>
 
   <div class="grid">
     <div class="card"><div class="k">Price now</div><div class="v" id="price">&mdash;</div>
@@ -49,15 +51,14 @@ border:1px solid var(--border,#2a3346);background:transparent;color:inherit}
       <div class="s" id="minOrderNote">per order</div></div>
   </div>
 
-  <!-- Public on purpose: the whole point of a ladder is that the average price
-       of a big order differs from the posted one, so anybody can check it
-       before signing in, not after paying. -->
+  <!-- Public on purpose: anybody can check what an order really costs before
+       signing in, not after paying. -->
   <div class="panel" id="calcPanel">
     <h2>What would it cost?</h2>
     <label for="calcPcn">Number of PCN</label>
     <input id="calcPcn" type="number" min="1" step="100" placeholder="50000" oninput="calc()">
-    <div class="note" id="calcBox">Enter a quantity to see the rungs it consumes, what it
-      costs in total, and the average price per coin.</div>
+    <div class="note" id="calcBox">Enter a quantity to see what it costs in total and the
+      price per coin.</div>
   </div>
 
   <!-- ── signed out ── -->
@@ -113,14 +114,20 @@ border:1px solid var(--border,#2a3346);background:transparent;color:inherit}
   </div>
 
   <footer>
-    <p><b>PCN is not listed on any exchange, and this market does not buy it
-    back.</b> This price is posted from a fixed ladder of 100,000 coins, not
-    discovered on a market. The only way out is the
-    <a href="https://wrapdesk.pc.am" rel="noopener">wrap desk</a>: wrap PCN into wPCN
-    (250 PCN per person while it is new, 5% fee, released by hand after 100
-    confirmations) and sell the wPCN into a small PancakeSwap pool that a bot holds
-    to this same posted price. So treat anything you buy here as spent: use it on
-    <a href="https://pc.am">the services that accept PCN</a>.
+    <!-- This said "PCN is not listed on any exchange" and that a bot holds the
+         PancakeSwap pool "to this same posted price". Both had stopped being
+         true -- exchange.pc.am opened on 2026-09-16, and the keeper stopped
+         defending the posted price on 2026-09-19 -- and the first is flatly
+         false once this market prices off exchange.pc.am's trades. Written now
+         to be true whichever way the price is set. -->
+    <p><b>This market does not buy PCN back, and nothing here promises you can sell
+    it for money.</b> PCN trades in two small places:
+    <a href="https://exchange.pc.am" rel="noopener">exchange.pc.am</a>, a small order
+    book the project runs, and PancakeSwap, as wPCN &mdash; made by wrapping PCN at the
+    <a href="https://wrapdesk.pc.am" rel="noopener">wrap desk</a> (250 PCN per person
+    while it is new, 5% fee, released by hand after 100 confirmations). Both are thin:
+    selling any real amount moves the price against you. So treat anything you buy here
+    as spent: use it on <a href="https://pc.am">the services that accept PCN</a>.
     <b>Do not buy PCN expecting to get money out of it.</b></p>
     <p><a href="https://pc.am">pc.am</a> &middot;
        <a href="https://explorer.pc.am">explorer</a> &middot;
@@ -440,6 +447,22 @@ function calc() {
     if (!(pcn > 0)) { $('calcBox').textContent = 'Enter a quantity.'; return; }
     try {
       const c = await api('/api/ladder/calc?pcn=' + pcn);
+      // INDEX MODE: one price for every coin, so there are no steps to climb
+      // and nothing an order does to the next buyer's price. Saying otherwise
+      // -- "climbs 3 of the 100 steps" -- would describe a product this market
+      // no longer sells.
+      if (c.pricingMode === 'index') {
+        $('calcBox').innerHTML =
+            '<b>' + fmtPcn(c.filledPcn) + ' PCN</b> costs <b>' + usd(c.totalCost)
+          + '</b>, at <b>' + money(c.averagePrice) + '</b> per coin &mdash; the same price '
+          + 'for any amount, so this order does not change what the next buyer pays.'
+          + (c.exhausted ? '<br>It would buy <b>all the PCN left for sale here</b>.' : '')
+          + (c.unfilledPcn > 0
+              ? '<br><b>Only ' + Math.round(c.filledPcn).toLocaleString()
+                + ' PCN are left for sale here</b>, so that is what this prices.'
+              : '');
+        return;
+      }
       const short = c.unfilledPcn > 0
         ? '<br><b>Only ' + Math.round(c.filledPcn).toLocaleString() + ' PCN are left on the ladder</b>, '
           + 'so that is what this prices.'
@@ -496,15 +519,23 @@ function quote() {
     try {
       const q = await api('/api/quote?usd=' + usd);
       $('quoteBox').innerHTML = 'You receive about <b>' + Math.round(q.pcn).toLocaleString()
-        + ' PCN</b> at an average of <b>' + money(q.effectivePrice) + '</b> each, across <b>'
-        + q.rungsConsumed + '</b> step' + (q.rungsConsumed === 1 ? '' : 's') + ' of the ladder.'
+        + (q.pricingMode === 'index'
+            // One price for every coin: no "average", no steps of a ladder.
+            ? ' PCN</b> at <b>' + money(q.effectivePrice) + '</b> each.'
+            : ' PCN</b> at an average of <b>' + money(q.effectivePrice) + '</b> each, across <b>'
+              + q.rungsConsumed + '</b> step' + (q.rungsConsumed === 1 ? '' : 's') + ' of the ladder.')
         + (q.saleOpen ? '' : '<br><br><b>Sales are paused.</b> ' + q.saleBlockedReason);
       // Say it before the click, not after. Someone who has typed an amount and
       // pasted an address should not discover at the payment step that we were
       // never going to accept it.
       $('buyBtn').disabled = !q.saleOpen;
       $('buyBtn').textContent = q.saleOpen ? 'Continue to payment' : 'Sales paused';
-    } catch (e) { $('quoteBox').textContent = e.message; }
+    } catch (e) {
+      $('quoteBox').textContent = e.message;
+      // 503 = the market cannot price right now (in index mode: no index it can
+      // vouch for). A button a previous quote enabled must not stay live.
+      if (e.status === 503) { $('buyBtn').disabled = true; $('buyBtn').textContent = 'Sales paused'; }
+    }
   }, 250);
 }
 
@@ -565,17 +596,37 @@ $('signout').onclick = async () => { await fetch('/api/logout'); refresh(); };
     const sellable  = (l.sellableNowPcn === null || l.sellableNowPcn === undefined)
       ? null : Math.round(Number(l.sellableNowPcn));
     $('remaining').textContent = sellable === null ? '\u2014' : sellable.toLocaleString();
+    const indexMode = l.pricingMode === 'index';
     $('soldPct').textContent = l.pctSold.toFixed(2) + '% of '
       + Number(l.totalPcn).toLocaleString() + ' PCN sold'
       + ((sellable !== null && sellable < remainPcn)
-          ? ' \u00b7 ' + remainPcn.toLocaleString() + ' left on the ladder' : '');
+          ? ' \u00b7 ' + remainPcn.toLocaleString() + (indexMode ? ' left in stock' : ' left on the ladder')
+          : '');
 
     // The opening paragraph describes the ladder, so it is built from the
     // ladder rather than typed into the markup. It read "$0.001 up to $10.00,
     // 9.75% a step" for as long as it took someone to notice, while the ladder
     // underneath it actually started at $0.015 and stepped 6.79% — the one
     // paragraph every buyer reads, describing a different product.
-    if (l.floorPrice && l.topPrice && l.stepPct) {
+    //
+    // INDEX MODE (price plan Step 3) describes a different product again: one
+    // price, the PCN index plus a premium, flat at any size. The premium is the
+    // server's number, never typed here -- a percentage on a public page is a
+    // promise, and a hardcoded one goes stale the day it moves.
+    if (indexMode) {
+      const prem = Number(l.premiumPct);
+      $('lede').innerHTML =
+        'Pay in USDT or any coin NOWPayments accepts. The price is the <b>PCN index</b> '
+        + '&mdash; the median price of trades between users on '
+        + '<a href="https://exchange.pc.am" rel="noopener">exchange.pc.am</a>, not counting '
+        + 'the project\u2019s own orders &mdash;'
+        + (prem > 0 ? ' plus <b>' + (+prem.toFixed(2)) + '%</b>,' : '')
+        + ' and it is <b>the same for every order size</b>: a large order pays the same per '
+        + 'coin as a small one. The index moves only when users trade there, and only by a '
+        + 'limited amount per trade and per day; if it cannot be confirmed, sales pause rather '
+        + 'than guess. Nothing is added to the stock here: when it is sold there is no more to '
+        + 'sell here.';
+    } else if (l.floorPrice && l.topPrice && l.stepPct) {
       $('lede').innerHTML =
         'Pay in USDT or any coin NOWPayments accepts. PCN is sold from a fixed ladder of <b>'
         + Number(l.totalPcn).toLocaleString() + ' coins</b> in ' + l.rungCount

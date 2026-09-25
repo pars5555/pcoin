@@ -63,6 +63,12 @@ export function makePriceWatch({ pool, ladder, notify, log = console }) {
     let st;
     try { st = await ladder.ladderState(); }
     catch (e) { log.warn('[pricewatch] ladder unreadable:', e.message); return { ok: false, why: e.message }; }
+    // Index mode with no usable index publishes marginalPrice null -- which
+    // below would be announced as "the ladder is empty". It is not empty; the
+    // price is UNKNOWN, and an unknown is not a move (the rule in the header).
+    // The gate watcher reports the closure itself. Nothing is written, so the
+    // next real reading is compared with the last real one.
+    if (st.priceUnavailable) return { ok: false, why: st.priceUnavailable };
 
     // The LEDGER of retirements, read separately from the ladder's counters.
     //
@@ -144,13 +150,26 @@ export function makePriceWatch({ pool, ladder, notify, log = console }) {
     }
     if (dSold < 0 || dRetired < 0) causes.push(`⚠️ counters went DOWN — the ladder was edited or rebuilt`);
     if (!causes.length) causes.push(`no change in sold or retired — the ladder itself was changed`);
+    // INDEX MODE (price plan Step 3): sales and retirements no longer move the
+    // price at all, so any cause worked out above would be an invented one --
+    // the failure this file's retirement comment already warns about. The
+    // price is the index times a setting; say that, and which index reading.
+    const indexMode = st.pricingMode === 'index';
+    if (indexMode) {
+      causes.length = 0;
+      causes.push(`index mode: the PCN index` +
+        (st.index && st.index.usd != null ? ` is now ${money(st.index.usd)}` +
+          (st.index.seq != null ? ` (seq ${st.index.seq})` : '') : '') +
+        `, plus ${Number(st.premiumPct) || 0}% — sales and retirements do not move this price`);
+      if (dSold < 0 || dRetired < 0) causes.push(`⚠️ counters went DOWN — the ladder was edited or rebuilt`);
+    }
 
     const dir = now.price === null ? '🔚'
               : pct === null ? '📊'
               : pct > 0 ? '📈' : '📉';
 
     await notify(
-      `${dir} <b>Ladder price moved</b>\n` +
+      `${dir} <b>${indexMode ? 'Market' : 'Ladder'} price moved</b>\n` +
       `${money(last.price)} → <b>${money(now.price)}</b>` +
       (pct === null ? '' : `  (${pct > 0 ? '+' : ''}${pct.toFixed(2)}%)`) + `\n` +
       causes.map(c => `• ${c}`).join('\n') + `\n` +

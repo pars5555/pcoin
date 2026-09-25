@@ -233,6 +233,49 @@ refusing at the final click.
 > `maxDivergencePct` here, `serviceRetuneIntervalHours` and
 > `serviceMaxMovePct` on the oracle.
 
+## 4a. Index mode — pricing off the PCN index (price plan Step 3)
+
+`pricingMode` (a setting, `curve` or `index`) picks how a coin is priced. Plan:
+`D:\pc.am\PCOIN-PRICE-EXCHANGE-ANCHOR-PLAN.md` §5 Step 3. On 2026-09-25 the
+owner decided to switch without waiting out the 7-day shadow.
+
+- **index:** every PCN at `max(index x (1 + marketPremiumPct/100),
+  ladderMinPriceUsd)`, the same for any order size. The index is the PCN index
+  from exchange.pc.am, read every 30 s from price.pc.am's `/price` on this box
+  (loopback `:8788`), which checks it before relaying it. `marketPremiumPct` is 3
+  (decision D10). `ladder_rungs` stays as the inventory ledger: allocation is
+  still cheapest rung first, and rung prices are unused.
+- **An unknown or stale index CLOSES the market.** It never falls back to the
+  curve. Stale means older than `indexMaxAgeSeconds` (default 900) or marked
+  stale by price.pc.am. Quotes, the calculator and orders answer 503 with the
+  reason, the gate closes (the gate watcher alerts), and `/api/ladder/state`
+  answers **503 to loopback callers**, so price.pc.am's ladder poll fails and its
+  `ladder.stale` turns true rather than publishing a closed market's price as fresh.
+- **No divergence gate** in index mode: the market price and the credit rate come
+  from the same index. `maxDivergencePct` and waivers apply to curve mode only.
+- **curve:** exactly as before, verified endpoint by endpoint against the old
+  server.
+
+Switch with `pricing-mode.mjs`, never by editing the setting alone: going back to
+the curve needs `ammK` re-anchored first, or the price jumps to wherever the
+curve was left. Both directions wait 35 s and verify the live price to 1e-6.
+
+```bash
+cd /opt/pcoin-market
+systemctl disable --now pcoin-ask-follow.timer   # FIRST: pricing-mode index refuses while it runs
+node set-setting.mjs marketPremiumPct 3          # validated write + read-back + admin_audit row
+node set-setting.mjs retireSpentCoins false      # cannot move the price in index mode
+node pricing-mode.mjs index --dry-run            # prints the price before and after, writes nothing
+node pricing-mode.mjs index                      # refuses on an unusable index; verifies quote, gate
+# rollback -- add --at <usd> when the index is what failed (no price in force to anchor to)
+node pricing-mode.mjs curve && node set-setting.mjs retireSpentCoins true \
+  && systemctl enable --now pcoin-ask-follow.timer
+```
+
+Tests: `node ladder-index-test.mjs` (pure, including a stale index refusing and
+never falling back to the curve), and `node ladder-floor-test.mjs` §7 (the floor,
+through `makeLadder`, on both paths).
+
 ## 5. Delivery — how the buyer actually gets the coins
 
 Sign in → quote → order → NOWPayments invoice → IPN → rungs settle → **delivery**.

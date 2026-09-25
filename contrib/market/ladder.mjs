@@ -156,6 +156,136 @@ export function ammWalk(rungs, { usd = null, pcn = null }, k, virt, floor = 0) {
   };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// INDEX MODE -- price plan Step 3 (D:\pc.am\PCOIN-PRICE-EXCHANGE-ANCHOR-PLAN.md)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The owner, 2026-09-24: one PCN price, "natural, depending on the exchange
+// average", in place of "10 different pricings and calculations". In index mode
+// this market sells every coin at ONE unit price,
+//
+//     unitPrice = max(index x (1 + marketPremiumPct/100), ladderMinPriceUsd)
+//
+// flat at every order size. The curve (ammWalk above) stays importable and is
+// what `pricingMode = curve` still uses, unchanged, until the plan's Phase 4.
+// ladder_rungs stays too, as the INVENTORY ledger: reservations, settlement,
+// release and the sweeper all live on it, so allocation below is still cheapest
+// rung first -- bookkeeping, exactly as it has been since the curve.
+
+/** The states in which the index carries a price. `held` is not stale -- it
+ *  is the index saying "no new evidence, the value stands" (plan §2.4). */
+export const INDEX_PRICED_STATES = Object.freeze(['live', 'held', 'frozen']);
+
+/** Is this index reading usable, and what does one PCN cost at it?
+ *
+ *  `index` is what server.mjs's getIndex() returns: { usd, state, seq,
+ *  ageSeconds, stale, error }. Pure: no clock, no network.
+ *
+ *  Returns { ok: true, unitPrice, indexUsd, premiumPct, floored } or
+ *  { ok: false, why }. Every "I do not know" is a refusal, never a number: an
+ *  unreadable index is not a price of zero, a missing age is not "fresh", and a
+ *  missing `stale` flag is not `false` (CLAUDE.md 7.1 / 7.2). */
+export function indexUnitPrice(index, { premiumPct = 0, floor = 0, maxAgeS = 900 } = {}) {
+  const because = index && index.error ? ` (${index.error})` : '';
+  if (!index || typeof index !== 'object' || !index.state) {
+    return { ok: false, why: `the PCN index has not been read from price.pc.am${because}` };
+  }
+  if (!INDEX_PRICED_STATES.includes(index.state)) {
+    return { ok: false, why: `the PCN index is ${String(index.state).slice(0, 20)}, which carries no price` };
+  }
+  // Number(null) is 0 and Number('') is 0: test the raw value first.
+  const usd = (index.usd === null || index.usd === undefined || index.usd === '') ? NaN : Number(index.usd);
+  if (!(Number.isFinite(usd) && usd > 0)) return { ok: false, why: 'the PCN index carries no usable price' };
+  const age = (index.ageSeconds === null || index.ageSeconds === undefined) ? NaN : Number(index.ageSeconds);
+  if (!Number.isFinite(age)) return { ok: false, why: `the age of the PCN index is unknown${because}` };
+  const limit = Number(maxAgeS);
+  if (!(Number.isFinite(limit) && limit > 0)) return { ok: false, why: 'indexMaxAgeSeconds is not a usable number' };
+  if (age > limit) {
+    return { ok: false, why: `the PCN index was last confirmed ${Math.round(age)} s ago, past the ${limit} s limit${because}` };
+  }
+  if (index.stale !== false) return { ok: false, why: 'price.pc.am does not vouch for the PCN index as current' };
+  const p = Number(premiumPct);
+  if (!(Number.isFinite(p) && p >= 0)) return { ok: false, why: 'marketPremiumPct is not a usable number' };
+  const f = Number(floor);
+  const raw = usd * (1 + p / 100);
+  // THE FLOOR, inside the price and not only in whoever writes the settings:
+  // the ammWalk comment above says why a floor that lives elsewhere is not one.
+  const unitPrice = (Number.isFinite(f) && f > 0) ? Math.max(raw, f) : raw;
+  return { ok: true, unitPrice, indexUsd: usd, premiumPct: p,
+           floored: Number.isFinite(f) && f > 0 && raw < f };
+}
+
+/** Flat pricing over the rung inventory: every PCN at `unitPrice`.
+ *
+ *  Same shape as ammWalk and finish(), because every caller expects it.
+ *  Allocation is ammWalk's loop, line for line -- cheapest rung first, stock
+ *  net of sold, reserved and retired -- so the rows an order reserves do not
+ *  depend on which mode priced it (ladder-index-test.mjs proves they match).
+ *
+ *    named the MONEY -> floor(usd / unitPrice) coins, to the satoshi. Rounding
+ *                       DOWN, never to nearest: a fraction of a satoshi more
+ *                       than was paid for is still more. The buyer pays `usd`.
+ *    named the COINS -> pcn x unitPrice.
+ *
+ *  `avgPrice` is `unitPrice` itself. With money named, cost/pcn differs from it
+ *  only by the sub-satoshi remainder that floor() keeps with the desk, and
+ *  reporting that as a different price per coin would make a flat price look
+ *  like it moves with order size -- the one thing it does not do.
+ *
+ *  Inventory running out mid-order is a PARTIAL fill, charged only for what
+ *  was allocated, exactly like the other two walks: `usdUnfilled` or
+ *  `pcnUnfilled` says how much could not be had, and reserveLadder refuses it.
+ *
+ *  Returns null only when it cannot price at all (a unit price or an amount
+ *  that is not a positive number). The caller must refuse then, never fall
+ *  back to another pricing. */
+export function flatWalk(rungs, { usd = null, pcn = null }, unitPrice) {
+  if (!(Number.isFinite(unitPrice) && unitPrice > 0)) return null;
+  let wantUnits;
+  if (usd !== null) {
+    if (!(Number.isFinite(usd) && usd > 0)) return null;
+    wantUnits = Math.floor((usd / unitPrice) * UNITS);
+  } else {
+    if (!(Number.isFinite(pcn) && pcn > 0)) return null;
+    wantUnits = toUnits(pcn);
+  }
+
+  let remUnits = 0;
+  for (const r of rungs) { const a = availUnits(r); if (a > 0) remUnits += a; }
+
+  let left = wantUnits, gotUnits = 0;
+  const fills = [];
+  for (const r of rungs) {
+    if (left <= 0) break;
+    const avail = availUnits(r);
+    if (avail <= 0) continue;
+    const take = Math.min(avail, left);
+    fills.push({ rungNo: r.rung_no, units: take, price: unitPrice });
+    gotUnits += take; left -= take;
+  }
+
+  const filledPcn = fromUnits(gotUnits);
+  const full = left <= 0 && gotUnits > 0;
+  const cost = (usd !== null && full) ? usd : filledPcn * unitPrice;
+  // Nothing left for the NEXT buyer means there is no next price -- the same
+  // null finish() reports for a sold-out rung walk, and what the sale gate
+  // reads as "sold out".
+  const exhausted = remUnits - gotUnits <= 0;
+  return {
+    pcn: filledPcn,
+    cost,
+    fills,
+    rungsConsumed: fills.length,
+    avgPrice: gotUnits ? unitPrice : 0,
+    marginalAfter: exhausted ? null : unitPrice,
+    // `gotUnits === 0` too: money that buys no whole satoshi bought nothing, and
+    // must read as unfilled rather than as a completed $0 order.
+    usdUnfilled: usd !== null && (left > 0 || gotUnits === 0) ? usd - cost : 0,
+    pcnUnfilled: pcn !== null && left > 0 ? fromUnits(left) : 0,
+    exhausted,
+  };
+}
+
 function finish(rungs, fills, gotUnits, cost, usdLeft, pcnShort = 0, askCap = Infinity) {
   // Marginal price AFTER this walk: the first rung still holding stock once
   // these fills are applied.
@@ -218,7 +348,24 @@ export function walkPcn(rungs, pcn, askCap = Infinity) {
   return finish(rungs, fills, gotUnits, cost, 0, fromUnits(needUnits), askCap);
 }
 
-export function makeLadder(pool, { notify = null, log = console, getSetting = null } = {}) {
+/** What every index-mode price path throws when the index cannot be used.
+ *  code 503, the same convention as reserveLadder's 409: server.mjs answers
+ *  with it rather than a 500, and the text is written for the buyer, who is
+ *  the one who reads it. */
+export function indexUnavailableError(why) {
+  const e = new Error(
+    `sales are paused: the PCN price cannot be confirmed right now — ${why}. ` +
+    'The price here is the PCN index from exchange.pc.am, and nothing is sold at a price ' +
+    'that cannot be confirmed. Nothing was reserved or charged; this clears itself once ' +
+    'the index is current again.');
+  e.code = 503;
+  e.indexUnavailable = true;
+  e.pricingRefusal = true;       // what server.mjs's catch keys on, not the number alone
+  return e;
+}
+
+export function makeLadder(pool, { notify = null, log = console, getSetting = null,
+                                   getIndex = null } = {}) {
   const q = async (sql, args = []) => (await pool.query(sql, args))[0];
 
   // The admin panel exposes `orderTtlHours`, and until 2026-09-03 nothing read
@@ -277,12 +424,57 @@ export function makeLadder(pool, { notify = null, log = console, getSetting = nu
     return (Number.isFinite(k) && k > 0 && Number.isFinite(v) && v >= 0)
       ? { k, v } : null;
   };
+  // PRICING MODE (price plan Step 3). Only an explicit 'index' selects index
+  // pricing. Anything else -- including a ladder built with no settings at all,
+  // as the test harnesses build it -- is the curve, exactly as before.
+  const pricingMode = () => {
+    let m;
+    try { if (getSetting) m = getSetting('pricingMode'); } catch { /* the curve */ }
+    return m === 'index' ? 'index' : 'curve';
+  };
+  // A setting the index path needs. With no settings object at all (a test
+  // harness) the default stands; WITH one, a value that is missing is NaN --
+  // unknown -- so indexUnitPrice() refuses instead of quietly pricing at a
+  // premium of 0. A default parameter would not do: `undefined` passed in
+  // explicitly takes the default, which is the silent fallback itself.
+  const setting = (k, dflt) => {
+    if (!getSetting) return dflt;
+    let v;
+    try { v = getSetting(k); } catch { return NaN; }
+    return (v === undefined || v === null) ? NaN : v;
+  };
+  const readIndex = () => {
+    try { return getIndex ? getIndex() : null; }
+    catch (e) { return { error: String(e && e.message || e).slice(0, 120) }; }
+  };
+  const indexQuote = (idx = readIndex()) => indexUnitPrice(idx, {
+    premiumPct: setting('marketPremiumPct', 0),
+    floor: askFloor(),
+    maxAgeS: setting('indexMaxAgeSeconds', 900),
+  });
+  // NEVER falls back to the curve, or to anything else. An index that cannot
+  // be trusted CLOSES the market (plan §2.4, state `unknown`): selling on the
+  // curve instead would charge a number nobody chose, from a k the ask-follow
+  // timer stopped maintaining the day this mode was switched on.
+  const indexWalk = (rungs, want) => {
+    const q = indexQuote();
+    if (!q.ok) throw indexUnavailableError(q.why);
+    const w = flatWalk(rungs, want, q.unitPrice);
+    if (!w) {
+      const e = new Error('that amount cannot be priced');
+      e.code = 400; e.pricingRefusal = true; throw e;
+    }
+    return w;
+  };
+
   const walkUsdCapped = (rungs, usd) => {
+    if (pricingMode() === 'index') return indexWalk(rungs, { usd });
     const p = ammParams();
     if (p) { const r = ammWalk(rungs, { usd }, p.k, p.v, askFloor()); if (r) return r; }
     return walkUsd(rungs, usd, askCap());
   };
   const walkPcnCapped = (rungs, pcn) => {
+    if (pricingMode() === 'index') return indexWalk(rungs, { pcn });
     const p = ammParams();
     if (p) { const r = ammWalk(rungs, { pcn }, p.k, p.v, askFloor()); if (r) return r; }
     return walkPcn(rungs, pcn, askCap());
@@ -351,7 +543,32 @@ export function makeLadder(pool, { notify = null, log = console, getSetting = nu
               MAX(CASE WHEN rung_no=2 THEN price END) AS p2
          FROM ladder_rungs`);
     const p1 = Number(shape?.p1), p2 = Number(shape?.p2);
+    // ONE read of the index for the whole reply, so marginalPrice, nextFillPrice
+    // and the published `index` block cannot come from two different readings.
+    const mode = pricingMode();
+    const idx = readIndex();
+    const iq = indexQuote(idx);
+    const idxAge = idx && Number.isFinite(Number(idx.ageSeconds)) && idx.ageSeconds !== null
+      ? Math.round(Number(idx.ageSeconds)) : null;
     return {
+      // Index mode: ONE price for every coin, so the published price and the
+      // next fill are the same number whatever is reserved. null means there
+      // is nothing to sell, or -- with priceUnavailable set -- no price we can
+      // stand behind; server.mjs tells those two apart, because price.pc.am
+      // reads a bare null as "sold out, keep the last price" (see
+      // /api/ladder/state there).
+      pricingMode: mode,
+      premiumPct: setting('marketPremiumPct', 0),
+      index: idx && idx.state ? {
+        usd: Number.isFinite(Number(idx.usd)) && idx.usd !== null ? Number(idx.usd) : null,
+        state: String(idx.state).slice(0, 20),
+        seq: Number.isSafeInteger(idx.seq) ? idx.seq : null,
+        ageSeconds: idxAge,
+        stale: typeof idx.stale === 'boolean' ? idx.stale : null,
+        usable: iq.ok,
+        ...(iq.ok ? {} : { why: iq.why }),
+      } : null,
+      priceUnavailable: mode === 'index' && !iq.ok ? iq.why : null,
       // Both capped, so the published price is the price charged. The rate
       // oracle reads marginalPrice into st.ladderPrice and computes
       // min(ladder, pool) -- safe here because the cap is a constant an
@@ -360,6 +577,7 @@ export function makeLadder(pool, { notify = null, log = console, getSetting = nu
       // reservations, for the reason given above the two queries: an unpaid
       // order must never be able to move the published price.
       marginalPrice: (() => {
+        if (mode === 'index') return iq.ok && (tot - sold - retd) > 0 ? iq.unitPrice : null;
         const p = ammParams();
         if (p) { const X = (tot - sold - retd) + p.v;
                  if (X > 0) return Math.max((p.k / X) / X, askFloor()); }
@@ -368,6 +586,7 @@ export function makeLadder(pool, { notify = null, log = console, getSetting = nu
       // What the next REAL buyer would be charged, so this one does include
       // everyone else's outstanding holds.
       nextFillPrice: (() => {
+        if (mode === 'index') return iq.ok && (tot - sold - resv - retd) > 0 ? iq.unitPrice : null;
         const p = ammParams();
         if (p) { const X = (tot - sold - resv - retd) + p.v;
                  if (X > 0) return Math.max((p.k / X) / X, askFloor()); }
@@ -403,9 +622,13 @@ export function makeLadder(pool, { notify = null, log = console, getSetting = nu
     // Refuse a partial fill rather than take money for coins that do not exist.
     // A tenth of a cent of rounding dust is not a shortfall.
     if (w.usdUnfilled > 0.001) {
-      const e = new Error(
-        `the ladder has ${w.pcn.toFixed(2)} PCN left, worth $${w.cost.toFixed(2)} at current rungs. ` +
-        `Order at or below that.`);
+      // Worded per mode: in index mode there are no rungs to a buyer, only one
+      // price, and a message about "current rungs" describes another product.
+      const e = new Error(pricingMode() === 'index'
+        ? `only ${w.pcn.toFixed(2)} PCN are left for sale here, worth $${w.cost.toFixed(2)} at the ` +
+          `current price. Order at or below that.`
+        : `the ladder has ${w.pcn.toFixed(2)} PCN left, worth $${w.cost.toFixed(2)} at current rungs. ` +
+          `Order at or below that.`);
       e.code = 409; throw e;
     }
     for (const f of w.fills) {
@@ -628,7 +851,9 @@ Inventory from unpaid orders is not ` +
 
   // walkUsd/walkPcn are exposed CAPPED: every consumer (quote, calc,
   // maxOrderUsdNow, the backing check) must see the price actually charged.
-  // The uncapped originals stay importable for the test harnesses.
+  // The uncapped originals stay importable for the test harnesses. In index
+  // mode the same two names price flat at the index, and THROW (code 503)
+  // rather than price at all when the index cannot be used.
   return { rungsWithStock, ladderState, reserveLadder, settleLadder, releaseLadder,
            expireWithRelease, sweepExpiredOrders,
            walkUsd: walkUsdCapped, walkPcn: walkPcnCapped };

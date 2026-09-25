@@ -1351,6 +1351,16 @@ ${left !== undefined ? `<p class="s" style="color:var(--dim)">${left} attempt(s)
           return `<input type="hidden" name="present_${k}" value="1">
                   <input type="checkbox" name="s_${k}" value="1"${s[k] ? ' checked' : ''}>`;
         }
+        // A closed list (pricingMode) gets a <select>. Falling through to the
+        // number input below would be a trap, not a cosmetic slip: a browser
+        // sanitises a non-numeric value in <input type=number> to "", so the
+        // next save of this form -- for any setting at all -- would post an
+        // empty pricingMode. coerce() refuses that now, but the refusal would
+        // abort the save half-way instead of leaving the mode alone.
+        if (d.options) {
+          return `<select name="s_${k}">${d.options.map(o =>
+            `<option value="${esc(o)}"${s[k] === o ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
+        }
         if (d.type === 'list') {
           return `<textarea name="s_${k}" rows="6" style="width:100%;font-family:ui-monospace,monospace;
                     font-size:12px;padding:6px;border:1px solid var(--line);border-radius:7px;

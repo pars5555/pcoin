@@ -89,5 +89,29 @@ console.log('\nquiet when nothing happens');
 sent.length = 0; await PW.check();
 ok('no price change -> no message', sent.length === 0, `sent ${sent.length}`);
 
+// INDEX MODE (price plan Step 3). The price is the PCN index x a setting, so
+// neither sales nor retirements move it: any cause worked out from those deltas
+// would be invented. And an index nobody can vouch for publishes a null price,
+// which must not be announced as "the ladder is empty".
+console.log('\nindex mode');
+const idx = (price, extra = {}) => {
+  LADDER = { marginalPrice: price, soldPcn: 0, retiredPcn: 4817, remainingPcn: 95183,
+             pricingMode: 'index', premiumPct: 3, index: { usd: 0.0273, seq: 4 }, priceUnavailable: null,
+             ...extra };
+  LEDGER = 4817;
+};
+sent.length = 0; idx(null, { priceUnavailable: 'the PCN index is unknown' });
+const r1 = await PW.check();
+ok('an unusable index is not announced at all', sent.length === 0, sent[0]);
+ok('  ...and is not written as the new baseline', r1.ok === false && JSON.parse(state.get('lastPublishedPrice')).price === 0.020,
+   state.get('lastPublishedPrice'));
+sent.length = 0; idx(0.028119);
+await PW.check();
+ok('an index move says it is the index, with its seq',
+   /index mode: the PCN index is now \$0\.0273 \(seq 4\)/.test(sent[0] || ''), sent[0]);
+ok('  ...and invents no sale, retirement or edit behind it',
+   !/PCN sold|customers spent|PCN retired|edited directly|ladder itself was changed/i.test(sent[0] || ''), sent[0]);
+ok('  ...headed as the market price, not the ladder', /Market price moved/.test(sent[0] || ''), sent[0]);
+
 console.log(`\n  ${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);
