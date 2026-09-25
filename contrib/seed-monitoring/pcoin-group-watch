@@ -27,6 +27,7 @@ THREE THINGS THAT WOULD BREAK IT, EACH GUARDED:
 """
 import html
 import json
+import ipaddress
 import os
 import re
 import subprocess
@@ -115,6 +116,8 @@ def load_state():
     s.setdefault("offset", 0)
     s.setdefault("seen", 0)
     s.setdefault("last_run", 0)
+    if not isinstance(s.get("members"), dict):
+        s["members"] = {}
     return s
 
 
@@ -487,6 +490,64 @@ def is_pool_link(text, url):
     return is_hostport(url)
 
 
+# INDEPENDENT PCoin POOLS run by people in this chat (owner, 2026-09-25). We pay
+# a bounty for somebody standing up a pool that is not ours; deleting the link to
+# one is deleting the thing we asked for. Alec's UI link was removed twice on
+# Discord that morning because it named no pool word.
+INDEPENDENT_POOLS = ("chatlab.rocks", "aioncore.pro")
+
+# A REGULAR is somebody first seen at least a day before this message, with a
+# few messages behind them. An outside link from a regular is REPORTED, not
+# deleted: DangoMango had chatted and mined for two days when "Would it be
+# alright if I get PCoin listed on www.fathom.cx ?" was removed as an advert.
+# Spam comes from accounts whose first message is the link, and a silent member
+# has no first-seen at all, so they are still removed.
+REGULAR_AFTER = 24 * 3600
+REGULAR_MIN_MSGS = 3
+MEMBERS_KEEP = 5000
+
+
+def is_regular(st, uid, at):
+    m = (st.get("members") or {}).get(str(uid))
+    if not m:
+        return False
+    try:
+        return at - int(m[0]) >= REGULAR_AFTER and int(m[1]) >= REGULAR_MIN_MSGS
+    except (TypeError, ValueError, IndexError):
+        return False
+
+
+def note_member(st, uid, at):
+    """Remember when somebody was first seen and how many messages they have
+    sent. Only messages that were NOT removed count."""
+    if uid is None:
+        return
+    mem = st.setdefault("members", {})
+    m = mem.get(str(uid))
+    if not isinstance(m, list) or len(m) != 2:
+        m = [int(at), 0]
+    m[1] = int(m[1]) + 1
+    mem[str(uid)] = m
+    if len(mem) > MEMBERS_KEEP:
+        # Drop the newest first-seen, never the oldest: the old ones are the
+        # regulars, and forgetting one would start deleting their links again.
+        for k, _ in sorted(mem.items(), key=lambda kv: -kv[1][0])[:len(mem) - MEMBERS_KEEP]:
+            del mem[k]
+
+
+def is_unroutable(host):
+    """An address nobody outside the poster's own machine can reach cannot
+    advertise anything. Tony pasted his pool's JSON config on 2026-09-22 to help
+    debug, Telegram marked its bind address 0.0.0.0 as a link, and the whole
+    message was deleted as "outside link: 0.0.0.0"."""
+    if host == "localhost":
+        return True
+    try:
+        return not ipaddress.ip_address(host).is_global
+    except ValueError:
+        return False
+
+
 def link_allowed(url):
     u = url.strip().lower()
     for pre in ("https://", "http://"):
@@ -505,6 +566,10 @@ def link_allowed(url):
         return True
     if host == "oonak.ai" or host.endswith(".oonak.ai"):
         return True
+    if is_unroutable(host):
+        return True
+    if any(host == d or host.endswith("." + d) for d in INDEPENDENT_POOLS):
+        return True
     if host in ("t.me", "telegram.me"):
         return first in OUR_TG
     if host == "github.com":
@@ -521,11 +586,12 @@ def link_allowed(url):
     return False
 
 
-def moderation_reason(msg):
+def moderation_reason(msg, regular=False):
     """(reason, delete) for a message that breaks the rules, or (None, False).
 
     delete=False means REPORT ONLY: the owner is told and the message stays. That
-    is what a PCoin pool or mining link gets (owner, 2026-09-16)."""
+    is what a PCoin pool or mining link gets (owner, 2026-09-16), and what an
+    outside link from a regular gets unless it carries scam words (2026-09-25)."""
     fo = msg.get("forward_origin") or {}
     fchat = fo.get("chat") or msg.get("forward_from_chat") or {}
     if (fo.get("type") == "channel" or fchat.get("type") == "channel") and \
@@ -546,6 +612,9 @@ def moderation_reason(msg):
             if url and not link_allowed(url):
                 if is_pool_link(text, url):
                     return ("PCoin pool / mining link: %s -- LEFT IN THE CHAT for you to judge"
+                            % url[:120], False)
+                if regular and not SCAM_WORDS.search(text) and not SCAM_WORDS.search(url):
+                    return ("outside link from a regular: %s -- LEFT IN THE CHAT for you to judge"
                             % url[:120], False)
                 return ("outside link: %s" % url[:120], True)
     return (None, False)
@@ -794,7 +863,8 @@ def main():
         # ---- moderation, BEFORE relay and spool ----------------------------
         uid_from = (msg.get("from") or {}).get("id")
         if uid_from != OWNER_ID:
-            reason, do_delete = moderation_reason(msg)
+            reason, do_delete = moderation_reason(
+                msg, regular=is_regular(st, uid_from, int(msg.get("date") or time.time())))
             if reason:
                 admins = group_admins(token, chat, st)
                 if admins is not None and uid_from not in admins:
@@ -815,6 +885,7 @@ def main():
                         print("  removal report failed at update %d -- offset held" % uid, file=sys.stderr)
                         break
 
+        note_member(st, uid_from, int(msg.get("date") or time.time()))
         text = describe(msg)
         urgent = bool(msg.get("text") and TRIGGERS.search(msg["text"]))
         head = "🆘 <b>PCoin Chat — someone needs help</b>" if urgent else "💬 <b>PCoin Chat</b>"
