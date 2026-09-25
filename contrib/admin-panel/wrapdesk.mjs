@@ -567,6 +567,14 @@ function workCard(w) {
   // hand-holding the refund form needs -- it changes no amount and no address
   // on a real payout.
   const isTest = (i) => /TEST WRAP/.test(String(i.title || ''));
+  // EVERY BUTTON HERE THAT MOVES MONEY ASKS FOR A FRESH AUTHENTICATOR CODE
+  // (owner, 2026-09-25: "no one can use it ever but me and with authenticator
+  // from admin"). Until then Send and Refund needed only a signed-in session,
+  // while every other money button in the panel wanted a code. The server
+  // checks it before anything is run; this box only collects it.
+  const codeField = `<input name="code" required inputmode="numeric" autocomplete="one-time-code"`
+    + ` pattern="[0-9]{6}" maxlength="6" placeholder="authenticator code" style="width:11em;padding:7px 10px;`
+    + `border-radius:4px;border:1px solid var(--line);background:var(--panel);color:inherit;margin-right:8px">`;
   const sendForm = (i) => (i.kind !== 'send' || !i.key ? '' :
     `<form method="post" style="margin-top:10px"`
     + ` data-danger data-confirm-ok="Send ${esc(amountOf(i) || '')} wPCN"`
@@ -574,6 +582,7 @@ function workCard(w) {
     + ` now? This moves real money and cannot be undone.">`
     + `<input type="hidden" name="action" value="send">`
     + `<input type="hidden" name="key" value="${esc(i.key)}">`
+    + codeField
     + `<button style="background:var(--accent,#2dd4bf);color:#0b1020;border:0;`
     + `border-radius:999px;padding:8px 18px;cursor:pointer;font-weight:700">`
     + `Send ${esc(amountOf(i) ? `${amountOf(i)} wPCN ` : '')}now${reqNo(i) ? ` &mdash; request ${esc(reqNo(i))}` : ''}</button>`
@@ -620,6 +629,7 @@ function workCard(w) {
       + `This moves real money and cannot be undone.">`
       + `<input type="hidden" name="action" value="refund">`
       + `<input type="hidden" name="key" value="${esc(i.key)}">`
+      + codeField
       + `<button style="background:var(--yellow);color:#0b1020;border:0;border-radius:999px;`
       + `padding:8px 18px;cursor:pointer;font-weight:700">Refund ${reqNo(i) ? `request ${esc(reqNo(i))}: ` : ''}${esc(amt)} PCN to `
       + `${esc(f.sender.slice(0, 10))}&hellip;${esc(f.sender.slice(-6))}</button>`
@@ -650,6 +660,7 @@ function workCard(w) {
     + `<input type="hidden" name="action" value="refund">`
     + `<input type="hidden" name="key" value="${esc(i.key)}">`
     + `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">`
+    + codeField
     + `<input name="pcn" required inputmode="decimal" pattern="[0-9]*\\.?[0-9]*"`
     + ` value="${esc(isTest(i) ? '1' : '')}"`
     + ` placeholder="PCN to give back" style="flex:0 1 170px;padding:7px 10px;`

@@ -1162,6 +1162,15 @@ async function handle(req, res) {
         flash = r.ok
           ? 'Recorded as sent. ' + r.out.split(CH10).filter(Boolean).join(' ')
           : 'NOT recorded, nothing was changed: ' + r.out.split(CH10).filter(Boolean).join(' ');
+      } else if ((action === 'send' || action === 'refund')
+          && !(totpRequired(loadCredential()) && checkTotp(form.get('code') || '', loadCredential().totp))) {
+        // A FRESH AUTHENTICATOR CODE, checked HERE, before sendWrap/refundWrap are
+        // even called (owner, 2026-09-25). A wrong or missing code moves nothing.
+        // With no authenticator enrolled there is no code to check, and that is a
+        // refusal too -- never a free pass.
+        flash = totpRequired(loadCredential())
+          ? 'NOT sent: that authenticator code was not right. Nothing moved.'
+          : 'NOT sent: turn on the authenticator first (Account). Money buttons need a code. Nothing moved.';
       } else if (action === 'send') {
         // PAY IT, from the keeper, and close it in the same step.
         //
