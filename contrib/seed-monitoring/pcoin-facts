@@ -102,6 +102,15 @@ TEXT_SOURCES = {
 # These change on a release, not by the minute: read them at most every 10 min.
 TEXT_CACHE_SECONDS = 600
 
+# price.pc.am's FULL body, for the index's evidence window and the buyback flag
+# only. The owner, 2026-09-25: "simplify the price.pc.am json response" -- the
+# root body shrinks to nine fields and today's body moves here. OPTIONAL and
+# DIAGNOSTIC: the PRICE line is decided by the root body alone, a failure here
+# is never counted as an unreadable source (it 404s until price.pc.am serves
+# it, and "a source could not be read" on every answer would teach the bot to
+# decline questions it can answer), and it is read once, without a retry.
+PRICE_DETAIL = "https://price.pc.am/detail"
+
 # One transaction, looked up by its own id. NOT in SOURCES because it is asked
 # per question rather than collected on a timer.
 WITHDRAWAL_STATUS = "https://exchange.pc.am/api/withdrawal-status?txid=%s"
@@ -164,6 +173,17 @@ def parse_text(name, t):
     return {}
 
 
+def get_once(url):
+    """A JSON GET with no retry -> the body, or None. For OPTIONAL sources only:
+    None here is "not available", and it must never decide anything."""
+    req = urllib.request.Request(url, headers={"User-Agent": "pcoin-facts"})
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            return json.load(r)
+    except Exception:
+        return None
+
+
 def collect(prev=None):
     out, errs = {}, {}
     for name, url in SOURCES.items():
@@ -172,6 +192,11 @@ def collect(prev=None):
             errs[name] = err
         else:
             out[name] = d
+    # Only worth asking when the root body answered: /detail never stands in for it.
+    if "price" in out:
+        det = get_once(PRICE_DETAIL)
+        if isinstance(det, dict):
+            out["price_detail"] = det
     # Slow sources: reuse the previous reading while it is fresh enough.
     prev = prev or {}
     if prev.get("text") and time.time() - prev.get("text_at", 0) < TEXT_CACHE_SECONDS:
@@ -234,6 +259,82 @@ def n(v, dp=None):
     except Exception:
         return str(v)
     return ("%%.%df" % dp) % f if dp is not None else ("%g" % f)
+
+
+PRICED_STATES = ("live", "held", "frozen")
+
+
+def price_view(p, detail=None):
+    """What the root price.pc.am body says, in ONE shape, whichever shape it came in.
+
+    The owner, 2026-09-25: "simplify the price.pc.am json response ... check
+    every service which field is using ... fix all". price.pc.am first adds nine
+    fields to today's body (creditRateUsd, sellPriceUsd, poolUsd, floorUsd,
+    state, seq, stale, ageSeconds, at -- `stale` becoming ONE unified hold flag)
+    and later drops everything else from the root: serviceRate, rateFloorUsd,
+    pool.*, index.*, ladder.*, note, buyback*. So:
+
+      the index   -> the `index` block while it is published (with the rails
+                     rolled back, {"useIndex":0}, the top-level creditRateUsd is
+                     NOT the index); else the top level, where creditRateUsd IS
+                     the index. A top-level `stale` that is present and not
+                     literally False holds either way -- every flag counts.
+      evidence    -> the block's window and lastMoveAt; from /detail when the
+                     root no longer carries them, and only if /detail is at the
+                     SAME seq -- origins answer independently, and a window from
+                     a different reading would explain a number it did not make.
+                     None when unknown: "not moved" is never a default.
+      buyback     -> True / False / None. None when neither body says, so the
+                     bot is never told a closed desk is open, or vice versa.
+
+    Pure; shared by block() and `--json` (derived.price), which is what
+    pcoin-group-answer builds its list of quotable rates from.
+    """
+    if not isinstance(p, dict):
+        return None
+    det = detail if isinstance(detail, dict) else {}
+    ix = p.get("index")
+    evidence = None
+    if isinstance(ix, dict):
+        stale = ix.get("stale")
+        if "stale" in p and p.get("stale") is not False:
+            stale = True
+        view = {"usd": ix.get("usd"), "state": ix.get("state"), "seq": ix.get("seq"),
+                "stale": stale, "inUse": ix.get("inUse") is True}
+        evidence = ix
+    elif isinstance(p.get("state"), str):
+        view = {"usd": p.get("creditRateUsd"), "state": p.get("state"), "seq": p.get("seq"),
+                "stale": p.get("stale"), "inUse": True}
+        dix = det.get("index")
+        if isinstance(dix, dict) and view["seq"] is not None and dix.get("seq") == view["seq"]:
+            evidence = dix
+    else:
+        view = {"usd": None, "state": None, "seq": None, "stale": None, "inUse": False}
+    ix_ok = (view["stale"] is False and view["state"] in PRICED_STATES
+             and view["usd"] is not None)
+    pool = p.get("pool") if isinstance(p.get("pool"), dict) else {}
+    dpool = det.get("pool") if isinstance(det.get("pool"), dict) else {}
+    credit = p.get("creditRateUsd")
+    if credit is None:
+        credit = p.get("serviceRate")
+    return {
+        "index": view,
+        "ix_ok": ix_ok,
+        "in_use": view["inUse"],
+        # While the index IS the credit rate and is unknown, no price at all is
+        # quotable: the rails hold and the market is closed.
+        "quotable": ix_ok or not view["inUse"],
+        "credit": credit,
+        "sell": p.get("sellPriceUsd"),
+        "pool_spot": p.get("poolUsd") if "poolUsd" in p else pool.get("spotUsd"),
+        "pool_median": pool.get("medianUsd", dpool.get("medianUsd")),
+        "floor": p.get("floorUsd") if "floorUsd" in p else p.get("rateFloorUsd"),
+        "window": evidence.get("window") if evidence and isinstance(evidence.get("window"), dict) else None,
+        "last_move_at": evidence.get("lastMoveAt") if evidence else None,
+        "evidence_known": evidence is not None,
+        "buyback_open": (p.get("buybackOpen") is True if "buybackOpen" in p
+                         else det.get("buybackOpen") is True if "buybackOpen" in det else None),
+    }
 
 
 def explorer_health(timeout=8):
@@ -439,57 +540,68 @@ def block(c):
     if "price" in bad:
         out.append("PRICE: UNREADABLE (%s) -- say you cannot read the rate right now." % bad["price"])
     else:
-        p = d["price"]
-        pool = p.get("pool") or {}
         # THE PCN INDEX, as price.pc.am relays it (the source is
         # exchange.pc.am/api/index; both are public). Since 2026-09-25 it IS the
         # PCN price. It may be quoted only when price.pc.am says it is not stale
         # AND its state is a price -- held is a price, unknown is not. Anything
         # else is UNKNOWN and must never become a number (CLAUDE.md 7.1).
-        ix = p.get("index") if isinstance(p.get("index"), dict) else {}
-        ist = ix.get("state") or "missing"
-        in_use = ix.get("inUse") is True
-        ix_ok = ix.get("stale") is False and ist in ("live", "held", "frozen") and ix.get("usd") is not None
+        # Read through price_view(), which takes today's body and the minimal
+        # one alike and decides from the ROOT body only.
+        pv = price_view(d["price"], d.get("price_detail"))
+        ix = pv["index"]
+        ist = ix["state"] or "missing"
+        in_use, ix_ok = pv["in_use"], pv["ix_ok"]
         if ix_ok:
-            w = ix.get("window") if isinstance(ix.get("window"), dict) else {}
+            w = pv["window"] or {}
             evidence = ""
             if w.get("hours"):
                 evidence = ("; its window is the last %s hours, with %s counted trades from %s people"
                             % (w.get("hours"), w.get("trades"), w.get("entities")))
-            try:
-                moved = "last moved %s" % time.strftime("%Y-%m-%d %H:%M UTC",
-                                                        time.gmtime(_epoch(ix.get("lastMoveAt"))))
-            except Exception:
-                moved = "it has not moved since it started"
+            # lastMoveAt null means "never moved" only when a block said so. With
+            # no block at all (the minimal body, /detail unreadable) it is
+            # unknown, and the sentence is left out rather than guessed.
+            moved = ""
+            if pv["evidence_known"]:
+                try:
+                    moved = "; last moved %s" % time.strftime("%Y-%m-%d %H:%M UTC",
+                                                              time.gmtime(_epoch(pv["last_move_at"])))
+                except Exception:
+                    moved = "; it has not moved since it started"
             gloss = (" (too little new qualifying trading to move it; a held index is still the price)"
                      if ist == "held" else "")
             if in_use:
-                credit = " It is what PCoin services CREDIT one PCN at (creditRateUsd $%s)." % n(p.get("creditRateUsd"), 6)
+                credit = " It is what PCoin services CREDIT one PCN at (creditRateUsd $%s)." % n(pv["credit"], 6)
             else:
                 credit = (" price.pc.am says it is NOT yet the credit rate: services credit $%s per PCN."
-                          % n(p.get("creditRateUsd"), 6))
-            out.append("PRICE: the PCN index is $%s per PCN, state %s%s%s; %s. It is the "
+                          % n(pv["credit"], 6))
+            out.append("PRICE: the PCN index is $%s per PCN, state %s%s%s%s. It is the "
                        "volume-weighted median of qualifying user-to-user trades on exchange.pc.am, "
                        "not a valuation.%s"
-                       % (n(ix.get("usd"), 6), ist, gloss, evidence, moved, credit))
+                       % (n(ix["usd"], 6), ist, gloss, evidence, moved, credit))
         elif in_use:
             out.append("PRICE: the PCN index is UNKNOWN right now (state %s, stale %s) -- do NOT quote "
                        "any PCN price. The services hold new credits until it is readable again; "
-                       "nothing is lost." % (ist, ix.get("stale")))
+                       "nothing is lost." % (ist, ix["stale"]))
         else:
             out.append("PRICE: the PCN index cannot be read (state %s). Services credit $%s per PCN."
-                       % (ist, n(p.get("creditRateUsd"), 6)))
+                       % (ist, n(pv["credit"], 6)))
         if ix_ok or not in_use:
             out.append("MARKET SELL PRICE (what market.pc.am charges; it never credits anything): $%s. "
                        "wPCN pool spot $%s -- the pool is NOT an input to the PCN price."
-                       % (n(p.get("sellPriceUsd"), 6), n(pool.get("spotUsd"), 6)))
+                       % (n(pv["sell"], 6), n(pv["pool_spot"], 6)))
         else:
             # market.pc.am closes when the index is unknown; a remembered sale
             # price here would contradict the MARKET.PC.AM line below.
             out.append("MARKET SELL PRICE: not quoted while the PCN index is unknown -- market.pc.am "
                        "does not sell without it.")
-        out.append("BUYBACK: %s. The project itself does not buy PCN back at price.pc.am."
-                   % ("OPEN" if p.get("buybackOpen") else "closed"))
+        if pv["buyback_open"] is None:
+            # The minimal body does not carry the flag and /detail could not be
+            # read. Unknown -- which must not come out as "open".
+            out.append("BUYBACK: price.pc.am did not say just now -- do not say whether the project "
+                       "buys PCN back.")
+        else:
+            out.append("BUYBACK: %s. The project itself does not buy PCN back at price.pc.am."
+                       % ("OPEN" if pv["buyback_open"] else "closed"))
 
     if "exchange" in bad:
         out.append("EXCHANGE: UNREADABLE (%s) -- do not quote a fee, a limit or a cap." % bad["exchange"])
@@ -716,7 +828,14 @@ def main():
         # `derived` is computed at print time, never cached: an age read from
         # the cache would be up to a minute stale, and for "how long since the
         # last block" that is the whole answer.
-        print(json.dumps(dict(c, derived={"last_block": last_block(c)}), indent=1))
+        # derived.price is price_view() of the ROOT body -- pcoin-group-answer
+        # builds its list of quotable rates from it, so the two cannot come to
+        # disagree about which shape of price.pc.am body they were handed.
+        data = c.get("data") or {}
+        print(json.dumps(dict(c, derived={
+            "last_block": last_block(c),
+            "price": price_view(data.get("price"), data.get("price_detail")),
+        }), indent=1))
     else:
         print(block(c))
     # Exit 1 when nothing at all could be read, so a caller that checks only the

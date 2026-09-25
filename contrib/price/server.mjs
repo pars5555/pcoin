@@ -43,7 +43,8 @@ import { readFileSync, writeFileSync, existsSync, renameSync,
 import { dirname } from 'node:path';
 import { timingSafeEqual, createHash, X509Certificate } from 'node:crypto';
 import { validateIndexBody, confirmTwice, speedCheck, remember,
-         indexUsable, rateFromIndex, switchCheck, indexLadder, indexNote } from './index-relay.mjs';
+         indexUsable, rateFromIndex, switchCheck, indexLadder, indexNote,
+         bodyVersionOf, minimalBody, phase1Body } from './index-relay.mjs';
 
 const STATE = '/opt/pcoin-price/state.json';
 const PORT = 8788;
@@ -456,6 +457,18 @@ const DEFAULTS = {
   indexHistory: [],         // [{t, nano}] accepted, 25 h -- for the speed check; not replicated
   indexRebaseArmed: false,  // set by POST /admin/index/accept after a deliberate re-seed
 
+  // WHICH BODY GET / AND /price SERVE. Owner, 2026-09-25: "make it minimal
+  // compact json, we dont need 100s of duplicated data".
+  //   1 = the legacy body, every field kept, PLUS the nine minimal fields and a
+  //       unified top-level `stale` (index-relay.mjs phase1Body). Consumers
+  //       move to the new fields while the old ones still answer.
+  //   2 = EXACTLY the nine keys, compact. /credit-rate's 200 becomes the same
+  //       JSON (it was the bare number as text), 503 still means hold.
+  // GET /detail serves the full legacy body under either, for the admin panel
+  // and ops tools. Set only through POST /admin/state; replicas follow the
+  // primary through /state. {"bodyVersion":1} is the rollback.
+  bodyVersion: 1,
+
   adminToken: '',
 };
 
@@ -630,6 +643,12 @@ async function syncFromPrimary() {
     // promoted or misconfigured primary could hand every replica a pin that
     // matches nothing, killing all sync at once with no way back in.
     st = { ...st, ...v,
+           // Taken from the primary EVERY sync, absent included. A primary
+           // that does not publish it is running code that only has the
+           // legacy body, so the legacy body is what it serves -- a replica
+           // left on a remembered 2 would answer differently from the origin
+           // beside it, for as long as that code stays rolled back.
+           bodyVersion: bodyVersionOf(v.bodyVersion),
            role: ROLE, upstream: UPSTREAM,
            upstreamSni: UPSTREAM_SNI, upstreamSpki: UPSTREAM_SPKI };
     save(st);
@@ -1249,8 +1268,11 @@ function retuneServiceRate(force = false) {
   return { moved, target, serviceRate: next };
 }
 
-const json = (res, code, obj) => {
-  const b = JSON.stringify(obj, null, 2);
+// `compact` for the minimal body (bodyVersion 2): whitespace was a third of the
+// legacy body's bytes, and nobody reads this feed by eye -- /detail stays
+// pretty-printed for the people who do.
+const json = (res, code, obj, { compact = false } = {}) => {
+  const b = compact ? JSON.stringify(obj) : JSON.stringify(obj, null, 2);
   res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store',
                         'Access-Control-Allow-Origin': '*' });
   res.end(b);
@@ -1263,6 +1285,185 @@ function isAdmin(req) {
   if (!st.adminToken || !t) return false;
   const a = Buffer.from(t), b = Buffer.from(st.adminToken);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+const ladderAgeSeconds = () => (st.ladderAt ? Math.floor((Date.now() - st.ladderAt) / 1000) : null);
+
+/** The legacy body of / and /price -- every byte what production served on
+ *  2026-09-25. It is GET /detail under either bodyVersion, and the base that
+ *  bodyVersion 1 adds to. Built by one function so the three cannot drift. */
+function legacyBody() {
+  const ladderAgeS = ladderAgeSeconds();
+  // Step 4 (useIndex = 1) changes exactly five things in this body, every
+  // other byte is the legacy body: serviceRate/creditRateUsd carry the
+  // index (set by pollIndex, not here), rateFollowsPoolDown is false, the
+  // `ladder` block becomes the compatibility block (index-relay.mjs
+  // indexLadder), `index.inUse` is true, and the `note` says what the price
+  // now is. Same field names on purpose: seven rail codebases read them, and
+  // renaming one would be nine deploys (plan §7). sellPriceUsd and `price`
+  // stay what market.pc.am charges -- read from its ladder state exactly as
+  // before, which after plan Step 3 is the index x (1 + premium).
+  const ixMode = indexMode();
+  const ix = indexBlock();
+  return {
+    // The posted price is the ladder's marginal rung -- the price at which
+    // the next PCN can actually be bought. `buybackPrice` is the AMM curve
+    // and is what a sell-back pays; they are different numbers on purpose
+    // and a consumer must not use one for the other.
+    price: Number(postedPrice().toFixed(9)),
+    serviceRate: st.serviceRate,
+
+    // THE SAME TWO NUMBERS, NAMED BY WHAT THEY ARE FOR.
+    //
+    // `price` and `serviceRate` say what they ARE -- a ladder rung and a
+    // tracked rate -- and an integrator reading the feed cold has to already
+    // know which one credits a customer. One did not: contrib/wpcn-pay
+    // credited from `price` for weeks, and `price` is the ONE number that
+    // must never credit anything, because it is the ladder and the ladder
+    // does not follow the pool down. That is precisely the leak the comment
+    // at the top of this file describes -- buy wPCN cheap, redeem 1:1, spend
+    // it at a rail crediting above the pool -- and crediting at `price`
+    // re-opens it by hand.
+    //
+    // So the feed now also answers in the language of the question. Same
+    // values, no new state, nothing to keep in step:
+    //   creditRateUsd -- what you credit an INBOUND payment at. Always this one.
+    //   sellPriceUsd  -- what a buyer PAYS us. Never credits anything.
+    // The bare number alone is at GET /credit-rate, where there is nothing
+    // to pick wrong (under bodyVersion 2 that answer is the minimal JSON).
+    creditRateUsd: st.serviceRate,
+    sellPriceUsd: Number(postedPrice().toFixed(9)),
+    rateFieldToUse: 'creditRateUsd',
+    // What the rate is tracking, and what is holding it up. Published
+    // because "why is the credit rate below the ladder price" has to be
+    // answerable from the feed itself, not from a server log.
+    //
+    // False in index mode: the pool is no input to the rate any more, and
+    // this flag is what tells pcnaibot to demand a fresh pool reading.
+    rateFollowsPoolDown: ixMode ? false : !!st.poolFollow,
+    rateFloorUsd: st.poolFloorUsd,
+    pool: st.poolFollow ? {
+      spotUsd: st.poolPrice,
+      medianUsd: st.poolMedian ?? null,
+      windowHours: st.poolTwapHours,
+      samples: st.poolSampleCount ?? 0,
+      ageSeconds: st.poolAt ? Math.floor((Date.now() - st.poolAt) / 1000) : null,
+      rateHeldAboveBy: st.poolHeldBy ?? null,
+    } : null,
+    // The exchange-anchored PCN index. In shadow (Phase 2) it is published
+    // so it can be judged beside creditRateUsd, and `inUse` is false. In
+    // index mode (Step 4) `inUse` is true and creditRateUsd IS this `usd`;
+    // `stale` and `state` then say whether the rails may credit at all.
+    index: ix,
+    currency: 'USD',
+    // BUYBACK. Every field below describes selling PCN back to us, and it
+    // is CLOSED unless `buybackOpen` is true. When it is closed the price
+    // is published as null rather than as a number, because a number here
+    // is a quote -- and quoting a price for something you will not do is
+    // the kind of honest-looking lie that ends in an argument with a
+    // customer. The curve's own figures stay visible for transparency.
+    buybackOpen: !!st.buybackOpen,
+    buybackPrice: st.buybackOpen ? Number(price().toFixed(9)) : null,
+    buybackRemainingToday: st.buybackOpen
+      ? Number((st.dailySellCapUsd - st.soldToday).toFixed(2)) : 0,
+    // reserve, poolSupply and feeBps USED TO BE PUBLISHED HERE and were
+    // removed on 2026-09-17. They described the buyback desk's inventory
+    // and spread, and that desk has been closed since 2026-09-09 -- so
+    // `reserve` advertised a USDT float that is not there, `poolSupply`
+    // (10,000,000) matched nothing real, and `feeBps` quoted a spread for
+    // trades that cannot happen. The comment above already says why a
+    // number here is a quote; these three were simply missed when
+    // buybackPrice was fixed.
+    //
+    // Every consumer was checked first -- aicontrol, webai, webbuilderbot,
+    // checker, pcnaibot, 3dmodels, 3dmodel, alik, pcnearner, market and
+    // the exchange -- and not one of them read any of the three. If a
+    // future integrator needs the curve's internals, publish them under a
+    // name that says what they are, not under the old desk's vocabulary.
+    //
+    // In index mode this is the COMPATIBILITY block of plan §2.6: pcnaibot,
+    // docs.pc.am integrations and the exchange's fetchSellPrice() all refuse
+    // a feed unless ladder.stale === false, so the flag follows the INDEX
+    // (the number they now credit at) and `price` is sellPriceUsd.
+    ladder: ladderKnown() ? (ixMode ? indexLadder({
+      block: ix, sellPriceUsd: Number(postedPrice().toFixed(9)),
+      soldPcn: st.ladderSoldPcn, remainingPcn: st.ladderRemainingPcn,
+    }) : {
+      price: st.ladderPrice,
+      soldPcn: st.ladderSoldPcn,
+      remainingPcn: st.ladderRemainingPcn,
+      ageSeconds: ladderAgeS,
+      // Remembered rather than current. Still the best answer available --
+      // but say so, rather than let a consumer assume it is fresh.
+      stale: ladderAgeS === null || ladderAgeS > 600,
+    }) : null,
+    // Stated so nobody mistakes a posted price for a market price.
+    // Taken from the same field the response publishes, never retyped: this
+    // sentence and rateFloorUsd disagreeing would be worse than either alone.
+    //
+    // In index mode the note is rewritten (index-relay.mjs indexNote): the
+    // price is the index of exchange.pc.am user-to-user fills, its caps,
+    // floor and ceiling -- each read from what is enforced or relayed.
+    note: ixMode ? indexNote({ floorUsd: st.poolFloorUsd, rules: (st.indexMeta || {}).rules,
+                               maxAgeS: st.indexMaxAgeSeconds, buybackOpen: !!st.buybackOpen }) :
+          'Posted from a finite 100,000 PCN order-book ladder, not discovered on a market. ' +
+          // "not exchange traded" stood here until 2026-09-24, long after
+          // exchange.pc.am opened; the pc.am mini app shows this text to users.
+          'PCN also trades on exchange.pc.am, a small order book the project runs, and its ' +
+          'wrapped form wPCN trades in a small PancakeSwap ' +
+          'pool. Until 2026-09-09 a keeper held that pool to THIS rate. It no longer ' +
+          'defends parity: the pool is allowed to fall on real selling, and since ' +
+          '2026-09-19 BOTH numbers here follow it down -- what services credit, and what ' +
+          'PCN is sold for. Both stop at a published floor of $' + Number(st.poolFloorUsd).toFixed(4) + ', which ' +
+          'is also where the keeper starts buying the pool back. The sale price is ' +
+          're-anchored at most hourly, against a 6-HOUR MEDIAN rather than the spot, and ' +
+          'by at most 8% in one step or 12% in a day; it is never RAISED by a pool read, ' +
+          'and rises only when PCN is bought or spent. ' +
+          // Both directions, deliberately. This field used to end by telling
+          // holders their way out was to sell the pool -- a public API field,
+          // read by every integrator, advertising only the exit. The pool is
+          // thin enough that saying so shaped behaviour: wrap, dump, and the
+          // keeper buys it back out of a small float. State the round trip.
+          'The two forms convert both ways: PCN becomes wPCN at ' +
+          'https://wrapdesk.pc.am, and wPCN becomes PCN through the token ' +
+          "contract's redeem(). " +
+          (st.buybackOpen
+            ? 'Buying PCN back is a separate constant-product curve at a much lower price.'
+            : 'This service is not buying PCN back at present.') +
+          // Plain words, no code formatting: the mini app renders this note.
+          ' The index block is shadow data from exchange.pc.am and must not be used for crediting yet.',
+    role: ROLE,
+    // A consumer can tell a fresh price from a remembered one. Both are
+    // usable; only one is current, and pretending otherwise is how a stale
+    // number gets treated as fact.
+    stale: ROLE === 'replica' && !syncOk,
+    // `0` on a replica that has NEVER synced would be the same value the
+    // primary reports for "I am the source" — the freshest possible answer
+    // standing in for the least fresh one. null says "never".
+    stateAgeSeconds: ROLE !== 'replica' ? 0
+                   : (lastSync ? Math.floor((Date.now() - lastSync) / 1000) : null),
+    at: new Date().toISOString(),
+  };
+}
+
+/** Both bodies from ONE reading of the state: the minimal one is derived from
+ *  the legacy one's own `index` and `ladder` blocks, its `stale` and its `at`,
+ *  so bodyVersion 1 and 2 -- and /detail beside them -- can never disagree
+ *  about a value, only about how much of it they show. A replica runs this
+ *  same code over the primary's /state, which is what makes all three origins
+ *  answer alike for the same bodyVersion. */
+function bodies() {
+  const legacy = legacyBody();
+  const minimal = minimalBody({
+    indexMode: indexMode(), block: legacy.index, ladder: legacy.ladder,
+    ladderKnown: ladderKnown(), ladderAgeS: ladderAgeSeconds(),
+    oracleStale: legacy.stale, serviceRate: st.serviceRate, sellPriceUsd: legacy.sellPriceUsd,
+    // The spot, information only: pool.spotUsd in the legacy body. Nothing on
+    // this side credits from it any more, and neither may a consumer.
+    poolUsd: st.poolFollow ? st.poolPrice : null,
+    floorUsd: st.poolFloorUsd, at: legacy.at,
+  });
+  return { legacy, minimal };
 }
 
 createServer(async (req, res) => {
@@ -1285,6 +1486,24 @@ createServer(async (req, res) => {
     // exchange says `unknown`, or it is switched off there -- this answers 503
     // and the rails hold (plan §2.4 and §2.6), rather than credit at the last
     // number while the one source of it cannot be heard.
+    //
+    // bodyVersion 2: the 503 fires on the unified `stale` -- a strict superset
+    // of the conditions below, so it is only ever MORE willing to hold, and a
+    // consumer that checks only the status code holds exactly when one reading
+    // the flag would. The 200 stays the bare number as text under BOTH
+    // versions: docs.pc.am told integrators to parse exactly that, and one
+    // number is already as compact as a body gets (reviewed 2026-09-25).
+    if (p === '/credit-rate' && bodyVersionOf(st.bodyVersion) === 2) {
+      const { minimal } = bodies();
+      if (minimal.stale !== false) {
+        return res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8',
+                                    'Cache-Control': 'no-store' })
+          && res.end('unavailable\n');
+      }
+      return res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8',
+                                  'Cache-Control': 'no-store' })
+        && res.end(String(minimal.creditRateUsd) + '\n');
+    }
     if (p === '/credit-rate') {
       const rate = st.serviceRate;
       if (!Number.isFinite(rate) || rate <= 0 || (ROLE === 'replica' && !syncOk)
@@ -1298,159 +1517,20 @@ createServer(async (req, res) => {
         && res.end(String(rate) + '\n');
     }
 
+    // WHICH BODY: bodyVersion 1 is the legacy body plus the nine minimal
+    // fields and the unified `stale`; 2 is exactly the nine, compact. See
+    // DEFAULTS.bodyVersion and index-relay.mjs minimalBody().
     if (p === '/' || p === '/price') {
-      const ladderAgeS = st.ladderAt ? Math.floor((Date.now() - st.ladderAt) / 1000) : null;
-      // Step 4 (useIndex = 1) changes exactly five things in this body, every
-      // other byte is the legacy body: serviceRate/creditRateUsd carry the
-      // index (set by pollIndex, not here), rateFollowsPoolDown is false, the
-      // `ladder` block becomes the compatibility block (index-relay.mjs
-      // indexLadder), `index.inUse` is true, and the `note` says what the price
-      // now is. Same field names on purpose: seven rail codebases read them, and
-      // renaming one would be nine deploys (plan §7). sellPriceUsd and `price`
-      // stay what market.pc.am charges -- read from its ladder state exactly as
-      // before, which after plan Step 3 is the index x (1 + premium).
-      const ixMode = indexMode();
-      const ix = indexBlock();
-      return json(res, 200, {
-        // The posted price is the ladder's marginal rung -- the price at which
-        // the next PCN can actually be bought. `buybackPrice` is the AMM curve
-        // and is what a sell-back pays; they are different numbers on purpose
-        // and a consumer must not use one for the other.
-        price: Number(postedPrice().toFixed(9)),
-        serviceRate: st.serviceRate,
-
-        // THE SAME TWO NUMBERS, NAMED BY WHAT THEY ARE FOR.
-        //
-        // `price` and `serviceRate` say what they ARE -- a ladder rung and a
-        // tracked rate -- and an integrator reading the feed cold has to already
-        // know which one credits a customer. One did not: contrib/wpcn-pay
-        // credited from `price` for weeks, and `price` is the ONE number that
-        // must never credit anything, because it is the ladder and the ladder
-        // does not follow the pool down. That is precisely the leak the comment
-        // at the top of this file describes -- buy wPCN cheap, redeem 1:1, spend
-        // it at a rail crediting above the pool -- and crediting at `price`
-        // re-opens it by hand.
-        //
-        // So the feed now also answers in the language of the question. Same
-        // values, no new state, nothing to keep in step:
-        //   creditRateUsd -- what you credit an INBOUND payment at. Always this one.
-        //   sellPriceUsd  -- what a buyer PAYS us. Never credits anything.
-        // The bare number alone is at GET /credit-rate, where there is nothing
-        // to pick wrong.
-        creditRateUsd: st.serviceRate,
-        sellPriceUsd: Number(postedPrice().toFixed(9)),
-        rateFieldToUse: 'creditRateUsd',
-        // What the rate is tracking, and what is holding it up. Published
-        // because "why is the credit rate below the ladder price" has to be
-        // answerable from the feed itself, not from a server log.
-        //
-        // False in index mode: the pool is no input to the rate any more, and
-        // this flag is what tells pcnaibot to demand a fresh pool reading.
-        rateFollowsPoolDown: ixMode ? false : !!st.poolFollow,
-        rateFloorUsd: st.poolFloorUsd,
-        pool: st.poolFollow ? {
-          spotUsd: st.poolPrice,
-          medianUsd: st.poolMedian ?? null,
-          windowHours: st.poolTwapHours,
-          samples: st.poolSampleCount ?? 0,
-          ageSeconds: st.poolAt ? Math.floor((Date.now() - st.poolAt) / 1000) : null,
-          rateHeldAboveBy: st.poolHeldBy ?? null,
-        } : null,
-        // The exchange-anchored PCN index. In shadow (Phase 2) it is published
-        // so it can be judged beside creditRateUsd, and `inUse` is false. In
-        // index mode (Step 4) `inUse` is true and creditRateUsd IS this `usd`;
-        // `stale` and `state` then say whether the rails may credit at all.
-        index: ix,
-        currency: 'USD',
-        // BUYBACK. Every field below describes selling PCN back to us, and it
-        // is CLOSED unless `buybackOpen` is true. When it is closed the price
-        // is published as null rather than as a number, because a number here
-        // is a quote -- and quoting a price for something you will not do is
-        // the kind of honest-looking lie that ends in an argument with a
-        // customer. The curve's own figures stay visible for transparency.
-        buybackOpen: !!st.buybackOpen,
-        buybackPrice: st.buybackOpen ? Number(price().toFixed(9)) : null,
-        buybackRemainingToday: st.buybackOpen
-          ? Number((st.dailySellCapUsd - st.soldToday).toFixed(2)) : 0,
-        // reserve, poolSupply and feeBps USED TO BE PUBLISHED HERE and were
-        // removed on 2026-09-17. They described the buyback desk's inventory
-        // and spread, and that desk has been closed since 2026-09-09 -- so
-        // `reserve` advertised a USDT float that is not there, `poolSupply`
-        // (10,000,000) matched nothing real, and `feeBps` quoted a spread for
-        // trades that cannot happen. The comment above already says why a
-        // number here is a quote; these three were simply missed when
-        // buybackPrice was fixed.
-        //
-        // Every consumer was checked first -- aicontrol, webai, webbuilderbot,
-        // checker, pcnaibot, 3dmodels, 3dmodel, alik, pcnearner, market and
-        // the exchange -- and not one of them read any of the three. If a
-        // future integrator needs the curve's internals, publish them under a
-        // name that says what they are, not under the old desk's vocabulary.
-        //
-        // In index mode this is the COMPATIBILITY block of plan §2.6: pcnaibot,
-        // docs.pc.am integrations and the exchange's fetchSellPrice() all refuse
-        // a feed unless ladder.stale === false, so the flag follows the INDEX
-        // (the number they now credit at) and `price` is sellPriceUsd.
-        ladder: ladderKnown() ? (ixMode ? indexLadder({
-          block: ix, sellPriceUsd: Number(postedPrice().toFixed(9)),
-          soldPcn: st.ladderSoldPcn, remainingPcn: st.ladderRemainingPcn,
-        }) : {
-          price: st.ladderPrice,
-          soldPcn: st.ladderSoldPcn,
-          remainingPcn: st.ladderRemainingPcn,
-          ageSeconds: ladderAgeS,
-          // Remembered rather than current. Still the best answer available --
-          // but say so, rather than let a consumer assume it is fresh.
-          stale: ladderAgeS === null || ladderAgeS > 600,
-        }) : null,
-        // Stated so nobody mistakes a posted price for a market price.
-        // Taken from the same field the response publishes, never retyped: this
-        // sentence and rateFloorUsd disagreeing would be worse than either alone.
-        //
-        // In index mode the note is rewritten (index-relay.mjs indexNote): the
-        // price is the index of exchange.pc.am user-to-user fills, its caps,
-        // floor and ceiling -- each read from what is enforced or relayed.
-        note: ixMode ? indexNote({ floorUsd: st.poolFloorUsd, rules: (st.indexMeta || {}).rules,
-                                   maxAgeS: st.indexMaxAgeSeconds, buybackOpen: !!st.buybackOpen }) :
-              'Posted from a finite 100,000 PCN order-book ladder, not discovered on a market. ' +
-              // "not exchange traded" stood here until 2026-09-24, long after
-              // exchange.pc.am opened; the pc.am mini app shows this text to users.
-              'PCN also trades on exchange.pc.am, a small order book the project runs, and its ' +
-              'wrapped form wPCN trades in a small PancakeSwap ' +
-              'pool. Until 2026-09-09 a keeper held that pool to THIS rate. It no longer ' +
-              'defends parity: the pool is allowed to fall on real selling, and since ' +
-              '2026-09-19 BOTH numbers here follow it down -- what services credit, and what ' +
-              'PCN is sold for. Both stop at a published floor of $' + Number(st.poolFloorUsd).toFixed(4) + ', which ' +
-              'is also where the keeper starts buying the pool back. The sale price is ' +
-              're-anchored at most hourly, against a 6-HOUR MEDIAN rather than the spot, and ' +
-              'by at most 8% in one step or 12% in a day; it is never RAISED by a pool read, ' +
-              'and rises only when PCN is bought or spent. ' +
-              // Both directions, deliberately. This field used to end by telling
-              // holders their way out was to sell the pool -- a public API field,
-              // read by every integrator, advertising only the exit. The pool is
-              // thin enough that saying so shaped behaviour: wrap, dump, and the
-              // keeper buys it back out of a small float. State the round trip.
-              'The two forms convert both ways: PCN becomes wPCN at ' +
-              'https://wrapdesk.pc.am, and wPCN becomes PCN through the token ' +
-              "contract's redeem(). " +
-              (st.buybackOpen
-                ? 'Buying PCN back is a separate constant-product curve at a much lower price.'
-                : 'This service is not buying PCN back at present.') +
-              // Plain words, no code formatting: the mini app renders this note.
-              ' The index block is shadow data from exchange.pc.am and must not be used for crediting yet.',
-        role: ROLE,
-        // A consumer can tell a fresh price from a remembered one. Both are
-        // usable; only one is current, and pretending otherwise is how a stale
-        // number gets treated as fact.
-        stale: ROLE === 'replica' && !syncOk,
-        // `0` on a replica that has NEVER synced would be the same value the
-        // primary reports for "I am the source" — the freshest possible answer
-        // standing in for the least fresh one. null says "never".
-        stateAgeSeconds: ROLE !== 'replica' ? 0
-                       : (lastSync ? Math.floor((Date.now() - lastSync) / 1000) : null),
-        at: new Date().toISOString(),
-      });
+      const { legacy, minimal } = bodies();
+      return bodyVersionOf(st.bodyVersion) === 2
+        ? json(res, 200, minimal, { compact: true })
+        : json(res, 200, phase1Body(legacy, minimal));
     }
+    // The full diagnostic body, whatever bodyVersion says: the admin panel
+    // and ops tools read the pool, the ladder and the index block from it.
+    // Diagnostic, NOT a contract -- its shape follows the code, and no rail
+    // may credit from it.
+    if (p === '/detail') return json(res, 200, legacyBody());
     if (p === '/quote/buy')  return json(res, 200, quoteBuy(Number(u.searchParams.get('usd'))));
     if (p === '/quote/sell') return json(res, 200, quoteSell(Number(u.searchParams.get('pcn'))));
 
@@ -1504,6 +1584,11 @@ createServer(async (req, res) => {
         // or "yes" is a typo, and a typo must not decide what every rail
         // credits at.
         useIndex:                   { min: 0,  max: 1, int: true },
+        // Which body / and /price serve (DEFAULTS.bodyVersion). 1 or 2 as a
+        // NUMBER, for the same reason as useIndex: a typo must not pick the
+        // body every rail parses. Never refused -- either direction is a
+        // deliberate act, and 1 is the rollback.
+        bodyVersion:                { min: 1,  max: 2, int: true },
       };
       const pending = {};
       for (const [key, bound] of Object.entries(BOUNDS)) {
@@ -1539,7 +1624,23 @@ createServer(async (req, res) => {
           'send {"useIndex":0} with it to set the rate by hand' });
       }
 
+      // The short body (bodyVersion 2) cannot say WHICH rule made creditRateUsd,
+      // and the market and the keeper read it as the index. So it exists only
+      // while the index IS the rate: asking for it off-index is refused, and
+      // switching the index off -- the rollback, which is never refused --
+      // takes the full body back with it in the same write.
+      const toBody = bodyVersionOf(pending.bodyVersion === undefined ? st.bodyVersion : pending.bodyVersion);
+      if (toBody === 2 && !toIndex) {
+        if (pending.useIndex === 0 && wasIndex && pending.bodyVersion === undefined) {
+          pending.bodyVersion = 1;
+        } else {
+          return json(res, 409, { error: 'the short price format (bodyVersion 2) only exists while the credit ' +
+            'rate IS the PCN index; send {"useIndex":1} first' });
+        }
+      }
+
       const beforeRate = st.serviceRate;
+      const beforeBody = bodyVersionOf(st.bodyVersion);
       Object.assign(st, pending);       // all-or-nothing: never a half-applied write
       if (toIndex && !wasIndex) {
         // Applied now rather than at the next poll, so the switch's own answer
@@ -1563,6 +1664,23 @@ createServer(async (req, res) => {
           `and starts moving on its own again after ${st.serviceRetuneIntervalHours} h.\n` +
           'What to do: nothing, if you switched it back on purpose.\n' +
           `<i>tech: The rails are back on the legacy walk, from ${st.serviceRate}</i>`);
+      }
+      // Every consumer on the estate parses this body, so a change of shape is
+      // said once, with the way back -- the same as the useIndex switch.
+      const afterBody = bodyVersionOf(st.bodyVersion);
+      if (afterBody !== beforeBody) {
+        notify(afterBody === 2
+          ? '🟡 <b>price.pc.am now publishes the SHORT price format</b>\n' +
+            'GET / serves nine fields only (creditRateUsd, sellPriceUsd, poolUsd, floorUsd, state, seq, ' +
+            'stale, ageSeconds, at). The old fields are gone from it; the full version is at /detail. ' +
+            'Every origin follows within a minute.\n' +
+            'What to do: watch the payment services for "rate unavailable" or held credits in the next ' +
+            'hour. To undo: <code>POST /admin/state {"bodyVersion":1}</code> on the price primary.\n' +
+            `<i>tech: bodyVersion ${beforeBody} → 2; /credit-rate is unchanged (bare number, 503 on stale)</i>`
+          : '🟢 <b>price.pc.am is back on the full price format</b>\n' +
+            'GET / carries every old field again, plus the nine new ones.\n' +
+            'What to do: nothing, if you switched it back on purpose.\n' +
+            `<i>tech: bodyVersion ${beforeBody} → 1${pending.useIndex === 0 ? ', because the index was switched off' : ''}</i>`);
       }
       return json(res, 200, { ok: true, price: postedPrice(), applied: pending,
         ...(wasIndex !== toIndex ? { useIndex: toIndex ? 1 : 0, serviceRate: st.serviceRate, check } : {}) });
@@ -1647,6 +1765,9 @@ createServer(async (req, res) => {
         // legacy body -- rateFollowsPoolDown true, the market-clock `ladder` --
         // around a serviceRate that is already the index.
         'useIndex',
+        // Same reason: a replica builds / from this state, so without it two
+        // of three origins would keep serving the other body.
+        'bodyVersion',
       ];
       const pub = {};
       for (const kk of PUBLIC_STATE) if (st[kk] !== undefined) pub[kk] = st[kk];

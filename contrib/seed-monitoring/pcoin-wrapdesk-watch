@@ -156,6 +156,30 @@ def get(url, timeout=25):
         return None
 
 
+def index_from_price(price):
+    """The PCN index from a price.pc.am body of EITHER shape -> a dict (maybe
+    empty, never None) with usd / state / stale. Pure; main() judges it.
+
+    Owner, 2026-09-25: "simplify the price.pc.am json response". While the
+    `index` block is published it IS the index -- with the rails rolled back
+    ({"useIndex":0}) the top-level creditRateUsd is the pool-follow rate, not
+    the index -- so the block wins, and a top-level `stale` that is present and
+    not literally False marks it stale too (every published flag counts). In
+    the minimal body the index is the top level: creditRateUsd, state, stale.
+    """
+    if not isinstance(price, dict):
+        return {}
+    ix = price.get("index")
+    if isinstance(ix, dict):
+        if "stale" in price and price.get("stale") is not False:
+            ix = dict(ix, stale=True)
+        return ix
+    if isinstance(price.get("state"), str):
+        return {"usd": price.get("creditRateUsd"), "state": price.get("state"),
+                "stale": price.get("stale")}
+    return {}
+
+
 def explorer_get(path, timeout=25):
     """GET <explorer><path>, trying each base in EXPLORERS -- loopback first.
 
@@ -1117,12 +1141,13 @@ def main() -> int:
     # Since 2026-09-25 the keeper holds the pool to the PCN INDEX in both
     # directions, every minute, within its daily budget. There is no manual
     # buy-back cycle: this line is the peg's temperature, never an instruction.
-    # The index is read from price.pc.am's `index` block and counts only when it
-    # is fresh and priced (held is a price; unknown is not).
+    # The index is read from price.pc.am and counts only when it is fresh and
+    # priced (held is a price; unknown is not). Either body shape since
+    # 2026-09-25 -- the `index` block or the minimal top level; see
+    # index_from_price().
     price = get("https://price.pc.am")
     pool = pool_price()
-    ix = (price or {}).get("index")
-    ix = ix if isinstance(ix, dict) else {}
+    ix = index_from_price(price)
     ixv = (ix.get("usd") if ix.get("stale") is False
            and ix.get("state") in ("live", "held", "frozen") else None)
     if ixv is None:

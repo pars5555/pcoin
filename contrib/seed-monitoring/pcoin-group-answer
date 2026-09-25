@@ -977,25 +977,31 @@ def main():
         d = parsed.get("data", {})
         global LAST_BLOCK
         LAST_BLOCK = (parsed.get("derived") or {}).get("last_block")
-        p = d.get("price") or {}
         x = d.get("exchange") or {}
         stx = x.get("stats") or {}
         la = d.get("ladder") or {}
-        pool = p.get("pool") or {}
         # THE PCN INDEX (since 2026-09-25 the PCN price). Quotable only when
         # price.pc.am says it is fresh and priced -- the same test pcoin-facts
         # applies before printing it. While the index is IN USE but unknown,
         # the credit rate and the market price are not quotable either: the
         # rails hold and the market is closed, and a remembered number is the
         # thing this list exists to stop.
-        ix = p.get("index") if isinstance(p.get("index"), dict) else {}
-        ix_ok = (ix.get("stale") is False and ix.get("state") in ("live", "held", "frozen")
-                 and ix.get("usd") is not None)
-        priced = ix_ok or ix.get("inUse") is not True
-        for v in ((p.get("creditRateUsd") if priced else None),
-                  (p.get("sellPriceUsd") if priced else None),
-                  (ix.get("usd") if ix_ok else None), p.get("rateFloorUsd"),
-                  pool.get("spotUsd"), pool.get("medianUsd"),
+        #
+        # Taken from pcoin-facts' OWN reading (derived.price), not re-parsed
+        # here: price.pc.am's body changes shape (owner, 2026-09-25: "simplify
+        # the price.pc.am json response") and two parsers of one body is how
+        # the facts and this list come to disagree. The old parser, fed the
+        # minimal body, found no `index` block, read that as "not in use", and
+        # would have allowed a STALE credit rate. A pcoin-facts too old to
+        # publish derived.price gives no price rates at all -- silence, never a
+        # guess.
+        pv = (parsed.get("derived") or {}).get("price") or {}
+        priced = pv.get("quotable") is True
+        ix_ok = pv.get("ix_ok") is True
+        for v in ((pv.get("credit") if priced else None),
+                  (pv.get("sell") if priced else None),
+                  ((pv.get("index") or {}).get("usd") if ix_ok else None), pv.get("floor"),
+                  pv.get("pool_spot"), pv.get("pool_median"),
                   stx.get("bestBidUsd"), stx.get("bestAskUsd"),
                   stx.get("lastPriceUsd"), stx.get("highUsd"), stx.get("lowUsd"),
                   (la.get("marginalPrice") if priced else None)):

@@ -82,6 +82,9 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import mysql from 'mysql2/promise';
 import { makeSettings } from '/opt/pcoin-market/settings.mjs';
+// Absolute for the same reason as settings.mjs: curve-refusals.sh and
+// curve-converge.sh run a rewritten COPY of this file from /tmp.
+import { creditRateFromPriceBody } from '/opt/pcoin-market/price-feed.mjs';
 
 // PARITY -- owner's decision, 2026-09-23, replacing his own earlier rule
 // ("PCN sits 5% above wPCN"). With the 6h window live, the ask still sat at
@@ -206,17 +209,25 @@ const median = win.length % 2
 // credits at whichever one it reached. Judge on the worst, exactly as the sale
 // gate does -- "some origin still disagrees" is the condition we must not sell
 // into, and equally the one we must not size a ceiling against.
+//
+// creditRateUsd, read by price-feed.mjs, NOT `.serviceRate`: the minimal body
+// (owner, 2026-09-25: "simplify the price.pc.am json response") drops
+// serviceRate, and a sample the oracle marks stale is thrown away like an
+// unreadable one -- sizing a ceiling against a rate nobody vouches for is the
+// same mistake as selling into it.
 const got = await Promise.allSettled(Array.from({ length: RATE_SAMPLES }, async () => {
   const r = await fetch(PUBLIC_RATE_URL, { signal: AbortSignal.timeout(15000) });
   if (!r.ok) throw new Error('HTTP ' + r.status);
-  return Number((await r.json()).serviceRate);
+  const c = creditRateFromPriceBody(await r.json());
+  if (!c.ok) throw new Error(c.why);
+  return c.rate;
 }));
 const rates = got.filter(r => r.status === 'fulfilled').map(r => r.value)
                  .filter(r => Number.isFinite(r) && r > 0);
 if (!rates.length) {
   const why = got.find(r => r.status === 'rejected');
   await refuse('price.pc.am is unreadable (' +
-    ((why && why.reason && why.reason.message) || 'no usable serviceRate') +
+    ((why && why.reason && why.reason.message) || 'no usable creditRateUsd') +
     '), so the divergence ceiling cannot be computed. An unreadable rate is not a rate.');
 }
 const rate = Math.max(...rates);   // worst = highest rate = tightest ceiling

@@ -28,6 +28,7 @@ card is shrunk to a thumbnail nobody can read.
 import argparse
 import datetime
 import json
+import math
 import os
 import sys
 import urllib.request
@@ -95,16 +96,40 @@ def live_rate(url):
                          "A card outlives the moment it was built, so a guessed "
                          "number would be wrong in public for as long as it "
                          "circulates." % (url, exc))
-    # The PCN rate is creditRateUsd (the PCN index since 2026-09-25; serviceRate
-    # is its older name). Never `price`: that is what market.pc.am charges, the
-    # index + 3%, and a card quoting it as "the PCN price" would be 3% wrong. A
-    # stale index is no rate at all -- refuse rather than print it.
-    rate = d.get("creditRateUsd") or d.get("serviceRate")
-    if (d.get("ladder") or {}).get("stale") is not False:
+    return rate_from_body(d, url)
+
+
+def rate_from_body(d, url="price.pc.am"):
+    """The PCN rate from a price.pc.am body of EITHER shape, or abort. Pure.
+
+    The PCN rate is creditRateUsd (the PCN index since 2026-09-25; serviceRate
+    is its older name). Never `price` / `sellPriceUsd`: that is what market.pc.am
+    charges, the index + 3%, and a card quoting it as "the PCN price" would be 3%
+    wrong. A stale rate is no rate at all -- refuse rather than print it.
+
+    TWO SHAPES (owner, 2026-09-25: "simplify the price.pc.am json response").
+    The minimal body drops serviceRate and the `ladder` block and makes the
+    top-level `stale` the one HOLD flag; price.pc.am adds the new fields first
+    and removes the old ones later. So: top-level `stale` must be literally
+    false (both shapes carry it), and while a `ladder` block is still published
+    its `stale` must be false too -- that was the flag this refused on until the
+    change, and in index mode it follows the index.
+    """
+    if not isinstance(d, dict):
+        raise SystemExit("REFUSING TO BUILD: %s answered something that is not a JSON object" % url)
+    rate = d.get("creditRateUsd")
+    if rate is None:
+        rate = d.get("serviceRate")
+    if d.get("stale") is not False:
+        raise SystemExit("REFUSING TO BUILD: %s says the rate is stale (stale %r)"
+                         % (url, d.get("stale")))
+    if "ladder" in d and (d.get("ladder") or {}).get("stale") is not False:
         raise SystemExit("REFUSING TO BUILD: %s says the rate is stale (ladder.stale)" % url)
-    if not rate or float(rate) <= 0:
+    # bool is refused on purpose: in Python True == 1, a flag read as $1.
+    if (isinstance(rate, bool) or not isinstance(rate, (int, float))
+            or not math.isfinite(rate) or not rate > 0):
         raise SystemExit("REFUSING TO BUILD: %s answered without a usable rate (%r)"
-                         % (url, d))
+                         % (url, rate))
     return float(rate)
 
 

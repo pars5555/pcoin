@@ -41,6 +41,7 @@
 // from a constant.
 import { esc, num, N, USD, PCT, card, note, kv, tbl, tiles, failed, DASH } from './ui.mjs';
 import { upstreamCreds } from './services.mjs';
+import { readPrice } from './price-feed.mjs';
 
 // The market's read-only token. /api/ladder/state serves the pricing-policy
 // fields only to our own callers now; an anonymous caller gets the public
@@ -72,7 +73,10 @@ async function get(url, headers = {}) {
 
 export async function pricingData() {
   const [price, state, gate] = await Promise.all([
-    get('https://price.pc.am/'),
+    // /detail first, through this page's own cache, either body shape
+    // (price-feed.mjs): the pool median and the index block this page explains
+    // leave the ROOT body in the 2026-09-25 simplification.
+    readPrice((u) => get(u)),
     // soldPcn and retiredPcn are no longer served to anonymous callers --
     // /api/ladder/state now gives the public only what the public page needs,
     // because the policy fields let anyone compute how much buying trips the

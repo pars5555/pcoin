@@ -8,6 +8,13 @@ code. Every rule here is also proved to be LOAD-BEARING by
 test_keeper_anchor_mutants.py, which removes it and requires the case guarding
 it to fail.
 
+Since 2026-09-25 it drives them with BOTH shapes of the price.pc.am body
+(owner: "simplify the price.pc.am json response"): today's body captured live
+that afternoon, the minimal one (the index at the top level, no `index` /
+`ladder` / `pool` block), the minimal one marked stale, and the transition
+that publishes both. Works, works, holds -- and the transition holds on either
+freshness flag.
+
 The keeper is loaded with D11's own settings in a tuning file of its own, so
 the first case is simply "the keeper accepts the owner's numbers": a value it
 would refuse would stop it trading the moment the switch is made.
@@ -109,6 +116,44 @@ def body(**ix):
 DROP = object()
 ifb = k.index_from_body
 
+
+def minimal(**kw):
+    """The MINIMAL price.pc.am body (owner, 2026-09-25: "simplify the
+    price.pc.am json response"): the index is the top level, creditRateUsd is
+    its usd, and there is no `index`, `ladder` or `pool` block. sellPriceUsd is
+    still here and still DIFFERENT, so reading the wrong field cannot pass."""
+    b = {"creditRateUsd": INDEX, "sellPriceUsd": LADDER, "poolUsd": POOL, "floorUsd": 0.015,
+         "state": "held", "seq": 1, "stale": False, "ageSeconds": 14,
+         "at": "2026-09-25T13:39:22.114Z"}
+    for key, v in kw.items():
+        if v is DROP:
+            b.pop(key, None)
+        else:
+            b[key] = v
+    return b
+
+
+# TODAY'S BODY, verbatim: `curl -s https://price.pc.am/` at 2026-09-25T13:39:22Z
+# (a replica, index mode, state held). The index here is $0.026748145 and the
+# sale price $0.027550589 -- different, so the wrong field cannot pass.
+LIVE = json.loads(r'''{"price":0.027550589,"serviceRate":0.026748145,"creditRateUsd":0.026748145,"sellPriceUsd":0.027550589,"rateFieldToUse":"creditRateUsd","rateFollowsPoolDown":false,"rateFloorUsd":0.015,"pool":{"spotUsd":0.027246974914188885,"medianUsd":0.026748145216180963,"windowHours":6,"samples":2000,"ageSeconds":17,"rateHeldAboveBy":null},"index":{"usd":0.026748145,"state":"held","seq":1,"ageSeconds":19,"stale":false,"lastMoveAt":null,"window":{"hours":168,"trades":4,"entities":5,"countedPcn":"757.00000000","countedUsd":"16.817790","qualifies":false},"limitedBy":[],"reasons":["too little evidence in every window; the widest (168 h) has 4 counted fills (5 needed), $16.81 counted ($25.00 needed)"],"refused":null,"inUse":true,"source":"https://exchange.pc.am/api/index"},"currency":"USD","buybackOpen":false,"buybackPrice":null,"buybackRemainingToday":0,"ladder":{"price":0.027550589,"soldPcn":38571.36624107,"remainingPcn":16387.70607446,"ageSeconds":19,"stale":false},"note":"The PCN price is the PCN index: the volume-weighted median price of real user-to-user trades on exchange.pc.am, a small order book the project runs. Trades with the project's own bots, and trades between linked accounts, do not count. It moves only when new qualifying trades arrive, by at most 2% per trade and 5% in 24 hours, and when there is too little trading it holds its last value. It never goes below a floor of $0.0150 or above a ceiling of $0.10. What PCoin services credit one PCN at (creditRateUsd, also published as serviceRate) is the index itself. sellPriceUsd is what market.pc.am charges for PCN, and it never credits anything. If the index is more than 10 minutes old, or the exchange reports it as unknown, GET /credit-rate answers 503 and ladder.stale is true: hold the credit and try again later, never guess a rate. The wPCN PancakeSwap pool is not an input to this price. The ladder block is kept only so older integrations keep working: its price is sellPriceUsd and its stale flag follows the index. This service is not buying PCN back at present.","role":"replica","stale":false,"stateAgeSeconds":0,"at":"2026-09-25T13:39:22.114Z"}''')
+LIVE_INDEX = 0.026748145
+
+
+def live(**over):
+    """LIVE, deep-copied, with top-level overrides."""
+    b = json.loads(json.dumps(LIVE))
+    b.update(over)
+    return b
+
+
+def both(top=None, ix=None):
+    """THE TRANSITION: price.pc.am publishes both sets at once. `top` overrides
+    the minimal fields, `ix` the old index block."""
+    b = body(**(ix or {}))
+    b.update(minimal(**(top or {})))
+    return b
+
 # --------------------------------------------------------------- the settings
 run("D11 settings are accepted by the keeper", lambda: k.TUNING_ERROR, None,
     "a value the keeper refuses would stop it trading the moment the switch is made")
@@ -181,6 +226,43 @@ run("a null index block is not a price",
     "what price.pc.am publishes before its first poll")
 run("a body that is not an object is not a price", lambda: ifb([INDEX]), None, "")
 
+# ------------------------------- both body shapes (owner, 2026-09-25) -------
+# price.pc.am first ADDS the minimal fields and later REMOVES the old blocks, so
+# the keeper must read today's body, the minimal one and the transition, and
+# hold on every one of them the moment any freshness flag says so.
+run("TODAY's live body (captured 2026-09-25) is a price", lambda: ifb(live()), LIVE_INDEX,
+    "the body every origin served that afternoon")
+run("the MINIMAL body is a price", lambda: ifb(minimal()), INDEX,
+    "the index is the top level: creditRateUsd, state, stale, ageSeconds")
+run("the MINIMAL body with stale: true is not a price", lambda: ifb(minimal(stale=True)), None,
+    "price.pc.am's one HOLD flag in the minimal body")
+run("minimal: a missing 'stale' is not 'not stale'", lambda: ifb(minimal(stale=DROP)), None,
+    "CLAUDE.md 7.2, the same rule as the index block")
+run("minimal: UNKNOWN state is not a price", lambda: ifb(minimal(state="unknown")), None, "")
+run("minimal: DISABLED state is not a price", lambda: ifb(minimal(state="disabled")), None, "")
+run("minimal: age over max_index_age_s is not a price", lambda: ifb(minimal(ageSeconds=181)), None, "")
+run("minimal: a missing age is not a young age", lambda: ifb(minimal(ageSeconds=DROP)), None, "")
+run("minimal: a null creditRateUsd is not a price", lambda: ifb(minimal(creditRateUsd=None)), None, "")
+run("minimal: no creditRateUsd is not a price, even with sellPriceUsd there",
+    lambda: ifb(minimal(creditRateUsd=DROP)), None,
+    "sellPriceUsd is what market.pc.am charges -- never the index")
+run("transition: the INDEX BLOCK is the price, not the top-level creditRateUsd",
+    lambda: ifb(both(top={"creditRateUsd": LADDER})), INDEX,
+    "rolled back ({\"useIndex\":0}) creditRateUsd is the pool-follow rate, not the index")
+run("transition: an index block marked stale holds, though the top level says fresh",
+    lambda: ifb(both(ix={"stale": True})), None, "")
+run("transition: top-level stale holds, though the index block says fresh",
+    lambda: ifb(both(top={"stale": True})), None,
+    "the unified flag also folds in the ladder and the replica; every published flag counts")
+run("transition: a top-level stale of null holds", lambda: ifb(both(top={"stale": None})), None, "")
+run("today's body, ladder.stale true: not a price, though the index says fresh",
+    lambda: ifb(live(ladder={"stale": True, "ageSeconds": 19})), None,
+    "the flag every PCN rail holds on while it is published")
+run("today's body, ladder: null is not a price", lambda: ifb(live(ladder=None)), None,
+    "what price.pc.am publishes before its first poll")
+run("today's body, ladder fresh: still a price",
+    lambda: ifb(live(ladder={"stale": False})), LIVE_INDEX, "the ladder rule must not over-reach")
+
 # ------------------------------------- the anchor, end to end, never the ladder
 run("anchor on: the target is the INDEX, not sellPriceUsd",
     lambda: k.target_from_body(body())[0], INDEX,
@@ -210,6 +292,23 @@ run("anchor off: the target is sellPriceUsd, exactly as before",
 run("anchor off: the index block is ignored, even when it is broken",
     lambda: with_anchor_off(lambda: k.target_from_body(body(stale=True, state="unknown"))[0]),
     LADDER, "")
+
+# The three bodies end to end, through the function posted_rate() calls.
+run("anchor on: TODAY's live body targets the index",
+    lambda: k.target_from_body(live())[0], LIVE_INDEX, "not its sellPriceUsd, $0.027550589")
+run("anchor on: the MINIMAL body targets creditRateUsd",
+    lambda: k.target_from_body(minimal())[0], INDEX, "")
+run("anchor on: the MINIMAL body marked stale -> NO target, NOT sellPriceUsd",
+    lambda: k.target_from_body(minimal(stale=True))[0], None,
+    "sellPriceUsd is right there in the minimal body too; it must not be taken")
+run("anchor on: the hold on a minimal body still names the index",
+    lambda: k.target_from_body(minimal(state="unknown"))[1],
+    lambda info: (info.get("index") or {}).get("state") == "unknown"
+    and "NOT falling back to the ladder" in info.get("why", ""),
+    "the log line and the effective file must show what was refused")
+run("anchor off: the MINIMAL body targets sellPriceUsd, exactly as before",
+    lambda: with_anchor_off(lambda: k.target_from_body(minimal())[0]), LADDER,
+    "the rollback path reads a field both shapes keep")
 
 # ------------------------------------------------------------- per-run caps
 # run_budget(buying, want, spent_today, have). Floors: 5 USDT, 1,500 wPCN.

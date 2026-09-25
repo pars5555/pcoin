@@ -44,6 +44,7 @@ import { keeperPage, keeperData, validate as keeperValidate, writeTuning } from 
 import { minersPage, minersData } from './miners.mjs';
 import { pricingPage, pricingData } from './pricing.mjs';
 import { pcnIndexPage, pcnIndexData } from './pcn-index.mjs';
+import { readPrice } from './price-feed.mjs';
 import { vaultPage } from './vault.mjs';
 import { sendPage, sendAction, readLog, hotBalance } from './send.mjs';
 import { transferRoute } from './transfer.mjs';
@@ -1391,8 +1392,10 @@ async function handle(req, res) {
       ? exchangeCall(exCreds.exchange, 'dashboard', 'GET', '/admin/api/overview')
           .catch(e => ({ readable: false, status: 0, json: null, reason: e.message }))
       : Promise.resolve(null),
-    fetch('https://price.pc.am/', { signal: AbortSignal.timeout(12000) })
-      .then(r => (r.ok ? r.json() : null)).catch(() => null),
+    // /detail first, the root as fallback, either body shape (price-feed.mjs):
+    // the Price and PCN index cards show the evidence behind the price, which
+    // leaves the root body in the 2026-09-25 simplification.
+    readPrice().then(r => (r.ok ? r.data : null)).catch(() => null),
   ]);
   let reports = [];
   try { reports = loadReports(DATA); } catch { reports = []; }

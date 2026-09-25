@@ -3,7 +3,8 @@
 // reading is proved to pass: a guard only ever seen passing is untested.
 import assert from 'node:assert/strict';
 import { INDEX_RULES, validateIndexBody, confirmTwice, speedCheck, remember,
-         indexUsable, rateFromIndex, switchCheck, indexLadder, indexNote } from './index-relay.mjs';
+         indexUsable, rateFromIndex, switchCheck, indexLadder, indexNote,
+         MINIMAL_KEYS, bodyVersionOf, creditAgeSeconds, creditStale, minimalBody, phase1Body } from './index-relay.mjs';
 import { loadConsumers, fetchOf, PCNAIBOT_BOUNDS, EXCHANGE_STALE_SECONDS } from './test-consumers.mjs';
 
 const NOW = 1790250000;
@@ -307,4 +308,134 @@ await acheck('every other rail\'s field reads the index: creditRateUsd, serviceR
 });
 
 assert.equal(pending, 6);
+
+// ── the published body: bodyVersion 1 (legacy + additive) and 2 (minimal) ──
+// Owner, 2026-09-25: "make it minimal compact json". Every way the unified
+// `stale` turns true is proved to FIRE here; server-test.mjs proves the wiring.
+console.log('  -- the published body (bodyVersion)');
+
+check('bodyVersion is 2 only when it is literally the number 2; anything else is the legacy body', () => {
+  assert.equal(bodyVersionOf(2), 2);
+  for (const v of [1, undefined, null, '2', 3, true, 0, 2.5, NaN]) assert.equal(bodyVersionOf(v), 1, String(v));
+});
+
+check('the age of the rate: the index\'s in index mode, the LADDER\'s otherwise -- never serviceRateAt', () => {
+  assert.equal(creditAgeSeconds({ indexMode: true, block: block({ ageSeconds: 14 }), ladderAgeS: 999 }), 14);
+  assert.equal(creditAgeSeconds({ indexMode: false, block: block({ ageSeconds: 14 }), ladderAgeS: 37 }), 37);
+  assert.equal(creditAgeSeconds({ indexMode: true, block: block({ ageSeconds: -12 }) }), 0,
+    'an exchange clock up to 30 s ahead is tolerated; the age floors at 0, never goes negative');
+  assert.equal(creditAgeSeconds({ indexMode: true, block: null, ladderAgeS: 5 }), null, 'no reading: unknown, not the ladder\'s');
+  assert.equal(creditAgeSeconds({ indexMode: true, block: block({ ageSeconds: null }) }), null);
+  assert.equal(creditAgeSeconds({ indexMode: false, ladderAgeS: null }), null, 'a ladder never read is unknown, not 0');
+  assert.equal(creditAgeSeconds({ indexMode: false, ladderAgeS: NaN }), null);
+});
+
+// A fresh index-mode reading, and the ladder block server.mjs builds beside it.
+const fresh = (o = {}) => {
+  const b = o.block === undefined ? block() : o.block;
+  return { indexMode: true, block: b, oracleStale: false, serviceRate: 0.027335212, ageSeconds: 14,
+           ladder: indexLadder({ block: b, sellPriceUsd: 0.028155268, soldPcn: 1, remainingPcn: 1 }), ...o };
+};
+
+check('unified stale: FALSE only when the oracle is in sync, the ladder flag is false, the index usable, the rate and age known', () => {
+  assert.equal(creditStale(fresh()), false);
+  assert.equal(creditStale({ ...fresh(), indexMode: false,
+    ladder: { price: 0.028, stale: false, ageSeconds: 30 }, block: block({ stale: true }) }), false,
+    'legacy mode: the index is shadow data, and its staleness does not stop a rate that does not use it');
+});
+
+check('unified stale: TRUE on every one of its causes, each alone', () => {
+  const cases = {
+    'the replica is out of sync (the old top-level stale)': { oracleStale: true },
+    'the oracle did not say (undefined is not "in sync")': { oracleStale: undefined },
+    'no ladder block at all (every rail refused on that)': { ladder: null },
+    'ladder.stale true (the old nested flag)': { ladder: { stale: true } },
+    'ladder.stale absent': { ladder: {} },
+    'index stale': { block: block({ stale: true, ageSeconds: 668 }) },
+    'index unknown, FRESH': { block: block({ state: 'unknown', usd: null, seq: null }) },
+    'index disabled': { block: block({ state: 'disabled', usd: null, seq: null }) },
+    'no index reading in index mode': { block: null },
+    'a rate of zero': { serviceRate: 0 },
+    'a NaN rate': { serviceRate: NaN },
+    'no rate': { serviceRate: null },
+    'an unknown age': { ageSeconds: null },
+    'a fractional age (not produced by creditAgeSeconds)': { ageSeconds: 1.5 },
+  };
+  for (const [why, o] of Object.entries(cases)) {
+    // The ladder flag is left as the fresh one unless the case is about it:
+    // this proves the INDEX clause fires by itself, not through ladder.stale.
+    const args = { ...fresh(), ...o };
+    assert.equal(creditStale(args), true, why);
+  }
+  assert.equal(creditStale({ ...fresh(), indexMode: false, ladder: { stale: true, ageSeconds: 700 } }), true,
+    'legacy mode: a market clock over 10 minutes');
+});
+
+const minArgs = (o = {}) => ({ indexMode: true, block: block(), ladderKnown: true, ladderAgeS: 30, oracleStale: false,
+  serviceRate: 0.027335212, sellPriceUsd: 0.028155268, poolUsd: 0.0272, floorUsd: 0.015, at: '2026-09-25T12:00:00.000Z',
+  ladder: indexLadder({ block: block(), sellPriceUsd: 0.028155268, soldPcn: 1, remainingPcn: 1 }), ...o });
+
+check('the minimal body is EXACTLY nine keys, in the agreed order, with the agreed values', () => {
+  const m = minimalBody(minArgs());
+  assert.deepEqual(Object.keys(m), MINIMAL_KEYS);
+  assert.deepEqual(MINIMAL_KEYS, ['creditRateUsd', 'sellPriceUsd', 'poolUsd', 'floorUsd', 'state', 'seq', 'stale', 'ageSeconds', 'at']);
+  assert.deepEqual(m, { creditRateUsd: 0.027335212, sellPriceUsd: 0.028155268, poolUsd: 0.0272, floorUsd: 0.015,
+    state: 'held', seq: 0, stale: false, ageSeconds: 14, at: '2026-09-25T12:00:00.000Z' });
+  assert.equal(JSON.stringify(m).includes(' '), false, 'compact: no whitespace anywhere');
+});
+
+check('the minimal body says UNKNOWN as null, never as a number', () => {
+  assert.equal(minimalBody(minArgs({ ladderKnown: false, sellPriceUsd: 0.001 })).sellPriceUsd, null,
+    'an origin that never read the market must not publish the AMM\'s 0.001 as a sale price');
+  for (const x of [null, 0, NaN, -1, undefined]) assert.equal(minimalBody(minArgs({ poolUsd: x })).poolUsd, null, String(x));
+  const u = minimalBody(minArgs({ block: block({ state: 'unknown', usd: null, seq: null }) }));
+  assert.deepEqual([u.state, u.seq, u.stale], ['unknown', null, true]);
+  const none = minimalBody(minArgs({ block: null }));
+  assert.deepEqual([none.state, none.seq, none.ageSeconds, none.stale], ['unknown', null, null, true], 'never polled');
+  const legacy = minimalBody(minArgs({ indexMode: false, ladderAgeS: 42, ladder: { stale: false } }));
+  assert.deepEqual([legacy.ageSeconds, legacy.stale], [42, false], 'legacy mode: the ladder clock');
+});
+
+check('bodyVersion 1 keeps every legacy key in place, replaces `stale` IN PLACE, and APPENDS the new ones', () => {
+  const legacy = indexModeBody({ ix: block({ state: 'unknown', usd: null, seq: null }) });
+  const m = minimalBody(minArgs({ block: legacy.index, ladder: legacy.ladder, at: legacy.at }));
+  const v1 = phase1Body(legacy, m);
+  const keys = Object.keys(legacy);
+  assert.deepEqual(Object.keys(v1), [...keys, 'poolUsd', 'floorUsd', 'state', 'seq', 'ageSeconds']);
+  for (const k of keys) if (k !== 'stale') assert.deepEqual(v1[k], legacy[k], k);
+  assert.equal(legacy.stale, false, 'the legacy flag said in sync ...');
+  assert.equal(v1.stale, true, '... and the unified one holds, because the index is unknown');
+  assert.equal(v1.at, legacy.at);
+  assert.equal(v1.creditRateUsd, legacy.creditRateUsd, 'never overwritten by the minimal copy');
+});
+
+// The phase-1 body through the two consumers that refuse on their own rules.
+// Built from the same helpers server.mjs calls; server-test.mjs repeats this
+// against the real server.
+const v1Of = (ix) => {
+  const legacy = indexModeBody({ ix });
+  return phase1Body(legacy, minimalBody(minArgs({ block: legacy.index, ladder: legacy.ladder, at: legacy.at })));
+};
+
+await acheck('the PHASE-1 body: pcnaibot credits the index exactly as before, and holds on stale or unknown', async () => {
+  const r = validateRateBody(text(v1Of(block())), PCNAIBOT_BOUNDS, LEGACY_RATE);
+  assert.equal(r.rateText, '0.027335212'); assert.equal(r.fieldUsed, 'creditRateUsd'); assert.equal(r.diverged, false);
+  for (const ix of [block({ stale: true, ageSeconds: 668 }), block({ state: 'unknown', usd: null, seq: null })]) {
+    assert.throws(() => validateRateBody(text(v1Of(ix)), PCNAIBOT_BOUNDS, LEGACY_RATE),
+      (e) => e instanceof RateInsane && /ladder\.stale is true/.test(e.reason), 'the same refusal, same reason');
+  }
+});
+
+await acheck('the PHASE-1 body: the exchange quotes sellPriceUsd as before, and pulls the bots on stale or unknown', async () => {
+  const ok = await fetchSellPrice({ url: 'http://x/', fetchImpl: fetchOf(text(v1Of(block()))), staleSeconds: EXCHANGE_STALE_SECONDS, attempts: 1 });
+  assert.equal(ok.usable, true, ok.reason); assert.equal(ok.sellPriceUsd, '0.028155268');
+  for (const ix of [block({ stale: true, ageSeconds: 668 }), block({ state: 'unknown', usd: null, seq: null })]) {
+    const r = await fetchSellPrice({ url: 'http://x/', fetchImpl: fetchOf(text(v1Of(ix))), staleSeconds: EXCHANGE_STALE_SECONDS, attempts: 1 });
+    // Same outcome. The REASON now names the top-level flag, because it is
+    // unified and the exchange checks it before ladder.stale.
+    assert.equal(r.usable, false); assert.equal(r.kind, 'bad'); assert.match(r.reason, /stale/);
+  }
+});
+
+assert.equal(pending, 8);
 console.log(`ALL ${n} CHECKS PASSED`);

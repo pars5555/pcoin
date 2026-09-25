@@ -62,7 +62,10 @@ SERVICES = [
     ("explorer",       "https://explorer.pc.am/api/status",     {"key": "chain.height"}),
     ("explorer3",      "https://explorer3.pc.am/",              {}),
     ("market",         "https://market.pc.am/api/ladder/state", {"key": "marginalPrice"}),
-    ("price",          "https://price.pc.am/",                  {"key": "sellPriceUsd"}),
+    # creditRateUsd: THE number the rails credit at, and one of the nine fields
+    # the minimal body keeps (owner, 2026-09-25: "simplify the price.pc.am json
+    # response"). It is what an outage of this service actually costs.
+    ("price",          "https://price.pc.am/",                  {"key": "creditRateUsd"}),
     ("exchange",       "https://exchange.pc.am/api/public",     {"key": "limits.minOrderUsd"}),
     ("wrapdesk",       "https://wrapdesk.pc.am/proof",          {"has": "Proof of backing"}),
     ("docs",           "https://docs.pc.am/",                   {}),

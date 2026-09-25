@@ -404,9 +404,48 @@ def _real(x):
     return v
 
 
+def index_block(d):
+    """The PCN index from a price.pc.am body of EITHER shape, or None. Pure.
+
+    The owner, 2026-09-25: "simplify the price.pc.am json response ... check
+    every service which field is using ... fix all". The root body becomes
+        {creditRateUsd, sellPriceUsd, poolUsd, floorUsd,
+         state, seq, stale, ageSeconds, at}
+    and the `index` / `ladder` / `pool` blocks move to /detail, which the keeper
+    must never read -- it spends the float. price.pc.am adds the new fields
+    first (phase 1: the old body plus the nine, with ONE unified top-level
+    `stale`) and removes the old ones later (phase 2), so there are three bodies:
+
+      today's     -> the `index` block, as before
+      phase 1     -> STILL the `index` block, and the top-level `stale` holds
+                     too. Not the top level's creditRateUsd: with the rails
+                     rolled back ({"useIndex":0}) that is the pool-follow
+                     serviceRate, not the index -- and the keeper aims at the
+                     INDEX, so the block that IS the index wins while it exists
+      minimal     -> the TOP LEVEL is the index: creditRateUsd is its usd
+
+    EVERY published freshness flag must say fresh: a top-level `stale` that is
+    present and not literally False holds, whatever the block says. Nothing
+    here judges the values -- index_verdict() does, on whichever block this
+    returns, so every rule applies to every shape unchanged.
+    """
+    if not isinstance(d, dict):
+        return None
+    ix = d.get("index")
+    if isinstance(ix, dict):
+        if "stale" in d and d.get("stale") is not False and ix.get("stale") is False:
+            ix = dict(ix, stale=True)
+        return ix
+    if isinstance(d.get("state"), str):
+        return {"usd": d.get("creditRateUsd"), "state": d.get("state"), "seq": d.get("seq"),
+                "ageSeconds": d.get("ageSeconds"), "stale": d.get("stale")}
+    return None
+
+
 def index_verdict(d, max_age_s=None, max_target_usd=None):
-    """(usd, None) when price.pc.am's `index` block is a price the keeper may
-    aim at, else (None, why). Pure, no I/O: the body is handed in.
+    """(usd, None) when price.pc.am's PCN index -- the `index` block, or the top
+    level of the minimal body (index_block()) -- is a price the keeper may aim
+    at, else (None, why). Pure, no I/O: the body is handed in.
 
     Every test is unknown-shaped (CLAUDE.md 7.2). A field that is missing, null
     or the wrong type rejects exactly as a bad value does -- `stale` must be
@@ -423,9 +462,15 @@ def index_verdict(d, max_age_s=None, max_target_usd=None):
     max_target_usd = MAX_TARGET_USD if max_target_usd is None else max_target_usd
     if not isinstance(d, dict):
         return None, "price.pc.am's answer is not a JSON object"
-    ix = d.get("index")
+    ix = index_block(d)
     if not isinstance(ix, dict):
-        return None, "price.pc.am carries no index block"
+        return None, "price.pc.am carries no index (no top-level state, no index block)"
+    # While the `ladder` block is still published (today's body and the
+    # transition), its `stale` is the flag every PCN rail holds on, and in index
+    # mode it follows the index. Honour it too; absent in the minimal body.
+    if "ladder" in d and not (isinstance(d.get("ladder"), dict)
+                              and d["ladder"].get("stale") is False):
+        return None, "price.pc.am's ladder block says the rate is stale"
     state = ix.get("state")
     if state not in INDEX_PRICED_STATES:
         return None, "index state is %r, not live, held or frozen" % (state,)
@@ -463,7 +508,7 @@ def target_from_body(d):
     to do".
     """
     if ANCHOR_INDEX:
-        ix = d.get("index") if isinstance(d, dict) else None
+        ix = index_block(d)
         info = {"anchor": "index",
                 "index": ({k: ix.get(k) for k in ("usd", "state", "seq", "ageSeconds", "stale")}
                           if isinstance(ix, dict) else None)}
@@ -483,6 +528,11 @@ def target_from_body(d):
         # reflection. Every run printed `+0.00% -- within dead band` because of
         # it. `sellPriceUsd` is the oracle's `postedPrice()`: the ladder's
         # marginal price, set by our order book and never by the pool.
+        #
+        # The minimal body (2026-09-25) keeps sellPriceUsd under the same name,
+        # so this rollback path reads both shapes unchanged -- deliberately
+        # "exactly as before", freshness flags included (test_keeper_anchor.py
+        # "anchor off" cases).
         info = {"anchor": "ladder"}
         anchor = _real(d.get("sellPriceUsd")) if isinstance(d, dict) else None
         if anchor is None or not (anchor > 0):

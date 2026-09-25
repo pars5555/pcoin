@@ -16,6 +16,7 @@
 // need the exchange's own authenticator code and are not offered here.
 import { esc, N, USD, PCT, DASH, card, note, kv, tbl, tiles, failed } from './ui.mjs';
 import { exchangeCall } from './exchange.mjs';
+import { readPrice } from './price-feed.mjs';
 
 const when = (t) => (t ? esc(new Date(Number(t) * 1000).toISOString().replace('T', ' ').slice(0, 16)) + ' UTC' : DASH);
 const age = (s) => (s === null || s === undefined ? DASH : s < 120 ? `${s} s` : s < 7200 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`);
@@ -33,9 +34,9 @@ export async function pcnIndexData({ creds }) {
   const [admin, price] = await Promise.all([
     ex ? exchangeCall(ex, 'owner', 'GET', '/admin/api/index')
        : Promise.resolve({ readable: false, reason: 'no exchange entry in upstream.json' }),
-    fetch('https://price.pc.am/', { signal: AbortSignal.timeout(12000) })
-      .then(async (r) => (r.ok ? { ok: true, data: await r.json() } : { ok: false, error: 'HTTP ' + r.status }))
-      .catch((e) => ({ ok: false, error: e.message })),
+    // /detail first (the index block, its window and refusals live there once
+    // the root body is minimal -- owner, 2026-09-25), the root as fallback.
+    readPrice().catch((e) => ({ ok: false, error: e.message })),
   ]);
   return { admin, price };
 }
@@ -153,5 +154,7 @@ export function pcnIndexPage(d) {
   }
 
   return top + banner + where + relay + fills + people + hist + rules
-    + note('Read live at page load from the exchange admin API (read token) and https://price.pc.am/.');
+    + note('Read live at page load from the exchange admin API (read token) and https://price.pc.am/detail '
+      + '(the full body), or price.pc.am\'s root when /detail cannot be read'
+      + (d.price && d.price.from ? ` — this time: ${d.price.from === 'detail' ? '/detail' : 'the root'}` : '') + '.');
 }

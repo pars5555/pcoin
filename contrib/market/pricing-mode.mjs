@@ -44,6 +44,7 @@ import { userInfo, hostname } from 'node:os';
 import mysql from 'mysql2/promise';
 import { makeSettings } from './settings.mjs';
 import { indexUnitPrice } from './ladder.mjs';
+import { indexFromPriceBody } from './price-feed.mjs';
 import { makeNotifier, readNotifyConfig } from './notify.mjs';
 
 const CFG        = '/opt/pcoin-market/config.json';
@@ -139,8 +140,12 @@ async function marketState(undo = '') {
   if (!s.body || typeof s.body !== 'object') await fail(`the market answered HTTP ${s.status} with no JSON`, undo);
   return s;
 }
+// The index as price.pc.am relays it, from EITHER body shape: the `index` block
+// today, the top level of the minimal body (owner, 2026-09-25: "simplify the
+// price.pc.am json response"). The same reader server.mjs prices with, so this
+// check compares like with like.
 async function relayIndex() {
-  try { const r = await getJson(PRICE); return r.body && r.body.index ? r.body.index : null; }
+  try { const r = await getJson(PRICE); return indexFromPriceBody(r.body); }
   catch { return null; }
 }
 /** What the TABLE holds, coerced as the server coerces it. */

@@ -13,7 +13,8 @@
 # THREE INPUTS HAVE TO BE CONTROLLABLE or whole branches are unreachable:
 #   * the 24h MEDIAN          -> the oracle state file
 #   * what is CHARGED NOW     -> the stubbed /api/ladder/state
-#   * the public serviceRate  -> the stubbed price.pc.am
+#   * the public credit rate  -> the stubbed price.pc.am (creditRateUsd;
+#                                serviceRate until the 2026-09-25 minimal body)
 # The first version of this harness stubbed only the first two, and the real
 # $0.0336 serviceRate then capped every proposal through the divergence ceiling
 # -- which made the 24h-ratchet window arithmetically unreachable. The branch
@@ -114,7 +115,10 @@ mkoracle () { node -e "
     require('fs').writeFileSync('$D/oracle.json', JSON.stringify({poolPrice:p, poolSamples:s}));
   " "$1" "$2"; }
 mklive () { printf '{"marginalPrice":%s,"ladderRemainingPcn":%s,"askCapUsd":0.03}\n' "$1" "$2" > $D/live.json; }
-mkrate () { printf '{"serviceRate":%s}\n' "$1" > $D/rate.json; }
+# The MINIMAL price.pc.am body (owner, 2026-09-25: "simplify the price.pc.am
+# json response"). A bare {"serviceRate":x} is no longer a rate cap-policy
+# accepts: it reads creditRateUsd and holds unless `stale` is literally false.
+mkrate () { printf '{"creditRateUsd":%s,"state":"held","seq":1,"stale":%s,"ageSeconds":10}\n' "$1" "${2:-false}" > $D/rate.json; }
 charge () { mklive "$1" "$(remFor "$1")"; }
 
 run () {
@@ -161,9 +165,13 @@ run; expect "an unreadable oracle refuses" 2 "cannot read the oracle state"
 echo "  [4] the public rate is unreadable (the ladder still answers)"
 reset; kill $STUB 2>/dev/null; sleep 1
 node $D/stub-ladder-only.mjs >/dev/null 2>&1 & ONLY=$!; sleep 1
-run; expect "an unreadable serviceRate refuses" 2 "price.pc.am is unreadable"
+run; expect "an unreadable creditRateUsd refuses" 2 "price.pc.am is unreadable"
 kill $ONLY 2>/dev/null; sleep 1
 node $D/stub.mjs >/dev/null 2>&1 & STUB=$!; sleep 1
+
+echo "  [4b] the public rate answers, but price.pc.am marks it stale"
+reset; mkrate 0.030 true
+run; expect "a rate price.pc.am marks stale refuses" 2 "says the rate is stale"
 
 echo "  [5] MODEL MISMATCH -- the service is not charging k/X^2"
 reset; mklive 0.09 62910.51878714

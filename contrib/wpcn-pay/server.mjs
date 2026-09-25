@@ -44,6 +44,8 @@
 import { createServer } from 'node:http';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, renameSync, openSync, closeSync, fsyncSync } from 'node:fs';
 import { join } from 'node:path';
+// The credit-rate rule, pure so it can be tested (rate.mjs, rate-test.mjs).
+import { creditRateFromBody } from './rate.mjs';
 
 const CONFIG = process.env.WPCN_PAY_CONFIG || '/etc/pcoin/wpcn-pay.json';
 
@@ -213,7 +215,6 @@ const addrFromTopic = t => '0x' + String(t).slice(26).toLowerCase();
 async function usdRate() {
   const r = await fetch(PRICE_URL, { signal: AbortSignal.timeout(12000) });
   if (!r.ok) throw new Error(`price feed HTTP ${r.status}`);
-  const j = await r.json();
 
   // `creditRateUsd`, NOT `price`. This read `Number(j.price)` from the day it
   // was written, and `price` is the ladder's marginal rung -- what a BUYER pays
@@ -233,21 +234,14 @@ async function usdRate() {
   // in PCN. 7 claims, 130 wPCN, roughly $0.60 given away -- small only because
   // almost nobody has used it yet.
   //
-  // `serviceRate` is the older name for the same number and is still published;
-  // it is the fallback so a replica that has not been redeployed yet still
-  // answers correctly rather than refusing.
-  const rate = Number(j.creditRateUsd ?? j.serviceRate);
-  if (!Number.isFinite(rate) || rate <= 0) throw new Error('price feed gave no usable credit rate');
-  // The feed says so itself when it is serving a remembered number. Rule 3.
-  if (j.stale === true) throw new Error('price feed reports itself stale');
-  // AND THE RATE ITSELF MUST BE FRESH. Since 2026-09-25 the credit rate is the
-  // PCN index (price.pc.am useIndex). When the index goes stale or unknown the
-  // top-level `stale` stays false -- the ORACLE is fine, its number is not --
-  // and only `ladder.stale` turns true. Every PCN rail already holds on it;
-  // this one kept crediting wPCN at the last index. Absent or anything but
-  // false is a hold: an unreadable freshness flag is not a fresh rate.
-  if (!j.ladder || j.ladder.stale !== false) throw new Error('price feed: the rate is stale');
-  return rate;
+  // THE RULE ITSELF IS creditRateFromBody() IN rate.mjs, pure and tested
+  // (rate-test.mjs). It moved out of this function on 2026-09-25, when the owner
+  // asked for a minimal price.pc.am body ("simplify the price.pc.am json
+  // response"): serviceRate and the `ladder` block leave the root, `stale`
+  // becomes the one hold flag, and this rail has to read both shapes while the
+  // oracle changes over. A rule that decides money and cannot be run outside a
+  // configured server is a rule nobody re-tests.
+  return creditRateFromBody(await r.json());
 }
 
 // ---------------------------------------------------------------------------

@@ -16,6 +16,16 @@
 //   C. a stale index: /credit-rate 503, both consumers refuse, and the switch
 //      refuses even when forced. That is the state price.pc.am was really in on
 //      2026-09-25, when exchange.pc.am was closed and answered it with 403.
+//   D. the published body (owner, 2026-09-25: "make it minimal compact json").
+//      bodyVersion 1 is production's body with five keys appended and a
+//      unified `stale`; 2 is exactly nine keys, compact; /detail is always the
+//      old body; the switch both ways; /credit-rate under each; a real replica
+//      following the primary, and one following a primary on OLD code.
+//
+// Part A's "byte for byte" now holds for everything EXCEPT the additive tail
+// of GET / and /price and the bodyVersion key at the end of /state: each is
+// cut off only after asserting it is there, and what remains must still match
+// production to the byte. GET /detail is compared to production's GET / whole.
 //
 // HERMETIC. The copies it runs have their state file, port, market URL, BSC RPC
 // list and alert config rewritten to a temp directory and a stub on 127.0.0.1.
@@ -29,7 +39,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { indexLadder, indexNote } from './index-relay.mjs';
+import { indexLadder, indexNote, MINIMAL_KEYS } from './index-relay.mjs';
 import { loadConsumers, PCNAIBOT_BOUNDS, EXCHANGE_STALE_SECONDS } from './test-consumers.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -93,7 +103,7 @@ async function freePort() {
 }
 
 // ── a copy of a server.mjs, rewired to the temp dir and the stub ───────────
-function prepare(name, src, relaySrc, { port, fast }) {
+function prepare(name, src, relaySrc, { port, fast, fastSync }) {
   const dir = join(ROOT, name); mkdirSync(dir);
   let s = src;
   const swap = (from, to) => {
@@ -113,6 +123,8 @@ function prepare(name, src, relaySrc, { port, fast }) {
     s = s.split('\n').map((l) => (/setInterval\(.*, 60000\);$/.test(l) ? (k++, l.replace(/, 60000\);$/, `, ${FAST_MS});`)) : l)).join('\n');
     if (k !== 3) throw new Error(`${name}: expected the three 60 s poll intervals, found ${k}`);
   }
+  // A replica syncs every 30 s; a test cannot wait for that.
+  if (fastSync) swap('setInterval(syncFromPrimary, 30000);', `setInterval(syncFromPrimary, ${FAST_MS});`);
   // Belt and braces: no production path left as a string LITERAL (comments may
   // still mention them, which is harmless).
   for (const bad of ["'/opt/pcoin-price", "'/etc/pcoin/", "'https://bsc-dataseed", "'http://127.0.0.1:8789", 'PORT = 8788']) {
@@ -142,9 +154,9 @@ function state(o = {}) {
   };
 }
 
-async function start(name, src, relaySrc, st, { fast = false } = {}) {
+async function start(name, src, relaySrc, st, { fast = false, fastSync = false } = {}) {
   const port = await freePort();
-  const dir = prepare(name, src, relaySrc, { port, fast });
+  const dir = prepare(name, src, relaySrc, { port, fast, fastSync });
   writeFileSync(join(dir, 'state.json'), JSON.stringify(st, null, 2));
   const env = { ...process.env }; delete env.PCOIN_PRICE_INIT;
   const child = spawn(process.execPath, [join(dir, 'server.mjs')], { cwd: dir, env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -183,6 +195,11 @@ const polls = (k) => sleep(FAST_MS * k + 100);
 const { validateRateBody, RateInsane, fetchSellPrice, exchangeSource } = await loadConsumers();
 const NEW_SRC = readFileSync(join(HERE, 'server.mjs'), 'utf8');
 const NEW_RELAY = readFileSync(join(HERE, 'index-relay.mjs'), 'utf8');
+// What bodyVersion 1 appends to the legacy body, in order (index-relay.mjs phase1Body).
+const APPENDED = ['poolUsd', 'floorUsd', 'state', 'seq', 'ageSeconds'];
+const PHASE1_TAIL = new RegExp(APPENDED.map((k) => `,\\n {2}"${k}": [^\\n]*`).join('') + '\\n\\}$');
+let LEGACY_KEYS = null;          // production's GET / keys, read off the baseline in part A
+const bytes = (t) => Buffer.byteLength(t, 'utf8');
 
 try {
   // ═══ A. useIndex 0 == the production baseline, byte for byte ═════════════
@@ -200,29 +217,44 @@ try {
     .replace(/"at": "[^"]*"/g, '"at": "<at>"')
     .replace(/"(ageSeconds|stateAgeSeconds)": -?\d+/g, '"$1": <age>')
     .replace(/"(ladderAt|poolAt|indexAt|serviceRateAt)": \d+/g, '"$1": <ms>');
-  const same = async (label, fn) => {
-    const [a, b] = await Promise.all([fn(old), fn(neu)]);
+  const same = async (label, fn, { phase1 = false, newFn = fn } = {}) => {
+    const [a, b] = await Promise.all([fn(old), newFn(neu)]);
     assert.equal(b.status, a.status, `${label}: status`);
     assert.equal(b.type, a.type, `${label}: content-type`);
     let bt = mask(b.text);
     if (label === 'GET /state') {
-      const cut = bt.replace(/,\n {2}"useIndex": 0\n\}$/, '\n}');
-      assert.notEqual(cut, bt, '/state carries "useIndex": 0 last, for the replicas');
+      const cut = bt.replace(/,\n {2}"useIndex": 0,\n {2}"bodyVersion": 1\n\}$/, '\n}');
+      assert.notEqual(cut, bt, '/state carries "useIndex": 0 and "bodyVersion": 1 last, for the replicas');
+      bt = cut;
+    }
+    if (phase1) {
+      const cut = bt.replace(PHASE1_TAIL, '\n}');
+      assert.notEqual(cut, bt, `${label}: bodyVersion 1 appends ${APPENDED.join(', ')} last`);
       bt = cut;
     }
     assert.equal(bt, mask(a.text), `${label}: body`);
   };
-  await check('every public GET answers byte-for-byte what production answers (clocks masked)', async () => {
+  await check('every public GET answers byte-for-byte what production answers (clocks masked; the additive tail cut)', async () => {
     for (const p of ['/', '/price', '/credit-rate', '/history', '/quote/buy?usd=10', '/quote/sell?pcn=100', '/nope', '/state']) {
-      await same(`GET ${p}`, (s) => http(s, p));
+      await same(`GET ${p}`, (s) => http(s, p), { phase1: p === '/' || p === '/price' });
     }
+    LEGACY_KEYS = Object.keys((await http(old, '/')).json);
+  });
+  await check('GET /detail is production\'s GET /, byte for byte, with nothing cut', async () => {
+    await same('GET /detail', (s) => http(s, '/'), { newFn: (s) => http(s, '/detail') });
+  });
+  await check('legacy mode, bodyVersion 1: the appended values, and the rate\'s age is the LADDER clock', async () => {
+    const j = await body(neu);
+    assert.equal(j.stale, false); assert.equal(j.floorUsd, j.rateFloorUsd); assert.equal(j.poolUsd, j.pool.spotUsd);
+    assert.equal(j.state, j.index.state); assert.equal(j.seq, j.index.seq);
+    assert.equal(j.ageSeconds, j.ladder.ageSeconds, 'not serviceRateAt: a converged walk would read days old');
   });
   await check('the admin answers are unchanged too: 401, a bad value, a good value, a forced retune', async () => {
     await same('no token', (s) => http(s, '/admin/state', { method: 'POST', body: { feeBps: 1 } }));
     await same('bad value', (s) => admin(s, '/admin/state', { feeBps: 'x' }));
     await same('good value', (s) => admin(s, '/admin/state', { serviceRetuneIntervalHours: 1 }));
     await same('retune', (s) => admin(s, '/admin/retune', {}));
-    await same('GET / after the retune', (s) => http(s, '/'));
+    await same('GET / after the retune', (s) => http(s, '/'), { phase1: true });
     await same('/credit-rate after the retune', (s) => http(s, '/credit-rate'));
   });
   await check('the shadow index block still says inUse: false and the note still says shadow', async () => {
@@ -403,8 +435,21 @@ try {
     assert.equal(r.json.index.stale, true); assert.equal(r.json.ladder.stale, true); assert.equal(r.json.index.inUse, true);
     assert.throws(() => validateRateBody(r.text, PCNAIBOT_BOUNDS, { rate: 0.0273 }), (e) => e instanceof RateInsane);
     const ex = await fetchSellPrice({ url: C.base + '/', staleSeconds: EXCHANGE_STALE_SECONDS, attempts: 1 });
-    assert.equal(ex.usable, false); assert.match(ex.reason, /ladder\.stale/);
+    // Same refusal as before bodyVersion existed. Its reason used to name
+    // ladder.stale; the top-level flag is unified now and the exchange checks
+    // it first, so the reason names that one.
+    assert.equal(ex.usable, false); assert.equal(ex.kind, 'bad'); assert.match(ex.reason, /stale/);
     assert.equal((await http(C, '/state')).json.indexError.why, 'HTTP 403');
+  });
+
+  await check('bodyVersion 1 says it at the TOP LEVEL now: stale true, the age over 600, while /detail keeps the old flag', async () => {
+    const j = await body(C);
+    assert.equal(j.stale, true, 'unified: the rate is unusable');
+    assert.equal(j.state, 'held', 'the last state stands; the flag is what holds');
+    assert.ok(j.ageSeconds >= 700, `ageSeconds ${j.ageSeconds}`);
+    const d = (await http(C, '/detail')).json;
+    assert.equal(d.stale, false, '/detail is the old body: its top-level flag is the replica sync only');
+    assert.equal(d.ladder.stale, true);
   });
 
   await check('rolling back restores crediting even while the exchange is unreadable', async () => {
@@ -418,6 +463,177 @@ try {
     assert.equal((await body(C)).index.inUse, false);
   });
   C.child.kill();
+
+  // ═══ D. the published body: bodyVersion 1 and 2, the switch, the replicas ═══
+  console.log('  -- D. bodyVersion: phase 1, the minimal body, /detail, the switch, the replicas');
+  stub.index = { status: 200, state: 'held', seq: 0, nano: 27335212 };
+  stub.ladder.marginalPrice = 0.028155268;
+  const P = await start('body-primary', NEW_SRC, NEW_RELAY, state({ useIndex: 1, serviceRate: 0.027335212 }), { fast: true });
+  // A REAL replica: its own state file, its own process, syncing from P's
+  // /state over HTTP exactly as the two production replicas do (minus the pin).
+  const R = await start('body-replica', NEW_SRC, NEW_RELAY,
+    state({ role: 'replica', upstream: P.base, adminToken: '', serviceRate: 0.001, bodyVersion: 1 }), { fastSync: true });
+  await until('the replica to mirror the primary', async () => (await body(R)).creditRateUsd === 0.027335212);
+  await until('the primary\'s first pool sample', async () => (await body(P)).pool.spotUsd !== 0.0273);
+  // Everything that is a clock, at any depth: two reads a moment apart differ there and nowhere else.
+  const unclock = (o) => JSON.parse(JSON.stringify(o), (k, v) => (k === 'at' || /ageseconds$/i.test(k) ? '<t>' : v));
+
+  let v1Body, detailBody;
+  await check('phase 1 (the default): every production key where it was, plus poolUsd floorUsd state seq ageSeconds -- right values', async () => {
+    const r = await http(P, '/');
+    const j = r.json;
+    v1Body = r.text;
+    assert.deepEqual(Object.keys(j), [...LEGACY_KEYS, ...APPENDED]);
+    assert.equal(j.creditRateUsd, 0.027335212); assert.equal(j.creditRateUsd, j.index.usd);
+    assert.equal(j.sellPriceUsd, 0.028155268);
+    assert.equal(j.floorUsd, 0.015); assert.equal(j.floorUsd, j.rateFloorUsd);
+    assert.ok(Math.abs(j.poolUsd - 546.70424 / 20000) < 1e-15, 'the PancakeSwap spot, read off the stub pair');
+    assert.equal(j.poolUsd, j.pool.spotUsd);
+    assert.equal(j.state, 'held'); assert.equal(j.seq, 0); assert.equal(j.seq, j.index.seq);
+    assert.equal(j.ageSeconds, Math.max(0, j.index.ageSeconds), 'index mode: the index\'s age');
+    assert.equal(j.stale, false);
+    assert.match(r.text, /^\{\n {2}"price": /, 'still pretty-printed: nothing about phase 1 changes the bytes a consumer already parses');
+  });
+
+  await check('/detail is the old body: production\'s keys, and a phase-1 body is it plus the tail (stale unified)', async () => {
+    const [v1, d] = await Promise.all([http(P, '/'), http(P, '/detail')]);
+    detailBody = d.text;
+    assert.deepEqual(Object.keys(d.json), LEGACY_KEYS);
+    const cut = { ...v1.json }; for (const k of APPENDED) delete cut[k];
+    assert.deepEqual(unclock(cut), unclock(d.json));
+  });
+
+  await check('pcnaibot and the exchange treat the REAL phase-1 body exactly as before', async () => {
+    const r = validateRateBody((await http(P, '/')).text, PCNAIBOT_BOUNDS, { rate: 0.02733 });
+    assert.equal(r.rateText, '0.027335212'); assert.equal(r.fieldUsed, 'creditRateUsd'); assert.equal(r.diverged, false);
+    const ex = await fetchSellPrice({ url: P.base + '/', staleSeconds: EXCHANGE_STALE_SECONDS, attempts: 1 });
+    assert.equal(ex.usable, true, ex.reason); assert.equal(ex.sellPriceUsd, '0.028155268');
+  });
+
+  await check('the switch is admin-only, primary-only, and takes 1 or 2 as a NUMBER, nothing else', async () => {
+    assert.equal((await http(P, '/admin/state', { method: 'POST', body: { bodyVersion: 2 } })).status, 401);
+    for (const v of [0, 3, 1.5, '2', true, null]) {
+      const r = await admin(P, '/admin/state', { bodyVersion: v });
+      assert.equal(r.status, 400, JSON.stringify(v)); assert.match(r.json.error, /bodyVersion must be an integer in \[1, 2\]/);
+    }
+    assert.equal((await admin(R, '/admin/state', { bodyVersion: 2 })).status, 409, 'a replica refuses every write');
+    assert.deepEqual(Object.keys((await body(P))), [...LEGACY_KEYS, ...APPENDED], 'nothing changed');
+  });
+
+  let v2Body;
+  await check('bodyVersion 2: EXACTLY the nine keys, compact, carrying the values phase 1 published', async () => {
+    const before = await body(P);
+    const sw = await admin(P, '/admin/state', { bodyVersion: 2 });
+    assert.equal(sw.status, 200, sw.text); assert.deepEqual(sw.json.applied, { bodyVersion: 2 });
+    for (const path of ['/', '/price']) {
+      const r = await http(P, path);
+      assert.deepEqual(Object.keys(r.json), MINIMAL_KEYS, path);
+      assert.deepEqual(MINIMAL_KEYS, ['creditRateUsd', 'sellPriceUsd', 'poolUsd', 'floorUsd', 'state', 'seq', 'stale', 'ageSeconds', 'at']);
+      assert.equal(r.text, JSON.stringify(r.json), `${path}: compact, not one byte of whitespace`);
+      assert.equal(r.type, 'application/json');
+      for (const k of MINIMAL_KEYS.filter((x) => x !== 'at' && x !== 'ageSeconds')) assert.deepEqual(r.json[k], before[k], k);
+      assert.ok(Number.isInteger(r.json.ageSeconds) && r.json.ageSeconds >= 0);
+      assert.ok(Number.isFinite(Date.parse(r.json.at)));
+      v2Body = r.text;
+    }
+    assert.match(P.err, /now publishes the SHORT price format/);
+  });
+
+  await check('under 2, /credit-rate\'s 200 is still the bare number as text; /detail is still the full, pretty body', async () => {
+    const c = await http(P, '/credit-rate');
+    assert.equal(c.status, 200); assert.match(c.type, /^text\/plain/);
+    assert.equal(c.text, '0.027335212\n');
+    const d = await http(P, '/detail');
+    assert.deepEqual(Object.keys(d.json), LEGACY_KEYS); assert.match(d.text, /^\{\n {2}"price": /);
+    assert.equal(d.json.index.inUse, true);
+  });
+
+  await check('the replica follows the switch through /state and serves the SAME body', async () => {
+    assert.equal((await http(P, '/state')).json.bodyVersion, 2);
+    await until('the replica to serve the minimal body', async () => Object.keys(await body(R)).length === MINIMAL_KEYS.length);
+    const [a, b] = await Promise.all([http(P, '/'), http(R, '/')]);
+    assert.deepEqual(unclock(b.json), unclock(a.json));
+    assert.ok(Math.abs(b.json.ageSeconds - a.json.ageSeconds) <= 1, 'both ages come off the primary\'s clock stamps');
+    const [ca, cb] = await Promise.all([http(P, '/credit-rate'), http(R, '/credit-rate')]);
+    assert.equal(cb.status, 200); assert.equal(cb.text, ca.text);
+    const [da, db] = await Promise.all([http(P, '/detail'), http(R, '/detail')]);
+    const own = (o) => ({ ...unclock(o), role: '<role>' });
+    assert.deepEqual(own(db.json), own(da.json), '/detail too, apart from which origin answered');
+    assert.equal(db.json.role, 'replica');
+  });
+
+  await check('under 2, an UNKNOWN index: stale true, seq null, /credit-rate 503 -- on both origins -- and back', async () => {
+    stub.index.state = 'unknown';
+    for (const s of [P, R]) {
+      await until(`${s.name}: unknown`, async () => (await body(s)).state === 'unknown');
+      const j = await body(s);
+      assert.equal(j.stale, true); assert.equal(j.seq, null); assert.equal(j.creditRateUsd, 0.027335212, 'kept, not used');
+      const c = await http(s, '/credit-rate');
+      assert.equal(c.status, 503); assert.equal(c.text, 'unavailable\n', 'never a number, never the stale body');
+    }
+    stub.index.state = 'held';
+    for (const s of [P, R]) await until(`${s.name}: crediting again`, async () => (await http(s, '/credit-rate')).status === 200);
+    assert.equal((await body(P)).stale, false);
+  });
+
+  await check('REVERSIBLE: {"bodyVersion":1} restores the phase-1 body and the text /credit-rate, on both origins', async () => {
+    const r = await admin(P, '/admin/state', { bodyVersion: 1 });
+    assert.equal(r.status, 200); assert.deepEqual(r.json.applied, { bodyVersion: 1 });
+    for (const s of [P, R]) {
+      await until(`${s.name}: phase 1 again`, async () => Object.keys(await body(s)).length > MINIMAL_KEYS.length);
+      assert.deepEqual(Object.keys(await body(s)), [...LEGACY_KEYS, ...APPENDED]);
+      const c = await http(s, '/credit-rate');
+      assert.equal(c.text, '0.027335212\n'); assert.match(c.type, /^text\/plain/);
+    }
+    assert.match(P.err, /back on the full price format/);
+  });
+
+  await check('the short body exists only ON the index: switching the index off takes body 1 back with it; body 2 off-index is refused', async () => {
+    assert.equal((await admin(P, '/admin/state', { bodyVersion: 2 })).status, 200);
+    await until('P on 2', async () => Object.keys(await body(P)).length === MINIMAL_KEYS.length);
+    const contradiction = await admin(P, '/admin/state', { useIndex: 0, bodyVersion: 2 });
+    assert.equal(contradiction.status, 409, 'an explicit ask for both is refused, never silently rewritten');
+    assert.equal((await http(P, '/state')).json.useIndex, 1, 'and nothing was applied');
+    const off = await admin(P, '/admin/state', { useIndex: 0 });
+    assert.equal(off.status, 200, off.text);
+    assert.deepEqual(off.json.applied, { useIndex: 0, bodyVersion: 1 }, 'the rollback carries the full body with it');
+    assert.equal((await http(P, '/state')).json.bodyVersion, 1);
+    assert.ok(Object.keys(await body(P)).length > MINIMAL_KEYS.length, 'GET / is the full body again');
+    const refused = await admin(P, '/admin/state', { bodyVersion: 2 });
+    assert.equal(refused.status, 409); assert.match(refused.json.error, /only exists while the credit rate IS the PCN index/);
+    assert.equal((await http(P, '/state')).json.bodyVersion, 1, 'a refused write changes nothing');
+    const both = await admin(P, '/admin/state', { useIndex: 0, bodyVersion: 2 });
+    assert.equal(both.status, 409, 'asking for both at once is the same ambiguous state, refused');
+    const on = await admin(P, '/admin/state', { useIndex: 1, force: true });
+    assert.equal(on.status, 200, on.text);
+    assert.equal((await body(P)).index.inUse, true);
+  });
+
+  await check('a replica that LOSES the primary says stale under either body, keeps its bodyVersion, and 503s /credit-rate', async () => {
+    assert.equal((await admin(P, '/admin/state', { bodyVersion: 2 })).status, 200);
+    await until('the replica on 2', async () => Object.keys(await body(R)).length === MINIMAL_KEYS.length);
+    P.child.kill();
+    await until('the replica to notice', async () => (await body(R)).stale === true);
+    const j = await body(R);
+    assert.deepEqual(Object.keys(j), MINIMAL_KEYS, 'a failed sync resolves nothing: still the body it was told to serve');
+    assert.equal(j.state, 'held', 'the index itself was fine; it is the ORACLE that is out of date');
+    assert.equal((await http(R, '/credit-rate')).status, 503);
+    assert.equal((await http(R, '/detail')).json.stale, true, 'the old flag says it too');
+  });
+  R.child.kill();
+
+  await check('a replica of a primary on OLD code (no bodyVersion in /state) serves phase 1, whatever it remembered', async () => {
+    const OP = await start('old-primary', baseSrc, baseRelay, state());
+    const R2 = await start('replica-of-old', NEW_SRC, NEW_RELAY,
+      state({ role: 'replica', upstream: OP.base, adminToken: '', bodyVersion: 2 }), { fastSync: true });
+    assert.equal((await http(OP, '/state')).json.bodyVersion, undefined, 'the old primary does not publish it');
+    assert.deepEqual(Object.keys(await body(R2)), [...LEGACY_KEYS, ...APPENDED]);
+    assert.equal((await http(R2, '/state')).json.bodyVersion, 1);
+    OP.child.kill(); R2.child.kill();
+  });
+
+  console.log(`  -- index-mode sizes on the stub's figures: today's body (/detail) ${bytes(detailBody)} B, ` +
+              `phase 1 ${bytes(v1Body)} B, minimal ${bytes(v2Body)} B`);
 
   console.log(`ALL ${n} CHECKS PASSED`);
 } finally {

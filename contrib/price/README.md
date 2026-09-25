@@ -11,6 +11,10 @@ It is one file, `server.mjs`, with its whole state in a JSON file next to it.
 
 ## 1. Three numbers, and they are not the same
 
+> These are the INTERNAL names, and since 2026-09-25 they live in `GET /detail`.
+> What consumers read is the nine-key body in §6: `creditRateUsd` is
+> `serviceRate`, `sellPriceUsd` is `price`.
+
 | field | what it is | who uses it |
 |---|---|---|
 | `price` | the **ladder's marginal rung** — what the next PCN costs to buy | the market page, humans |
@@ -144,14 +148,75 @@ Two changes close it:
 
 ## 6. HTTP API
 
+### The body every consumer reads (`bodyVersion`)
+
+Owner, 2026-09-25: *"simplify the https://price.pc.am/ json response, check
+every service which field is using and make it minimal compact json, we dont
+need 100s of duplicated data"*. The old body was ~2.4 KB answering one
+question in three spellings of the rate (`price`, `serviceRate`,
+`creditRateUsd`) and three staleness flags, only the nested ones of which said
+whether the RATE was usable. The contract is now nine keys:
+
+| key | |
+|---|---|
+| `creditRateUsd` | USD per PCN every service credits. **The** field. |
+| `sellPriceUsd` | what market.pc.am charges; never credits anything. `null` on an origin that has never read the market |
+| `poolUsd` | PancakeSwap wPCN spot, information only; `null` if unknown |
+| `floorUsd` | the published floor (`rateFloorUsd`, 0.015) |
+| `state` | the index state: `live` `held` `frozen` `unknown` `disabled` (`unknown` if never read) |
+| `seq` | the index sequence number, `null` when it carries no price |
+| `stale` | **`true` = HOLD.** True if the replica is out of sync, the index is stale/unknown/disabled (index mode), the ladder flag the rails used to honour is not `false`, the rate is not a positive number, or its age is unknown |
+| `ageSeconds` | age of `creditRateUsd`: the index's age in index mode, the **ladder's** in legacy mode |
+| `at` | ISO-8601 time of the answer |
+
+`bodyVersion` in the state picks what `GET /` and `/price` serve:
+
+* **1** (default) — the legacy body, every key where it was, with the top-level
+  `stale` replaced in place by the unified flag and `poolUsd floorUsd state seq
+  ageSeconds` **appended**. The flag is only ever more conservative than before.
+* **2** — exactly the nine keys, compact JSON. `/credit-rate` then answers 503
+  on the unified `stale`; its 200 stays the bare number as text under both
+  versions (docs.pc.am told integrators to parse exactly that).
+
+`GET /detail` is the full legacy body under either version, for the admin panel
+and ops tools. It is diagnostic, not a contract.
+
+Two choices that differ from the first sketch of this, both deliberate:
+
+* **Legacy-mode `ageSeconds` is the ladder clock, not `serviceRateAt`.** The
+  walk stamps `serviceRateAt` only when the rate MOVES, so a converged rate
+  would read days old and every rail bounding `ageSeconds` would hold for ever —
+  turning `{"useIndex":0}`, the rollback that exists to restore crediting, into
+  an outage.
+* **`/credit-rate` keeps its text body under version 1.** docs.pc.am told
+  integrators to parse the bare number; phase 1 removes nothing.
+
+The switch, on the primary only (replicas follow through `/state` within a
+sync, and a replica whose primary publishes no `bodyVersion` — older code —
+serves version 1):
+
+```
+POST /admin/state {"bodyVersion":2}     # minimal
+POST /admin/state {"bodyVersion":1}     # the rollback
+```
+
+The body helpers live in `index-relay.mjs` (pure, tested in
+`index-relay-test.mjs`), so **`server.mjs` and `index-relay.mjs` deploy
+together**: a new `server.mjs` beside an old `index-relay.mjs` dies at start on
+a missing export.
+
+### Endpoints
+
 | endpoint | |
 |---|---|
-| `GET /price` | the posted price, `serviceRate`, `buybackPrice`, the ladder block, staleness |
+| `GET /` `GET /price` | the body above, as `bodyVersion` says |
+| `GET /detail` | the full legacy body: `serviceRate`, `price`, the `pool`, `index` and `ladder` blocks, `note`, staleness. Diagnostic |
+| `GET /credit-rate` | 503 = hold. 200 = the bare rate as text, under either version |
 | `GET /state` | the full state, minus the admin token, so a replica can mirror it |
 | `GET /quote/buy?usd=` `GET /quote/sell?pcn=` | AMM quotes — `sell` is the live buyback |
 | `GET /history` | recent curve movements |
 | `POST /execute` | move the curve. **Primary only**, admin token |
-| `POST /admin/state` | set curve and damping parameters. **Primary only**, admin token. `{"useIndex":1}` makes the credit rate the PCN index (price plan Step 4) and is **refused** unless the index is fresh and priced, the walk is within 0.5% of it and market.pc.am sells at or above it (`"force": true` skips the last two); `{"useIndex":0}` is the rollback |
+| `POST /admin/state` | set curve and damping parameters. **Primary only**, admin token. `{"useIndex":1}` makes the credit rate the PCN index (price plan Step 4) and is **refused** unless the index is fresh and priced, the walk is within 0.5% of it and market.pc.am sells at or above it (`"force": true` skips the last two); `{"useIndex":0}` is the rollback. `{"bodyVersion":2}` / `{"bodyVersion":1}` picks the published body (above); never refused, alerted on change |
 | `POST /admin/index/accept` | accept a deliberately re-seeded index as the new baseline. **Primary only**, admin token |
 | `POST /admin/retune` | force one `serviceRate` step now — refreshes the ladder first, then applies the clamp and ceiling. **Primary only**, admin token |
 
@@ -170,3 +235,6 @@ reserve, which is the one number the solvency property depends on.
 5. **Only the primary polls the ladder.** The market runs on the primary's
    loopback; a replica could not reach it, and if it could, independent walks
    would drift and the products would read inconsistent rates.
+6. **`/detail` is not a contract.** Anything that credits reads `/` (or
+   `/credit-rate`); the full body's shape follows the code.
+7. **`server.mjs` and `index-relay.mjs` ship together.** See §6.

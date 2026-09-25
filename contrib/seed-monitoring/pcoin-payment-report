@@ -61,10 +61,22 @@ log() { logger -t pcoin-payment-report -- "$*" 2>/dev/null || printf '%s\n' "$*"
 # '"serviceRate": 0.015' WITH A SPACE and a naive grep matches nothing. That
 # fails silently and drops the drift line -- precisely when the rate has moved
 # and the drift is the thing worth seeing. Caught by a dry run, not by reading.
-RATE_NOW=$(curl -s --max-time 15 https://price.pc.am/price 2>/dev/null \
-           | tr -d ' \t\n' \
-           | grep -oE '"serviceRate":[0-9.]+' | head -1 | cut -d: -f2)
-[ -n "${RATE_NOW:-}" ] || RATE_NOW=""
+#
+# creditRateUsd FIRST, serviceRate only as the fallback for an origin still on
+# the old body. The minimal body (owner, 2026-09-25: "simplify the price.pc.am
+# json response") has no serviceRate at all, and a grep for it would have found
+# nothing for ever -- the same silent loss of the drift line as the missing
+# space above, just permanent. And a body that marks its rate stale or unknown
+# ("stale":true or null, top-level or the ladder's) gives no rate NOW: a drift
+# figure against a number price.pc.am will not stand behind is noise.
+PRICE_BODY=$(curl -s --max-time 15 https://price.pc.am/price 2>/dev/null | tr -d ' \t\n\r')
+RATE_NOW=""
+if [ -n "$PRICE_BODY" ] && ! printf '%s' "$PRICE_BODY" | grep -qE '"stale":(true|null)'; then
+  for key in creditRateUsd serviceRate; do
+    RATE_NOW=$(printf '%s' "$PRICE_BODY" | grep -oE "\"$key\":[0-9.eE+-]+" | head -1 | cut -d: -f2)
+    [ -n "$RATE_NOW" ] && break
+  done
+fi
 
 emit() {  # emit <product> <who> <addr> <sat> <usd> <rate> <credited> <unit> <txid> <height> <confs> <when>
   local prod="$1" who="$2" addr="$3" sat="$4" usd="$5" rate="$6" \

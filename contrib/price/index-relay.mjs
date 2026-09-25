@@ -280,3 +280,116 @@ export function indexNote({ floorUsd, ceilingUsd = INDEX_RULES.ceilingUsd, rules
       ? 'Buying PCN back is a separate constant-product curve at a much lower price.'
       : 'This service is not buying PCN back at present.');
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The published body -- bodyVersion 1 (legacy + additive) and 2 (minimal)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Owner, 2026-09-25: "simplify the https://price.pc.am/ json response, check
+// every service which field is using and make it minimal compact json, we dont
+// need 100s of duplicated data".
+//
+// The root body had grown to ~4 KB answering one question -- "what do I credit
+// a PCN at, and may I use it right now?" -- in three spellings of the rate
+// (price, serviceRate, creditRateUsd), a field naming which one to read, and
+// THREE staleness flags (stale, index.stale, ladder.stale) of which only the
+// nested ones said whether the RATE was usable. Every rail had to know which
+// flag was the real one, and docs.pc.am had to teach it. The minimal body is
+// nine keys with ONE flag.
+//
+// It lives here rather than in server.mjs for the same reason everything else
+// in this file does: pure, so every way `stale` can turn true is proved to FIRE
+// (index-relay-test.mjs). And here rather than in a third file because every
+// origin already deploys exactly these two, and one more file to copy to three
+// hosts is one more way to crash an origin at start on a missing import.
+
+export const MINIMAL_KEYS = Object.freeze(['creditRateUsd', 'sellPriceUsd', 'poolUsd', 'floorUsd',
+  'state', 'seq', 'stale', 'ageSeconds', 'at']);
+
+/** Strictly 2 is minimal; anything else -- absent, 1, a hand-edited "2" -- is
+ *  the legacy body, which every consumer can read. Same rule as useIndex: the
+ *  safe way to be wrong is the old behaviour. */
+export const bodyVersionOf = (v) => (v === 2 ? 2 : 1);
+
+const positive = (x) => typeof x === 'number' && Number.isFinite(x) && x > 0;
+
+/** How old creditRateUsd is, in whole seconds, or null for UNKNOWN.
+ *
+ *  Index mode: the index's age -- this side's clock minus the exchange's
+ *  computedAt, exactly index.ageSeconds. The exchange recomputes every minute
+ *  whether or not the price moves, so a held index stays young.
+ *
+ *  Legacy mode: the LADDER's age (ladder.ageSeconds), not serviceRateAt. The
+ *  walk re-evaluates the rate on every ladder poll but stamps serviceRateAt
+ *  only when it MOVES, so a converged rate would read days old and every rail
+ *  bounding ageSeconds would hold for ever -- turning {"useIndex":0}, the
+ *  rollback that exists to restore crediting, into an outage.
+ *
+ *  Floored at 0: the relay tolerates an exchange clock up to 30 s ahead
+ *  (INDEX_RULES.skewS), and a negative age reads as a malformed field. */
+export function creditAgeSeconds({ indexMode, block, ladderAgeS }) {
+  const a = indexMode ? (block ? block.ageSeconds : null) : ladderAgeS;
+  return typeof a === 'number' && Number.isFinite(a) ? Math.max(0, Math.floor(a)) : null;
+}
+
+/** THE flag. True means HOLD: creditRateUsd must not be used.
+ *
+ *  It may only ever be MORE conservative than what the rails honoured before,
+ *  so it is true whenever ANY of these is:
+ *    - the oracle is stale (a replica out of sync -- the old top-level `stale`)
+ *    - the published `ladder` block is absent or its stale flag is not false
+ *      (every rail and the exchange already refused on that; in index mode it
+ *      follows the index, in legacy mode the market clock)
+ *    - index mode and the index is not usable: stale, unknown, disabled, absent
+ *    - the rate is not a positive number
+ *    - its age is unknown
+ *  `oracleStale` must be literally false to count as fresh: undefined is not
+ *  "in sync", it is "did not say". */
+export function creditStale({ indexMode, block, ladder, oracleStale, serviceRate, ageSeconds }) {
+  return oracleStale !== false
+    || !ladder || ladder.stale !== false
+    || (indexMode && !indexUsable(block))
+    || !positive(serviceRate)
+    || !Number.isInteger(ageSeconds);
+}
+
+/** The nine-key body (bodyVersion 2), and the nine values bodyVersion 1 adds
+ *  to or overwrites in the legacy body. Built ONCE from the legacy body's own
+ *  blocks, so the two versions cannot disagree about a value.
+ *
+ *  sellPriceUsd is null -- not the AMM's 0.001 -- on an origin that has never
+ *  read the market: the legacy body falls back to the curve there, and a
+ *  consumer that prices orders from this field (the exchange's house bots)
+ *  must see "unknown", never a price a thousandth of the real one. */
+export function minimalBody({ indexMode, block, ladder, ladderKnown, ladderAgeS, oracleStale,
+                              serviceRate, sellPriceUsd, poolUsd, floorUsd, at }) {
+  const ageSeconds = creditAgeSeconds({ indexMode, block, ladderAgeS });
+  return {
+    creditRateUsd: serviceRate,
+    sellPriceUsd: ladderKnown && positive(sellPriceUsd) ? sellPriceUsd : null,
+    poolUsd: positive(poolUsd) ? poolUsd : null,
+    floorUsd,
+    // 'unknown' when there has never been a reading: this side knows no price,
+    // which is what the exchange's own 'unknown' means too.
+    state: block && typeof block.state === 'string' ? block.state : 'unknown',
+    seq: block && Number.isSafeInteger(block.seq) ? block.seq : null,
+    stale: creditStale({ indexMode, block, ladder, oracleStale, serviceRate, ageSeconds }),
+    ageSeconds,
+    at,
+  };
+}
+
+/** bodyVersion 1: the legacy body, every key where it was, with the top-level
+ *  `stale` replaced IN PLACE by the unified flag and the new keys APPENDED.
+ *  Appended rather than interleaved on purpose: a consumer that finds a field
+ *  by the first regex match in the raw text (pcnaibot reads creditRateUsd that
+ *  way) keeps finding the nested one it found before. */
+export function phase1Body(legacy, minimal) {
+  const out = { ...legacy };
+  for (const k of MINIMAL_KEYS) {
+    if (k === 'at') continue;                 // the legacy body's own, same instant
+    if (k in legacy && k !== 'stale') continue; // creditRateUsd, sellPriceUsd: already there
+    out[k] = minimal[k];
+  }
+  return out;
+}

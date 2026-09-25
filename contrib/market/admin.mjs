@@ -28,6 +28,7 @@ import { toSvg } from './qr.mjs';
 import { clientIp, ipLabel } from './clientip.mjs';
 
 import { CONFIRM_CSS, CONFIRM_JS } from './confirm-modal.mjs';
+import { creditRateFromPriceBody } from './price-feed.mjs';
 const SCRYPT = { N: 1 << 15, r: 8, p: 1, maxmem: 96 * 1024 * 1024 };
 const SESSION_HOURS = 12;
 // Tuned for a human who mistypes, not for a lock that a stranger can spring.
@@ -900,9 +901,12 @@ ${left !== undefined ? `<p class="s" style="color:var(--dim)">${left} attempt(s)
             const walk = ladder.walkUsd(rungs, wUsd);
             const st2 = await ladder.ladderState();
             shownPrice = walk.pcn > 0 ? walk.avgPrice : st2.marginalPrice;
+            // creditRateUsd via price-feed.mjs: serviceRate leaves the root body
+            // (2026-09-25), and a rate the oracle marks stale is shown as none.
             const pr = await fetch('https://price.pc.am', { signal: AbortSignal.timeout(8000) })
               .then(r => r.json()).catch(() => null);
-            shownRate = Number(pr?.serviceRate) || null;
+            const cr = creditRateFromPriceBody(pr);
+            shownRate = cr.ok ? cr.rate : null;
             if (shownPrice && shownRate) shownLoss = (1 - shownRate / shownPrice) * 100;
           } catch (e) { log.warn('[waiver] could not price the grant:', e.message); }
           const id = await waivers.grant({

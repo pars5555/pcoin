@@ -120,17 +120,45 @@ export function validateRateBody(text, { maxStateAgeS, maxLadderAgeS, maxPoolAge
     }
   }
 
-  // --- check 4: the ladder clock, on its OWN bound -----------------------
-  const ladder = body.ladder;
-  if (!ladder || typeof ladder !== 'object') throw new RateInsane('ladder block is absent');
-  const ladderAge = requireFiniteNumber(ladder.ageSeconds, 'ladder.ageSeconds');
-  if (ladder.stale !== false) throw new RateInsane(`ladder.stale is ${JSON.stringify(ladder.stale)}`);
-  if (ladderAge > maxLadderAgeS) throw new RateInsane(`ladder.ageSeconds ${ladderAge} > ${maxLadderAgeS}`);
+  // TWO BODY SHAPES, 2026-09-25. The owner: "simplify the price.pc.am json
+  // response ... check every service which field is using ... fix all". The
+  // root body becomes { creditRateUsd, sellPriceUsd, poolUsd, floorUsd, state,
+  // seq, stale, ageSeconds, at }: no `ladder`, no `stateAgeSeconds`, no pool
+  // block. Its top-level `ageSeconds` is the age of creditRateUsd itself and its
+  // `stale` is the one HOLD flag, with the replica's sync folded in. The oracle
+  // ADDS those fields first and REMOVES the old ones later, so each clock below
+  // is checked wherever it is published, and a body carrying NO clock for the
+  // rate or the replica is refused exactly as an absent block always was.
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw new RateInsane('the body is not a JSON object');
+  const hasLadder = 'ladder' in body;
+  const hasRateAge = body.ageSeconds !== undefined;
+
+  // --- check 4: the rate's clock, on its OWN bound -----------------------
+  // Today's body: the ladder block (in index mode its stale flag follows the
+  // index). A `ladder` key that is present but null still refuses, as before.
+  if (hasLadder) {
+    const ladder = body.ladder;
+    if (!ladder || typeof ladder !== 'object') throw new RateInsane('ladder block is absent');
+    const ladderAge = requireFiniteNumber(ladder.ageSeconds, 'ladder.ageSeconds');
+    if (ladder.stale !== false) throw new RateInsane(`ladder.stale is ${JSON.stringify(ladder.stale)}`);
+    if (ladderAge > maxLadderAgeS) throw new RateInsane(`ladder.ageSeconds ${ladderAge} > ${maxLadderAgeS}`);
+  }
+  // The minimal body: top-level ageSeconds, on the same bound. Required when
+  // there is no ladder block -- then it is the only clock the rate has.
+  if (hasRateAge || !hasLadder) {
+    const rateAge = requireFiniteNumber(body.ageSeconds, 'ageSeconds');
+    if (rateAge > maxLadderAgeS) throw new RateInsane(`ageSeconds ${rateAge} > ${maxLadderAgeS}`);
+  }
 
   // --- check 5: the replica clock, on its OWN bound ----------------------
+  // `stale` is in both shapes and must be literally false in both.
   if (body.stale !== false) throw new RateInsane(`stale is ${JSON.stringify(body.stale)}`);
-  const stateAge = requireFiniteNumber(body.stateAgeSeconds, 'stateAgeSeconds');
-  if (stateAge > maxStateAgeS) throw new RateInsane(`stateAgeSeconds ${stateAge} > ${maxStateAgeS}`);
+  // stateAgeSeconds is today's body only. Absent is accepted ONLY beside the
+  // minimal body's ageSeconds, whose `stale` already carries the sync.
+  if (body.stateAgeSeconds !== undefined || !hasRateAge) {
+    const stateAge = requireFiniteNumber(body.stateAgeSeconds, 'stateAgeSeconds');
+    if (stateAge > maxStateAgeS) throw new RateInsane(`stateAgeSeconds ${stateAge} > ${maxStateAgeS}`);
+  }
 
   // --- check 6: the pool clock, but only when the rate follows the pool --
   // A `pool` of null while rateFollowsPoolDown is true is UNKNOWN, not "the
@@ -149,7 +177,9 @@ export function validateRateBody(text, { maxStateAgeS, maxLadderAgeS, maxPoolAge
     rateText: rateStr,
     rate: rateNum,
     rateE12: rateToE12(rateStr), // from the STRING: floor, no double involved
-    rateFloorUsd: typeof body.rateFloorUsd === 'number' ? body.rateFloorUsd : null,
+    // `floorUsd` in the minimal body (2026-09-25), `rateFloorUsd` before it.
+    rateFloorUsd: typeof body.rateFloorUsd === 'number' ? body.rateFloorUsd
+      : typeof body.floorUsd === 'number' ? body.floorUsd : null,
     role: typeof body.role === 'string' ? body.role : null,
     at: typeof body.at === 'string' ? body.at : null,
     buybackOpen: body.buybackOpen === true,

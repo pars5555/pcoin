@@ -36,6 +36,10 @@ CSV = os.path.join(DIR, "shadow.csv")
 STATE = os.path.join(DIR, "state.json")
 NOTIFY = os.environ.get("PCOIN_NOTIFY", "/usr/local/bin/pcoin-notify")
 PRICE = "https://price.pc.am/"
+# The full body (index window, pool median, inUse) lives at /detail once price.pc.am
+# serves the short nine-field format at /; until /detail is deployed the root still
+# carries it, so read /detail first and fall back.
+PRICE_DETAIL = "https://price.pc.am/detail"
 EXCHANGE = "https://exchange.pc.am/api/public"
 HISTORY = "https://exchange.pc.am/api/index/history?hours=24"
 SHADOW_START = 1790248500      # 2026-09-24 ~11:15 UTC, index_enabled on the exchange
@@ -58,6 +62,15 @@ def get(url):
     return None
 
 
+def price_full():
+    """The full price body: /detail, else the root while it still is the full body."""
+    p = get(PRICE_DETAIL)
+    if isinstance(p, dict) and isinstance(p.get("index"), dict):
+        return p
+    p = get(PRICE)
+    return p if isinstance(p, dict) and isinstance(p.get("index"), dict) else None
+
+
 def num(v):
     try:
         f = float(v)
@@ -67,7 +80,7 @@ def num(v):
 
 
 def collect():
-    p, x = get(PRICE), get(EXCHANGE)
+    p, x = price_full(), get(EXCHANGE)
     ix = (p or {}).get("index") or {}
     w = ix.get("window") or {}
     stx = ((x or {}).get("stats") or {})
@@ -132,7 +145,7 @@ def digest(now):
     # "nothing uses it yet" would be a false line in a message the owner reads
     # every morning. Read from the live feed; an unreadable feed is its own
     # answer, never "shadow" by default.
-    pb = get(PRICE)
+    pb = price_full()
     in_use = ((pb.get("index") or {}).get("inUse")) if isinstance(pb, dict) else None
     if in_use is True:
         title = "PCN index -- IN USE: the rails credit at it (day %d since the shadow began)" % day

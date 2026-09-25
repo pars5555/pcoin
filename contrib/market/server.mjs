@@ -220,6 +220,14 @@ function validAddress(addr) {
 // awaits -- and a `let` declared further down would still be in its temporal
 // dead zone when that call lands. This file has been caught by that ordering
 // more than once already (see the notes at makeLadder and at watchGate).
+//
+// TWO BODY SHAPES (owner, 2026-09-25: "simplify the price.pc.am json
+// response"). The index used to be the `index` block; in the minimal body it is
+// the top level itself -- creditRateUsd, state, seq, stale, ageSeconds -- and
+// the block moves to /detail, which a money path must never read.
+// indexFromPriceBody() reads either and hands indexUnitPrice() the same five
+// fields, so the rules that close the market (stale, unknown, too old) did not
+// move.
 const INDEX_URL = `${PRICE}/price`;
 const INDEX_REFRESH_MS = 30_000;
 let _index = { block: null, at: 0, error: 'not read yet' };
@@ -229,13 +237,12 @@ async function refreshIndex() {
     const r = await fetch(INDEX_URL, { signal: AbortSignal.timeout(5000) });
     if (!r.ok) throw Object.assign(new Error(`HTTP ${r.status}`), { said: `price.pc.am answered HTTP ${r.status}` });
     const j = await r.json();
-    const b = j && j.index;
-    // No index block is an ANSWER, not a failure: the relay is up and has no
-    // index to give. The old reading is dropped rather than aged, because the
-    // relay has just said it no longer vouches for it.
-    _index = (b && typeof b === 'object')
-      ? { block: { usd: b.usd, state: b.state, seq: b.seq, ageSeconds: b.ageSeconds, stale: b.stale },
-          at: Date.now(), error: null }
+    const b = indexFromPriceBody(j);
+    // No index is an ANSWER, not a failure: the relay is up and has no index
+    // to give. The old reading is dropped rather than aged, because the relay
+    // has just said it no longer vouches for it.
+    _index = b
+      ? { block: b, at: Date.now(), error: null }
       : { block: null, at: Date.now(), error: 'price.pc.am publishes no index' };
   } catch (e) {
     // The text reaches the public gate reason, so it names the service, never
@@ -276,6 +283,9 @@ setInterval(() => { refreshIndex().catch(() => {}); }, INDEX_REFRESH_MS).unref?.
 // isolation is an engine nobody re-tests after changing it.
 import { makeLadder } from './ladder.mjs';
 import { makeWaivers, lossOnSpendPct } from './waivers.mjs';
+// Both shapes of the price.pc.am body (see refreshIndex above). Hoisted like
+// every import, so refreshIndex -- which runs during module evaluation -- has it.
+import { indexFromPriceBody, creditRateFromPriceBody } from './price-feed.mjs';
 // The notifier is passed in so a failing reservation sweep can say so; without
 // it the ladder silently stops returning inventory from unpaid orders.
 //
@@ -506,10 +516,11 @@ async function publicServiceRates() {
   if (_rates.values.length && age < RATE_CACHE_MS) return { rates: _rates.values, ageMs: age };
   const got = await Promise.allSettled(
     Array.from({ length: RATE_SAMPLES }, () => jget(PUBLIC_RATE_URL)));
-  const rates = got
-    .filter(r => r.status === 'fulfilled')
-    .map(r => Number(r.value.serviceRate))
-    .filter(r => r > 0);
+  // creditRateUsd, not serviceRate: serviceRate is not in the minimal body
+  // (2026-09-25), and a sample the oracle itself marks stale is not a rate to
+  // judge a sale against -- it is dropped exactly like an unreadable one.
+  const judged = got.filter(r => r.status === 'fulfilled').map(r => creditRateFromPriceBody(r.value));
+  const rates = judged.filter(r => r.ok).map(r => r.rate);
   if (rates.length) {
     _rates = { values: rates, at: Date.now() };
     return { rates, ageMs: 0 };
@@ -521,7 +532,8 @@ async function publicServiceRates() {
     return { rates: _rates.values, ageMs: Date.now() - _rates.at, degraded: true };
   }
   const why = got.find(r => r.status === 'rejected');
-  return { rates: [], error: why ? why.reason?.message : 'no usable serviceRate' };
+  const refused = judged.find(r => !r.ok);
+  return { rates: [], error: why ? why.reason?.message : refused ? refused.why : 'no usable creditRateUsd' };
 }
 
 /** May we sell right now? Fails CLOSED: an unreadable oracle blocks the sale.

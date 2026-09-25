@@ -79,7 +79,9 @@ TARGET=$(node -e "process.stdout.write(($POOL*(1+$PREMIUM/100)).toFixed(8))")
 # takes >12 h to follow, so the demanded drop arrives smaller and later than this.
 node -e "const n=1441,now=Date.now(),s=[];for(let i=0;i<n;i++)s.push({t:now-i*60000,p:$POOL});
   require('fs').writeFileSync('$D/oracle.json',JSON.stringify({poolPrice:$POOL,poolSamples:s}));"
-printf '{"serviceRate":%s}\n' "$POOL" > $D/rate.json
+# The minimal price.pc.am body (2026-09-25): cap-policy reads creditRateUsd and
+# holds unless `stale` is literally false, so a bare {"serviceRate":x} would refuse.
+printf '{"creditRateUsd":%s,"state":"held","seq":1,"stale":false,"ageSeconds":10}\n' "$POOL" > $D/rate.json
 echo '[]' > $D/curve-history.json
 
 echo
