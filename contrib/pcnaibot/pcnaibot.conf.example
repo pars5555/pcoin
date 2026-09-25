@@ -282,6 +282,10 @@ AGENT_EFFORT=gpt-5-mini:low,gpt-5:low
 # no max_tokens to derive a worst case from here, so it is declared; max_turns
 # is what actually bounds the run. Measured: a trivial run costs 1.1-2.7.
 AGENT_MAX_CREDITS_PER_RUN=400
+# How often to read OonaCode's session events (GET /v1/agent/events) and tell each chat when its
+# files were deleted after an idle hour or the chat ended after an idle day (lib/lifecycle.mjs).
+# Polled rather than pushed: a webhook would need a public door into this process.
+AGENT_EVENTS_POLL_SECONDS=60
 
 # ---------------------------------------------------------------------------
 # P3, the "10% back on PCN spent here" rebate.

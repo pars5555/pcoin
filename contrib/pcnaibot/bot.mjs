@@ -37,8 +37,9 @@ import { startAdminApi } from './lib/admin-api.mjs';
 import QRCode from 'qrcode';
 import { extractSvgs, svgToPng, unknownBlockTypes } from './lib/render.mjs';
 import { newDeliverables, deliverFiles, noteUploaded } from './lib/deliver.mjs';
-import { AgentClient, AgentUnavailable, AgentRefused, creditsToMicroUsd, runOutcome } from './lib/agent.mjs';
+import { AgentClient, AgentUnavailable, AgentRefused, creditsToMicroUsd, runOutcome, stopNote } from './lib/agent.mjs';
 import { liveSession, recordSession, setSessionModel, touchSession, retireSession, sweepDeletions, reconcileRemote } from './lib/agentstore.mjs';
+import { pollAgentEvents } from './lib/lifecycle.mjs';
 import { streamMessages, StreamStage } from './lib/stream.mjs';
 import { mdToHtml } from './lib/markdown.mjs';
 import { DraftStream } from './lib/drafts.mjs';
@@ -922,11 +923,8 @@ async function runTurn(chatId, updateId, text, attachments = []) {
 You were charged $${escapeHtml(microUsdToString(actual, 6))} for this.`;
     }
 
-    let note = '';
-    if (out.cancelled) note = '\n\n<i>stopped</i>';
-    else if (out.stopReason === 'max_turns') note = `\n\n<i>stopped at the ${AGENT_MAX_TURNS}-step limit — say "continue" to let it go on</i>`;
-    else if (out.stopReason === 'deadline') note = '\n\n<i>stopped at the time limit — say "continue" to let it go on</i>';
-    else if (out.stopReason === 'budget') note = '\n\n<i>stopped: the run reached its spending limit</i>';
+    const stop = stopNote(out, { maxTurns: AGENT_MAX_TURNS });
+    const note = stop ? `\n\n<i>${escapeHtml(stop)}</i>` : '';
 
     // SENDING THIS IS WHAT ENDS THE DRAFT -- see the note where clear() used to
     // live in drafts.mjs. Nothing else is needed, and the empty-text push that
@@ -2052,6 +2050,21 @@ async function main() {
     }, 3600000);
     sweepDeletions(db, agent).catch(() => {});
     reconcileRemote(db, agent).catch(() => {});
+
+    // What happened to a chat while it sat idle -- its files deleted, or the chat ended -- told
+    // to the person (lib/lifecycle.mjs). One pass at a time: a pass held up by Telegram's rate
+    // limit must not have a second one reading the same events under it.
+    let eventsBusy = false;
+    const pollEvents = () => {
+      if (eventsBusy) return;
+      eventsBusy = true;
+      pollAgentEvents(db, agent, tg)
+        .then((c) => { if (c.handled) log.info('agent session events', c); })
+        .catch((e) => log.warn('agent events poll failed', errFields(e)))
+        .finally(() => { eventsBusy = false; });
+    };
+    setInterval(pollEvents, cfg.int('AGENT_EVENTS_POLL_SECONDS', 60) * 1000);
+    pollEvents();
   }
 
   let offset = (kvGetJson(db, 'tg:offset') ?? { offset: 0 }).offset;

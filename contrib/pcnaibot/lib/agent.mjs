@@ -135,6 +135,22 @@ export class AgentClient {
     return false;
   }
 
+  // What happened to our sessions while nobody was talking to them (OonaCode, 2026-09-25): a
+  // workspace deleted after an idle hour, a session expired after an idle day. Oldest first;
+  // `after` is the id of the last event already handled. `nextAfter` is set only when the page
+  // came back full, so it is a "read on" signal, not the cursor -- the cursor is the last event
+  // actually handled.
+  async listEvents({ after = null, limit = 100 } = {}) {
+    const q = new URLSearchParams({ limit: String(limit) });
+    if (after) q.set('after', after);
+    const r = await this.#json('GET', `/v1/agent/events?${q}`);
+    if (!r.ok) throw new AgentUnavailable(`could not read agent events (HTTP ${r.status})`);
+    return {
+      events: Array.isArray(r.json?.events) ? r.json.events : [],
+      nextAfter: typeof r.json?.next_after === 'string' ? r.json.next_after : null,
+    };
+  }
+
   async interrupt(id) {
     try {
       const r = await this.#json('POST', `/v1/agent/sessions/${encodeURIComponent(id)}/interrupt`, {});
@@ -388,6 +404,25 @@ export function runOutcome(run) {
     modelRequests: Number.isInteger(run.model_requests) ? run.model_requests : null,
     sessionId: typeof run.session_id === 'string' ? run.session_id : null,
     runId: typeof run.id === 'string' ? run.id : null,
+    durationMs: Number.isFinite(Number(run.duration_ms)) ? Number(run.duration_ms) : null,
     error: run.error ?? null,
   };
+}
+
+// The line under an answer that ended early, or null. Every bound here COMPLETES the run with its
+// partial answer and keeps its sandbox, so the user's next message continues in the same chat.
+//
+// The deadline says how long the run took rather than naming a number: the limit is an OonaCode
+// admin setting (600 s until 2026-09-25, 1800 s since), and a figure written here would be the
+// first thing to go stale.
+export function stopNote(out, { maxTurns } = {}) {
+  if (out.cancelled) return 'stopped';
+  if (out.stopReason === 'max_turns') return `stopped at the ${maxTurns}-step limit — say "continue" to let it go on`;
+  if (out.stopReason === 'deadline') {
+    const min = Number.isFinite(out.durationMs) && out.durationMs >= 60000 ? Math.round(out.durationMs / 60000) : null;
+    return `${min ? `stopped after ${min} minutes, the time limit for one task` : 'stopped at the time limit for one task'}`
+      + ' — say "continue" and it picks up where it stopped, in the same chat';
+  }
+  if (out.stopReason === 'budget') return 'stopped: the run reached its spending limit';
+  return null;
 }
