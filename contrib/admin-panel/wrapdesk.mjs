@@ -249,6 +249,19 @@ export function sendWrap(key) {
 // Returns null when it cannot be determined, and null must stay null: a
 // refund to a guessed address is money given to a stranger.
 function depositorOf(txid) {
+  return (depositFacts(`${txid}:`) || {}).sender || null;
+}
+
+// THE WHOLE DEPOSIT, BACK TO WHERE IT CAME FROM (owner, 2026-09-25: "the refund
+// should not ask amount -- it should send same PCN to same address"). One read
+// of the deposit transaction answers both: the sender is its first input, and
+// the amount is what it paid to THIS wrap's deposit address (the key's second
+// half) -- summed, in satoshis, from the explorer's own outputs, never parsed
+// out of the watcher's text. Unknown stays unknown (null), because a refund of
+// a guessed amount to a guessed address is money given to a stranger.
+export function depositFacts(key) {
+  const [txid, address] = String(key || '').split(':');
+  if (!/^[0-9a-f]{64}$/i.test(txid || '')) return null;
   const bases = [process.env.PCOIN_EXPLORER, 'http://127.0.0.1:8080',
     'https://explorer.pc.am'].filter(Boolean);
   for (const base of bases) {
@@ -256,8 +269,14 @@ function depositorOf(txid) {
       const out = execFileSync('curl', ['-s', '--max-time', '20',
         `${base}/api/tx/${encodeURIComponent(txid)}`], { encoding: 'utf8', timeout: 30000 });
       const tx = (JSON.parse(out) || {}).tx;
-      const a = ((tx && tx.inputs) || []).map((i) => i && i.address).filter(Boolean)[0];
-      if (a) return a;
+      if (!tx) continue;
+      const sender = ((tx.inputs || []).map((i) => i && i.address).filter(Boolean)[0]) || null;
+      let sat = null;
+      if (address) {
+        const outs = (tx.outputs || []).filter((o) => o && String(o.address || '').toLowerCase() === address.toLowerCase());
+        if (outs.length && outs.every((o) => Number.isInteger(o.value_sat))) sat = outs.reduce((s, o) => s + o.value_sat, 0);
+      }
+      return { sender, sat, pcn: sat === null ? null : (sat / 1e8).toFixed(8) };
     } catch { /* try the next base */ }
   }
   return null;
@@ -280,12 +299,18 @@ export function refundWrap(key, pcn, to) {
   if (!/^[0-9a-f]{64}:[0-9a-z]+$/i.test(String(key || ''))) {
     return { ok: false, out: 'That wrap key does not look right; nothing was sent.' };
   }
-  const amount = Number(pcn);
+  // Blank amount / blank address = the WHOLE deposit, back to its SENDER, both
+  // read from the deposit transaction itself. Only a test row passes them in.
+  const needFacts = !String(pcn || '').trim() || !String(to || '').trim();
+  const facts = needFacts ? depositFacts(key) : null;
+  const amount = String(pcn || '').trim() ? Number(pcn) : Number(facts && facts.pcn);
   if (!Number.isFinite(amount) || amount <= 0) {
-    return { ok: false, out: `"${pcn}" is not an amount of PCN; nothing was sent.` };
+    return { ok: false, out: String(pcn || '').trim()
+      ? `"${pcn}" is not an amount of PCN; nothing was sent.`
+      : 'Could not read how much this deposit brought (the deposit transaction could not '
+        + 'be read, or paid nothing to this wrap\'s address). Nothing was sent.' };
   }
-  const txid = String(key).split(':')[0];
-  const dest = String(to || '').trim() || depositorOf(txid);
+  const dest = String(to || '').trim() || (facts && facts.sender);
   if (!dest) {
     return { ok: false, out: 'Could not work out who to refund: the deposit transaction '
       + 'could not be read, so its sender is unknown. Nothing was sent. Type the address '
@@ -538,7 +563,42 @@ function workCard(w) {
   // the destination from the deposit transaction's own inputs (the desk never
   // records who paid), the amount left blank because only a person knows
   // whether this is the whole deposit or the part above the cap.
-  const refundForm = (i) => (!i.key ? '' :
+  // A REAL ROW REFUNDS THE WHOLE DEPOSIT TO ITS SENDER, with nothing to type
+  // (owner, 2026-09-25: "the refund should not ask amount -- it should send same
+  // PCN to same address"). The amount and address are read from the deposit
+  // transaction when the page is drawn and shown on the button, so what the
+  // owner sees is what is sent; the server reads them again at send time. A row
+  // whose deposit cannot be read gets no button at all -- never a guess.
+  const refundWhole = (i) => {
+    const f = depositFacts(i.key);
+    const summary = `<details style="margin-top:10px"><summary style="cursor:pointer;`
+      + `display:inline-block;background:transparent;color:var(--yellow);`
+      + `border:2px solid var(--yellow);border-radius:999px;padding:7px 18px;`
+      + `font-weight:700;list-style:none">&#8617; Refund PCN instead &mdash; tap to open</summary>`;
+    if (!f || !f.pcn || !f.sender) {
+      return summary + `<p class="bad" style="margin:8px 0 0">The deposit transaction could not be `
+        + `read just now, so the amount and the sender are unknown and there is no refund button. `
+        + `Reload in a minute.</p></details>`;
+    }
+    const amt = String(Number(f.pcn));
+    return summary
+      + `<form method="post" style="margin-top:8px"`
+      + ` onsubmit="return confirm('Refund ${esc(amt)} PCN to ${esc(f.sender)} from the market wallet now? `
+      + `This moves real money and cannot be undone.')">`
+      + `<input type="hidden" name="action" value="refund">`
+      + `<input type="hidden" name="key" value="${esc(i.key)}">`
+      + `<button style="background:var(--yellow);color:#0b1020;border:0;border-radius:999px;`
+      + `padding:8px 18px;cursor:pointer;font-weight:700">Refund ${esc(amt)} PCN to `
+      + `${esc(f.sender.slice(0, 10))}&hellip;${esc(f.sender.slice(-6))}</button>`
+      + `<p class="muted" style="margin:6px 0 0;font-size:12px">Sends back exactly what this `
+      + `deposit brought, to the address it came from (<code>${esc(f.sender)}</code>) &mdash; both `
+      + `read from the deposit transaction, not typed. Paid from the market wallet. Idempotent on `
+      + `the wrap key, so a lost answer costs a retry and never a second refund. The customer `
+      + `sees it on their wrap desk page as refunded, with the transaction.</p>`
+      + `</form></details>`;
+  };
+
+  const refundForm = (i) => (!i.key ? '' : !isTest(i) ? refundWhole(i) :
     // A PLAIN <summary> WAS NOT FINDABLE. It rendered as a line of coloured
     // text under a large green button, and the operator pressed Send three
     // times in a row while trying to reach the refund -- each press moving
