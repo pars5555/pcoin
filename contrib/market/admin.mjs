@@ -27,6 +27,7 @@ import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypt
 import { toSvg } from './qr.mjs';
 import { clientIp, ipLabel } from './clientip.mjs';
 
+import { CONFIRM_CSS, CONFIRM_JS } from './confirm-modal.mjs';
 const SCRYPT = { N: 1 << 15, r: 8, p: 1, maxmem: 96 * 1024 * 1024 };
 const SESSION_HOURS = 12;
 // Tuned for a human who mistypes, not for a lock that a stranger can spring.
@@ -512,7 +513,7 @@ export function makeAdmin({ pool, cfg, settings, ladder, delivery, backing, waiv
 
   const page = (title, active, body, email, csrfTok = '') => `<!DOCTYPE html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${esc(title)} · market admin</title><style>${CSS}</style></head><body>
+<title>${esc(title)} · market admin</title><style>${CSS}${CONFIRM_CSS}</style><script>${CONFIRM_JS}</script></head><body>
 <div class="layout">
   <div class="sidebar">
     <div class="sidebar-logo"><b>market.pc.am</b><small>admin</small></div>
@@ -1152,9 +1153,10 @@ ${left !== undefined ? `<p class="s" style="color:var(--dim)">${left} attempt(s)
           <td class="mono s">${o.delivered_txid ? esc(o.delivered_txid.slice(0, 14)) + '…' : '—'}</td>
           <td>${['awaiting_delivery', 'needs_review'].includes(o.status) ? `
             <form class="inline" method="POST" action="/admin/order/send"
-                  onsubmit="return confirm(${o.status === 'needs_review'
-                    ? `'FLAGGED: ${escAttrJs(esc(String(o.delivery_error || 'no reason recorded')))} — send ${money(o.quoted_pcn)} PCN anyway?'`
-                    : `'Send ${money(o.quoted_pcn)} PCN from the hot wallet?'`})">
+                  data-danger data-confirm-ok="Send ${money(o.quoted_pcn)} PCN"
+                  data-confirm="${o.status === 'needs_review'
+                    ? `FLAGGED: ${esc(String(o.delivery_error || 'no reason recorded'))} — send ${money(o.quoted_pcn)} PCN anyway?`
+                    : `Send ${money(o.quoted_pcn)} PCN from the hot wallet?`}">
               ${csrf}<input type="hidden" name="order_id" value="${esc(o.order_id)}">
               ${o.status === 'needs_review' ? '<input type="hidden" name="reviewed" value="1">' : ''}
               <button>${o.status === 'needs_review' ? 'Send (reviewed)' : 'Send'}</button></form>
@@ -1164,7 +1166,7 @@ ${left !== undefined ? `<p class="s" style="color:var(--dim)">${left} attempt(s)
               <button class="ghost">Record</button></form>` : ''}
             ${o.status === 'pending' ? `
             <form class="inline" method="POST" action="/admin/order/expire"
-                  onsubmit="return confirm('Expire this order and release its PCN?')">
+                  data-confirm-ok="Expire it" data-confirm="Expire this order and release its PCN?">
               ${csrf}<input type="hidden" name="order_id" value="${esc(o.order_id)}">
               <button class="ghost">Expire</button></form>` : ''}
           </td></tr>
@@ -1372,7 +1374,7 @@ ${left !== undefined ? `<p class="s" style="color:var(--dim)">${left} attempt(s)
         ${acc?.totp_enabled
           ? `<p class="ok">2FA is <b>on</b> for ${esc(email)}.</p>
              <form method="POST" action="/admin/totp/disable"
-                   onsubmit="return confirm('Turn OFF two-factor authentication?')">${csrf}
+                   data-danger data-confirm-ok="Turn off 2FA" data-confirm="Turn OFF two-factor authentication? Anyone with the password could then sign in.">${csrf}
              <button class="ghost">Turn off 2FA</button></form>`
           : `<p class="bad">2FA is <b>off</b>. Anyone with the password can sign in.</p>
              <form method="POST" action="/admin/totp/enrol">${csrf}<button>Set up 2FA</button></form>`}

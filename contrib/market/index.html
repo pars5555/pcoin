@@ -10,6 +10,18 @@
 #ssoNote{display:none;color:var(--dim,#9aa2b8);margin:.2rem 0 1.2rem}
 body.sso #lede,body.sso .grid,body.sso #calcPanel,body.sso #app,body.sso footer{display:none}
 body.sso #ssoNote{display:block}
+.xconfirm-back{position:fixed;inset:0;background:rgba(5,8,16,.62);display:flex;align-items:center;
+justify-content:center;z-index:9999;padding:16px}
+.xconfirm{background:var(--panel,#151c2c);color:var(--text,#e6e9ef);border:1px solid var(--border,#2a3346);
+border-radius:14px;max-width:480px;width:100%;padding:22px 24px;box-shadow:0 24px 70px rgba(0,0,0,.55)}
+.xconfirm h3{margin:0 0 10px;font-size:17px}
+.xconfirm-msg{margin:0 0 20px;white-space:pre-line;line-height:1.55;font-size:15px;word-break:break-word}
+.xconfirm-btns{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap}
+.xconfirm-btns button{border-radius:999px;padding:9px 20px;font-weight:700;cursor:pointer;font-size:14px;
+border:1px solid var(--border,#2a3346);background:transparent;color:inherit}
+.xconfirm-btns .xconfirm-ok{background:var(--blue,#60a5fa);color:#0b1220;border-color:transparent}
+.xconfirm-btns .xconfirm-ok.danger{background:var(--red,#ef4444);color:#fff}
+.xconfirm-btns button:disabled{opacity:.6;cursor:default}
 </style>
 <div class="wrap">
   <header>
@@ -116,6 +128,52 @@ body.sso #ssoNote{display:block}
   </footer>
 </div>
 
+<script>(function () {
+  function open(msg, okText, danger, onOk) {
+    var back = document.createElement('div');
+    back.className = 'xconfirm-back';
+    back.innerHTML = '<div class="xconfirm" role="dialog" aria-modal="true"><h3>Please confirm</h3>'
+      + '<p class="xconfirm-msg"></p><div class="xconfirm-btns">'
+      + '<button type="button" class="xconfirm-cancel">Cancel</button>'
+      + '<button type="button" class="xconfirm-ok"></button></div></div>';
+    back.querySelector('.xconfirm-msg').textContent = msg;
+    var ok = back.querySelector('.xconfirm-ok');
+    ok.textContent = okText || 'Confirm';
+    if (danger) ok.classList.add('danger');
+    function close() { document.removeEventListener('keydown', key, true); back.remove(); }
+    function key(e) { if (e.key === 'Escape') { e.preventDefault(); close(); } }
+    back.addEventListener('click', function (e) { if (e.target === back) close(); });
+    back.querySelector('.xconfirm-cancel').onclick = close;
+    ok.onclick = function () { ok.disabled = true; close(); onOk(); };
+    document.addEventListener('keydown', key, true);
+    document.body.appendChild(back);
+    ok.focus();
+  }
+  // Exposed for code that confirms without a form (a fetch-driven button).
+  window.pcoinConfirm = function (msg, opts) {
+    opts = opts || {};
+    return new Promise(function (resolve) {
+      var done = false;
+      open(msg, opts.ok, !!opts.danger, function () { done = true; resolve(true); });
+      var obs = new MutationObserver(function () {
+        if (!document.querySelector('.xconfirm-back')) { obs.disconnect(); if (!done) resolve(false); }
+      });
+      obs.observe(document.body, { childList: true });
+    });
+  };
+  document.addEventListener('submit', function (e) {
+    var f = e.target;
+    if (!f || !f.getAttribute) return;
+    var msg = f.getAttribute('data-confirm');
+    if (!msg || f.getAttribute('data-confirmed') === '1') return;
+    e.preventDefault();
+    open(msg, f.getAttribute('data-confirm-ok'), f.hasAttribute('data-danger'), function () {
+      f.setAttribute('data-confirmed', '1');
+      Array.prototype.forEach.call(f.querySelectorAll('button,input[type=submit]'), function (x) { x.disabled = true; });
+      HTMLFormElement.prototype.submit.call(f);
+    });
+  }, true);
+})();</script>
 <script>
 let mode = 'in';
 // Server-owned limits, fetched at load. The defaults only cover the instant
@@ -271,8 +329,8 @@ function renderOrders(list) {
   $('orders').querySelectorAll('[data-cancel]').forEach(btn => {
     btn.onclick = async () => {
       const id = btn.getAttribute('data-cancel');
-      if (!confirm('Cancel order ' + id + '? The PCN it is holding goes back on sale.\n\n'
-                 + 'If you have already sent payment, do NOT cancel \u2014 it will still be credited.')) return;
+      if (!(await window.pcoinConfirm('Cancel order ' + id + '? The PCN it is holding goes back on sale.\n\n'
+                 + 'If you have already sent payment, do NOT cancel \u2014 it will still be credited.', { ok: 'Cancel the order', danger: true }))) return;
       btn.disabled = true;
       try {
         const r = await api('/api/order/' + encodeURIComponent(id) + '/cancel', { method: 'POST' });
