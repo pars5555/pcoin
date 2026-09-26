@@ -171,7 +171,8 @@ export class WpcnService {
       return out;
     }
 
-    return { ...base, state };
+    // "confirming" carries how far along it is; the user is shown n/required.
+    return { ...base, state, confirmations: r?.confirmations ?? null, required: r?.required ?? null };
   }
 
   async #ownClaimRows(chatId, txhash) {

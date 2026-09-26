@@ -26,11 +26,11 @@ import { creditedUsdLast30Days } from './lib/deposits.mjs';
 import { microUsdToString, trimZeros, usdToPcnString, satsToPcnString, parseScaled } from './lib/money.mjs';
 import { OonaCodeClient } from './lib/oonacode.mjs';
 import { release, ageOutReservations } from './lib/billing.mjs';
-import { WpcnService, isTxHash, STATE as WSTATE, humanMessage } from './lib/wpcn.mjs';
+import { WpcnService, isTxHash, STATE as WSTATE } from './lib/wpcn.mjs';
 import { startAdminApi } from './lib/admin-api.mjs';
 import QRCode from 'qrcode';
 import { MEDIA_MODELS, MediaClient, mediaOffer, priceFor, usdToMicro, moneyLabel, videoDurations } from './lib/media.mjs';
-import { getSettings, saveSettings, settingsProblems, mediaChoices, mergeSettingsInput, DEFAULT_SETTINGS } from './lib/settings.mjs';
+import { getSettings, saveSettings, settingsProblems, mediaChoices, mergeSettingsInput, DEFAULT_SETTINGS, DEFAULT_PAY_SUPPORT } from './lib/settings.mjs';
 import {
   quoteSpec, createProposal, sendCard, setCardStatus, cancelProposal, expireCards, beginJob, refusalText,
   runImageJob, startVideoJob, pollVideos, redeliverSweep, sendOriginal, recoverAfterRestart,
@@ -43,6 +43,8 @@ import {
 } from './lib/stars.mjs';
 import { mdToHtml } from './lib/markdown.mjs';
 import { DraftStream } from './lib/drafts.mjs';
+import { t, langOf, LANGS, LANG_CODES, detectLang, isLang, everyLabel, whenLabel } from './lib/i18n.mjs';
+import { openAccount, parseInvite, inviteLink, inviteStats, payInviteReward, usdToMicro as dollarsToMicro } from './lib/rewards.mjs';
 
 const cfg = loadConfig();
 installCrashHandlers();
@@ -145,35 +147,85 @@ async function checkChatModel() {
 }
 
 const note = noteFor(db);
-const jobDeps = (draft = null) => ({ db, tg, media, marginE6: marginE6(), note, draft });
+const jobDeps = (draft = null) => ({ db, tg, media, marginE6: marginE6(), note, draft, onDelivered: afterDelivery });
+
+// The bot's @username, for invite links (read from getMe at start).
+let BOT_USERNAME = null;
 
 // ---------------------------------------------------------------------------
 // Users
 // ---------------------------------------------------------------------------
-function ensureUser(chatId) {
-  const u = db.prepare('SELECT * FROM users WHERE chat_id = ?').get(chatId);
-  if (u) return u;
-  db.prepare('INSERT INTO users (chat_id, model, created_at) VALUES (?,?,?)').run(chatId, USERS_MODEL_PLACEHOLDER, nowSec());
-  return db.prepare('SELECT * FROM users WHERE chat_id = ?').get(chatId);
+
+// Find or create the user. Creating one is the ONLY moment the welcome gift is given and an invite
+// recorded (lib/rewards.mjs), and it is when the language is first read from Telegram. A user from
+// before languages existed gets theirs from Telegram on their next message.
+function account(chatId, from = null, invitedBy = null) {
+  const existing = db.prepare('SELECT * FROM users WHERE chat_id = ?').get(chatId);
+  if (existing) {
+    if (!isLang(existing.lang) && from) {
+      const lang = detectLang(from.language_code);
+      db.prepare('UPDATE users SET lang = ? WHERE chat_id = ? AND lang IS NULL').run(lang, chatId);
+      existing.lang = lang;
+    }
+    return { user: existing, created: false, giftMicro: 0n, invite: null };
+  }
+  const s = settings();
+  const open = mayUse(chatId);
+  const r = openAccount(db, {
+    chatId, model: USERS_MODEL_PLACEHOLDER, lang: detectLang(from?.language_code),
+    giftMicro: open && s.giftEnabled ? dollarsToMicro(s.giftUsd) : 0n,
+    invitedBy: open && s.invitesEnabled ? invitedBy : null,
+  });
+  if (r.created) {
+    log.info('new user', { chat: chatTag(chatId), lang: r.user.lang, gift: Number(r.giftMicro), invite: r.invite ?? '-' });
+  }
+  return r;
+}
+const ensureUser = (chatId, from = null) => account(chatId, from).user;
+const langOfUser = (u) => (isLang(u?.lang) ? u.lang : 'en');
+
+// A delivered result (lib/jobs.mjs deliverItem). A VIDEO may pay the person who invited its maker:
+// once, and only after the maker has topped up (lib/rewards.mjs). The inviter is told in their own
+// language.
+async function afterDelivery(it) {
+  if (it.kind !== 'video') return;
+  const s = settings();
+  const r = payInviteReward(db, {
+    referredId: it.chat_id, itemId: it.id, enabled: s.invitesEnabled,
+    rewardMicro: dollarsToMicro(s.inviteRewardUsd), minTopupMicro: dollarsToMicro(s.inviteMinTopupUsd),
+  });
+  if (!r.paid) {
+    if (r.why !== 'none' && r.why !== 'off') log.info('invite reward not paid', { chat: chatTag(it.chat_id), why: r.why });
+    return;
+  }
+  log.info('invite reward paid', { inviter: chatTag(r.referrerId), invited: chatTag(it.chat_id), micro: Number(r.micro), item: it.id });
+  const L = langOf(db, r.referrerId);
+  await tg.sendMessage(r.referrerId, t(L, 'invite.earned_msg', { reward: dollars(Number(r.micro) / 1e6), balance: balanceLabel(r.balance) }))
+    .catch((e) => log.warn('invite reward notice failed', errFields(e)));
 }
 
 // ---------------------------------------------------------------------------
-// Screens
+// Screens -- every text is in lib/locales, in the user's language.
 // ---------------------------------------------------------------------------
 const NEWLINE = String.fromCharCode(10);
-// On the PCN and wPCN screens. (A Stars payment CAN be refunded while unspent -- STUDIO_TERMS says so.)
-const ONE_WAY = 'PCN deposits are <b>one-way</b>: PCN in, credit out. Your balance is held in <b>USD</b>, cannot be withdrawn, and a PCN deposit cannot be refunded.';
+
+// A settings amount ($3, $2.50) as people write it.
+const dollars = (usd) => (Number.isInteger(Number(usd)) ? `$${Number(usd)}` : `$${Number(usd).toFixed(2)}`);
 
 // THE MENU: a keyboard that stays under the composer. Telegram sends a tapped button's text as a
-// message, so `quickAction` turns those texts back into screens before anything reaches the agent.
-const QUICK = {
-  balance: '💳 Balance', topup: '➕ Top up', clear: '🆕 New chat', help: '❓ How it works',
-};
-function quickKeyboard() {
+// message, so `quickAction` turns those texts back into screens before anything reaches the agent
+// -- in ANY language, because a keyboard drawn before a language change stays on screen.
+const QUICK_KEYS = ['balance', 'topup', 'invite', 'language', 'clear', 'help'];
+const QUICK_BY_LABEL = new Map(QUICK_KEYS.flatMap((k) => [...everyLabel(`kb.${k}`)].map((label) => [label, k])));
+// The four labels of the keyboard before 2026-09-26 (English only).
+for (const [label, k] of [['💳 Balance', 'balance'], ['➕ Top up', 'topup'], ['🆕 New chat', 'clear'], ['❓ How it works', 'help']]) QUICK_BY_LABEL.set(label, k);
+function quickKeyboard(L) {
+  const b = (k) => ({ text: t(L, `kb.${k}`) });
   return {
     keyboard: [
-      [{ text: QUICK.balance }, { text: QUICK.topup }],
-      [{ text: QUICK.clear }, { text: QUICK.help }],
+      [b('balance'), b('topup')],
+      [b('invite'), b('language')],
+      [b('clear'), b('help')],
     ],
     resize_keyboard: true,
     is_persistent: true,
@@ -183,83 +235,146 @@ function quickAction(text) {
   // The keyboard before 2026-09-26 had a "🧠 Model: …" button, and it stays on users' screens until
   // replaced. It opens the start screen, which sends the new keyboard.
   if (/^(🧠|🎨|🎬) Model:/u.test(text)) return 'start';
-  for (const [k, v] of Object.entries(QUICK)) if (text === v) return k;
-  return null;
+  return QUICK_BY_LABEL.get(text) ?? null;
 }
-const BACK_KEYBOARD = { inline_keyboard: [[{ text: '« Menu', callback_data: 'nav:start' }]] };
+const backKeyboard = (L) => ({ inline_keyboard: [[{ text: t(L, 'btn.menu'), callback_data: 'nav:start' }]] });
 
 const balanceLabel = (micro) => `$${escapeHtml(trimZeros(microUsdToString(micro, 4)))}`;
 
+// Button names used inside sentences, in the sentence's language.
+const buttonNames = (L) => ({
+  make: t(L, 'btn.make'), cancel: t(L, 'btn.cancel'), again: t(L, 'btn.again'), original: t(L, 'btn.original'),
+  topup: t(L, 'kb.topup'), help: t(L, 'kb.help'), newchat: t(L, 'kb.clear'), language: t(L, 'kb.language'),
+});
+const pricesNow = (L) => escapeHtml(priceLines(currentOffer(), settings(), marginE6(), L).join(t(L, 'price.sep')));
+
 // What a user reads first (/start) and in full (/help): what the bot makes, how to change a photo
 // or a picture it made, what video can and cannot do yet, and how paying works. Prices, video length
-// and resolution are read live, so the text stays true when the admin changes them.
-const STUDIO_TERMS = 'Your balance is credit for this bot, in USD. It cannot be withdrawn. PCN deposits are final; a Stars payment you have not spent can be refunded (/paysupport).';
-
-function startScreen(u) {
-  const prices = priceLines(currentOffer(), settings(), marginE6());
-  return [
-    '👋 <b>Hi! I make AI pictures 🎨 and short videos 🎬.</b>',
+// and resolution are read live, so the text stays true when the admin changes them. `fresh` is the
+// account just opened by this very message: its gift and invite are said once, here.
+function startScreen(u, fresh = null) {
+  const L = langOfUser(u);
+  const s = settings();
+  const names = buttonNames(L);
+  const lines = [t(L, 'start.title')];
+  if (fresh?.giftMicro > 0n) lines.push('', t(L, 'start.gift', { amount: dollars(Number(fresh.giftMicro) / 1e6) }));
+  if (fresh?.invite === 'recorded') lines.push(t(L, 'start.invited'));
+  lines.push(
     '',
-    '<b>What I can do</b>',
-    '🎨 <b>Make a picture</b> from your words — <i>"a cat astronaut, cartoon style"</i>, <i>"a poster for my café with the words Grand Opening"</i>',
-    '✏️ <b>Change your photo</b> — send it with a caption: <i>"make it winter"</i>, <i>"put this watch on a wooden desk"</i>',
-    '🔁 <b>Change a picture I made</b> — reply to it, or write <i>"#2 make it night"</i>',
-    '🎬 <b>Make a video</b> from your words — <i>"a horse running on a beach at sunset"</i>',
-    '✨ <b>Bring a photo or picture to life</b> — send a photo with <i>"animate it"</i>, or write <i>"animate #2"</i>',
-    '🎞 <b>Change a video</b> — I make a <b>new version</b> with your changes (a video cannot be edited frame by frame yet)',
+    t(L, 'start.can_title'),
+    t(L, 'start.can_picture'),
+    t(L, 'start.can_edit_photo'),
+    t(L, 'start.can_edit_mine'),
+    t(L, 'start.can_video'),
+    t(L, 'start.can_animate'),
+    t(L, 'start.can_edit_video'),
     '',
-    '<b>How it works</b>',
-    '1. Tell me what you want, in any language. I may ask a short question.',
-    '2. I show a <b>card</b>: what I will make and its price.',
-    '3. Press <b>✅ Make it</b> — only then is anything charged. Talking to me is free.',
+    t(L, 'start.how_title'),
+    t(L, 'start.how_1'),
+    t(L, 'start.how_2'),
+    t(L, 'start.how_3', names),
     '',
-    `<i>Now: ${escapeHtml(prices.join('; '))}.</i>`,
-    '',
-    `Balance: <b>${balanceLabel(u.balance_micro_usd)}</b> — <b>➕ Top up</b> with Telegram Stars or PCN. More in <b>❓ How it works</b>.`,
-  ].join('\n');
+    t(L, 'start.now', { prices: pricesNow(L) }),
+  );
+  if (s.invitesEnabled && s.inviteRewardUsd > 0) lines.push('', t(L, 'start.invite', { reward: dollars(s.inviteRewardUsd) }));
+  lines.push('', t(L, 'start.balance', { balance: balanceLabel(u.balance_micro_usd), ...names }));
+  return lines.join('\n');
 }
 
-function helpScreen() {
+function helpScreen(L) {
   const s = settings();
-  const prices = priceLines(currentOffer(), s, marginE6());
-  return [
-    '<b>How to use this bot</b>',
+  const names = buttonNames(L);
+  const lines = [
+    t(L, 'help.title'),
     '',
-    '<b>🎨 Pictures</b>',
-    '• Describe what you want — the subject, the style, any words that must appear. Example: <i>"a poster for PCoin Café, the words Grand Opening Saturday 10:00, a latte on a wooden table"</i>.',
-    '• Say the shape if it matters — <b>square</b>, <b>wide</b> or <b>tall</b> — or I choose.',
-    '• Want variations? Press <b>🔁 Again</b> under a picture.',
+    t(L, 'help.pic_title'), t(L, 'help.pic_1'), t(L, 'help.pic_2'), t(L, 'help.pic_3', names),
     '',
-    '<b>✏️ Changing pictures</b>',
-    '• <b>Your photo:</b> send it as a photo with a caption saying what to change. Without a caption I keep it and ask what to do.',
-    '• <b>A picture I made:</b> reply to it, or use its number — every result has <b>#N</b> in its caption: <i>"#3 make the sky pink"</i>.',
-    '• <b>Several pictures:</b> <i>"put the cat from #2 into the room from #4"</i>.',
+    t(L, 'help.edit_title'), t(L, 'help.edit_1'), t(L, 'help.edit_2'), t(L, 'help.edit_3'),
     '',
-    '<b>🎬 Videos</b>',
-    `• <b>From words:</b> <i>"a red fox running through snow"</i>. ${escapeHtml(String(s.videoSeconds))} seconds, ${escapeHtml(s.videoResolution)}, with sound. Say a length if you want another one.`,
-    '• <b>From a picture:</b> send a photo, or write <i>"animate #2"</i> — the video starts from that picture.',
-    '• <b>Changing a video</b> makes a <b>new version</b> with your changes, from the same starting picture — not a frame-by-frame edit. I cannot edit a video you send me.',
-    '• A video takes 1–5 minutes and arrives by itself; you can keep chatting meanwhile.',
+    t(L, 'help.vid_title'),
+    t(L, 'help.vid_1', { seconds: escapeHtml(String(s.videoSeconds)), res: escapeHtml(s.videoResolution) }),
+    t(L, 'help.vid_2'), t(L, 'help.vid_3'), t(L, 'help.vid_4'),
     '',
-    '<b>✅ Cards and paying</b>',
-    '• Every request becomes a card with its price. <b>✅ Make it</b> charges exactly that price, never more. Want something different? Just say so — a new card replaces the old one — or press <b>✖ Cancel</b>.',
-    '• Not enough balance? The card stays open: top up and press ✅ again.',
-    '• If the image service refuses a request, nothing is charged.',
-    '• Under each result: <b>🔁 Again</b> (a new card for another one) and <b>📎 Original file</b> (full quality, free, for 24 hours).',
+    t(L, 'help.pay_title'), t(L, 'help.pay_1', names), t(L, 'help.pay_2'), t(L, 'help.pay_3'), t(L, 'help.pay_4', names),
     '',
-    '<b>➕ Balance and top-up</b>',
-    '• <b>Telegram Stars</b> — pay inside Telegram, credited instantly.',
-    '• <b>PCN</b> — send PCN to your own permanent address; credited after 3 confirmations.',
+    t(L, 'help.top_title'),
+  ];
+  if (starsPackages(s).length) lines.push(t(L, 'help.top_stars'));
+  lines.push(t(L, 'help.top_pcn', { conf: MIN_CONF }));
+  if (WPCN_ENABLED) lines.push(t(L, 'help.top_wpcn'));
+  if (s.invitesEnabled && s.inviteRewardUsd > 0) {
+    lines.push('', t(L, 'help.inv_title'), s.inviteMinTopupUsd > 0
+      ? t(L, 'help.inv_1', { reward: dollars(s.inviteRewardUsd), min: dollars(s.inviteMinTopupUsd) })
+      : t(L, 'help.inv_1_nomin', { reward: dollars(s.inviteRewardUsd) }));
+  }
+  lines.push(
     '',
-    '<b>Good to know</b>',
-    '• I only make pictures and videos — I do not answer other questions.',
-    '• <b>🆕 New chat</b> forgets our conversation; your pictures stay and keep their numbers.',
-    '• Problems with a payment: /paysupport.',
+    t(L, 'help.know_title'), t(L, 'help.know_1'), t(L, 'help.know_2', names), t(L, 'help.know_3', names), t(L, 'help.know_4'),
     '',
-    `<i>Now: ${escapeHtml(prices.join('; '))}.</i>`,
+    t(L, 'start.now', { prices: pricesNow(L) }),
     '',
-    `<i>${STUDIO_TERMS}</i>`,
+    `<i>${t(L, 'terms.studio')}</i>`,
+  );
+  return lines.join('\n');
+}
+
+// 🤝 Invite friends: the user's own link, what it pays, and how it has gone.
+function inviteScreen(chatId, L) {
+  const s = settings();
+  if (!s.invitesEnabled || !(s.inviteRewardUsd > 0) || !BOT_USERNAME) {
+    return { html: t(L, 'invite.off'), keyboard: backKeyboard(L) };
+  }
+  const link = inviteLink(BOT_USERNAME, chatId);
+  const st = inviteStats(db, chatId);
+  const reward = dollars(s.inviteRewardUsd);
+  const html = [
+    t(L, 'invite.title', { reward }),
+    '',
+    s.inviteMinTopupUsd > 0 ? t(L, 'invite.how', { reward, min: dollars(s.inviteMinTopupUsd) }) : t(L, 'invite.how_nomin', { reward }),
+    '',
+    t(L, 'invite.link_title'),
+    `<code>${escapeHtml(link)}</code>`,
+    t(L, 'invite.tap_copy'),
+    '',
+    t(L, 'invite.stats_title'),
+    t(L, 'invite.joined', { n: st.joined }),
+    t(L, 'invite.rewarded', { n: st.rewarded }),
+    t(L, 'invite.earned', { amount: dollars(Number(st.earnedMicro) / 1e6) }),
+    '',
+    t(L, 'invite.fine'),
   ].join('\n');
+  const shareText = s.giftEnabled && s.giftUsd > 0 ? t(L, 'invite.share_text', { gift: dollars(s.giftUsd) }) : t(L, 'invite.share_text_nogift');
+  const share = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(shareText)}`;
+  return {
+    html,
+    keyboard: { inline_keyboard: [[{ text: t(L, 'btn.share'), url: share }], [{ text: t(L, 'btn.menu'), callback_data: 'nav:start' }]] },
+  };
+}
+
+// 🌐 Language: every language, the current one ticked, two to a row.
+function languageKeyboard(L) {
+  const rows = [];
+  for (let i = 0; i < LANG_CODES.length; i += 2) {
+    rows.push(LANG_CODES.slice(i, i + 2).map((c) => ({ text: `${c === L ? '✓ ' : ''}${LANGS[c].flag} ${LANGS[c].name}`, callback_data: `lang:${c}` })));
+  }
+  return { inline_keyboard: rows };
+}
+
+// The "/" menu, in one language; admins also see /stats.
+function commandsFor(L, admin = false) {
+  const list = ['start', 'balance', 'topup', 'invite', 'language', 'clear', 'help', 'paysupport']
+    .map((c) => ({ command: c, description: t(L, `cmd.${c}`) }));
+  return admin ? [...list, { command: 'stats', description: 'Admin: rail and studio status' }] : list;
+}
+
+// A new language: saved, said in that language, and the keyboard and "/" menu redrawn in it.
+async function setLanguage(chatId, code) {
+  if (!isLang(code)) return;
+  db.prepare('UPDATE users SET lang = ? WHERE chat_id = ?').run(code, chatId);
+  log.info('language changed', { chat: chatTag(chatId), lang: code });
+  await tg.sendMessage(chatId, t(code, 'lang.changed', { flag: LANGS[code].flag, name: LANGS[code].name }), { reply_markup: quickKeyboard(code) });
+  const r = await tg.setMyCommands(commandsFor(code, ADMIN_CHATS.has(chatId)), { type: 'chat', chat_id: chatId });
+  if (!r.ok) log.warn('setMyCommands (chat language) failed', { desc: r.description });
 }
 
 // The QR carries a BARE ADDRESS, not a pcoin: payment URI.
@@ -283,7 +398,9 @@ async function depositQr(address) {
   });
 }
 
-async function depositScreen(chatId) {
+// ➕ → PCN: the user's own permanent address, in webbuilderbot's three steps, with the live rate,
+// the 30-day headroom and the last deposits. Returns { html, keyboard }.
+async function depositScreen(chatId, L) {
   let alloc;
   try {
     alloc = allocateAddress(db, chatId);
@@ -299,7 +416,7 @@ async function depositScreen(chatId) {
         tg.sendMessage(a, 'The pcnaibot deposit address pool is EMPTY. New users cannot be given an address.')
           .catch(err => log.error('admin alert failed', errFields(err)));
       }
-      return 'We could not allocate a deposit address just now. This has been reported and will be fixed — please try again shortly.';
+      return { html: t(L, 'pcn.pool_empty'), keyboard: backKeyboard(L) };
     }
     throw e;
   }
@@ -308,122 +425,154 @@ async function depositScreen(chatId) {
   const rate = await readRate(kvStore, cfg);
 
   const lines = [
-    '<b>Top up with PCN</b>',
+    t(L, 'pcn.title'),
     '',
-    'Send PCN to your own permanent address:',
+    t(L, 'pcn.step1'),
+    '',
     `<code>${escapeHtml(alloc.address)}</code>`,
+    t(L, 'pcn.tap_copy'),
+    '',
+    t(L, 'pcn.step2'),
+    '',
+    t(L, 'pcn.step3'),
     '',
   ];
 
   if (rate.usable) {
     const minPcn = usdToPcnString(BigInt(Math.round(PUBLISHED_MIN_USD * 1e6)), rate.rateE12);
     lines.push(
-      `Rate right now: <b>1 PCN = $${escapeHtml(Number(rate.rateText).toFixed(6))}</b>`,
-      `Suggested minimum: <b>${escapeHtml(minPcn)} PCN</b> (about $${PUBLISHED_MIN_USD})`,
-      '',
-      `<b>The rate is read when your deposit confirms, not now.</b> It can move while you wait, and that move is yours either way.`,
+      t(L, 'pcn.rate', { rate: escapeHtml(Number(rate.rateText).toFixed(6)) }),
+      t(L, 'pcn.min', { pcn: escapeHtml(minPcn), usd: PUBLISHED_MIN_USD }),
     );
     // 30-day headroom, stated in PCN at the live rate. CAPS ARE ENFORCED BEFORE
     // THE MONEY MOVES -- a deposit that lands over a cap is credited and
     // flagged, never kept and refused.
     const used = creditedUsdLast30Days(db, chatId);
     const headroom = CAP_USER_MICRO > used ? CAP_USER_MICRO - used : 0n;
-    if (headroom <= 0n) {
-      lines.push('', '<b>Your 30-day top-up limit is used up.</b> Please do not send more until it frees up.');
-    } else {
-      lines.push('', `30-day headroom left: <b>$${escapeHtml(microUsdToString(headroom, 2))}</b> (~${escapeHtml(usdToPcnString(headroom, rate.rateE12))} PCN)`);
-    }
+    lines.push(headroom <= 0n
+      ? t(L, 'pcn.cap_used')
+      : t(L, 'pcn.headroom', { usd: escapeHtml(microUsdToString(headroom, 2)), pcn: escapeHtml(usdToPcnString(headroom, rate.rateE12)) }));
+    lines.push(t(L, 'pcn.conf', { conf: MIN_CONF }), '', t(L, 'pcn.rate_note'));
   } else {
-    lines.push('<b>Rate unavailable right now.</b> Your deposit will still be credited — the rate is read when it confirms, not now.');
+    lines.push(t(L, 'pcn.rate_off'), t(L, 'pcn.conf', { conf: MIN_CONF }));
   }
-
-  lines.push(
-    '',
-    `Credited after <b>${MIN_CONF} confirmations</b> (about 30 minutes, sometimes longer).`,
-    'Coinbase (freshly mined) payments need 100 confirmations.',
-    '',
-    ONE_WAY,
-    '',
-    `<a href="${EXPLORER_PUBLIC}/address/${encodeURIComponent(alloc.address)}">View this address on the explorer</a>`,
-  );
+  lines.push('', t(L, 'terms.one_way'));
 
   const recent = db.prepare(
     `SELECT amount_sat, status, credited_micro_usd FROM pcn_deposits
       WHERE chat_id = ? ORDER BY id DESC LIMIT 10`
   ).all(chatId);
   if (recent.length) {
-    lines.push('', '<b>Recent deposits</b>');
+    lines.push('', t(L, 'pcn.recent'));
     for (const d of recent) {
-      lines.push(`· ${escapeHtml(satsToPcnString(d.amount_sat))} PCN — ${escapeHtml(d.status)}`
+      const st = ['seen', 'confirming', 'credited', 'rejected', 'held'].includes(d.status) ? t(L, `pcn.st.${d.status}`) : escapeHtml(d.status);
+      lines.push(`· ${escapeHtml(satsToPcnString(d.amount_sat))} PCN — ${st}`
         + (d.credited_micro_usd !== null ? ` — $${escapeHtml(microUsdToString(d.credited_micro_usd, 4))}` : ''));
     }
   }
-  return lines.join('\n');
+  return {
+    html: lines.join('\n'),
+    keyboard: {
+      inline_keyboard: [
+        [{ text: t(L, 'btn.buy_pcn'), url: 'https://market.pc.am' }],
+        [{ text: t(L, 'btn.explorer'), url: `${EXPLORER_PUBLIC}/address/${encodeURIComponent(alloc.address)}` }],
+        [{ text: t(L, 'btn.menu'), callback_data: 'nav:start' }],
+      ],
+    },
+  };
 }
 
-async function wpcnScreen() {
-  if (!WPCN_ENABLED) {
-    return 'wPCN top-ups are not enabled yet. Please top up with PCN using /topup.';
-  }
+// The wPCN token and the one PancakeSwap route to it, pinned by contract address -- a search for
+// "wPCN" can land on any token that claims the name, and buying the wrong one is unrecoverable
+// (webbuilderbot's WPCN_SWAP_URL).
+const WPCN_CONTRACT = '0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1';
+const WPCN_SWAP_URL = `https://pancakeswap.finance/swap?inputCurrency=0x55d398326f99059fF775485246999027B3197955&outputCurrency=${WPCN_CONTRACT}`;
+
+// ➕ → wPCN: pay the shared address, paste the hash. Returns { html, keyboard }.
+async function wpcnScreen(chatId, L) {
+  if (!WPCN_ENABLED) return { html: t(L, 'wpcn.off'), keyboard: backKeyboard(L) };
   const info = await wpcn.paymentInfo();
-  if (!info) {
-    return 'The wPCN payment service is unreachable right now. Please try again shortly, or top up with PCN using /topup.';
-  }
-  return [
-    '<b>Top up with wPCN</b>',
+  if (!info) return { html: t(L, 'wpcn.unreachable'), keyboard: backKeyboard(L) };
+  const lines = [
+    t(L, 'wpcn.title'),
     '',
-    'wPCN is the wrapped form of PCN on <b>BNB Smart Chain (BEP-20)</b>.',
-    `Token contract: <code>0x290A5779a419Cb9cB22fa087CDD1CD16dA2D95F1</code>`,
-    '<b>wPCN has 8 decimals, not 18.</b>',
-    '',
-    'Send wPCN to:',
-    `<code>${escapeHtml(info.payTo)}</code>`,
-    '',
+    t(L, 'wpcn.what'),
     // wPCN is a 1:1 claim on PCN, redeemable 1:1, so it credits at PARITY --
     // and the screen must say whatever is actually true rather than a number
     // baked in here. bonusPercent went 10 -> 0 on 2026-09-11 precisely because
     // a bonus on a 1:1 claim contradicts the property that makes it work; if it
     // is ever non-zero again, the user is told, not silently given a rate the
     // code did not expect.
-    info.bonusPct === 0
-      ? 'wPCN credits <b>exactly the same</b> as the same amount of PCN.'
-      : `Paying in wPCN currently credits <b>${escapeHtml(String(info.bonusPct))}% more</b> than the same amount of PCN.`,
-    info.minConfirmations ? `Credited after ${info.minConfirmations} BSC confirmations.` : '',
+    info.bonusPct === 0 ? t(L, 'wpcn.parity') : t(L, 'wpcn.bonus', { pct: escapeHtml(String(info.bonusPct)) }),
     '',
-    '<b>Then paste your transaction hash here</b> (the 0x… value) and it will be verified.',
+    t(L, 'wpcn.step1'),
+    `<code>${escapeHtml(info.payTo)}</code>`,
     '',
-    ONE_WAY,
-  ].filter(Boolean).join('\n');
+    t(L, 'wpcn.network', { contract: WPCN_CONTRACT }),
+    '',
+    t(L, 'wpcn.step2'),
+    '',
+    t(L, 'wpcn.step3'),
+    '',
+    t(L, 'wpcn.conf', { conf: escapeHtml(String(info.minConfirmations ?? '?')) }),
+    '',
+    t(L, 'terms.one_way'),
+  ];
+  const paid = db.prepare(
+    `SELECT txhash, SUM(wpcn_sat) sat, SUM(usd_micro) usd FROM wpcn_claims WHERE chat_id = ?
+      GROUP BY txhash ORDER BY MAX(created_at) DESC LIMIT 10`
+  ).all(chatId);
+  if (paid.length) {
+    lines.push('', t(L, 'wpcn.recent'));
+    for (const p of paid) {
+      lines.push(t(L, 'wpcn.recent_row', {
+        wpcn: escapeHtml(satsToPcnString(p.sat)), usd: escapeHtml(microUsdToString(p.usd, 4)), hash: escapeHtml(String(p.txhash).slice(0, 12)),
+      }));
+    }
+  }
+  return {
+    html: lines.join('\n'),
+    keyboard: {
+      inline_keyboard: [
+        [{ text: t(L, 'btn.buy_wpcn'), url: WPCN_SWAP_URL }],
+        [{ text: t(L, 'btn.bscscan'), url: `https://bscscan.com/address/${encodeURIComponent(info.payTo)}` }],
+        [{ text: t(L, 'btn.menu'), callback_data: 'nav:start' }],
+      ],
+    },
+  };
 }
 
-async function handleTxHash(chatId, txhash) {
-  if (!WPCN_ENABLED) {
-    return 'That looks like a BNB Smart Chain transaction hash. wPCN top-ups are not enabled yet — please top up with PCN using /topup.';
-  }
+// A pasted 0x hash: "checking…" at once (the verifier can take several seconds), then the verdict.
+async function handleTxHash(chatId, txhash, L) {
+  if (!WPCN_ENABLED) return t(L, 'wpcn.hash_off');
+  await tg.sendMessage(chatId, t(L, 'wpcn.checking')).catch(() => undefined);
   const r = await wpcn.verifyAndCredit(chatId, txhash);
 
   if (r.state === WSTATE.CREDITED && r.creditedMicro > 0n) {
-    return `Credited <b>$${escapeHtml(microUsdToString(r.creditedMicro, 4))}</b>${r.healed ? ' (recovered from an earlier interrupted payment)' : ''}.`;
+    const bal = db.prepare('SELECT balance_micro_usd b FROM users WHERE chat_id = ?').get(chatId)?.b ?? 0;
+    return t(L, 'wpcn.credited', { usd: escapeHtml(microUsdToString(r.creditedMicro, 4)), balance: balanceLabel(bal) })
+      + (r.healed ? `\n\n${t(L, 'wpcn.healed')}` : '');
   }
-  if (r.state === WSTATE.CREDITED && r.duplicate) {
-    return 'That transaction was already credited to your balance.';
-  }
-  if (r.state === WSTATE.ALREADY_CLAIMED) {
-    return r.yours
-      ? 'That transaction is already credited to your balance.'
-      : 'That transaction has already been claimed by another account. If you believe that is wrong, please report it.';
-  }
+  if (r.state === WSTATE.CREDITED && r.duplicate) return t(L, 'wpcn.dup');
+  if (r.state === WSTATE.ALREADY_CLAIMED) return r.yours ? t(L, 'wpcn.dup') : t(L, 'wpcn.claimed_other');
   // 503 unreadable -> THE QUESTION IS UNANSWERED. Resolve nothing, and never
   // say "payment not found".
-  if (r.state === WSTATE.UNREADABLE) {
-    return 'We could not reach the blockchain just now. <b>Your payment is safe</b> — please try again in a minute.';
+  if (r.state === WSTATE.UNREADABLE) return t(L, 'wpcn.unreadable');
+  switch (r.state) {
+    case WSTATE.PENDING: return t(L, 'wpcn.st.pending');
+    case WSTATE.CONFIRMING: return t(L, 'wpcn.st.confirming', { n: escapeHtml(String(r.confirmations ?? '?')), req: escapeHtml(String(r.required ?? '?')) });
+    case WSTATE.NO_PAYMENT: return t(L, 'wpcn.st.no_payment');
+    case WSTATE.REVERTED: return t(L, 'wpcn.st.reverted');
+    case WSTATE.REORGED: return t(L, 'wpcn.st.reorged');
+    case WSTATE.BAD_REQUEST: return t(L, 'wpcn.st.bad_request');
+    // Anything else is NOT "you did not pay" -- it is "we could not check".
+    default: return t(L, 'wpcn.unreadable');
   }
-  return escapeHtml(humanMessage({ state: r.state }));
 }
 
 // One screen, sent with its buttons. The text is what the slash command would have returned;
 // the keyboard is what makes it a menu.
-async function sendScreen(chatId, html, keyboard = BACK_KEYBOARD) {
+async function sendScreen(chatId, html, keyboard) {
   const parts = splitMessage(html);
   for (let i = 0; i < parts.length; i++) {
     const last = i === parts.length - 1;
@@ -433,32 +582,45 @@ async function sendScreen(chatId, html, keyboard = BACK_KEYBOARD) {
 
 // What each menu button (and its typed alias) shows. `null` from a handler means it sent its own
 // messages. Shared by the slash commands and the inline buttons so the two can never drift.
-async function showScreen(chatId, u, which) {
+// `fresh` is set when this very message opened the account (lib/rewards.mjs openAccount).
+async function showScreen(chatId, u, which, fresh = null) {
+  const L = langOfUser(u);
   switch (which) {
     case 'start':
-      await sendScreen(chatId, startScreen(u), quickKeyboard());
+      await sendScreen(chatId, startScreen(u, fresh), quickKeyboard(L));
+      // A new user is asked their language once -- it was guessed from Telegram's.
+      if (fresh?.created) await tg.sendMessage(chatId, t(L, 'lang.choose'), { reply_markup: languageKeyboard(L) });
       return null;
     case 'help':
-      await sendScreen(chatId, helpScreen());
+      await sendScreen(chatId, helpScreen(L), backKeyboard(L));
+      return null;
+    case 'invite': {
+      const s = inviteScreen(chatId, L);
+      await sendScreen(chatId, s.html, s.keyboard);
+      return null;
+    }
+    case 'language':
+      await tg.sendMessage(chatId, t(L, 'lang.choose'), { reply_markup: languageKeyboard(L) });
       return null;
     case 'balance':
       await sendScreen(chatId, balanceScreen(u), {
-        inline_keyboard: [[{ text: '➕ Top up', callback_data: 'nav:topup' }, { text: '« Menu', callback_data: 'nav:start' }]],
+        inline_keyboard: [[{ text: t(L, 'btn.topup'), callback_data: 'nav:topup' }, { text: t(L, 'btn.menu'), callback_data: 'nav:start' }]],
       });
       return null;
     case 'topup': {
       // Telegram Stars first -- paid in two taps, credited at once -- then the PCN rails.
       const pk = starsPackages(settings());
       const rows = pk.map((p) => [{ text: packageButtonText(p), callback_data: `st:${p.index}` }]);
-      rows.push([{ text: 'PCN — on the PCoin chain', callback_data: 'nav:topup_pcn' }]);
-      if (WPCN_ENABLED) rows.push([{ text: 'wPCN — on BNB Smart Chain', callback_data: 'nav:topup_wpcn' }]);
-      rows.push([{ text: '« Menu', callback_data: 'nav:start' }]);
+      rows.push([{ text: t(L, 'btn.pcn'), callback_data: 'nav:topup_pcn' }]);
+      if (WPCN_ENABLED) rows.push([{ text: t(L, 'btn.wpcn'), callback_data: 'nav:topup_wpcn' }]);
+      rows.push([{ text: t(L, 'btn.menu'), callback_data: 'nav:start' }]);
       await tg.sendMessage(chatId, [
-        `<b>Top up</b> · your balance is <b>${balanceLabel(u.balance_micro_usd)}</b>`,
+        t(L, 'topup.title', { balance: balanceLabel(u.balance_micro_usd) }),
         '',
-        pk.length ? '⭐ <b>Telegram Stars</b> — pay inside Telegram, credited instantly:' : '',
+        pk.length ? t(L, 'topup.stars') : null,
         pk.length ? '' : null,
-        '<b>PCN</b> — send PCN to your own address; credited after 3 confirmations.',
+        t(L, 'topup.pcn', { conf: MIN_CONF }),
+        WPCN_ENABLED ? t(L, 'topup.wpcn') : null,
       ].filter((l) => l !== null && l !== undefined).join('\n'), { reply_markup: { inline_keyboard: rows } });
       return null;
     }
@@ -473,30 +635,30 @@ async function showScreen(chatId, u, which) {
           const png = await depositQr(alloc.address);
           await tg.sendPhoto(chatId, png, {
             filename: `pcn-${alloc.address.slice(0, 10)}.png`,
-            caption: `<b>Your PCN deposit address</b>
-<code>${escapeHtml(alloc.address)}</code>
-
-Scan or copy. It is yours permanently.`,
+            caption: t(L, 'pcn.qr_caption', { address: escapeHtml(alloc.address) }),
           });
         } catch (e) {
           // A QR that fails to render must never cost the user the address.
           log.warn('QR render/send failed; sending the address as text only', errFields(e));
         }
       }
-      await sendScreen(chatId, await depositScreen(chatId));
+      const s = await depositScreen(chatId, L);
+      await sendScreen(chatId, s.html, s.keyboard);
       return null;
     }
-    case 'topup_wpcn':
-      await sendScreen(chatId, await wpcnScreen());
+    case 'topup_wpcn': {
+      const s = await wpcnScreen(chatId, L);
+      await sendScreen(chatId, s.html, s.keyboard);
       return null;
+    }
     case 'clear': {
       db.prepare('DELETE FROM conversations WHERE chat_id = ?').run(chatId);
       const open = db.prepare("SELECT id FROM proposals WHERE chat_id = ? AND state = 'open'").all(chatId);
       for (const p of open) {
         cancelProposal(db, chatId, p.id);
-        await setCardStatus(jobDeps(), p.id, 'Cancelled — a new chat was started.');
+        await setCardStatus(jobDeps(), p.id, 'card.st.new_chat');
       }
-      await sendScreen(chatId, 'New chat started — I have forgotten our conversation. Your pictures and videos are still here, and I can still change them by their number.');
+      await sendScreen(chatId, t(L, 'clear.done'), backKeyboard(L));
       return null;
     }
     default:
@@ -507,46 +669,40 @@ Scan or copy. It is yours permanently.`,
 // A ledger row as a person reads it: WHAT it was and WHEN, not the row's kind tag. A studio charge
 // is noted "media <model> P<card> …"; older rows name the chat model ("agent <model> …",
 // "stream <model> …", "<model> in=…").
-function ledgerLabel(l) {
+function ledgerLabel(l, L) {
   if (l.kind === 'ai_turn') {
     const words = String(l.note ?? '').trim().split(/\s+/);
     if (words[0] === 'media') {
       const kind = MEDIA_MODELS[words[1]]?.kind ?? (/video|t2v|i2v|horse/.test(words[1] ?? '') ? 'video' : 'image');
-      return kind === 'video' ? '🎬 video' : '🎨 picture';
+      return kind === 'video' ? t(L, 'led.video') : t(L, 'led.picture');
     }
     const model = words[0] === 'agent' || words[0] === 'stream' ? words[1] : words[0];
-    return model ? `<code>${escapeHtml(model)}</code>` : 'a turn';
+    return model ? `<code>${escapeHtml(model)}</code>` : t(L, 'led.turn');
   }
-  if (l.kind === 'deposit_pcn') return 'PCN deposit';
-  if (l.kind === 'deposit_wpcn') return 'wPCN deposit';
-  if (l.kind === 'deposit_stars') return `⭐ ${escapeHtml(String(l.note ?? 'Stars').replace(/ Telegram Stars$/, ''))} Stars`;
-  if (l.kind === 'grant') return 'free grant';
-  if (String(l.idem_key ?? '').startsWith('stars-refund:')) return '⭐ Stars refund';
-  return 'adjustment';
-}
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-function whenLabel(sec) {
-  const d = new Date(sec * 1000);
-  const hh = String(d.getUTCHours()).padStart(2, '0');
-  const mm = String(d.getUTCMinutes()).padStart(2, '0');
-  return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${hh}:${mm}`;
+  const key = String(l.idem_key ?? '');
+  if (l.kind === 'deposit_pcn') return t(L, 'led.pcn');
+  if (l.kind === 'deposit_wpcn') return t(L, 'led.wpcn');
+  if (l.kind === 'deposit_stars') return t(L, 'led.stars', { n: escapeHtml(String(l.note ?? '').replace(/ Telegram Stars$/, '')) });
+  if (l.kind === 'gift') return t(L, 'led.gift');
+  if (l.kind === 'referral') return t(L, 'led.referral');
+  if (l.kind === 'grant') return t(L, 'led.grant');
+  if (key.startsWith('stars-refund:')) return t(L, 'led.stars_refund');
+  if (key.startsWith('rebate:')) return t(L, 'led.rebate');
+  return t(L, 'led.adjust');
 }
 
 function balanceScreen(u) {
+  const L = langOfUser(u);
   // A grant row moves nothing and no longer means anything; it is not shown.
   const led = db.prepare("SELECT * FROM ledger WHERE chat_id=? AND kind <> 'grant' ORDER BY id DESC LIMIT 10").all(u.chat_id);
-  const lines = [
-    `Balance: <b>${balanceLabel(u.balance_micro_usd)}</b>`,
-    u.reserved_micro_usd > 0 ? `Set aside for something being made: $${escapeHtml(microUsdToString(u.reserved_micro_usd, 4))}` : '',
-  ].filter(Boolean);
-  if (u.balance_micro_usd < 0) {
-    lines.push('', '<b>Your balance is negative.</b> Top up to continue.');
-  }
+  const lines = [t(L, 'bal.balance', { balance: balanceLabel(u.balance_micro_usd) })];
+  if (u.reserved_micro_usd > 0) lines.push(t(L, 'bal.reserved', { amount: `$${escapeHtml(microUsdToString(u.reserved_micro_usd, 4))}` }));
+  if (u.balance_micro_usd < 0) lines.push('', t(L, 'bal.negative'));
   if (led.length) {
-    lines.push('', '<b>Recent activity</b> <i>(times in UTC)</i>');
+    lines.push('', t(L, 'bal.recent'));
     for (const l of led) {
       const sign = l.delta_micro_usd >= 0 ? '+' : '−';
-      lines.push(`· ${escapeHtml(whenLabel(l.created_at))} · ${ledgerLabel(l)} ${sign}$${escapeHtml(microUsdToString(Math.abs(l.delta_micro_usd), 4))}`);
+      lines.push(`· ${escapeHtml(whenLabel(L, l.created_at))} · ${ledgerLabel(l, L)} ${sign}$${escapeHtml(microUsdToString(Math.abs(l.delta_micro_usd), 4))}`);
     }
   }
   return lines.join('\n');
@@ -616,18 +772,19 @@ function enqueueChat(chatId, fn) {
 // Albums arrive as several messages; the caption-less ones get one short answer between them.
 const answeredAlbums = new Map();
 
-async function sendAgentText(chatId, text, fallback) {
+async function sendAgentText(chatId, text, fallback, L = langOf(db, chatId)) {
   const html = text ? mdToHtml(text) : fallback;
-  if (html) await tg.sendLong(chatId, html, { reply_markup: quickKeyboard() });
+  if (html) await tg.sendLong(chatId, html, { reply_markup: quickKeyboard(L) });
 }
 
 // One free chat turn: the agent talks, and may propose a card.
 async function runChat(chatId, updateId, userContent) {
   const u = ensureUser(chatId);
+  const L = langOfUser(u);
   const s = settings();
   const gate = chatGate(db, chatId, {
     perHour: s.chatPerHour, dailyBudget: s.chatDailyBudget, balanceMicro: u.balance_micro_usd,
-    rateRemaining: oona.rateLimitRemaining, rlFloor: RL_FLOOR,
+    rateRemaining: oona.rateLimitRemaining, rlFloor: RL_FLOOR, lang: L,
   });
   if (gate.refuse) { await tg.sendMessage(chatId, gate.refuse); return; }
 
@@ -642,13 +799,13 @@ async function runChat(chatId, updateId, userContent) {
     r = await chatTurn({ db, oona, settings: s, offer, marginE6: m, balanceMicro: BigInt(u.balance_micro_usd) }, { chatId, userContent });
   } catch (e) {
     log.warn('chat turn failed', { chat: chatTag(chatId), model: s.chatModel, ...errFields(e) });
-    await tg.sendMessage(chatId, 'The assistant is unavailable for a moment — please try again shortly. Nothing is charged for chatting.');
+    await tg.sendMessage(chatId, t(L, 'chat.unavailable'));
     return;
   }
   log.info('chat turn', { chat: chatTag(chatId), model: s.chatModel, ms: Date.now() - started, card: !!r.spec, failed: r.failed ?? null });
 
   if (r.failed === 'max_tokens') {
-    await tg.sendMessage(chatId, 'Sorry, I lost my thread — could you say that again?');
+    await tg.sendMessage(chatId, t(L, 'chat.lost_thread'));
     appendHistory(db, chatId, [{ role: 'user', content: userContent }]);
     return;
   }
@@ -659,18 +816,16 @@ async function runChat(chatId, updateId, userContent) {
     try { quote = quoteSpec(offer[r.spec.model], r.spec, m); } catch (e) { log.warn('a proposal could not be priced', { chat: chatTag(chatId), ...errFields(e) }); }
     if (quote) {
       const created = createProposal(db, chatId, r.spec, quote, { ttlSec: s.cardTtlHours * 3600 });
-      if (r.text) await sendAgentText(chatId, r.text);
+      if (r.text) await sendAgentText(chatId, r.text, null, L);
       await sendCard(jobDeps(), created);
       const p = created.proposal;
       cardNote = `(Card P${p.id} shown: ${p.kind === 'video' ? `video ${p.seconds} s` : 'picture'}, ${p.shape} — "${p.summary}" — ${moneyLabel(p.price_micro)}; waiting for the user's ✅.)`;
     } else {
-      await sendAgentText(chatId, r.text, 'That cannot be priced right now — please try again in a little while.');
+      await sendAgentText(chatId, r.text, t(L, 'chat.unpriced'), L);
       cardNote = '(The card could not be priced, so none was shown.)';
     }
   } else {
-    await sendAgentText(chatId, r.text, r.failed === 'invalid'
-      ? 'I could not set that up — could you describe it once more?'
-      : 'Tell me what picture or video you would like.');
+    await sendAgentText(chatId, r.text, r.failed === 'invalid' ? t(L, 'chat.invalid') : t(L, 'chat.ask'), L);
   }
   appendHistory(db, chatId, [
     { role: 'user', content: userContent },
@@ -681,6 +836,7 @@ async function runChat(chatId, updateId, userContent) {
 // ✅ on a card: everything up to the reservation is synchronous (lib/jobs.mjs beginJob), then the
 // job runs in the background.
 function confirmCard(chatId, updateId, proposalId) {
+  const L = langOf(db, chatId);
   const b = beginJob(db, { chatId, proposalId, offer: currentOffer(), marginE6: marginE6() });
   if (b.ok) {
     note(chatId, `(The user pressed ✅ on card P${proposalId}; it is being made.)`);
@@ -689,31 +845,32 @@ function confirmCard(chatId, updateId, proposalId) {
       : startVideoJob(jobDeps(), b);
     track(work.then((text) => (text ? tg.sendMessage(chatId, text) : null))
       .catch((e) => log.error('studio job threw', { chat: chatTag(chatId), job: b.jobId, ...errFields(e) })));
-    return b.proposal.kind === 'image' ? 'Making it…' : 'Starting the video…';
+    return b.proposal.kind === 'image' ? t(L, 'toast.making') : t(L, 'toast.starting_video');
   }
-  const text = refusalText(b);
+  const text = refusalText(b, L);
   track((async () => {
     if (b.short) {
       note(chatId, `(The user pressed ✅ on card P${proposalId}, but the balance was short.)`);
-      await tg.sendMessage(chatId, text, { reply_markup: { inline_keyboard: [[{ text: '➕ Top up', callback_data: 'nav:topup' }]] } });
+      await tg.sendMessage(chatId, text, { reply_markup: { inline_keyboard: [[{ text: t(L, 'btn.topup'), callback_data: 'nav:topup' }]] } });
     } else if (b.repriced !== undefined) {
-      await setCardStatus(jobDeps(), proposalId, 'The price was updated.', { keepButtons: true });
+      await setCardStatus(jobDeps(), proposalId, 'card.st.price_updated', { keepButtons: true });
       await tg.sendMessage(chatId, text);
     } else if (text) {
       await tg.sendMessage(chatId, text);
     }
   })().catch((e) => log.warn('card refusal could not be sent', errFields(e))));
-  return b.short ? 'Not enough balance' : b.refused === 'started' || b.refused === 'raced' ? 'Already being made' : 'Not made';
+  return b.short ? t(L, 'toast.short') : b.refused === 'started' || b.refused === 'raced' ? t(L, 'toast.already') : t(L, 'toast.not_made');
 }
 
 async function againCard(chatId, itemId) {
+  const L = langOf(db, chatId);
   const s = settings();
   const spec = againSpec(db, { chatId, itemId, settings: s });
-  if (!spec) { await tg.sendMessage(chatId, 'I cannot repeat that one — tell me what you would like instead.'); return; }
+  if (!spec) { await tg.sendMessage(chatId, t(L, 'again.cannot')); return; }
   const offer = currentOffer();
   let quote;
   try { quote = quoteSpec(offer[spec.model], spec, marginE6()); } catch {
-    await tg.sendMessage(chatId, 'That is not available right now — please try again in a little while.');
+    await tg.sendMessage(chatId, t(L, 'again.unavailable'));
     return;
   }
   const created = createProposal(db, chatId, spec, quote, { ttlSec: s.cardTtlHours * 3600 });
@@ -728,15 +885,15 @@ async function againCard(chatId, itemId) {
 // Telegram has taken the Stars. Credit once (keyed on Telegram's charge id), and say so. A credit
 // that cannot be made is an ERROR for the admins -- the user paid -- and the user is told it will
 // be sorted out, never that it failed silently.
-async function handleStarsPaid(chatId, sp) {
-  ensureUser(chatId);
+async function handleStarsPaid(chatId, sp, from = null) {
+  const L = langOfUser(ensureUser(chatId, from));
   let r;
   try { r = creditStarsPayment(db, { chatId, sp }); } catch (e) { r = { refused: e.message }; }
   if (r.credited) {
     log.info('stars payment credited', { chat: chatTag(chatId), stars: r.stars, micro: Number(r.micro) });
-    return `✅ Paid <b>${r.stars} ⭐</b> — <b>${moneyLabel(r.micro)}</b> added. Your balance is <b>${balanceLabel(r.balance)}</b>.`;
+    return t(L, 'stars.paid', { stars: r.stars, usd: moneyLabel(r.micro), balance: balanceLabel(r.balance) });
   }
-  if (r.duplicate) return `That payment was already credited. Your balance is <b>${balanceLabel(r.balance)}</b>.`;
+  if (r.duplicate) return t(L, 'stars.dup', { balance: balanceLabel(r.balance) });
   log.error('STARS PAYMENT NOT CREDITED -- the user paid; credit or refund by hand', {
     chat: chatTag(chatId), stars: sp?.total_amount ?? null, charge: String(sp?.telegram_payment_charge_id ?? '').slice(0, 24), why: r.refused,
   });
@@ -744,7 +901,7 @@ async function handleStarsPaid(chatId, sp) {
     tg.sendMessage(a, `⚠️ A Stars payment of ${escapeHtml(String(sp?.total_amount ?? '?'))} ⭐ from chat ${chatId} could not be credited: ${escapeHtml(String(r.refused))}. Credit or refund it on admin.pc.am → PcoinAiBot → Payments.`)
       .catch(() => undefined);
   }
-  return 'Your payment arrived, but it could not be added to your balance automatically. The team has been told and will sort it out — nothing is lost.';
+  return t(L, 'stars.not_credited');
 }
 
 // A message that starts with SUPPORT (the /paysupport text asks for it) goes to the admins.
@@ -757,9 +914,7 @@ async function relaySupport(chatId, msg, text) {
     if (r.ok) told++;
   }
   log.info('support message relayed', { chat: chatTag(chatId), admins: told });
-  return told
-    ? 'Thank you — your message was passed to the people who run this bot. They will get back to you.'
-    : 'Your message could not be passed on just now. Please try again in a little while.';
+  return t(langOfUser(u), told ? 'support.passed' : 'support.failed');
 }
 
 // ---------------------------------------------------------------------------
@@ -767,7 +922,7 @@ async function relaySupport(chatId, msg, text) {
 // ---------------------------------------------------------------------------
 const COMMANDS = new Set([
   '/start', '/menu', '/help', '/models', '/model', '/balance', '/topup', '/paysupport',
-  '/pcn', '/topup_pcn', '/wpcn', '/topup_wpcn', '/clear', '/stats', '/stop',
+  '/pcn', '/topup_pcn', '/wpcn', '/topup_wpcn', '/clear', '/stats', '/stop', '/invite', '/language', '/lang',
 ]);
 
 async function handleMessage(msg) {
@@ -781,60 +936,81 @@ async function handleMessage(msg) {
 
   // A STARS PAYMENT, before anything else -- the allow-list, commands, the agent. Telegram has
   // already taken the Stars; the credit must happen whatever else is true.
-  if (msg.successful_payment) return handleStarsPaid(chatId, msg.successful_payment);
+  if (msg.successful_payment) return handleStarsPaid(chatId, msg.successful_payment, msg.from);
+
+  // Before the account exists, speak the language Telegram says they use.
+  const guess = () => {
+    const r = db.prepare('SELECT lang FROM users WHERE chat_id = ?').get(chatId);
+    return isLang(r?.lang) ? r.lang : detectLang(msg.from?.language_code);
+  };
 
   const pictures = collectPictures(msg);
   const text = (typeof msg.text === 'string' ? msg.text : (typeof msg.caption === 'string' ? msg.caption : '')).trim();
   if (text === '' && pictures.length === 0) {
     if (carriesOtherMedia(msg) || msg.sticker || msg.poll || msg.contact || msg.location || msg.venue || msg.dice) {
-      return mayUse(chatId) ? 'I can use photos and pictures — send one as a photo, or describe what you would like me to make.' : null;
+      return mayUse(chatId) ? t(guess(), 'msg.photos_only') : null;
     }
     return;
   }
 
   // DISPATCH ON EXACT MATCH OF THE FIRST TOKEN, so /topup_pcn cannot be
   // swallowed by /topup.
-  const first = text.split(/\s+/)[0].split('@')[0];
+  const words = text.split(/\s+/);
+  const first = words[0].split('@')[0];
+
+  // THE ALLOW-LIST. Empty means the bot answers nobody -- that is the launch
+  // gate, not a bug. Checked BEFORE an account (and its welcome gift) exists.
+  if (!mayUse(chatId)) {
+    return COMMANDS.has(first) || isTxHash(text) ? t(guess(), 'msg.not_open') : null;
+  }
+
+  // The account. An invite link opens the bot with "/start r<inviter>"; only the message that
+  // CREATES the account can record it (lib/rewards.mjs).
+  const acct = account(chatId, msg.from, first === '/start' ? parseInvite(words[1]) : null);
+  const u = acct.user;
+  const L = langOfUser(u);
+  const fresh = acct.created ? acct : null;
 
   // Intercept a bare 0x + 64 hex ABOVE the agent even while wPCN is off: a
   // payment receipt is not a picture request.
   if (isTxHash(text)) {
-    if (!mayUse(chatId)) {
-      return 'This bot is not open yet. Thanks for your interest — it will be announced when it is.';
-    }
-    ensureUser(chatId);
-    return handleTxHash(chatId, text);
-  }
-
-  const u = ensureUser(chatId);
-
-  // THE ALLOW-LIST. Empty means the bot answers nobody -- that is the launch
-  // gate, not a bug.
-  if (!mayUse(chatId)) {
-    if (COMMANDS.has(first)) {
-      return 'This bot is not open yet. Thanks for your interest — it will be announced when it is.';
-    }
-    return null;
+    if (fresh) await showScreen(chatId, u, 'start', fresh);
+    return handleTxHash(chatId, text, L);
   }
 
   switch (first) {
     case '/start':
     case '/menu':
-      return showScreen(chatId, u, 'start');
+      return showScreen(chatId, u, 'start', fresh);
+    default:
+      break;
+  }
+  // Someone new whose first message is not /start still sees what the bot does -- and their gift.
+  if (fresh) await showScreen(chatId, u, 'start', fresh);
+
+  switch (first) {
     case '/help':
       return showScreen(chatId, u, 'help');
     case '/balance':
       return showScreen(chatId, u, 'balance');
     case '/clear':
       return showScreen(chatId, u, 'clear');
+    case '/invite':
+      return showScreen(chatId, u, 'invite');
+    case '/language':
+    case '/lang':
+      return showScreen(chatId, u, 'language');
     // Telegram caches the old menu per chat, so these still arrive for a while.
     case '/models':
     case '/model':
-      return 'There is no model to choose any more — just tell me what picture or video you want, and I will show you a card with its price.';
-    case '/paysupport':
-      return escapeHtml(settings().paySupportText);
+      return t(L, 'msg.no_models');
+    case '/paysupport': {
+      // The admin's own text if they wrote one; the built-in one is said in the user's language.
+      const txt = settings().paySupportText;
+      return txt.trim() === DEFAULT_PAY_SUPPORT.trim() ? t(L, 'paysupport.default') : escapeHtml(txt);
+    }
     case '/stop':
-      return 'Nothing to stop: a picture or video is made only after you press ✅, and then it runs to the end.';
+      return t(L, 'msg.nothing_to_stop');
     case '/pcn':
     case '/topup_pcn':
       return showScreen(chatId, u, 'topup_pcn');
@@ -844,7 +1020,7 @@ async function handleMessage(msg) {
     case '/topup_wpcn':
       return showScreen(chatId, u, 'topup_wpcn');
     case '/stats': {
-      if (!ADMIN_CHATS.has(chatId)) return 'That command does not exist here. Try /help.';
+      if (!ADMIN_CHATS.has(chatId)) return t(L, 'msg.no_command');
       return statsText();
     }
     default:
@@ -857,7 +1033,7 @@ async function handleMessage(msg) {
 
   // A dead command never reaches the agent.
   if (first.startsWith('/')) {
-    return 'That command does not exist here. Try /help.';
+    return t(L, 'msg.no_command');
   }
 
   // A message to the people who run the bot (the /paysupport text says how): passed to the admin
@@ -879,15 +1055,15 @@ async function handleMessage(msg) {
       answeredAlbums.set(msg.media_group_id, nowSec());
       for (const [k, at] of answeredAlbums) if (nowSec() - at > 600) answeredAlbums.delete(k);
     }
-    return `Got it — that is #${uploaded.join(', #')}. Tell me what to do with it: change something in it, or bring it to life as a video.`;
+    return t(L, 'msg.got_photo', { ids: `#${uploaded.join(', #')}` });
   }
   const maxChars = settings().chatMaxChars;
   if (text.length > maxChars) {
-    return `That is a long message — please keep it under ${maxChars} characters.`;
+    return t(L, 'msg.too_long', { n: maxChars });
   }
 
   const queued = enqueueChat(chatId, () => runChat(chatId, msg.__update_id, [...notes, text].join('\n')));
-  if (!queued) return 'One moment — I am still answering your earlier messages.';
+  if (!queued) return t(L, 'msg.busy');
   await queued;
   return null;
 }
@@ -1045,28 +1221,22 @@ async function writeBotHeartbeat(fields) {
 //
 // Telegram CACHES this list per chat and only refreshes it on that user's next
 // /start, which is why /models and /stop are still ANSWERED though no longer listed.
-const PUBLIC_COMMANDS = [
-  { command: 'start',   description: 'What I make, prices, your balance' },
-  { command: 'balance', description: 'Balance and recent activity' },
-  { command: 'topup',   description: 'Add credit with PCN' },
-  { command: 'clear',   description: 'New chat — forget the conversation' },
-  { command: 'help',    description: 'How it works' },
-  // Telegram asks every bot that takes Stars to answer /paysupport.
-  { command: 'paysupport', description: 'Help with a payment' },
-];
-
-const ADMIN_EXTRA = [
-  { command: 'stats', description: 'Admin: rail and studio status' },
-];
-
+//
+// One list per language (commandsFor), published for each Telegram language_code, English as the
+// default. A user who picks a language in the bot gets their own per-chat list (setLanguage).
+// Telegram asks every bot that takes Stars to answer /paysupport.
 async function publishCommands() {
-  const r = await tg.setMyCommands(PUBLIC_COMMANDS, { type: 'all_private_chats' });
+  const r = await tg.setMyCommands(commandsFor('en'), { type: 'all_private_chats' });
   if (!r.ok) log.warn('setMyCommands (public) failed', { desc: r.description });
-  else log.info('command menu published', { count: PUBLIC_COMMANDS.length });
+  for (const code of LANG_CODES.filter((c) => c !== 'en')) {
+    const x = await tg.setMyCommands(commandsFor(code), { type: 'all_private_chats' }, code);
+    if (!x.ok) log.warn('setMyCommands (language) failed', { lang: code, desc: x.description });
+  }
+  log.info('command menu published', { languages: LANG_CODES.length });
 
-  // Admin commands are scoped to each admin's own chat, never global.
+  // Admin commands are scoped to each admin's own chat, never global -- in the admin's language.
   for (const id of ADMIN_CHATS) {
-    const a = await tg.setMyCommands([...PUBLIC_COMMANDS, ...ADMIN_EXTRA], { type: 'chat', chat_id: id });
+    const a = await tg.setMyCommands(commandsFor(langOf(db, id), true), { type: 'chat', chat_id: id });
     if (!a.ok) log.warn('setMyCommands (admin scope) failed', { desc: a.description });
   }
 }
@@ -1095,6 +1265,7 @@ async function telegramNames(chatIds) {
 // A button from before 2026-09-26: `mj:<job>:<action>` under a picture, `m:<model>` on the model
 // list, `stop:` on a streaming answer. Answered, never charged.
 async function legacyButton(chatId, data) {
+  const L = langOf(db, chatId);
   if (data.startsWith('mj:') && data.endsWith(':file')) {
     const j = db.prepare('SELECT * FROM media_jobs WHERE id = ? AND chat_id = ?').get(Number(data.split(':')[1]), chatId);
     if (j?.result_url && (j.result_expires_at ?? 0) > nowSec()) {
@@ -1104,10 +1275,10 @@ async function legacyButton(chatId, data) {
         return;
       } catch { /* fall through */ }
     }
-    await tg.sendMessage(chatId, 'That original file has expired — the copy in the chat is still yours to save.');
+    await tg.sendMessage(chatId, t(L, 'legacy.expired_file'));
     return;
   }
-  await tg.sendMessage(chatId, 'That button is from an older version of the bot. Just tell me what picture or video you would like — reply to a picture to change it.', { reply_markup: quickKeyboard() });
+  await tg.sendMessage(chatId, t(L, 'legacy.old_button'), { reply_markup: quickKeyboard(L) });
 }
 
 async function main() {
@@ -1121,6 +1292,7 @@ async function main() {
   if (me.result.can_read_all_group_messages === true) {
     log.warn('PRIVACY MODE IS OFF -- this bot would see every message in any group it is added to. Turn it ON in BotFather.');
   }
+  BOT_USERNAME = me.result.username ?? null;
 
   // A RESTART ENDS EVERY TURN -- but not every JOB. First: whatever was being made. A picture being
   // drawn, or a clip whose job id was never recorded, is HELD (it may have been made and charged)
@@ -1181,7 +1353,7 @@ async function main() {
       refund: async ({ paymentId, note: why }) => {
         try {
           const r = await refundStarsPayment({ db, tg }, { paymentId, note: why });
-          await tg.sendMessage(r.chatId, `⭐ ${r.stars} Stars were refunded to you, and ${moneyLabel(r.micro)} was taken off your balance.`).catch(() => undefined);
+          await tg.sendMessage(r.chatId, t(langOf(db, r.chatId), 'stars.refunded', { stars: r.stars, usd: moneyLabel(r.micro) })).catch(() => undefined);
           return { ok: true, ...r, micro: Number(r.micro) };
         } catch (e) {
           if (e instanceof RefundRefused) return { ok: false, error: e.message };
@@ -1265,7 +1437,7 @@ async function main() {
       if (up.pre_checkout_query) {
         const q = up.pre_checkout_query;
         let verdict;
-        try { verdict = checkPreCheckout(db, q); } catch (e) { log.error('pre-checkout check threw', errFields(e)); verdict = { ok: false, error: 'Something went wrong — please try again.' }; }
+        try { verdict = checkPreCheckout(db, q); } catch (e) { log.error('pre-checkout check threw', errFields(e)); verdict = { ok: false, error: t(detectLang(q.from?.language_code), 'pc.error') }; }
         const a = await tg.call('answerPreCheckoutQuery', verdict.ok
           ? { pre_checkout_query_id: q.id, ok: true }
           : { pre_checkout_query_id: q.id, ok: false, error_message: verdict.error });
@@ -1280,47 +1452,55 @@ async function main() {
         const cid = cq.message?.chat?.id ?? cq.from?.id ?? null;
         const data = typeof cq.data === 'string' ? cq.data : '';
         let toast = '';
+        // The pop-up's language: the user's, or Telegram's before they have an account.
+        let L = detectLang(cq.from?.language_code);
         try {
           if (cid === null || !mayUse(cid)) {
-            toast = 'This bot is not open yet.';
-          } else if (/^sc:\d+$/.test(data)) {
-            ensureUser(cid);
-            toast = confirmCard(cid, up.update_id, Number(data.slice(3)));
-          } else if (/^st:\d+$/.test(data)) {
-            // A Stars package: write the invoice, send it.
-            ensureUser(cid);
-            toast = 'Opening the payment…';
-            track(sendStarsInvoice({ db, tg }, { chatId: cid, settings: settings(), index: Number(data.slice(3)) })
-              .then((r) => (r.ok ? null : tg.sendMessage(cid, r.text)))
-              .catch((e) => log.error('stars invoice threw', errFields(e))));
-          } else if (/^sx:\d+$/.test(data)) {
-            const id = Number(data.slice(3));
-            if (cancelProposal(db, cid, id)) {
-              toast = 'Cancelled';
-              note(cid, `(The user cancelled card P${id}.)`);
-              track(setCardStatus(jobDeps(), id, 'Cancelled.'));
-            } else {
-              toast = 'That card is no longer open.';
+            toast = t(L, 'toast.not_open');
+          } else {
+            L = langOfUser(ensureUser(cid, cq.from));
+            if (/^sc:\d+$/.test(data)) {
+              toast = confirmCard(cid, up.update_id, Number(data.slice(3)));
+            } else if (/^st:\d+$/.test(data)) {
+              // A Stars package: write the invoice, send it.
+              toast = t(L, 'toast.opening_payment');
+              track(sendStarsInvoice({ db, tg }, { chatId: cid, settings: settings(), index: Number(data.slice(3)) })
+                .then((r) => (r.ok ? null : tg.sendMessage(cid, r.text)))
+                .catch((e) => log.error('stars invoice threw', errFields(e))));
+            } else if (/^sx:\d+$/.test(data)) {
+              const id = Number(data.slice(3));
+              if (cancelProposal(db, cid, id)) {
+                toast = t(L, 'toast.cancelled');
+                note(cid, `(The user cancelled card P${id}.)`);
+                track(setCardStatus(jobDeps(), id, 'card.st.cancelled'));
+              } else {
+                toast = t(L, 'toast.card_closed');
+              }
+            } else if (/^ag:\d+$/.test(data)) {
+              toast = t(L, 'toast.new_card');
+              track(againCard(cid, Number(data.slice(3))).catch((e) => log.error('again threw', errFields(e))));
+            } else if (/^of:\d+$/.test(data)) {
+              toast = t(L, 'toast.sending_file');
+              track(sendOriginal(jobDeps(), { chatId: cid, itemId: Number(data.slice(3)) })
+                .then((text) => (text ? tg.sendMessage(cid, text) : null))
+                .catch((e) => log.error('original file threw', errFields(e))));
+            } else if (/^lang:[a-z]{2}$/.test(data)) {
+              const code = data.slice(5);
+              if (isLang(code)) {
+                toast = `${LANGS[code].flag} ${LANGS[code].name}`;
+                track(setLanguage(cid, code).catch((e) => log.error('language change threw', errFields(e))));
+              }
+            } else if (data.startsWith('nav:')) {
+              // A menu button is the same screen its slash command shows.
+              await showScreen(cid, ensureUser(cid, cq.from), data.slice(4));
+            } else if (data.startsWith('mj:') || data.startsWith('m:') || data.startsWith('stop:')) {
+              toast = data.startsWith('stop:') ? t(L, 'toast.nothing_to_stop') : '';
+              track(legacyButton(cid, data).catch((e) => log.warn('legacy button threw', errFields(e))));
             }
-          } else if (/^ag:\d+$/.test(data)) {
-            toast = 'A new card…';
-            track(againCard(cid, Number(data.slice(3))).catch((e) => log.error('again threw', errFields(e))));
-          } else if (/^of:\d+$/.test(data)) {
-            toast = 'Sending the file…';
-            track(sendOriginal(jobDeps(), { chatId: cid, itemId: Number(data.slice(3)) })
-              .then((t) => (t ? tg.sendMessage(cid, t) : null))
-              .catch((e) => log.error('original file threw', errFields(e))));
-          } else if (data.startsWith('nav:')) {
-            // A menu button is the same screen its slash command shows.
-            const u = ensureUser(cid);
-            await showScreen(cid, u, data.slice(4));
-          } else if (data.startsWith('mj:') || data.startsWith('m:') || data.startsWith('stop:')) {
-            toast = data.startsWith('stop:') ? 'Nothing to stop' : '';
-            track(legacyButton(cid, data).catch((e) => log.warn('legacy button threw', errFields(e))));
           }
         } catch (e) {
           log.error('callback handler threw', errFields(e));
-          toast = 'Something went wrong.';
+          toast = t(L, 'toast.error');
         }
         try { await tg.call('answerCallbackQuery', { callback_query_id: cq.id, text: toast }); }
         catch (e) { log.warn('answerCallbackQuery failed', errFields(e)); }
@@ -1342,7 +1522,7 @@ async function main() {
           if (reply) await tg.sendLong(msg.chat.id, reply);
         } catch (e) {
           log.error('handler threw', errFields(e));
-          try { await tg.sendMessage(msg.chat.id, 'Something went wrong handling that. It has been logged.'); }
+          try { await tg.sendMessage(msg.chat.id, t(langOf(db, msg.chat.id), 'msg.error')); }
           catch { /* best effort */ }
         }
       })());

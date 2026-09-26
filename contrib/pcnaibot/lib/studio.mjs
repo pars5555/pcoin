@@ -17,6 +17,7 @@ import { nowSec } from './time.mjs';
 import { takeFreeTurn } from './billing.mjs';
 import { SHAPES, maxInputs, videoDurations, priceFor, usdToMicro, moneyLabel, balanceLabel } from './media.mjs';
 import { item } from './jobs.mjs';
+import { t } from './i18n.mjs';
 
 export const HISTORY_MAX = 24;
 export const MESSAGE_MAX_CHARS = 2000;
@@ -97,32 +98,40 @@ export const PROPOSE_TOOL = {
   },
 };
 
-// The prices the agent quotes, from the live list x our margin.
-export function priceLines(offer, settings, marginE6) {
+// The live prices, from the list x our margin, as figures: { picture: { price, edit } | null,
+// video: { seconds, price, per, min, max, res } | null }. Worded by priceLines, in any language.
+export function priceFacts(offer, settings, marginE6) {
   const pic = offer[settings.pictureModel];
   const vid = offer[settings.videoModel];
-  const out = [];
+  let picture = null;
+  let video = null;
   try {
-    if (!pic) throw new Error('no picture model');
-    const a = usdToMicro(priceFor(pic, { kind: 'image', inputs: 0 }).usd, marginE6);
-    const b = usdToMicro(priceFor(pic, { kind: 'image', inputs: 1 }).usd, marginE6);
-    out.push(`a picture costs ${moneyLabel(a)}${b !== a ? ` (changing a picture: ${moneyLabel(b)})` : ''}`);
-  } catch {
-    out.push('pictures are unavailable right now');
-  }
-  if (vid) {
-    try {
+    if (pic) {
+      const a = usdToMicro(priceFor(pic, { kind: 'image', inputs: 0 }).usd, marginE6);
+      const b = usdToMicro(priceFor(pic, { kind: 'image', inputs: 1 }).usd, marginE6);
+      picture = { price: moneyLabel(a), edit: b !== a ? moneyLabel(b) : null };
+    }
+  } catch { picture = null; }
+  try {
+    if (vid) {
       const d = videoDurations(vid);
       const whole = usdToMicro(priceFor(vid, { kind: 'video', seconds: settings.videoSeconds, resolution: settings.videoResolution }).usd, marginE6);
       const one = usdToMicro(priceFor(vid, { kind: 'video', seconds: 1, resolution: settings.videoResolution }).usd, marginE6);
-      out.push(`a ${settings.videoSeconds}-second video costs ${moneyLabel(whole)} (${d.min}–${d.max} seconds possible, ${moneyLabel(one)} per second; ${settings.videoResolution}, with sound)`);
-    } catch {
-      out.push('videos are unavailable right now');
+      video = { seconds: settings.videoSeconds, price: moneyLabel(whole), per: moneyLabel(one), min: d.min, max: d.max, res: settings.videoResolution };
     }
-  } else {
-    out.push('videos are unavailable right now');
-  }
-  return out;
+  } catch { video = null; }
+  return { picture, video };
+}
+
+// The prices as sentences. English for the agent (its instructions are English); the bot's screens
+// pass the user's language.
+export function priceLines(offer, settings, marginE6, lang = 'en') {
+  const { picture, video } = priceFacts(offer, settings, marginE6);
+  return [
+    !picture ? t(lang, 'price.picture_off')
+      : picture.edit ? t(lang, 'price.picture_edit', picture) : t(lang, 'price.picture', picture),
+    video ? t(lang, 'price.video', video) : t(lang, 'price.video_off'),
+  ];
 }
 
 // THE INSTRUCTIONS -- the part the admin may edit (admin.pc.am → PcoinAiBot → Chat agent). Facts
@@ -269,16 +278,16 @@ const dayKey = () => `studio:chatcalls:${new Date().toISOString().slice(0, 10)}`
 
 // { ok } or { refuse: text }. Per user per hour, and a daily budget for the whole bot after which
 // only people who have paid something may chat (Telegram accounts are free to make).
-export function chatGate(db, chatId, { perHour, dailyBudget, balanceMicro, rateRemaining = null, rlFloor = 0 }) {
+export function chatGate(db, chatId, { perHour, dailyBudget, balanceMicro, rateRemaining = null, rlFloor = 0, lang = 'en' }) {
   if (rateRemaining !== null && rateRemaining < rlFloor) {
-    return { refuse: 'The assistant is busy right now — please try again in a minute.' };
+    return { refuse: t(lang, 'gate.busy') };
   }
   const day = kvGetJson(db, dayKey()) ?? { n: 0 };
   if (day.n >= dailyBudget && !(BigInt(balanceMicro) > 0n)) {
-    return { refuse: 'The assistant is resting for today. Top up with ➕ Top up to keep going now, or come back tomorrow.' };
+    return { refuse: t(lang, 'gate.resting', { topup: t(lang, 'kb.topup') }) };
   }
   const q = takeFreeTurn(db, chatId, { perHour });
-  if (!q.allowed) return { refuse: `That is ${q.limit} messages this hour — please give it a few minutes.` };
+  if (!q.allowed) return { refuse: t(lang, 'gate.hourly', { n: q.limit }) };
   kvSetJson(db, dayKey(), { n: day.n + 1 });
   return { ok: true };
 }

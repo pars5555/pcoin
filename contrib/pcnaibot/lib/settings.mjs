@@ -8,6 +8,7 @@
 //   Pictures & video  pictureModel, videoModel, videoSeconds, videoResolution, videoEditModel,
 //                     margin (our price = OonaCode's x margin), cardTtlHours
 //   Payments          starsEnabled, starsPackages [{usd, stars}], paySupportText
+//   Gifts & invites   giftEnabled, giftUsd, invitesEnabled, inviteRewardUsd, inviteMinTopupUsd
 
 import { kvGetJson, kvSetJson } from './db.mjs';
 import { MEDIA_MODELS } from './media.mjs';
@@ -38,6 +39,14 @@ export const DEFAULT_SETTINGS = Object.freeze({
   // webbuilderbot's packages (50 Stars per USD).
   starsPackages: [{ usd: 5, stars: 250 }, { usd: 10, stars: 500 }, { usd: 25, stars: 1250 }, { usd: 50, stars: 2500 }],
   paySupportText: DEFAULT_PAY_SUPPORT,
+  // Free money (lib/rewards.mjs; owner, 2026-09-26). The gift goes to every NEW account once; the
+  // invite reward to the inviter once per invited person, when that person's video is delivered
+  // after they have topped up at least inviteMinTopupUsd. No caps, by the owner's decision.
+  giftEnabled: true,
+  giftUsd: 3,
+  invitesEnabled: true,
+  inviteRewardUsd: 2,
+  inviteMinTopupUsd: 1,
 });
 
 // `base` lets the process's own config supply a default (the margin lived in pcnaibot.conf before
@@ -88,6 +97,14 @@ export function settingsProblems(s, { offer, chatChoices }) {
     if (s.starsEnabled && s.starsPackages.length === 0) bad.push('Stars are on but there is no package to buy');
   }
   if (typeof s.paySupportText !== 'string' || !s.paySupportText.trim() || s.paySupportText.length > 1000) bad.push('the payment support text must be 1 to 1,000 characters');
+
+  // Free money is created by these numbers, so a typo is bounded: $20 (not $300 for $3.00).
+  const cents = (v, lo, hi) => typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi && Math.abs(v * 100 - Math.round(v * 100)) < 1e-6;
+  if (typeof s.giftEnabled !== 'boolean') bad.push('the welcome gift on/off must be true or false');
+  if (!cents(s.giftUsd, 0, 20)) bad.push('the welcome gift must be $0 to $20, in cents');
+  if (typeof s.invitesEnabled !== 'boolean') bad.push('invites on/off must be true or false');
+  if (!cents(s.inviteRewardUsd, 0, 20)) bad.push('the invite reward must be $0 to $20, in cents');
+  if (!cents(s.inviteMinTopupUsd, 0, 1000)) bad.push('the top-up an invited person must make must be $0 to $1,000, in cents');
   return bad;
 }
 
@@ -103,10 +120,13 @@ export function saveSettings(db, s) {
 export function mergeSettingsInput(cur, input) {
   const next = { ...cur };
   const str = ['chatModel', 'chatPrompt', 'pictureModel', 'videoModel', 'videoResolution', 'videoEditModel', 'paySupportText'];
-  const num = ['chatPerHour', 'chatDailyBudget', 'chatMaxChars', 'historyMax', 'videoSeconds', 'margin', 'cardTtlHours'];
+  const num = ['chatPerHour', 'chatDailyBudget', 'chatMaxChars', 'historyMax', 'videoSeconds', 'margin', 'cardTtlHours',
+    'giftUsd', 'inviteRewardUsd', 'inviteMinTopupUsd'];
   for (const k of str) if (typeof input[k] === 'string') next[k] = input[k];
   for (const k of num) if (input[k] !== undefined && input[k] !== '') next[k] = Number(input[k]);
-  if (input.starsEnabled !== undefined) next.starsEnabled = input.starsEnabled === true || input.starsEnabled === 'true' || input.starsEnabled === 'on';
+  for (const k of ['starsEnabled', 'giftEnabled', 'invitesEnabled']) {
+    if (input[k] !== undefined) next[k] = input[k] === true || input[k] === 'true' || input[k] === 'on';
+  }
   if (Array.isArray(input.starsPackages)) {
     next.starsPackages = input.starsPackages.map((p) => ({ usd: Number(p?.usd), stars: Number(p?.stars) }));
   }

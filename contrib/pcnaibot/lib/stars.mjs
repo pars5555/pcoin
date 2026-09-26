@@ -16,6 +16,7 @@
 import { immediate } from './db.mjs';
 import { nowSec } from './time.mjs';
 import { log, chatTag } from './log.mjs';
+import { t, langOf } from './i18n.mjs';
 import { randomBytes } from 'node:crypto';
 
 export const INVOICE_TTL_SEC = 24 * 3600;
@@ -35,25 +36,27 @@ export const packageButtonText = (p) => `⭐ ${p.stars} → ${usdLabel(p.micro)}
 
 // Write the invoice, then send it. A package index from a stale keyboard is refused.
 export async function sendStarsInvoice({ db, tg }, { chatId, settings, index, now = nowSec() }) {
+  const lang = langOf(db, chatId);
   const p = packages(settings)[index];
-  if (!p) return { ok: false, text: 'That package is not available any more — open ➕ Top up again.' };
+  if (!p) return { ok: false, text: t(lang, 'stars.pkg_gone', { topup: t(lang, 'kb.topup') }) };
   const payload = `stars:${chatId}:${now}:${randomBytes(4).toString('hex')}`;
   db.prepare(
     `INSERT INTO stars_invoices (chat_id, payload, stars, micro_usd, state, created_at) VALUES (?,?,?,?, 'pending', ?)`
   ).run(chatId, payload, p.stars, Number(p.micro), now);
+  const title = t(lang, 'stars.inv_title', { usd: usdLabel(p.micro) });
   const r = await tg.call('sendInvoice', {
     chat_id: chatId,
-    title: `Top up ${usdLabel(p.micro)}`,
-    description: `Adds ${usdLabel(p.micro)} to your PcoinAiBot balance, for pictures and videos.`,
+    title,
+    description: t(lang, 'stars.inv_desc', { usd: usdLabel(p.micro) }),
     payload,
     provider_token: '',
     currency: 'XTR',
-    prices: [{ label: `Top up ${usdLabel(p.micro)}`, amount: p.stars }],
+    prices: [{ label: title, amount: p.stars }],
   });
   if (!r.ok) {
     log.warn('sendInvoice failed', { chat: chatTag(chatId), desc: r.description ?? null });
     db.prepare("UPDATE stars_invoices SET state = 'expired' WHERE payload = ? AND state = 'pending'").run(payload);
-    return { ok: false, text: 'The payment could not be started just now. Please try again in a moment.' };
+    return { ok: false, text: t(lang, 'stars.start_failed') };
   }
   return { ok: true, payload };
 }
@@ -61,12 +64,15 @@ export async function sendStarsInvoice({ db, tg }, { chatId, settings, index, no
 // Telegram's last check before it takes the Stars; it must be answered within 10 seconds, so this
 // is a synchronous look-up. Returns { ok } or { ok: false, error } for answerPreCheckoutQuery.
 export function checkPreCheckout(db, q, now = nowSec()) {
+  // In the PAYER's language: this text is shown to them by Telegram.
+  const lang = langOf(db, Number(q?.from?.id));
+  const no = (key) => ({ ok: false, error: t(lang, key, { topup: t(lang, 'kb.topup') }) });
   const inv = db.prepare('SELECT * FROM stars_invoices WHERE payload = ?').get(String(q?.invoice_payload ?? ''));
-  if (!inv) return { ok: false, error: 'This payment was not started here. Please open ➕ Top up again.' };
-  if (inv.state !== 'pending') return { ok: false, error: 'This invoice was already used or has expired. Please open ➕ Top up again.' };
-  if (now - inv.created_at > INVOICE_TTL_SEC) return { ok: false, error: 'This invoice has expired. Please open ➕ Top up again.' };
-  if (Number(q?.from?.id) !== inv.chat_id) return { ok: false, error: 'This invoice belongs to another account.' };
-  if (q?.currency !== 'XTR' || Number(q?.total_amount) !== inv.stars) return { ok: false, error: 'The amount does not match this invoice. Please open ➕ Top up again.' };
+  if (!inv) return no('pc.not_here');
+  if (inv.state !== 'pending') return no('pc.used');
+  if (now - inv.created_at > INVOICE_TTL_SEC) return no('pc.expired');
+  if (Number(q?.from?.id) !== inv.chat_id) return no('pc.other_account');
+  if (q?.currency !== 'XTR' || Number(q?.total_amount) !== inv.stars) return no('pc.amount');
   return { ok: true };
 }
 

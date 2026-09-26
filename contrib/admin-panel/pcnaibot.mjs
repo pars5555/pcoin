@@ -6,13 +6,15 @@
 //   /pcnaibot/chat      Chat agent         — model (tested live), instructions, limits, preview
 //   /pcnaibot/studio    Pictures & video   — models, video length/resolution, margin, cards, jobs
 //   /pcnaibot/payments  Payments & Stars   — Stars packages, Telegram's books, refunds, support text
+//   /pcnaibot/gifts     Gifts & invites    — the welcome gift, the invite reward, every invite
 //
 // The bot owns its database; this page reads and writes it only through the bot's own loopback
 // admin API (contrib/pcnaibot/lib/admin-api.mjs). upstream.json:
 // "pcnaibot": { "url": "http://127.0.0.1:8797", "token": … }.
 //
 // MONEY TAKES THE AUTHENTICATOR CODE, once (codeOnce, shared with Send PCN): a credit creates money
-// the bot will spend at our cost; a refund gives Stars back. Settings do not move money, and the
+// the bot will spend at our cost; a refund gives Stars back; the gift and invite amounts decide how
+// much free money every new user and every inviter gets. Other settings do not move money, and the
 // bot itself refuses a model OonaCode does not serve and tests a new chat model before accepting it.
 import { randomBytes } from 'node:crypto';
 import { esc, card, note, tbl, tiles, failed, DASH } from './ui.mjs';
@@ -45,6 +47,7 @@ async function call(creds, path, body = null, timeoutMs = 15000) {
 // The sub-pages, as tabs across the top of each (the sidebar lists them too).
 export const PCNAIBOT_SECTIONS = [
   ['', 'Overview & users'], ['chat', 'Chat agent'], ['studio', 'Pictures & video'], ['payments', 'Payments & Stars'],
+  ['gifts', 'Gifts & invites'],
 ];
 const tabsBar = (base, section) => `<div class="xtabs sub" style="margin-bottom:12px">${PCNAIBOT_SECTIONS.map(([slug, label]) =>
   `<a href="${base}/pcnaibot${slug ? '/' + slug : ''}" style="margin-right:14px;${slug === section ? 'font-weight:600' : ''}">${esc(label)}</a>`).join('')}</div>`;
@@ -90,6 +93,15 @@ export async function pcnaibotAction(form, { verifyCode, creds }) {
     }
     return saveSettings(creds, { starsEnabled: g('starsEnabled') === 'on', starsPackages: pk, paySupportText: g('paySupportText') }, 'Payment settings');
   }
+  if (kind === 'gifts') {
+    // Free money: the same authenticator gate as a hand credit.
+    if (!codeOnce(form.get('code'), verifyCode)) return { bad: true, flash: 'Wrong or reused authenticator code. Nothing was changed.' };
+    const dollars = (k) => g(k).trim().replace(',', '.');
+    return saveSettings(creds, {
+      giftEnabled: g('giftEnabled') === 'on', giftUsd: dollars('giftUsd'),
+      invitesEnabled: g('invitesEnabled') === 'on', inviteRewardUsd: dollars('inviteRewardUsd'), inviteMinTopupUsd: dollars('inviteMinTopupUsd'),
+    }, 'Gift and invite settings');
+  }
   if (kind === 'test-chat') {
     const r = await call(creds, '/admin/test-chat', { model: g('model') }, 60000);
     if (!r.ok) return { bad: true, flash: `Test failed: ${r.error}.` };
@@ -131,6 +143,7 @@ export async function pcnaibotPage({ base, creds, result = null, chat = null, se
   if (section === 'chat') return head + await chatPage({ base, creds, query });
   if (section === 'studio') return head + await studioPage({ base, creds });
   if (section === 'payments') return head + await paymentsPage({ base, creds });
+  if (section === 'gifts') return head + await giftsPage({ base, creds });
   return head + await overviewPage({ base, creds, chat });
 }
 
@@ -144,9 +157,10 @@ async function overviewPage({ base, creds, chat }) {
   const s = st.ok ? st.data.settings : null;
 
   const rows = users.map((u) => [
-    label(u),
+    label(u) + (u.invited_by ? `<br><span class="muted">invited by <code>${esc(u.invited_by)}</code></span>` : ''),
     `<b>${usd(u.balance_micro_usd, 4)}</b>` + (u.reserved_micro_usd ? ` <span class="muted">(+${usd(u.reserved_micro_usd, 4)} being made)</span>` : ''),
     usd(u.spent_micro_usd, 4), usd(u.deposited_micro_usd), usd(u.stars_micro_usd), usd(u.credited_micro_usd),
+    usd(u.gift_micro_usd), usd(u.referral_micro_usd), esc(u.lang || DASH),
     esc(u.turns), at(u.last_turn_at), at(u.created_at),
     `<a href="${base}/pcnaibot?chat=${encodeURIComponent(u.chat_id)}">history</a>`,
   ]);
@@ -173,6 +187,8 @@ async function overviewPage({ base, creds, chat }) {
       ['Deposited, all time', usd(sum('deposited_micro_usd'))],
       ['of it by ⭐ Stars', usd(sum('stars_micro_usd'))],
       ['Credited by hand', usd(sum('credited_micro_usd'))],
+      ['🎁 Welcome gifts', usd(sum('gift_micro_usd'))],
+      ['🤝 Invite rewards', usd(sum('referral_micro_usd'))],
     ])
     + (x ? tiles([
       ['Pictures, 24 h', esc(x.picturesDay)], ['Videos, 24 h', esc(x.videosDay)], ['Cards, 24 h', esc(x.cardsDay)],
@@ -192,8 +208,49 @@ async function overviewPage({ base, creds, chat }) {
         + 'They can spend it on pictures and videos at once. At most $1,000 per credit. A user appears here after they first message the bot.')
       : note('No users yet. A user appears here after they first message the bot.'))
     + history
-    + card('Users', tbl(['User', 'Balance', 'Spent', 'Deposited', '⭐ Stars', 'Credited', 'Paid items', 'Last paid (UTC)', 'Joined (UTC)', ''],
+    + card('Users', tbl(['User', 'Balance', 'Spent', 'Deposited', '⭐ Stars', 'Credited', '🎁 Gift', '🤝 Invites', 'Lang', 'Paid items', 'Last paid (UTC)', 'Joined (UTC)', ''],
         rows, 'No users yet.'));
+}
+
+async function giftsPage({ base, creds }) {
+  const [st, rf, us] = await Promise.all([call(creds, '/admin/settings'), call(creds, '/admin/referrals'), call(creds, '/admin/users')]);
+  if (!st.ok) return failed('the gift and invite settings', st.error);
+  const s = st.data.settings;
+  const users = us.ok ? us.data.users || [] : [];
+  const sum = (k) => users.reduce((a, u) => a + (u[k] || 0), 0);
+  const refs = rf.ok ? rf.data.referrals || [] : [];
+  const nm = rf.ok ? rf.data.names || {} : {};
+  const who = (id) => (nm[id] ? `${esc(nm[id])} <span class="muted">${esc(id)}</span>` : `<code>${esc(id)}</code>`);
+  const counts = refs.reduce((a, r) => { a[r.status] = (a[r.status] || 0) + 1; return a; }, {});
+
+  return tiles([
+      ['🎁 Gifts given', usd(sum('gift_micro_usd'))],
+      ['🤝 Rewards paid', usd(sum('referral_micro_usd'))],
+      ['Invites waiting', esc(counts.pending || 0)],
+      ['Invites paid', esc(counts.rewarded || 0)],
+      ['Void', esc(counts.void || 0)],
+    ])
+    + card('Welcome gift and invite reward', `
+      <form method="POST" action="${base}/pcnaibot/gifts" autocomplete="off">
+        <input type="hidden" name="form" value="gifts">
+        <p><label><input type="checkbox" name="giftEnabled"${s.giftEnabled ? ' checked' : ''}> Give every new user a welcome gift of</label>
+          <label>$ <input name="giftUsd" type="text" inputmode="decimal" value="${esc(s.giftUsd)}" style="width:6em"></label></p>
+        <p><label><input type="checkbox" name="invitesEnabled"${s.invitesEnabled ? ' checked' : ''}> Pay an inviter</label>
+          <label>$ <input name="inviteRewardUsd" type="text" inputmode="decimal" value="${esc(s.inviteRewardUsd)}" style="width:6em"></label>
+          <label>when the person they invited makes their first video after topping up at least
+            $ <input name="inviteMinTopupUsd" type="text" inputmode="decimal" value="${esc(s.inviteMinTopupUsd)}" style="width:6em"></label></p>
+        <p><input name="code" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="authenticator" style="width:9em" required>
+          <button type="submit">Save</button></p>
+      </form>`
+    + note('The gift is a <code>gift</code> ledger row, given once per Telegram account when it first messages the bot — never again, even if the account comes back. '
+      + 'The invite reward is a <code>referral</code> row for the inviter, paid once per invited person, only for a person new to the bot, never for yourself. '
+      + '"Topped up" counts Stars, PCN and wPCN deposits minus Stars refunds — never the gift — so an account living on its gift cannot pay its inviter. '
+      + 'Set the top-up to $0 to pay on the first video alone. There are no daily or monthly caps. Each amount is at most $20.'))
+    + card('Invites', rf.ok ? tbl(['#', 'Inviter', 'Invited', 'State', 'Paid', 'Joined (UTC)', 'Paid (UTC)'],
+        refs.map((r) => [esc(r.id), who(r.referrer_chat_id), who(r.referred_chat_id),
+          r.status === 'rewarded' ? '<span class="ok">paid</span>' : r.status === 'void' ? `<span class="muted">void — ${esc(r.void_reason || '')}</span>` : 'waiting',
+          r.reward_micro_usd ? usd(r.reward_micro_usd) : DASH, at(r.created_at), at(r.rewarded_at)]), 'No invites yet.')
+      : failed('the invites', rf.error));
 }
 
 function healthLine(h, model) {

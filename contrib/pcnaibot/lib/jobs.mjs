@@ -24,6 +24,7 @@ import { reserve, settle, release, hold, InsufficientFunds } from './billing.mjs
 import { creditsToMicroUsd } from './money.mjs';
 import { MEDIA_MODELS, MediaError, priceFor, usdToMicro, moneyLabel, balanceLabel } from './media.mjs';
 import { escapeHtml } from './telegram.mjs';
+import { t, langOf } from './i18n.mjs';
 
 export const CARD_TTL_SEC = 24 * 3600;
 // Telegram refuses a PHOTO over 10 MB; a bigger picture goes as a file.
@@ -72,27 +73,34 @@ export function createProposal(db, chatId, spec, { priceMicro, apiModel }, { now
   });
 }
 
-export function cardText(p, { balanceMicro = null, status = null } = {}) {
+// A shape the builder knows is named in the user's language; anything else is shown as it is.
+const shapeLabel = (lang, shape) => (['square', 'wide', 'tall'].includes(shape) ? t(lang, `shape.${shape}`) : escapeHtml(String(shape ?? '')));
+
+export function cardText(p, { balanceMicro = null, status = null, lang = 'en' } = {}) {
   const sources = parseIds(p.sources);
   const lines = [
     p.kind === 'video'
-      ? `🎬 <b>Video</b> · ${escapeHtml(p.shape)} · ${escapeHtml(String(p.seconds))} s · ${escapeHtml(p.resolution ?? '')}`
-      : `🎨 <b>Picture</b> · ${escapeHtml(p.shape)}`,
+      ? t(lang, 'card.video', { shape: shapeLabel(lang, p.shape), seconds: escapeHtml(String(p.seconds)), res: escapeHtml(p.resolution ?? '') })
+      : t(lang, 'card.picture', { shape: shapeLabel(lang, p.shape) }),
     escapeHtml(p.summary),
   ];
-  if (p.new_version_of) lines.push(`<i>A new version of #${p.new_version_of}${sources.length ? `, starting from #${sources[0]}` : ''}.</i>`);
-  else if (p.kind === 'video' && sources.length) lines.push(`<i>Starts from #${sources[0]}.</i>`);
-  else if (sources.length) lines.push(`<i>Changes ${sources.map((s) => `#${s}`).join(', ')}.</i>`);
-  lines.push('', `Price: <b>${moneyLabel(p.price_micro)}</b>`
-    + (balanceMicro === null ? '' : ` · your balance ${balanceLabel(balanceMicro)}`));
+  if (p.new_version_of) {
+    lines.push(sources.length
+      ? t(lang, 'card.new_version_from', { of: p.new_version_of, start: sources[0] })
+      : t(lang, 'card.new_version', { of: p.new_version_of }));
+  } else if (p.kind === 'video' && sources.length) lines.push(t(lang, 'card.starts_from', { id: sources[0] }));
+  else if (sources.length) lines.push(t(lang, 'card.changes', { ids: sources.map((x) => `#${x}`).join(', ') }));
+  lines.push('', balanceMicro === null
+    ? t(lang, 'card.price', { price: moneyLabel(p.price_micro) })
+    : t(lang, 'card.price_balance', { price: moneyLabel(p.price_micro), balance: balanceLabel(balanceMicro) }));
   if (status) lines.push('', `<i>${status}</i>`);
   return lines.join('\n');
 }
 
-export const cardKeyboard = (p) => ({
+export const cardKeyboard = (p, lang = 'en') => ({
   inline_keyboard: [[
-    { text: `✅ Make it · ${moneyLabel(p.price_micro)}`, callback_data: `sc:${p.id}` },
-    { text: '✖ Cancel', callback_data: `sx:${p.id}` },
+    { text: `${t(lang, 'btn.make')} · ${moneyLabel(p.price_micro)}`, callback_data: `sc:${p.id}` },
+    { text: t(lang, 'btn.cancel'), callback_data: `sx:${p.id}` },
   ]],
 });
 
@@ -101,23 +109,25 @@ const balanceOf = (db, chatId) => db.prepare('SELECT balance_micro_usd b FROM us
 // Show a card, and mark the ones it replaced.
 export async function sendCard(deps, { proposal: p, replaced = [] }) {
   const { db, tg } = deps;
-  for (const r of replaced) await setCardStatus(deps, r.id, 'Replaced by a newer card.');
-  const sent = await tg.sendMessage(p.chat_id, cardText(p, { balanceMicro: balanceOf(db, p.chat_id) }), { reply_markup: cardKeyboard(p) });
+  for (const r of replaced) await setCardStatus(deps, r.id, 'card.st.replaced');
+  const lang = langOf(db, p.chat_id);
+  const sent = await tg.sendMessage(p.chat_id, cardText(p, { balanceMicro: balanceOf(db, p.chat_id), lang }), { reply_markup: cardKeyboard(p, lang) });
   if (sent.ok) db.prepare('UPDATE proposals SET message_id = ? WHERE id = ?').run(sent.result?.message_id ?? null, p.id);
   return sent;
 }
 
-// Re-render a card with a status line and no buttons. Cosmetic: a card that cannot be edited
-// (too old, deleted) changes nothing about the money.
-export async function setCardStatus(deps, proposalId, status, { keepButtons = false } = {}) {
+// Re-render a card with a status line (a locales key, card.st.*) and no buttons. Cosmetic: a card
+// that cannot be edited (too old, deleted) changes nothing about the money.
+export async function setCardStatus(deps, proposalId, statusKey, { keepButtons = false, vars = {} } = {}) {
   const { db, tg } = deps;
   const p = db.prepare('SELECT * FROM proposals WHERE id = ?').get(proposalId);
   if (!p?.message_id) return;
+  const lang = langOf(db, p.chat_id);
   try {
     await tg.call('editMessageText', {
       chat_id: p.chat_id, message_id: p.message_id, parse_mode: 'HTML',
-      text: cardText(p, { status, balanceMicro: keepButtons ? balanceOf(db, p.chat_id) : null }),
-      reply_markup: keepButtons ? cardKeyboard(p) : { inline_keyboard: [] },
+      text: cardText(p, { status: t(lang, statusKey, vars), balanceMicro: keepButtons ? balanceOf(db, p.chat_id) : null, lang }),
+      reply_markup: keepButtons ? cardKeyboard(p, lang) : { inline_keyboard: [] },
     });
   } catch { /* cosmetic */ }
 }
@@ -199,40 +209,27 @@ export function beginJob(db, { chatId, proposalId, offer, marginE6, now = nowSec
 }
 
 // The words for every refusal of ✅.
-export function refusalText(r) {
-  const m = moneyLabel;
-  if (r.short) {
-    return `This costs <b>${m(r.short.needMicro)}</b> and your balance is <b>${balanceLabel(r.short.haveMicro)}</b>. `
-      + 'Top up and press ✅ again — the card stays open.';
-  }
-  if (r.repriced !== undefined) return `The price changed to <b>${m(r.repriced)}</b> since the card was made. Press ✅ again if that is fine.`;
+export function refusalText(r, lang = 'en') {
+  if (r.short) return t(lang, 'refuse.short', { price: moneyLabel(r.short.needMicro), balance: balanceLabel(r.short.haveMicro) });
+  if (r.repriced !== undefined) return t(lang, 'refuse.repriced', { price: moneyLabel(r.repriced) });
   switch (r.refused) {
     case 'started': case 'raced': return null; // a second tap on a card already being made
-    case 'done': return 'That card was already made.';
-    case 'cancelled': return 'That card was cancelled — ask for it again if you want it.';
-    case 'replaced': return 'That card was replaced by a newer one.';
-    case 'expired': return 'That card has expired — ask for it again and I will make a new one.';
-    case 'failed': return 'That card did not work out — ask for it again if you like.';
-    case 'unavailable': return 'That model is not available right now. <b>Nothing has been charged.</b> Please try again in a little while.';
-    case 'sources': return 'A picture that card uses is no longer available. <b>Nothing has been charged.</b>';
-    case 'busy_image': return 'Your previous picture is still being made — press ✅ again when it arrives.';
-    case 'busy_video': return 'Your previous video is still being made — press ✅ again when it arrives.';
-    default: return 'That card is no longer available.';
+    case 'done': case 'cancelled': case 'replaced': case 'expired': case 'failed':
+    case 'unavailable': case 'sources': case 'busy_image': case 'busy_video':
+      return t(lang, `refuse.${r.refused}`);
+    default: return t(lang, 'refuse.gone');
   }
 }
 
 // ---- running a job --------------------------------------------------------------------------
 
-function failureText(e, { what }) {
-  if (!(e instanceof MediaError)) return `The ${what} could not be made. <b>Nothing has been charged.</b>`;
-  if (e.bucket === Bucket.UNKNOWN) {
-    return `We lost contact with the ${what} service part-way through. The amount is held and comes back to your balance automatically within the hour unless a charge is recorded.`;
-  }
-  if (e.bucket === Bucket.BACKOFF || e.bucket === Bucket.NOT_BILLED) {
-    return `The ${what} service is busy right now. <b>Nothing has been charged.</b> Press ✅ on a new card to try again.`;
-  }
+// `what` is 'picture' or 'video'.
+function failureText(e, { what, lang = 'en' }) {
+  if (!(e instanceof MediaError)) return t(lang, `fail.${what}.generic`);
+  if (e.bucket === Bucket.UNKNOWN) return t(lang, `fail.${what}.unknown`);
+  if (e.bucket === Bucket.BACKOFF || e.bucket === Bucket.NOT_BILLED) return t(lang, `fail.${what}.busy`);
   // PERMANENT: the request itself was refused -- most often a content filter. Say what it said.
-  return `The ${what} service refused this request. <b>Nothing has been charged.</b>\n\n<i>${escapeHtml(e.message.slice(0, 200))}</i>`;
+  return t(lang, `fail.${what}.refused`, { why: escapeHtml(e.message.slice(0, 200)) });
 }
 
 // Undo a reservation according to how the call failed, and close the job and the card.
@@ -248,7 +245,7 @@ function unwind(deps, begun, e, { what }) {
     db.prepare("UPDATE proposals SET state = 'failed' WHERE id = ?").run(begun.proposal.id);
     deps.note?.(begun.proposal.chat_id, `(Card P${begun.proposal.id} failed: ${String(e?.message ?? e).slice(0, 120)}. ${unknown ? 'Its amount is held.' : 'Nothing was charged.'})`);
   }
-  return failureText(e, { what });
+  return failureText(e, { what, lang: langOf(db, begun.proposal.chat_id) });
 }
 
 // Settle what OonaCode charged, capped at the button's price. No credits reported -> the button's
@@ -301,13 +298,14 @@ export async function runImageJob(deps, begun, { draft = null } = {}) {
   const { db, media, marginE6 } = deps;
   const p = begun.proposal;
   const started = Date.now();
-  const status = () => `<i>🎨 Drawing… ${Math.floor((Date.now() - started) / 1000)}s</i>`;
+  const lang = langOf(db, p.chat_id);
+  const status = () => t(lang, 'job.drawing', { s: Math.floor((Date.now() - started) / 1000) });
   let tick = null;
   if (draft) {
     await draft.push(status()).catch(() => undefined);
     tick = setInterval(() => { draft.push(status()).catch(() => undefined); }, 5000);
   }
-  await setCardStatus(deps, p.id, '⏳ Making it…');
+  await setCardStatus(deps, p.id, 'card.st.making');
 
   let images;
   try {
@@ -325,7 +323,7 @@ export async function runImageJob(deps, begun, { draft = null } = {}) {
   } catch (e) {
     clearInterval(tick);
     log.warn('picture failed', { chat: chatTag(p.chat_id), model: p.api_model, bucket: e?.bucket ?? null, err: String(e?.message ?? e).slice(0, 160) });
-    await setCardStatus(deps, p.id, e instanceof MediaError && e.bucket === Bucket.UNKNOWN ? 'Interrupted — the amount is held.' : 'Not made — nothing charged.');
+    await setCardStatus(deps, p.id, e instanceof MediaError && e.bucket === Bucket.UNKNOWN ? 'card.st.held' : 'card.st.not_made');
     return unwind(deps, begun, e, { what: 'picture' });
   }
   clearInterval(tick);
@@ -343,7 +341,7 @@ export async function runImageJob(deps, begun, { draft = null } = {}) {
     expires: Number.isFinite(expires) ? Math.floor(expires / 1000) : null,
   });
   deps.note?.(p.chat_id, `(Picture #${it.id} was made and sent: ${p.summary})`);
-  await setCardStatus(deps, p.id, `✅ Made — #${it.id}`);
+  await setCardStatus(deps, p.id, 'card.st.made', { vars: { id: it.id } });
   const bytes = first?.b64_json ? Buffer.from(first.b64_json, 'base64') : null;
   await deliverItem(deps, it.id, { bytes });
   log.info('picture delivered', { chat: chatTag(p.chat_id), model: p.api_model, item: it.id, credits, ms: Date.now() - started });
@@ -375,7 +373,7 @@ function finishJob(db, begun, { kind, credits, url, expires }) {
 export async function startVideoJob(deps, begun) {
   const { db, tg, media } = deps;
   const p = begun.proposal;
-  await setCardStatus(deps, p.id, '⏳ Starting the video…');
+  await setCardStatus(deps, p.id, 'card.st.starting_video');
   const sources = parseIds(p.sources);
   let image = null;
   try {
@@ -394,7 +392,7 @@ export async function startVideoJob(deps, begun) {
     });
   } catch (e) {
     log.warn('video could not be started', { chat: chatTag(p.chat_id), bucket: e?.bucket ?? null, err: String(e?.message ?? e).slice(0, 160) });
-    await setCardStatus(deps, p.id, e instanceof MediaError && e.bucket === Bucket.UNKNOWN ? 'Interrupted — the amount is held.' : 'Not started — nothing charged.');
+    await setCardStatus(deps, p.id, e instanceof MediaError && e.bucket === Bucket.UNKNOWN ? 'card.st.held' : 'card.st.not_started');
     return unwind(deps, begun, e, { what: 'video' });
   }
   if (typeof job?.id !== 'string' || !job.id) {
@@ -402,8 +400,8 @@ export async function startVideoJob(deps, begun) {
     return unwind(deps, begun, new MediaError(Bucket.UNKNOWN, 'the video service named no job'), { what: 'video' });
   }
   db.prepare('UPDATE media_jobs SET remote_id = ? WHERE id = ?').run(job.id, begun.jobId);
-  await setCardStatus(deps, p.id, '⏳ Making the video…');
-  const msg = await tg.sendMessage(p.chat_id, '<i>🎬 Making your video — usually 1–5 minutes. It will arrive here; you can keep chatting meanwhile.</i>');
+  await setCardStatus(deps, p.id, 'card.st.making_video');
+  const msg = await tg.sendMessage(p.chat_id, t(langOf(db, p.chat_id), 'job.video_started'));
   if (msg.ok) db.prepare('UPDATE media_jobs SET status_message_id = ? WHERE id = ?').run(msg.result?.message_id ?? null, begun.jobId);
   log.info('video started', { chat: chatTag(p.chat_id), model: p.api_model, job: begun.jobId });
   return null;
@@ -429,7 +427,7 @@ export async function pollVideos(deps, { maxAgeSec = 45 * 60, now = nowSec } = {
       if (now() - j.created_at > maxAgeSec) {
         const text = unwind(deps, begun, new MediaError(Bucket.UNKNOWN, `unreadable past its time: ${e?.message ?? e}`), { what: 'video' });
         await dropStatus(tg, j);
-        await tg.sendMessage(j.chat_id, `Your video is taking far longer than it should, and I can no longer reach the job. ${text}`);
+        await tg.sendMessage(j.chat_id, t(langOf(db, j.chat_id), 'job.video_lost', { detail: text }));
       }
       continue;
     }
@@ -437,13 +435,13 @@ export async function pollVideos(deps, { maxAgeSec = 45 * 60, now = nowSec } = {
     if (v.status === 'failed') {
       const text = unwind(deps, begun, new MediaError(Bucket.PERMANENT, v.error?.message ?? 'failed'), { what: 'video' });
       await dropStatus(tg, j);
-      if (p) await setCardStatus(deps, p.id, 'Not made — nothing charged.');
+      if (p) await setCardStatus(deps, p.id, 'card.st.not_made');
       await tg.sendMessage(j.chat_id, text);
       counts.failed++;
       continue;
     }
     if (v.status !== 'completed') {
-      await touchStatus(tg, j, now());
+      await touchStatus(tg, j, now(), langOf(db, j.chat_id));
       continue;
     }
 
@@ -467,7 +465,7 @@ export async function pollVideos(deps, { maxAgeSec = 45 * 60, now = nowSec } = {
     await dropStatus(tg, j);
     if (p) {
       deps.note?.(j.chat_id, `(Video #${it.id} was made and sent: ${p.summary})`);
-      await setCardStatus(deps, p.id, `✅ Made — #${it.id}`);
+      await setCardStatus(deps, p.id, 'card.st.made', { vars: { id: it.id } });
     }
     await deliverItem(deps, it.id);
     log.info('video delivered', { chat: chatTag(j.chat_id), job: j.id, item: it.id, credits: v.credits, secs: now() - j.created_at });
@@ -481,7 +479,7 @@ async function dropStatus(tg, j) {
 }
 
 // The "making your video" line, with the clock moved on -- once a minute is enough.
-async function touchStatus(tg, j, nowS) {
+async function touchStatus(tg, j, nowS, lang = 'en') {
   if (!j.status_message_id) return;
   const secs = nowS - j.created_at;
   if (secs < 60 || secs % 60 >= 20) return; // the poller runs every ~15 s; one edit per minute
@@ -489,17 +487,17 @@ async function touchStatus(tg, j, nowS) {
   try {
     await tg.call('editMessageText', {
       chat_id: j.chat_id, message_id: j.status_message_id, parse_mode: 'HTML',
-      text: `<i>🎬 Making your video… ${clock} so far — usually 1–5 minutes. It will arrive here.</i>`,
+      text: t(lang, 'job.video_clock', { clock }),
     });
   } catch { /* cosmetic */ }
 }
 
 // ---- delivery -------------------------------------------------------------------------------
 
-export const resultKeyboard = (itemId) => ({
+export const resultKeyboard = (itemId, lang = 'en') => ({
   inline_keyboard: [[
-    { text: '🔁 Again', callback_data: `ag:${itemId}` },
-    { text: '📎 Original file', callback_data: `of:${itemId}` },
+    { text: t(lang, 'btn.again'), callback_data: `ag:${itemId}` },
+    { text: t(lang, 'btn.original'), callback_data: `of:${itemId}` },
   ]],
 });
 
@@ -524,7 +522,7 @@ export async function deliverItem(deps, itemId, { bytes = null } = {}) {
   if (!buf) return { ok: false };
 
   const caption = `<b>#${it.id}</b> · ${escapeHtml(String(it.summary ?? '').slice(0, 300))}`;
-  const opts = { caption, replyMarkup: resultKeyboard(it.id) };
+  const opts = { caption, replyMarkup: resultKeyboard(it.id, langOf(db, it.chat_id)) };
   const isVideo = it.kind === 'video';
   let sent = isVideo
     ? await tg.sendVideo(it.chat_id, buf, { ...opts, filename: `video-${it.id}.mp4` })
@@ -549,6 +547,11 @@ export async function deliverItem(deps, itemId, { bytes = null } = {}) {
     db.prepare('UPDATE items SET delivered_at = ?, tg_file_id = ? WHERE id = ?').run(nowSec(), fileIdOf(sent.result), it.id);
     log.warn('item message id not recorded', { item: it.id, ...errFields(e) });
   }
+  // Delivered, once (delivered_at was null above). What follows -- an inviter's reward -- must never
+  // cost the user their result, so it cannot throw into here.
+  if (deps.onDelivered) {
+    try { await deps.onDelivered(it); } catch (e) { log.error('after-delivery hook threw', { item: it.id, ...errFields(e) }); }
+  }
   return { ok: true };
 }
 
@@ -568,19 +571,18 @@ export async function redeliverSweep(deps, { now = nowSec() } = {}) {
 // "Original file": the untouched bytes, as a document. Free.
 export async function sendOriginal(deps, { chatId, itemId }) {
   const { db, tg, media } = deps;
+  const lang = langOf(db, chatId);
   const it = item(db, itemId);
-  if (!it || it.chat_id !== chatId || it.kind === 'upload') return 'That file is not available.';
-  if (!it.result_url || (it.result_expires_at ?? 0) < nowSec()) {
-    return 'The original file is kept for 24 hours and this one has expired — the copy in the chat is still yours to save.';
-  }
+  if (!it || it.chat_id !== chatId || it.kind === 'upload') return t(lang, 'orig.unavailable');
+  if (!it.result_url || (it.result_expires_at ?? 0) < nowSec()) return t(lang, 'orig.expired');
   let bytes;
-  try { bytes = await media.download(it.result_url); } catch { return 'The file could not be fetched just now. Please try again in a moment.'; }
+  try { bytes = await media.download(it.result_url); } catch { return t(lang, 'orig.fetch_failed'); }
   const video = it.kind === 'video';
   const sent = await tg.sendDocument(chatId, bytes, {
     filename: `${video ? 'video' : 'picture'}-${it.id}.${video ? 'mp4' : 'png'}`,
     contentType: video ? 'video/mp4' : (sniffMime(bytes) ?? 'image/png'),
   });
-  return sent.ok ? null : 'The file could not be sent just now. Please try again in a moment.';
+  return sent.ok ? null : t(lang, 'orig.send_failed');
 }
 
 // ---- a restart ------------------------------------------------------------------------------
@@ -601,11 +603,7 @@ export function recoverAfterRestart(deps) {
     db.prepare("UPDATE media_jobs SET state = 'unknown', error = 'interrupted by a restart', finished_at = ? WHERE id = ?").run(nowSec(), j.id);
     if (j.proposal_id) db.prepare("UPDATE proposals SET state = 'failed' WHERE id = ?").run(j.proposal_id);
     deps.note?.(j.chat_id, `(The ${j.kind === 'video' ? 'video' : 'picture'} being made was interrupted by a restart; its amount is held.)`);
-    msgs.push({
-      chatId: j.chat_id,
-      text: `The bot restarted while your ${j.kind === 'video' ? 'video was starting' : 'picture was being drawn'}. `
-        + 'Its amount is held and comes back to your balance within the hour unless a charge is recorded. Sorry — ask me again and I will make a new card.',
-    });
+    msgs.push({ chatId: j.chat_id, text: t(langOf(db, j.chat_id), j.kind === 'video' ? 'restart.video' : 'restart.picture') });
   }
   const orphaned = db.prepare(
     "UPDATE proposals SET state = 'failed' WHERE state = 'started' AND id NOT IN (SELECT proposal_id FROM media_jobs WHERE proposal_id IS NOT NULL)"

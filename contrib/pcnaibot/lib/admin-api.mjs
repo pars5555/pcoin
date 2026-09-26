@@ -62,12 +62,24 @@ export function listUsers(db) {
             COALESCE(SUM(CASE WHEN l.kind IN ('deposit_pcn','deposit_wpcn','deposit_stars') THEN l.delta_micro_usd END), 0) AS deposited_micro_usd,
             COALESCE(SUM(CASE WHEN l.kind = 'deposit_stars' THEN l.delta_micro_usd END), 0) AS stars_micro_usd,
             COALESCE(SUM(CASE WHEN l.kind = 'adjust' THEN l.delta_micro_usd END), 0) AS credited_micro_usd,
+            COALESCE(SUM(CASE WHEN l.kind = 'gift' THEN l.delta_micro_usd END), 0) AS gift_micro_usd,
+            COALESCE(SUM(CASE WHEN l.kind = 'referral' THEN l.delta_micro_usd END), 0) AS referral_micro_usd,
             COUNT(CASE WHEN l.kind = 'ai_turn' THEN 1 END) AS turns,
-            MAX(CASE WHEN l.kind = 'ai_turn' THEN l.created_at END) AS last_turn_at
+            MAX(CASE WHEN l.kind = 'ai_turn' THEN l.created_at END) AS last_turn_at,
+            u.lang,
+            (SELECT r.referrer_chat_id FROM referrals r WHERE r.referred_chat_id = u.chat_id) AS invited_by
        FROM users u LEFT JOIN ledger l ON l.chat_id = u.chat_id
       GROUP BY u.chat_id
       ORDER BY u.created_at DESC`
   ).all();
+}
+
+// Every invite: who invited whom, and whether it has paid.
+export function listReferrals(db, limit = 200) {
+  return db.prepare(
+    `SELECT id, referrer_chat_id, referred_chat_id, status, reward_micro_usd, trigger_item_id, void_reason, created_at, rewarded_at
+       FROM referrals ORDER BY id DESC LIMIT ?`
+  ).all(Math.min(1000, Math.max(1, Number(limit) || 200)));
 }
 
 export function userLedger(db, chatId, limit = 50) {
@@ -120,6 +132,12 @@ export function startAdminApi({ db, token, port, host = '127.0.0.1', names = asy
         const users = listUsers(db);
         const nm = await names(users.map((u) => u.chat_id)).catch(() => ({}));
         return json(res, 200, { users: users.map((u) => ({ ...u, name: nm[u.chat_id] ?? null })) });
+      }
+      if (req.method === 'GET' && url.pathname === '/admin/referrals') {
+        const rows = listReferrals(db, Number(url.searchParams.get('limit') || 200));
+        const ids = [...new Set(rows.flatMap((r) => [r.referrer_chat_id, r.referred_chat_id]))];
+        const nm = await names(ids).catch(() => ({}));
+        return json(res, 200, { referrals: rows, names: nm });
       }
       if (req.method === 'GET' && url.pathname === '/admin/ledger') {
         const chatId = Number(url.searchParams.get('chat_id'));

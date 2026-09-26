@@ -304,8 +304,9 @@ export class TelegramClient {
     }, { timeoutMs: (timeout + 15) * 1000 });
   }
 
-  async setMyCommands(commands, scope) {
-    return this.call('setMyCommands', { commands, scope });
+  // `languageCode` makes it the list for users whose Telegram is in that language.
+  async setMyCommands(commands, scope, languageCode = null) {
+    return this.call('setMyCommands', { commands, scope, ...(languageCode ? { language_code: languageCode } : {}) });
   }
 }
 

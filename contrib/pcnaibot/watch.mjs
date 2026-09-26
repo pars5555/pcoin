@@ -23,6 +23,7 @@ import { readRate, floorParity } from './lib/rate.mjs';
 import { issuedAddresses, poolStats } from './lib/pool.mjs';
 import { creditDepositSafe, reconcile, creditedUsdLast30Days, CreditResult, configureRebate } from './lib/deposits.mjs';
 import { TelegramClient, escapeHtml } from './lib/telegram.mjs';
+import { t, langOf } from './lib/i18n.mjs';
 import { satsToPcnString, microUsdToString, satsToNanoUsd, splitNano } from './lib/money.mjs';
 
 const cfg = loadConfig();
@@ -168,6 +169,12 @@ async function notify(chatId, html) {
   if (!tg || chatId === null || chatId === undefined) return;
   try { await tg.sendMessage(chatId, html); }
   catch (e) { log.warn('user notification failed', errFields(e)); }
+}
+
+// A notice in the user's own language (users.lang, set by the bot).
+function say(chatId, key, vars = {}) {
+  if (chatId === null || chatId === undefined) return '';
+  return t(langOf(db, chatId), key, vars);
 }
 
 // ---------------------------------------------------------------------------
@@ -338,9 +345,7 @@ async function tick() {
           ).run(txid, addr, row.chat_id, recv, nowSec());
           if (ins.changes === 1) {
             // Message the user ONCE, on the transition only.
-            await notify(row.chat_id,
-              `Seen your deposit of <b>${escapeHtml(satsToPcnString(recv))} PCN</b> in the mempool. `
-              + `It will be credited after ${MIN_CONF} confirmations.`);
+            await notify(row.chat_id, say(row.chat_id, 'dep.seen', { pcn: escapeHtml(satsToPcnString(recv)), conf: MIN_CONF }));
           }
         }
       }
@@ -470,9 +475,7 @@ async function handleConfirmedItem({ item, addr, row, tipHeight, rate, floorFlag
           typeof item?.block_hash === 'string' ? item.block_hash : null,
           nowSec());
     if (ins.changes === 1) {
-      await notify(row?.chat_id,
-        `Your deposit of <b>${escapeHtml(satsToPcnString(recv))} PCN</b> is confirming. `
-        + `It will be credited at ${MIN_CONF} confirmations.`);
+      await notify(row?.chat_id, say(row?.chat_id, 'dep.confirming', { pcn: escapeHtml(satsToPcnString(recv)), conf: MIN_CONF }));
     }
     // Credit on a LATER pass, deliberately: one thing per tick keeps the
     // ordering auditable.
@@ -532,9 +535,7 @@ async function redriveDeposit({ dep, tipHeight, rate, floorFlag }) {
   if (height < MIN_BLOCK_HEIGHT) {
     db.prepare(`UPDATE pcn_deposits SET status='rejected', block_height=?, note=? WHERE id=?`)
       .run(height, `below the ${MIN_BLOCK_HEIGHT} consensus floor (height ${height})`, dep.id);
-    await notify(dep.chat_id,
-      `A deposit was found in block ${height}, which is below this chain's ${MIN_BLOCK_HEIGHT}-block safety floor, `
-      + `so it cannot be credited. Please contact support.`);
+    await notify(dep.chat_id, say(dep.chat_id, 'dep.below_floor', { height, floor: MIN_BLOCK_HEIGHT }));
     return 'rejected';
   }
 
@@ -647,15 +648,20 @@ async function redriveDeposit({ dep, tipHeight, rate, floorFlag }) {
     creditedThisTick += res.microUsd;
     // Notifications run AFTER the money is committed, and are never fatal.
     if (res.dust) {
-      await notify(dep.chat_id,
-        `Received <b>${escapeHtml(satsToPcnString(dep.amount_sat))} PCN</b>, which is below the `
-        + `${cfg.int('MIN_DEPOSIT_PCN', 1)} PCN minimum. It has been kept against your account and will be `
-        + `added to your next top-up.`);
+      await notify(dep.chat_id, say(dep.chat_id, 'dep.dust', { pcn: escapeHtml(satsToPcnString(dep.amount_sat)), min: cfg.int('MIN_DEPOSIT_PCN', 1) }));
     } else {
-      await notify(dep.chat_id,
-        `Credited <b>$${escapeHtml(microUsdToString(res.microUsd, 4))}</b> from `
-        + `${escapeHtml(satsToPcnString(dep.amount_sat))} PCN at a rate of `
-        + `${escapeHtml(rate.rateText)} USD/PCN, read at confirmation time.`);
+      // The balance is read AFTER the credit (and any rebate) committed -- display only.
+      const bal = dep.chat_id === null ? null : db.prepare('SELECT balance_micro_usd b FROM users WHERE chat_id = ?').get(dep.chat_id)?.b;
+      const granted = res.rebate?.granted ?? 0n;
+      await notify(dep.chat_id, [
+        say(dep.chat_id, 'dep.credited', {
+          pcn: escapeHtml(satsToPcnString(dep.amount_sat)),
+          usd: escapeHtml(microUsdToString(res.microUsd, 4)),
+          rate: escapeHtml(rate.rateText),
+        }),
+        granted > 0n ? say(dep.chat_id, 'dep.rebate', { usd: escapeHtml(microUsdToString(granted, 4)) }) : null,
+        bal === null || bal === undefined ? null : say(dep.chat_id, 'dep.balance', { balance: `$${escapeHtml(microUsdToString(bal, 4))}` }),
+      ].filter(Boolean).join('\n'));
     }
     return 'credited';
   }

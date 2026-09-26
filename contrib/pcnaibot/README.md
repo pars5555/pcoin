@@ -63,7 +63,7 @@ watch.mjs                the deposit watcher, a SEPARATE process on a timer
 Dockerfile               one image, used by both processes
 migrate.mjs              explicit versioned migrations + the structural proof
 heartbeat-check.sh       staleness check for both heartbeats; RUNS AS ROOT
-migrations/              001_init .. 014_stars, explicit and versioned
+migrations/              001_init .. 015_gifts_invites_lang, explicit and versioned
 systemd/                 units + timers + logrotate; systemd/docker/ for the container
 test/                    money path, billing path, studio (cards, jobs, chat agent), Markdown
 lib/
@@ -87,9 +87,35 @@ lib/
   media.mjs              the builder: OonaCode's image/video models, prices, client
   settings.mjs           every admin setting (kv 'studio:settings'), validated
   stars.mjs              Telegram Stars: invoices, pre-checkout, credit, refunds, Telegram's books
+  rewards.mjs            the welcome gift and the invite reward (see "Gifts, invites, languages")
+  i18n.mjs               the eight languages: t(), detection, the user's language
+  locales/<code>.mjs     every user-facing text; en.mjs is the master
   drafts.mjs             live status lines (sendMessageDraft)
   markdown.mjs           the agent's Markdown as Telegram HTML
 ```
+
+## Gifts, invites, languages (2026-09-26, webbuilderbot's shape with its holes closed)
+
+* **Welcome gift** — `giftUsd` ($3) to every NEW account, as a `gift` ledger row keyed
+  `welcome:<chat_id>`, written in the same transaction that creates the user row. Given once per
+  Telegram account for life: a re-created row finds the key taken. webbuilderbot SET the balance with
+  no ledger row, so its gift was invisible to every total and re-armed by deleting a user.
+* **Invites** — `t.me/<bot>?start=r<chat_id>`. Recorded only by the message that CREATES the account
+  (`referrals.referred_chat_id` UNIQUE: one inviter per person, for life; never yourself; never a
+  stranger). Paid once — `inviteRewardUsd` ($2), a `referral` row for the inviter keyed
+  `referral:<invited>` — when the invited person's VIDEO is delivered AND they have topped up at least
+  `inviteMinTopupUsd` ($1) of their own money (deposits minus Stars refunds; never the gift). That
+  last rule is the owner's choice (2026-09-26) and what stops a fake account living on its $3 from
+  paying its maker $2. No caps, by the owner's decision. The payout hook is `deliverItem` →
+  `onDelivered` (lib/jobs.mjs), which can never cost the user their result.
+* **Languages** — en, ru, hy, fa, ar, fr, de, es (webbuilderbot's eight). Detected from Telegram's
+  `language_code` when the account is created, changed with 🌐 / `/language`, stored in `users.lang`
+  and read by the watcher too. Texts are in `lib/locales/`; `node test/locale-check.mjs` compares every
+  language with English (keys, placeholders, HTML tags, literal commands and SUPPORT, Telegram's
+  length limits) and the test suite refuses any difference. The chat agent is not driven by this: it
+  answers in the language of the user's latest message.
+* All five amounts and switches are on admin.pc.am → PcoinAiBot → Gifts & invites, behind the
+  authenticator code (they create money); each amount is at most $20.
 
 ## Two processes, deliberately
 
@@ -203,7 +229,7 @@ the owner from a monitoring-setup step.
 ## Testing
 
 ```sh
-node --test test/          # 149 tests, no network
+node --test test/          # 168 tests, no network
 ```
 
 They need `better-sqlite3`, which has no Windows/node-24 prebuild — run them in the

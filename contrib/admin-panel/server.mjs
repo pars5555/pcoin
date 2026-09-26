@@ -245,6 +245,7 @@ const NAV = [
                      ['pcnaibot/chat', 'Chat agent', 'sub'],
                      ['pcnaibot/studio', 'Pictures & video', 'sub'],
                      ['pcnaibot/payments', 'Payments & Stars', 'sub'],
+                     ['pcnaibot/gifts', 'Gifts & invites', 'sub'],
                      ['send', '\u{1F4E4} Send PCN (market-hot)'],
                      ['transfer', '\u{1F4B8} Move PCN']]],
   ['Network',       [['miners', '\u26CF\uFE0F Miners & pools'],
