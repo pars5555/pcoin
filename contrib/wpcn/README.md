@@ -195,10 +195,15 @@ with no established range.
 
 **Superseded.** The direction that shipped is the opposite: `price.pc.am` is the
 anchor and `pcoin-wpcn-keeper` moves the pool toward it, never the reverse
-(`WRAP-DESK.md` §11.1). The live pool price may be published as its own
-informational field but must never be presented as the PCN price. The plan below is
-kept as history; switching `serviceRate` to follow the pool is gated on a sustained
-majority of pool volume coming from addresses that are not ours (`WRAP-DESK.md` §6).
+(`WRAP-DESK.md` §11.1). Since 2026-09-25 the rate price.pc.am publishes as
+`creditRateUsd` is the PCN index — the volume-weighted median of user-to-user
+trades on exchange.pc.am, bounded $0.015–$0.10 — and the pool feeds it nothing.
+The live pool price is published beside it as `poolUsd`, information only, and
+must never be presented as the PCN price. The plan below is kept as history, and
+so is its name for the credit rate, `serviceRate`, which today appears only in
+price.pc.am's diagnostic `/detail`. Switching the credit rate to follow the pool
+is gated on a sustained majority of pool volume coming from addresses that are
+not ours (`WRAP-DESK.md` §6).
 
 On PancakeSwap the price is automatic and needs no oracle — an AMM's price *is*
 its pool ratio, so every trade moves it. The question is only what, if anything,

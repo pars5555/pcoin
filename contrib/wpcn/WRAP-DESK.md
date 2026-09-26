@@ -204,6 +204,14 @@ days. Time alone is not the gate. Depth alone is not the gate. **Provenance is.*
 Until then `price.pc.am` stays the anchor, honestly labelled as a posted rate,
 and the pool is a second opinion rather than the source of truth.
 
+> **Since 2026-09-25 the anchor is a traded price, not a posted one.** The credit
+> rate price.pc.am publishes, `creditRateUsd` (still `serviceRate` inside the
+> price server and in its diagnostic `/detail`), is the PCN index: the
+> volume-weighted median of user-to-user trades on exchange.pc.am, bounded
+> $0.015–$0.10, moving at most 2% a trade and 5% a day. The pool feeds it
+> nothing; `poolUsd` is published beside it as information only. The gate above
+> still governs ever wiring the pool in.
+
 ### Can the price grow without limit?
 
 **Yes — there is no ceiling in the mechanism.** An AMM price rises without bound
@@ -269,7 +277,9 @@ rungs and the marginal price rises. It is a bonding curve, and it already has th
 property "if someone buys PCN, the price grows" — all the way to $10.
 
 State on 31 Aug 2026: rungs 0-2 exhausted (2,940 PCN sold), marginal price at
-rung 3, ~$0.0183 — which is what `serviceRate` is tracking.
+rung 3, ~$0.0183 — which is what `serviceRate` was tracking then. (Since
+2026-09-25 the credit rate is the PCN index from exchange.pc.am, and the ladder
+no longer feeds it.)
 
 **Compare the two instruments honestly:**
 
@@ -301,6 +311,16 @@ buyer purchases PCN on market.pc.am
    -> the cycle buys wPCN while pool < serviceRate
    -> pool price rises
 ```
+
+> **Written 2026-08-31, when the credit rate tracked the ladder. It no longer
+> does.** Since 2026-09-25 market.pc.am sells every PCN at the PCN index +3%
+> (the curve is only its rollback path), so a purchase moves neither the market
+> price nor the credit rate, and the credit rate is the index itself. The third
+> step of this chain does not exist today; read §9.2 as the design it was.
+> Anything built from it reads the credit rate as `creditRateUsd` from
+> price.pc.am's root body, holding unless `stale` is exactly `false` — never
+> `serviceRate`, `ladder.*` or `price`, which survive only in the diagnostic
+> `/detail`.
 
 Automating step 3 is the whole change. On a successful delivery, buy wPCN from
 the pool with a share of the proceeds — **only while the pool trades below

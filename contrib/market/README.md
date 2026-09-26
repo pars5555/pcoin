@@ -180,10 +180,13 @@ the mechanism. Both are there deliberately.
 `ladderState()` computes the published `marginalPrice` from `qty_sold` **alone**.
 
 Reserving costs nothing. If reservations moved the published price, anyone could
-open orders they never intend to pay for and walk it up — and because
-`serviceRate` follows that number, it would inflate what five separate products
-credit real customers. Quoting still respects reservations, so we can never
-oversell; only the *published* number ignores them.
+open orders they never intend to pay for and walk it up — and because the credit
+rate (`serviceRate`) followed that number until 2026-09-25, it would have
+inflated what five separate products credit real customers. Since then the
+credit rate is the PCN index from exchange.pc.am, which the ladder does not
+feed; the rule stays for curve mode, the rollback path (§4a). Quoting still
+respects reservations, so we can never oversell; only the *published* number
+ignores them.
 
 ### The order is written before the invoice
 
@@ -195,6 +198,13 @@ order row: the customer pays, the IPN arrives, and the handler logs
 case is an order with no invoice, which the sweeper expires.
 
 ## 4. The divergence interlock
+
+> **Curve mode only, and written while the credit rate was a walk.** Since
+> 2026-09-25 the market prices in index mode (§4a), where this gate does not
+> run, and the credit rate is the PCN index from exchange.pc.am (at most 2% a
+> trade and 5% a day), not a `serviceRate` walking toward the ladder. The
+> section stands for the curve, now the rollback path; its figures for how fast
+> `serviceRate` walks describe the credit rate as it was before the index.
 
 **The market refuses to sell when the ladder price and the rate the products
 credit PCN at have drifted more than 20% apart.**
@@ -208,7 +218,10 @@ Four properties matter:
 
 - It compares against the **public** `price.pc.am`, not the loopback oracle on
   the same host. Those are different services, and that distinction is the whole
-  point — the loopback one is always correct and nobody consumes it.
+  point — the loopback one is always correct and nobody consumes it. It reads
+  `creditRateUsd` and drops any sample whose `stale` is not exactly `false`
+  (`creditRateFromPriceBody()` in `price-feed.mjs`); `serviceRate` is no longer
+  in the root body, only in `/detail`, which nothing here reads.
 - It **samples the public endpoint three times and judges on the worst reading**.
   `price.pc.am` is Cloudflare-proxied across three origins, and they have
   disagreed in production. A lucky sample must not open sales while a customer's
@@ -251,6 +264,8 @@ owner decided to switch without waiting out the 7-day shadow.
   reason, the gate closes (the gate watcher alerts), and `/api/ladder/state`
   answers **503 to loopback callers**, so price.pc.am's ladder poll fails and its
   `ladder.stale` turns true rather than publishing a closed market's price as fresh.
+  (`ladder.stale` is only in price.pc.am's `/detail` now; the root body folds it
+  into its one hold flag, `stale`.)
 - **No divergence gate** in index mode: the market price and the credit rate come
   from the same index. `maxDivergencePct` and waivers apply to curve mode only.
 - **curve:** exactly as before, verified endpoint by endpoint against the old
@@ -517,7 +532,8 @@ node gen_ladder.mjs --report
 # Refuses unless the ladder is pristine; restores it afterwards.
 cd /opt/pcoin-market && node ladder-test.mjs
 
-# exercise ladder -> oracle -> serviceRate without spending money
+# exercise ladder -> oracle -> serviceRate without spending money (curve mode;
+# in index mode a sale moves neither the price nor the credit rate)
 node ladder-sim.mjs sell 2000
 node ladder-sim.mjs reset      # refuses if any non-TEST fill exists
 ```

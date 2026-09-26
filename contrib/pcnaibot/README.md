@@ -209,8 +209,12 @@ the target host or any Linux box with node 20.
   than silently returning a non-streamed body. Streaming would add the
   `message_start` early-abort, which is the only mechanism that *stops* a
   mid-answer overrun rather than discovering it afterwards.
-* **wPCN is off** (`WPCN_ENABLED=0`) and must stay off until the shared verifier
-  credits from `serviceRate` rather than `price`.
+* **wPCN is off** (`WPCN_ENABLED=0`). The condition this line used to set, that
+  the shared verifier stop crediting from `price`, is met: it credits from
+  `creditRateUsd` (`serviceRate` only on an origin still serving the old body),
+  never `price` or `sellPriceUsd`. This rail's own PCN deposits read the same
+  way (`lib/rate.mjs`): `creditRateUsd` first, `stale` must be exactly `false`,
+  and the rate's `ageSeconds` is bounded (900 s by default).
 
 ---
 
