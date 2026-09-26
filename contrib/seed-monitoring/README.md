@@ -23,8 +23,13 @@ the rail runs, and no single host can read all of it. So each host declares the
 rails it is responsible for in `/etc/pcoin-deposit-watch.conf`:
 
 ```sh
-RAILS_EXPECTED="webbuilderbot aicontrol"
+RAILS_EXPECTED="aicontrol 3dmodels.pc.am"
 ```
+
+The old webbuilderbot host (116.203.221.42) also sets `WBB=""` there: it still
+holds a frozen copy of webbuilderbot's config after the 2026-09-26 move, and a
+database nobody writes any more reads exactly like a stopped watcher. The new
+host (89.58.3.44) runs its own copy with `RAILS_EXPECTED="webbuilderbot"`.
 
 **The union of these lists is what covers the estate, and nothing computes that
 union automatically.** If you add a rail, add it to exactly one host's list and
@@ -34,9 +39,9 @@ the failure is silent in exactly the way this table exists to prevent.
 | rail | evidence lives on | watched from | how |
 |---|---|---|---|
 | `checker` | 152.53.171.190 | 152.53.171.190 | MySQL `settings.last_poll_at` |
-| `webbuilderbot` | the webbuilderbot host | same host | MySQL `settings.last_poll_at` |
-| `aicontrol` | the webbuilderbot host | same host | MySQL `pcoin_watcher_heartbeat` |
-| `3dmodels.pc.am` | the webbuilderbot host | same host | log mtime + docker db |
+| `webbuilderbot` | 89.58.3.44 (moved from 116.203.221.42 on 2026-09-26) | same host | MySQL `settings.last_poll_at` |
+| `aicontrol` | 116.203.221.42 | same host | MySQL `pcoin_watcher_heartbeat` |
+| `3dmodels.pc.am` | 116.203.221.42 | same host | log mtime + docker db |
 | `3dmodel.oonak.ai` | its own host | same host | log mtime + `deposits.json` |
 | `webai` | the webai host (GCE `rba`) | same host | MySQL `pcoin_watcher_heartbeat` |
 | `pcnaibot` | 178.105.3.51 | same host | SQLite -- the only SQLite rail, so it needed its own reader |

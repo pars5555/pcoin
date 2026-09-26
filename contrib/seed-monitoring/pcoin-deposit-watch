@@ -425,7 +425,12 @@ print('u=%r;p=%r;db=%r' % (d['db_user'],d['db_pass'],d['db_name']))
 fi
 
 # -------------------------------------------------------- webbuilderbot -----
-WBB=/var/www/ai-bots/bots/webbuilderbot/config.json
+# WBB is overridable from $CONF. webbuilderbot moved from 116.203.221.42 to
+# 89.58.3.44 on 2026-09-26, and the old box keeps a frozen copy of its config
+# through the rollback week: read from there, a DB nobody writes any more
+# looks exactly like a stopped watcher. That box sets WBB="" and the new one
+# runs its own copy of this script, per the one-copy-per-host rule.
+WBB=${WBB-/var/www/ai-bots/bots/webbuilderbot/config.json}
 if [ -r "$WBB" ]; then
     seen_rail webbuilderbot
     eval "$(python3 -c "

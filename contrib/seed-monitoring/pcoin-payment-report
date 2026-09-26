@@ -10,7 +10,8 @@
 # Local products only -- no SSH between servers, same rule pcoin-deposit-watch
 # follows. Run one copy per host; each reports what lives on it:
 #     152.53.171.190 -> checker
-#     116.203.221.42 -> webbuilderbot, aicontrol, 3dmodels
+#     116.203.221.42 -> aicontrol, 3dmodels
+#     89.58.3.44     -> webbuilderbot (moved there 2026-09-26)
 #
 # One message per credit, carrying everything needed to answer "who paid, where,
 # how much was it worth" without opening a database -- including BOTH the rate
@@ -150,8 +151,13 @@ print('U=%s;P=%s;D=%s' % (d['db_user'], d['db_pass'], d['db_name']))" 2>/dev/nul
   unset U P D
 fi
 
-# ── webbuilderbot (116.203.221.42) ────────────────────────────────────────
-WBB=/var/www/ai-bots/bots/webbuilderbot/config.json
+# ── webbuilderbot (89.58.3.44) ────────────────────────────────────────────
+# WBB is overridable from $CONF. webbuilderbot moved from 116.203.221.42 to
+# 89.58.3.44 on 2026-09-26, and the old box keeps a frozen copy of its config
+# through the rollback week: read from there, a DB nobody writes any more
+# looks exactly like a stopped watcher. That box sets WBB="" and the new one
+# runs its own copy of this script, per the one-copy-per-host rule.
+WBB=${WBB-/var/www/ai-bots/bots/webbuilderbot/config.json}
 if [ -r "$WBB" ]; then
   eval "$(python3 -c "
 import json;d=json.load(open('$WBB'))
