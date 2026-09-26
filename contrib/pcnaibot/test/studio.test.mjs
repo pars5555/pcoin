@@ -55,6 +55,7 @@ test('a clear request becomes a checked spec; the model\'s text comes with it; t
   assert.deepEqual(body.tools, [PROPOSE_TOOL]);
   assert.equal(body.messages.at(-1).content, 'лиса в снегу, широкая');
   assert.match(body.system, /reply in the language of the user's latest message/);
+  assert.match(body.system, /THE USER'S LATEST MESSAGE: "лиса в снегу, широкая"\. Reply, and write the card summary, in the language of THAT message/);
   assert.match(body.system, /a picture costs \$0\.27/);
 });
 

@@ -124,7 +124,7 @@ export function priceLines(offer, settings, marginE6) {
   return out;
 }
 
-export function systemPrompt({ items = [], openCard = null, prices = [], balanceMicro = 0n, pictureInputs = 1, now = nowSec() }) {
+export function systemPrompt({ items = [], openCard = null, prices = [], balanceMicro = 0n, pictureInputs = 1, latest = '', now = nowSec() }) {
   return [
     'You are the assistant of a Telegram bot that makes AI pictures and short AI videos for its users. '
     + 'You only help with that: planning, making and changing pictures and videos. If the user asks for anything else '
@@ -161,6 +161,9 @@ export function systemPrompt({ items = [], openCard = null, prices = [], balance
     openCard
       ? `OPEN CARD P${openCard.id}: ${openCard.kind === 'video' ? 'video' : 'picture'}, ${openCard.shape} — "${openCard.summary}" — ${moneyLabel(openCard.price_micro)}. It is waiting for the user's ✅.`
       : 'No card is open.',
+    // LAST, where it weighs most: the language of THIS message. Seen live 2026-09-26: after one
+    // Armenian request, mimo-v2.5 wrote the next English request's card summary in Armenian.
+    ...(latest ? ['', `THE USER'S LATEST MESSAGE: "${latest.slice(0, 300)}". Reply, and write the card summary, in the language of THAT message — even if earlier messages used another language.`] : []),
   ].join('\n');
 }
 
@@ -261,6 +264,8 @@ export async function chatTurn(deps, { chatId, userContent }) {
     prices: priceLines(offer, settings, marginE6),
     balanceMicro: deps.balanceMicro ?? 0n,
     pictureInputs: pic ? Math.max(1, maxInputs(pic)) : 1,
+    // The user's own words, without the bot's notes ("(The user is replying to #12.)").
+    latest: userContent.split('\n').filter((l) => !/^\(The user /.test(l)).join(' ').trim(),
   });
   const messages = normalizeHistory([...loadHistory(db, chatId), { role: 'user', content: userContent }]);
   const body = { model: settings.chatModel, max_tokens: 2048, system, tools: [PROPOSE_TOOL], messages };
