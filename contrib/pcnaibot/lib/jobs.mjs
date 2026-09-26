@@ -22,7 +22,7 @@ import { immediate } from './db.mjs';
 import { Bucket } from './oonacode.mjs';
 import { reserve, settle, release, hold, InsufficientFunds } from './billing.mjs';
 import { creditsToMicroUsd } from './money.mjs';
-import { MEDIA_MODELS, MediaError, priceFor, usdToMicro, moneyLabel } from './media.mjs';
+import { MEDIA_MODELS, MediaError, priceFor, usdToMicro, moneyLabel, balanceLabel } from './media.mjs';
 import { escapeHtml } from './telegram.mjs';
 
 export const CARD_TTL_SEC = 24 * 3600;
@@ -84,7 +84,7 @@ export function cardText(p, { balanceMicro = null, status = null } = {}) {
   else if (p.kind === 'video' && sources.length) lines.push(`<i>Starts from #${sources[0]}.</i>`);
   else if (sources.length) lines.push(`<i>Changes ${sources.map((s) => `#${s}`).join(', ')}.</i>`);
   lines.push('', `Price: <b>${moneyLabel(p.price_micro)}</b>`
-    + (balanceMicro === null ? '' : ` · your balance ${moneyLabel(balanceMicro)}`));
+    + (balanceMicro === null ? '' : ` · your balance ${balanceLabel(balanceMicro)}`));
   if (status) lines.push('', `<i>${status}</i>`);
   return lines.join('\n');
 }
@@ -202,7 +202,7 @@ export function beginJob(db, { chatId, proposalId, offer, marginE6, now = nowSec
 export function refusalText(r) {
   const m = moneyLabel;
   if (r.short) {
-    return `This costs <b>${m(r.short.needMicro)}</b> and your balance is <b>${m(r.short.haveMicro)}</b>. `
+    return `This costs <b>${m(r.short.needMicro)}</b> and your balance is <b>${balanceLabel(r.short.haveMicro)}</b>. `
       + 'Top up and press ✅ again — the card stays open.';
   }
   if (r.repriced !== undefined) return `The price changed to <b>${m(r.repriced)}</b> since the card was made. Press ✅ again if that is fine.`;

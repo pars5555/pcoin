@@ -15,7 +15,7 @@
 import { kvGetJson, kvSetJson } from './db.mjs';
 import { nowSec } from './time.mjs';
 import { takeFreeTurn } from './billing.mjs';
-import { SHAPES, maxInputs, videoDurations, priceFor, usdToMicro, moneyLabel } from './media.mjs';
+import { SHAPES, maxInputs, videoDurations, priceFor, usdToMicro, moneyLabel, balanceLabel } from './media.mjs';
 import { item } from './jobs.mjs';
 
 export const HISTORY_MAX = 24;
@@ -151,7 +151,7 @@ export function systemPrompt({ items = [], openCard = null, prices = [], balance
     '- "It", "this" or "the last one" usually means the newest item, or the one the user replies to.',
     '',
     `PRICES (charged only on ✅): ${prices.join('; ')}. Pictures take under a minute; videos 1–5 minutes. `
-    + `The user's balance is ${moneyLabel(balanceMicro)}; below the price they still get the card and can top up with the ➕ Top up button.`,
+    + `The user's balance is ${balanceLabel(balanceMicro)}; below the price they still get the card and can top up with the ➕ Top up button.`,
     '',
     'Lines in parentheses in the conversation, such as "(Picture #12 was made and sent: …)", are the bot\'s records of what happened. Never write such lines yourself.',
     '',

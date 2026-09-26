@@ -89,12 +89,13 @@ export function priceFor(offer, { kind, inputs = 0, seconds = 0, resolution = nu
 }
 
 export const usdToMicro = (usd, marginE6) => creditsToMicroUsd(Number(usd) * CREDITS_PER_USD, marginE6);
-// $0.27, $0.144, $2.52, $0.10 -- at least two decimals, a third only when it is not zero.
-export function moneyLabel(micro) {
-  const [whole, frac = ''] = microUsdToString(micro, 3).split('.');
-  const f = frac.endsWith('0') ? frac.slice(0, 2) : frac;
-  return `$${whole}.${f}`;
+// $0.27, $0.144, $2.52, $0.10 -- at least two decimals, more only when they are not zero. A price
+// needs 3; a BALANCE needs 4 ($0.1725 is not $0.172), which is what `dp` is for.
+export function moneyLabel(micro, dp = 3) {
+  const [whole, frac = ''] = microUsdToString(micro, dp).split('.');
+  return `$${whole}.${frac.replace(/0+$/, '').padEnd(2, '0')}`;
 }
+export const balanceLabel = (micro) => moneyLabel(micro, 4);
 
 // ---- the API --------------------------------------------------------------------------------
 

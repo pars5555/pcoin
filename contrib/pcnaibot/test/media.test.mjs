@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { Bucket } from '../lib/oonacode.mjs';
-import { mediaOffer, priceFor, usdToMicro, moneyLabel, maxInputs, videoDurations, MediaClient, MediaError, PriceUnavailable } from '../lib/media.mjs';
+import { mediaOffer, priceFor, usdToMicro, moneyLabel, balanceLabel, maxInputs, videoDurations, MediaClient, MediaError, PriceUnavailable } from '../lib/media.mjs';
 import { creditsToMicroUsd } from '../lib/money.mjs';
 import { LISTING, OFFER, MARGIN_E6 } from './fixtures.mjs';
 
@@ -34,6 +34,11 @@ test('the exact price of a job, and which model it calls', () => {
   assert.equal(usdToMicro(0.09, MARGIN_E6), 270000n);
   assert.equal(usdToMicro(0.84, MARGIN_E6), 2520000n);
   assert.equal(moneyLabel(270000n), '$0.27');
+  assert.equal(moneyLabel(144000n), '$0.144');
+  assert.equal(moneyLabel(100000n), '$0.10');
+  assert.equal(moneyLabel(2000000n), '$2.00');
+  assert.equal(balanceLabel(172577), '$0.1725', 'a balance is shown to the hundredth of a cent, never rounded up');
+  assert.equal(balanceLabel(1830000), '$1.83');
   assert.equal(creditsToMicroUsd(90, MARGIN_E6), 270000n);
   assert.equal(creditsToMicroUsd(51.6, MARGIN_E6), 154800n);
 });
