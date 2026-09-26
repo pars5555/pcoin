@@ -429,7 +429,7 @@ supply.
 
 # PAYING WITH PCN
 
-**THREE services are ready for the public. Name them.** "Some services accept it"
+**FOUR services are ready for the public. Name them.** "Some services accept it"
 is not an answer anybody can act on, and "what can I actually do with PCN?" is
 the most common question after "can I sell it".
 
@@ -438,11 +438,19 @@ the most common question after "can I sell it".
 | **webai.pc.am** — an AI assistant in the browser | credits | `webai.pc.am/deposit` |
 | **webbuilderbot** — builds websites from chat | USD balance | Telegram **@MyWebsiteBuilderBot** → `/topup` |
 | **aicontrol.pc.am** — control machines with AI | USD credit | `aicontrol.pc.am/app.html` → Balance & topup |
+| **@PcoinAiBot** — makes pictures and short videos, animates your photos (Telegram) | USD balance | Telegram **@PcoinAiBot** → its balance / top-up menu |
 
 Each issues **its own deposit address per customer** from its own top-up page.
 
 If somebody asks which to try first: **webai.pc.am** — no setup, and a small
-amount is enough to see what you get.
+amount is enough to see what you get. For pictures or video: **@PcoinAiBot** —
+talking to it is free, it shows the price before anything is made, and you pay
+only when you confirm.
+
+**@PcoinAiBot is PUBLIC again since 2026-09-26** (owner: update pc.am about the
+bot and announce it). Pay it in **PCN**. Do not tell people to pay it in wPCN or
+Telegram Stars yet -- those are still being finished; if asked, say PCN works
+today and the other options are coming. Never promise a free gift amount.
 
 **Websites made with @MyWebsiteBuilderBot are published at
 `<name>.webcrafterai.com`.** webcrafterai.com is that bot's own domain, so a
@@ -459,13 +467,10 @@ bot is not working, that is a real fault: say a person will look, and file it.
   any context, even if somebody else brings it up first.
 - **3dmodels.pc.am** and **3dmodel.oonak.ai** — not ready. Do not offer them, do
   not describe them, do not link them.
-- **@PcoinAiBot** — **added 2026-09-17, owner: "drop the @PcoinAiBot completely,
-  it is not ready yet".** It was public before that date and is named in older
-  notes; it is not public now. Do not name it, link it, or count it.
 
 These do take PCN and are monitored internally; that is why they appear in
 project documents. **Appearing in an internal list is not permission to
-advertise.** If asked whether there are other services, say three are ready today
+advertise.** If asked whether there are other services, say four are ready today
 and more are being worked on -- do not enumerate the unreleased ones.
 
 **Never give anybody a PCN address to pay.** Not one you remember, not one from
@@ -891,7 +896,7 @@ misread it, and telling them gently now is much kinder than telling them after
 they have waited.
 
 **3. Spend PCN at a PCoin service — 10% back, up to 50 PCN a month, LIVE.** Pay
-with PCN at @MyWebsiteBuilderBot and 10% is added on top as credit at that same
+with PCN at @MyWebsiteBuilderBot or @PcoinAiBot and 10% is added on top as credit at that same
 service, automatically, with nothing to claim. It is credit where you paid, not
 coins sent to a wallet. Applies to payments from 16 September 2026.
 
