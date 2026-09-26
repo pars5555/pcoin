@@ -1034,7 +1034,12 @@ createServer(async (req, res) => {
     }
 
     // ---- public price ----
-    if (p === '/api/price') return json(res, 200, await jget(`${PRICE}/price`));
+    // /detail, not /price: this endpoint forwarded price.pc.am's FULL body until
+    // 2026-09-25, and an outside integration polls it every 5 minutes. price.pc.am's
+    // root shrank to nine keys that day; /detail is the old body (it still carries
+    // sellPriceUsd, which our own page reads), so nobody downstream of this
+    // endpoint loses a field. Found 2026-09-26 in the access log (966 calls).
+    if (p === '/api/price') return json(res, 200, await jget(`${PRICE}/detail`));
 
     // Quotes come from the ladder now, not from the oracle's AMM curve. The
     // oracle still owns `serviceRate` (what the four products credit at) and
