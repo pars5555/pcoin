@@ -221,6 +221,37 @@ export function validateProposal(db, chatId, input, { offer, settings }) {
     sources: start !== null ? [start] : [], startItemId: start, newVersionOf } };
 }
 
+// ---- the card's language --------------------------------------------------------------------
+//
+// A prompt alone did not hold it: twice on 2026-09-26, after one Armenian request, mimo-v2.5 wrote
+// an English request's card summary in Armenian -- the second time with "reply in the language of
+// THAT message" as the last line of its instructions. So the script is checked in code, and a
+// mismatch goes back to the model once. (Script, not language: English and Spanish share one,
+// which is the mistake a script check cannot see and a person can live with.)
+const SCRIPTS = [
+  ['Armenian', /[԰-֏]/], ['Cyrillic', /[Ѐ-ӿ]/], ['Arabic', /[؀-ۿ]/],
+  ['Georgian', /[Ⴀ-ჿ]/], ['Greek', /[Ͱ-Ͽ]/], ['Hebrew', /[֐-׿]/],
+  ['Devanagari', /[ऀ-ॿ]/], ['CJK', /[぀-ヿ一-鿿가-힯]/],
+  ['Latin', /[A-Za-zÀ-ɏ]/],
+];
+export function dominantScript(text) {
+  const counts = {};
+  for (const ch of String(text ?? '')) {
+    for (const [name, re] of SCRIPTS) if (re.test(ch)) { counts[name] = (counts[name] ?? 0) + 1; break; }
+  }
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  if (total < 3) return null;
+  const [name, n] = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+  return n / total >= 0.6 ? name : null;
+}
+export function languageProblem(latest, summary) {
+  const want = dominantScript(latest);
+  const got = dominantScript(summary);
+  return want && got && want !== got
+    ? `the summary is written in ${got} script, but the user's latest message is in ${want} script. Write the summary, and your reply, in the language of the user's latest message.`
+    : null;
+}
+
 // ---- the free chat's limits -----------------------------------------------------------------
 
 const dayKey = () => `studio:chatcalls:${new Date().toISOString().slice(0, 10)}`;
@@ -259,14 +290,15 @@ export async function chatTurn(deps, { chatId, userContent }) {
   const { db, oona, settings, offer, marginE6 } = deps;
   const openCard = db.prepare("SELECT * FROM proposals WHERE chat_id = ? AND state = 'open' ORDER BY id DESC LIMIT 1").get(chatId) ?? null;
   const pic = offer[settings.pictureModel];
+  // The user's own words, without the bot's notes ("(The user is replying to #12.)").
+  const latest = userContent.split('\n').filter((l) => !/^\(The user /.test(l)).join(' ').trim();
   const system = systemPrompt({
     items: recentItems(db, chatId),
     openCard,
     prices: priceLines(offer, settings, marginE6),
     balanceMicro: deps.balanceMicro ?? 0n,
     pictureInputs: pic ? Math.max(1, maxInputs(pic)) : 1,
-    // The user's own words, without the bot's notes ("(The user is replying to #12.)").
-    latest: userContent.split('\n').filter((l) => !/^\(The user /.test(l)).join(' ').trim(),
+    latest,
   });
   const messages = normalizeHistory([...loadHistory(db, chatId), { role: 'user', content: userContent }]);
   const body = { model: settings.chatModel, max_tokens: 2048, system, tools: [PROPOSE_TOOL], messages };
@@ -278,7 +310,8 @@ export async function chatTurn(deps, { chatId, userContent }) {
   if (!r.tool) return { text: r.text, spec: null, failed: null };
 
   const v = validateProposal(db, chatId, r.tool.input, { offer, settings });
-  if (v.spec) return { text: r.text, spec: v.spec, failed: null };
+  const wrongLanguage = v.spec ? (languageProblem(latest, v.spec.summary) ?? languageProblem(latest, r.text)) : null;
+  if (v.spec && !wrongLanguage) return { text: r.text, spec: v.spec, failed: null };
 
   // ONE retry, told why. The model's own blocks go back untouched (thinking included).
   const resp2 = await oona.messages({
@@ -286,7 +319,7 @@ export async function chatTurn(deps, { chatId, userContent }) {
     messages: [...messages,
       { role: 'assistant', content: resp.content },
       { role: 'user', content: [{ type: 'tool_result', tool_use_id: r.tool.id, is_error: true,
-        content: `Not accepted: ${v.error} Fix it and call propose again, or ask the user.` }] },
+        content: `Not accepted: ${v.error ?? wrongLanguage} Fix it and call propose again, or ask the user.` }] },
     ],
   });
   const r2 = readReply(resp2);

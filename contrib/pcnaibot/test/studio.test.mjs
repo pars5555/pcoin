@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 
 import {
   chatTurn, validateProposal, normalizeHistory, loadHistory, appendHistory, noteFor, chatGate,
-  systemPrompt, priceLines, testChatModel, PROPOSE_TOOL,
+  systemPrompt, priceLines, testChatModel, PROPOSE_TOOL, dominantScript,
 } from '../lib/studio.mjs';
 import { settingsProblems, DEFAULT_SETTINGS, getSettings, saveSettings } from '../lib/settings.mjs';
 import { mediaOffer } from '../lib/media.mjs';
@@ -44,10 +44,10 @@ const turnDeps = (db, oona) => ({ db, oona, settings: SETTINGS, offer: OFFER, ma
 
 test('a clear request becomes a checked spec; the model\'s text comes with it; thinking is dropped', async () => {
   const db = freshDb();
-  const oona = fakeOona([toolAnswer({ kind: 'image', prompt: 'A red fox sitting in fresh snow, photorealistic', summary: 'Лиса в снегу', shape: 'wide' })]);
+  const oona = fakeOona([toolAnswer({ kind: 'image', prompt: 'A red fox sitting in fresh snow, photorealistic', summary: 'Лиса в снегу', shape: 'wide' }, 'Вот карточка — нажмите ✅.')]);
   const r = await chatTurn(turnDeps(db, oona), { chatId: 7, userContent: 'лиса в снегу, широкая' });
   assert.equal(r.failed, null);
-  assert.equal(r.text, 'Here is the card — press ✅ to make it.');
+  assert.equal(r.text, 'Вот карточка — нажмите ✅.');
   assert.deepEqual(r.spec, { kind: 'image', model: 'wan2.7-image-pro', prompt: 'A red fox sitting in fresh snow, photorealistic', summary: 'Лиса в снегу',
     shape: 'wide', seconds: null, resolution: null, sources: [], startItemId: null, newVersionOf: null });
   const body = oona.calls[0];
@@ -86,6 +86,22 @@ test('an invalid proposal goes back to the model once, with the reason, and its 
   assert.equal(retry.at(-1).content[0].is_error, true);
   assert.match(retry.at(-1).content[0].content, new RegExp(`#${foreign} is not one of this user's items`));
   assert.equal(r.text, 'Here is the card — press ✅ to make it.', 'the first text stands when the retry has none');
+});
+
+test('a card summary in another script than the user\'s message goes back once -- then stands', async () => {
+  const db = freshDb();
+  assert.equal(dominantScript('put this watch on a desk'), 'Latin');
+  assert.equal(dominantScript('Ձեռքի ժամացույցը սեղանին'), 'Armenian');
+  assert.equal(dominantScript('#4 ok'), null, 'too few letters to tell');
+  const armenian = toolAnswer({ kind: 'image', prompt: 'A watch on a dark wooden desk', summary: 'Ձեռքի ժամացույցը մուգ փայտե սեղանին', shape: 'square' }, '');
+  const english = toolAnswer({ kind: 'image', prompt: 'A watch on a dark wooden desk', summary: 'The watch on a dark wooden desk by a cup of coffee', shape: 'square' }, '');
+  const oona = fakeOona([armenian, english]);
+  const r = await chatTurn(turnDeps(db, oona), { chatId: 7, userContent: '(The user sent a photo: #4.)\nput this watch on a dark wooden desk' });
+  assert.equal(r.spec.summary, 'The watch on a dark wooden desk by a cup of coffee');
+  assert.match(oona.calls[1].messages.at(-1).content[0].content, /Armenian script, but the user's latest message is in Latin script/);
+  // Wrong again: the card is still made -- a language slip is not worth losing the request over.
+  const again = await chatTurn(turnDeps(db, fakeOona([armenian, armenian])), { chatId: 7, userContent: 'put this watch on a dark wooden desk' });
+  assert.equal(again.spec.summary, 'Ձեռքի ժամացույցը մուգ փայտե սեղանին');
 });
 
 test('a second invalid proposal is no card', async () => {
