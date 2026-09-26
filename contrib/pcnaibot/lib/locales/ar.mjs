@@ -135,6 +135,7 @@ export default {
   'topup.title': '<b>شحن الرصيد</b> · رصيدك <b>{balance}</b>',
   'topup.stars': '⭐ <b>Telegram Stars</b> — ادفع داخل تيليجرام، ويُضاف فورًا:',
   'topup.pcn': '⚡ <b>PCN</b> — أرسل PCN إلى عنوانك الخاص؛ يُضاف بعد {conf} تأكيدات (نحو 30 دقيقة).',
+  'promo.rebate': '🎁 <b>ادفع بـ PCN واستردّ {percent}٪</b> — حتى {cap} PCN شهرياً، تُضاف إلى رصيدك تلقائياً.',
   'topup.wpcn': '🟡 <b>wPCN</b> — على شبكة BNB Smart Chain؛ يُضاف خلال دقيقة تقريبًا.',
 
   // ---- PCN ----

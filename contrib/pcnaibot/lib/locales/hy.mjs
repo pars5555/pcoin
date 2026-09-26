@@ -140,6 +140,7 @@ export default {
   'topup.title': '<b>Համալրում</b> · ձեր հաշվեկշիռը՝ <b>{balance}</b>',
   'topup.stars': '⭐ <b>Telegram Stars</b> — վճարեք հենց Telegram-ում, հաշվեգրվում է անմիջապես։',
   'topup.pcn': '⚡ <b>PCN</b> — ուղարկեք PCN ձեր հասցեին, հաշվեգրվում է {conf} հաստատումից հետո (մոտ 30 րոպե)։',
+  'promo.rebate': '🎁 <b>Վճարեք PCN-ով և ստացեք {percent}% հետ</b>՝ ամսական մինչև {cap} PCN, ինքնաշխատ ձեր հաշվեկշռին։',
   'topup.wpcn': '🟡 <b>wPCN</b> — BNB Smart Chain ցանցում, հաշվեգրվում է մոտ մեկ րոպեում։',
 
   // ---- PCN ----

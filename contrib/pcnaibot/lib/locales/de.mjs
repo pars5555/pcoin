@@ -139,6 +139,7 @@ export default {
   'topup.title': '<b>Aufladen</b> · dein Guthaben: <b>{balance}</b>',
   'topup.stars': '⭐ <b>Telegram Stars</b> — bezahl direkt in Telegram, sofort gutgeschrieben:',
   'topup.pcn': '⚡ <b>PCN</b> — sende PCN an deine eigene Adresse; gutgeschrieben nach {conf} Bestätigungen (etwa 30 Minuten).',
+  'promo.rebate': '🎁 <b>Mit PCN zahlen, {percent} % zurückbekommen</b> — bis zu {cap} PCN im Monat, automatisch deinem Guthaben gutgeschrieben.',
   'topup.wpcn': '🟡 <b>wPCN</b> — auf der BNB Smart Chain; gutgeschrieben in etwa einer Minute.',
 
   // ---- PCN ----

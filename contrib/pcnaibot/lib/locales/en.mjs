@@ -139,6 +139,7 @@ export default {
   'topup.title': '<b>Top up</b> · your balance is <b>{balance}</b>',
   'topup.stars': '⭐ <b>Telegram Stars</b> — pay inside Telegram, credited instantly:',
   'topup.pcn': '⚡ <b>PCN</b> — send PCN to your own address; credited after {conf} confirmations (about 30 minutes).',
+  'promo.rebate': '🎁 <b>Pay with PCN, get {percent}% back</b> — up to {cap} PCN a month, added to your balance automatically.',
   'topup.wpcn': '🟡 <b>wPCN</b> — on BNB Smart Chain; credited in about a minute.',
 
   // ---- PCN ----

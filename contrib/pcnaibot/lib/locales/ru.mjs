@@ -135,6 +135,7 @@ export default {
   'topup.title': '<b>Пополнение</b> · ваш баланс <b>{balance}</b>',
   'topup.stars': '⭐ <b>Telegram Stars</b> — оплата прямо в Telegram, зачисление мгновенное:',
   'topup.pcn': '⚡ <b>PCN</b> — отправьте PCN на свой адрес; зачисление после {conf} подтверждений (около 30 минут).',
+  'promo.rebate': '🎁 <b>Платите в PCN — получайте {percent}% обратно</b>: до {cap} PCN в месяц, автоматически на ваш баланс.',
   'topup.wpcn': '🟡 <b>wPCN</b> — в сети BNB Smart Chain; зачисление примерно за минуту.',
 
   // ---- PCN ----

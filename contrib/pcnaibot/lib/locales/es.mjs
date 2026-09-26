@@ -135,6 +135,7 @@ export default {
   'topup.title': '<b>Recargar</b> · tu saldo es <b>{balance}</b>',
   'topup.stars': '⭐ <b>Telegram Stars</b> — paga dentro de Telegram, se acredita al instante:',
   'topup.pcn': '⚡ <b>PCN</b> — envía PCN a tu propia dirección; se acredita tras {conf} confirmaciones (unos 30 minutos).',
+  'promo.rebate': '🎁 <b>Paga con PCN y recupera un {percent} %</b> — hasta {cap} PCN al mes, abonado automáticamente a tu saldo.',
   'topup.wpcn': '🟡 <b>wPCN</b> — en BNB Smart Chain; se acredita en un minuto aproximadamente.',
 
   // ---- PCN ----

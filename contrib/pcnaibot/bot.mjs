@@ -22,7 +22,8 @@ import { nowSec } from './lib/time.mjs';
 import { TelegramClient, escapeHtml, splitMessage } from './lib/telegram.mjs';
 import { readRate } from './lib/rate.mjs';
 import { allocateAddress, poolStats, PoolEmpty } from './lib/pool.mjs';
-import { creditedUsdLast30Days } from './lib/deposits.mjs';
+import { creditedUsdLast30Days, REBATE, configureRebate } from './lib/deposits.mjs';
+import { rebatePromo } from './lib/promo.mjs';
 import { microUsdToString, trimZeros, usdToPcnString, satsToPcnString, parseScaled } from './lib/money.mjs';
 import { OonaCodeClient } from './lib/oonacode.mjs';
 import { release, ageOutReservations } from './lib/billing.mjs';
@@ -50,6 +51,21 @@ import { openAccount, parseInvite, inviteLink, inviteStats, payInviteReward, gif
 
 const cfg = loadConfig();
 installCrashHandlers();
+
+// The P3 rebate's switch, read from the same config keys watch.mjs reads. The watcher PAYS the
+// rebate; the bot only ADVERTISES it ("pay with PCN, get 10% back"), and must advertise exactly
+// what the watcher will pay -- so it reads the same keys, never a copy of the numbers. Without
+// this the bot saw the env-only defaults (off) and the line would never show.
+configureRebate({
+  ppm: cfg.strOr('REBATE_PPM', null),
+  capSat: cfg.strOr('REBATE_CAP_SAT', null),
+  from: cfg.strOr('REBATE_FROM', null),
+});
+// The line, or null while the rebate would pay nothing (lib/promo.mjs says which cases).
+function promoLine(L) {
+  const p = rebatePromo(REBATE, nowSec());
+  return p ? t(L, p.key, p.vars) : null;
+}
 
 const DB_PATH = cfg.str('DB_PATH');
 const db = openDb(DB_PATH);
@@ -443,8 +459,10 @@ async function depositScreen(chatId, L) {
   // QUOTE THE LIVE ORACLE, OR SAY "RATE UNAVAILABLE". Never a config constant.
   const rate = await readRate(kvStore, cfg);
 
+  const promo = promoLine(L);
   const lines = [
     t(L, 'pcn.title'),
+    ...(promo ? ['', promo] : []),
     '',
     t(L, 'pcn.step1'),
     '',
@@ -688,6 +706,7 @@ async function showScreen(chatId, u, which, fresh = null) {
         pk.length ? t(L, 'topup.stars') : null,
         pk.length ? '' : null,
         t(L, 'topup.pcn', { conf: MIN_CONF }),
+        promoLine(L),
         WPCN_ENABLED ? t(L, 'topup.wpcn') : null,
       ].filter((l) => l !== null && l !== undefined).join('\n'), { reply_markup: { inline_keyboard: rows } });
       return null;
@@ -768,6 +787,8 @@ function balanceScreen(u) {
   const lines = [t(L, 'bal.balance', { balance: balanceLabel(u.balance_micro_usd) })];
   if (u.reserved_micro_usd > 0) lines.push(t(L, 'bal.reserved', { amount: `$${escapeHtml(microUsdToString(u.reserved_micro_usd, 4))}` }));
   if (u.balance_micro_usd < 0) lines.push('', t(L, 'bal.negative'));
+  const promo = promoLine(L);
+  if (promo) lines.push('', promo);
   if (led.length) {
     lines.push('', t(L, 'bal.recent'));
     for (const l of led) {
@@ -921,7 +942,8 @@ function confirmCard(chatId, updateId, proposalId) {
   track((async () => {
     if (b.short) {
       note(chatId, `(The user pressed ✅ on card P${proposalId}, but the balance was short.)`);
-      await tg.sendMessage(chatId, text, { reply_markup: { inline_keyboard: [[{ text: t(L, 'btn.topup'), callback_data: 'nav:topup' }]] } });
+      const promo = promoLine(L);
+      await tg.sendMessage(chatId, promo ? `${text}\n\n${promo}` : text, { reply_markup: { inline_keyboard: [[{ text: t(L, 'btn.topup'), callback_data: 'nav:topup' }]] } });
     } else if (b.repriced !== undefined) {
       await setCardStatus(jobDeps(), proposalId, 'card.st.price_updated', { keepButtons: true });
       await tg.sendMessage(chatId, text);

@@ -135,6 +135,7 @@ export default {
   'topup.title': '<b>شارژ حساب</b> · موجودی شما <b>{balance}</b> است',
   'topup.stars': '⭐ <b>Telegram Stars</b> — پرداخت داخل تلگرام، واریز فوری:',
   'topup.pcn': '⚡ <b>PCN</b> — PCN را به آدرس خودتان بفرستید؛ پس از {conf} تأیید (حدود 30 دقیقه) واریز می‌شود.',
+  'promo.rebate': '🎁 <b>با PCN پرداخت کنید، {percent}٪ برگشت بگیرید</b> — تا {cap} PCN در ماه، خودکار به موجودی شما اضافه می‌شود.',
   'topup.wpcn': '🟡 <b>wPCN</b> — روی BNB Smart Chain؛ در حدود یک دقیقه واریز می‌شود.',
 
   // ---- PCN ----
