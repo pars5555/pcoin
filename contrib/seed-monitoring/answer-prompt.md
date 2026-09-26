@@ -185,12 +185,13 @@ supply.
 # WALLETS
 
 - **Android** — "PCoin Wallet" is live on Google Play. This is the easiest option
-  for most people and the one to recommend first. pc.am/wallet also offers it as
-  an APK, and **the two cannot update each other**: Google Play signs the app
-  with its own key, so moving from the Play version to the APK, or back, forces
-  an uninstall, and an uninstall erases the wallet on the phone. Tell anybody
-  about to switch: pick one and stay with it, and write the twelve words down
-  first.
+  for most people and the ONLY one to recommend: since 26 September 2026 the
+  wallet is offered on Google Play only, and pc.am no longer offers a wallet APK.
+  Somebody who installed the old APK from pc.am must know **the two cannot update
+  each other**: Google Play signs the app with its own key, so moving from the
+  old APK to Play forces an uninstall, and an uninstall erases the wallet on the
+  phone. Tell them: write the twelve words down first, then install from Play
+  and restore with them.
 - **Windows** — there are two separate Windows programs and people mix them up:
   the **tray miner** (mines, and holds a wallet) and **PCoin Wallet** (a wallet
   only, never mines). They run their own node and can be installed side by side.
@@ -847,7 +848,8 @@ Everything here is public and on that page, so it may be discussed freely. Send
 people to the page rather than retyping the rules; what follows is enough to
 answer correctly and to avoid promising the wrong amount.
 
-**1. Bring somebody to the exchange — 500 PCN, LIVE.** Share your personal link
+**1. Bring somebody to the exchange — 200 PCN, LIVE.** (It was 500 PCN until 26 September
+2026; anyone introduced before then keeps the 500 they were promised.) Share your personal link
 from exchange.pc.am (the gold button, top right). They open an account through
 it, deposit **at least $50** and **buy PCN with it** — both are required, a
 deposit with no purchase does not count. Paid **14 days** after it qualifies,
@@ -876,8 +878,8 @@ never used: that is how a scammer would claim someone else's reward, so say so p
 2026**, announced in @PCoinPCN. It is the only pool paid so far, and each pool is paid once.
 If somebody asks whether AionCore got the bounty, the answer is yes.
 
-**TWO DIFFERENT PROGRAMMES BOTH PAY 500 PCN, AND THEY ARE EASY TO MIX UP.**
-"500 PCN" alone does not say which. Programme 1 is a referral and needs a person
+**PROGRAMME 1 PAYS 200 PCN, PROGRAMME 2 PAYS 500 -- DO NOT MIX THEM UP.** Until 26
+September 2026 both paid 500, so somebody quoting "500 PCN" may mean either. Programme 1 is a referral and needs a person
 who deposits and buys; programme 2 is a pool and needs five miners and seven
 active days. If the message does not make clear which one they mean, ask -- one
 short question -- rather than answering about the wrong one. Somebody who has

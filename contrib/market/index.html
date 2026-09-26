@@ -584,7 +584,12 @@ $('signout').onclick = async () => { await fetch('/api/logout'); refresh(); };
 (async () => {
   try {
     const p = await (await fetch('/api/price')).json();
-    $('price').textContent = money(Number(p.price));
+    // sellPriceUsd is what this market charges for the next PCN. price.pc.am's
+    // root body dropped the old `price` field on 2026-09-25, and reading it gave
+    // "$NaN" on the live page (owner, 2026-09-26). `price` stays as a fallback
+    // for an origin still serving the old body; anything unusable is said so.
+    const usd = Number(p.sellPriceUsd ?? p.price);
+    $('price').textContent = Number.isFinite(usd) && usd > 0 ? money(usd) : 'unavailable';
   } catch { $('price').textContent = 'unavailable'; }
   try {
     const l = await (await fetch('/api/ladder/state')).json();
