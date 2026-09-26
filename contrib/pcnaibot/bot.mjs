@@ -161,7 +161,8 @@ function ensureUser(chatId) {
 // Screens
 // ---------------------------------------------------------------------------
 const NEWLINE = String.fromCharCode(10);
-const ONE_WAY = 'Deposits are <b>one-way</b>: PCN in, credit out. Balances are held in <b>USD</b>, are not withdrawable, and are not refundable.';
+// On the PCN and wPCN screens. (A Stars payment CAN be refunded while unspent -- STUDIO_TERMS says so.)
+const ONE_WAY = 'PCN deposits are <b>one-way</b>: PCN in, credit out. Your balance is held in <b>USD</b>, cannot be withdrawn, and a PCN deposit cannot be refunded.';
 
 // THE MENU: a keyboard that stays under the composer. Telegram sends a tapped button's text as a
 // message, so `quickAction` turns those texts back into screens before anything reaches the agent.
@@ -189,43 +190,75 @@ const BACK_KEYBOARD = { inline_keyboard: [[{ text: '« Menu', callback_data: 'na
 
 const balanceLabel = (micro) => `$${escapeHtml(trimZeros(microUsdToString(micro, 4)))}`;
 
+// What a user reads first (/start) and in full (/help): what the bot makes, how to change a photo
+// or a picture it made, what video can and cannot do yet, and how paying works. Prices, video length
+// and resolution are read live, so the text stays true when the admin changes them.
+const STUDIO_TERMS = 'Your balance is credit for this bot, in USD. It cannot be withdrawn. PCN deposits are final; a Stars payment you have not spent can be refunded (/paysupport).';
+
 function startScreen(u) {
   const prices = priceLines(currentOffer(), settings(), marginE6());
   return [
-    '👋 <b>Hi! I make pictures 🎨 and short videos 🎬</b> — you pay in PCN.',
+    '👋 <b>Hi! I make AI pictures 🎨 and short videos 🎬.</b>',
     '',
-    '<b>Just tell me what you want</b>, in any language: "a cat astronaut, cartoon style", "a poster for my café", "animate this photo".',
-    'Send a photo to change it or bring it to life. Reply to a picture I made to change it.',
+    '<b>What I can do</b>',
+    '🎨 <b>Make a picture</b> from your words — <i>"a cat astronaut, cartoon style"</i>, <i>"a poster for my café with the words Grand Opening"</i>',
+    '✏️ <b>Change your photo</b> — send it with a caption: <i>"make it winter"</i>, <i>"put this watch on a wooden desk"</i>',
+    '🔁 <b>Change a picture I made</b> — reply to it, or write <i>"#2 make it night"</i>',
+    '🎬 <b>Make a video</b> from your words — <i>"a horse running on a beach at sunset"</i>',
+    '✨ <b>Bring a photo or picture to life</b> — send a photo with <i>"animate it"</i>, or write <i>"animate #2"</i>',
+    '🎞 <b>Change a video</b> — I make a <b>new version</b> with your changes (a video cannot be edited frame by frame yet)',
     '',
-    'I show you a card with exactly what I will make and its price. <b>Nothing is charged until you press ✅.</b> Talking with me is free.',
+    '<b>How it works</b>',
+    '1. Tell me what you want, in any language. I may ask a short question.',
+    '2. I show a <b>card</b>: what I will make and its price.',
+    '3. Press <b>✅ Make it</b> — only then is anything charged. Talking to me is free.',
     '',
     `<i>Now: ${escapeHtml(prices.join('; '))}.</i>`,
     '',
-    `Balance: <b>${balanceLabel(u.balance_micro_usd)}</b>`,
-    '',
-    `<i>${ONE_WAY}</i>`,
+    `Balance: <b>${balanceLabel(u.balance_micro_usd)}</b> — <b>➕ Top up</b> with Telegram Stars or PCN. More in <b>❓ How it works</b>.`,
   ].join('\n');
 }
 
 function helpScreen() {
-  const prices = priceLines(currentOffer(), settings(), marginE6());
+  const s = settings();
+  const prices = priceLines(currentOffer(), s, marginE6());
   return [
-    '<b>How it works</b>',
+    '<b>How to use this bot</b>',
     '',
-    '• <b>Describe</b> the picture or video you want. I may ask one or two short questions.',
-    '• I show a <b>card</b>: what I will make, its shape and its price. Press <b>✅ Make it</b> to make it, or tell me what to change — a new card replaces the old one.',
-    '• <b>Only ✅ charges you</b>, and never more than the price on the button. Talking with me is free.',
-    '• Pictures take under a minute. Videos take 1–5 minutes and arrive by themselves; you can keep chatting meanwhile.',
-    '• <b>Change</b> a picture: reply to it, or say "#12, make it night". A video can\'t be edited frame by frame yet — changing one makes a <b>new version</b>.',
-    '• <b>Send a photo</b> to change it or bring it to life as a video.',
+    '<b>🎨 Pictures</b>',
+    '• Describe what you want — the subject, the style, any words that must appear. Example: <i>"a poster for PCoin Café, the words Grand Opening Saturday 10:00, a latte on a wooden table"</i>.',
+    '• Say the shape if it matters — <b>square</b>, <b>wide</b> or <b>tall</b> — or I choose.',
+    '• Want variations? Press <b>🔁 Again</b> under a picture.',
+    '',
+    '<b>✏️ Changing pictures</b>',
+    '• <b>Your photo:</b> send it as a photo with a caption saying what to change. Without a caption I keep it and ask what to do.',
+    '• <b>A picture I made:</b> reply to it, or use its number — every result has <b>#N</b> in its caption: <i>"#3 make the sky pink"</i>.',
+    '• <b>Several pictures:</b> <i>"put the cat from #2 into the room from #4"</i>.',
+    '',
+    '<b>🎬 Videos</b>',
+    `• <b>From words:</b> <i>"a red fox running through snow"</i>. ${escapeHtml(String(s.videoSeconds))} seconds, ${escapeHtml(s.videoResolution)}, with sound. Say a length if you want another one.`,
+    '• <b>From a picture:</b> send a photo, or write <i>"animate #2"</i> — the video starts from that picture.',
+    '• <b>Changing a video</b> makes a <b>new version</b> with your changes, from the same starting picture — not a frame-by-frame edit. I cannot edit a video you send me.',
+    '• A video takes 1–5 minutes and arrives by itself; you can keep chatting meanwhile.',
+    '',
+    '<b>✅ Cards and paying</b>',
+    '• Every request becomes a card with its price. <b>✅ Make it</b> charges exactly that price, never more. Want something different? Just say so — a new card replaces the old one — or press <b>✖ Cancel</b>.',
+    '• Not enough balance? The card stays open: top up and press ✅ again.',
+    '• If the image service refuses a request, nothing is charged.',
     '• Under each result: <b>🔁 Again</b> (a new card for another one) and <b>📎 Original file</b> (full quality, free, for 24 hours).',
-    '• <b>New chat</b> forgets our conversation. Your pictures stay in the chat.',
-    '• <b>Top up</b> by sending PCN to your own permanent address; credit lands after 3 confirmations.',
+    '',
+    '<b>➕ Balance and top-up</b>',
+    '• <b>Telegram Stars</b> — pay inside Telegram, credited instantly.',
+    '• <b>PCN</b> — send PCN to your own permanent address; credited after 3 confirmations.',
+    '',
+    '<b>Good to know</b>',
+    '• I only make pictures and videos — I do not answer other questions.',
+    '• <b>🆕 New chat</b> forgets our conversation; your pictures stay and keep their numbers.',
+    '• Problems with a payment: /paysupport.',
     '',
     `<i>Now: ${escapeHtml(prices.join('; '))}.</i>`,
     '',
-    ONE_WAY,
-    'This is a service credit, not an account balance you can withdraw. We hold no keys for you and send no PCN.',
+    `<i>${STUDIO_TERMS}</i>`,
   ].join('\n');
 }
 
