@@ -9,6 +9,7 @@ import { openDb, pendingMigrations, applyMigration, nowSec } from '../lib/db.mjs
 import { parseScaled } from '../lib/money.mjs';
 import { mediaOffer } from '../lib/media.mjs';
 import { DEFAULT_SETTINGS } from '../lib/settings.mjs';
+import { reserve, settle } from '../lib/billing.mjs';
 
 export const MARGIN_E6 = parseScaled('3.0', 6);
 
@@ -93,6 +94,21 @@ export function imageSpec(over = {}) {
 export function videoSpec(over = {}) {
   return { kind: 'video', model: 'happyhorse-1.1', prompt: 'a horse on a beach', summary: 'A horse running on a beach', shape: 'wide',
     seconds: 5, resolution: '720P', sources: [], startItemId: null, newVersionOf: null, ...over };
+}
+
+// A delivered video the user was charged `micro` for, through the real reserve -> settle path, so
+// its ledger row is keyed exactly as production writes it. `micro` 0 makes a $0 video.
+export function paidVideo(db, { chatId = 7, micro = 252_000 } = {}) {
+  const n = db.prepare('SELECT COUNT(*) n FROM media_jobs').get().n + 1;
+  const { reservationId } = reserve(db, { chatId, reqKey: `proposal:test-video-${n}`, model: 'happyhorse-1.1', microUsd: BigInt(micro) });
+  settle(db, reservationId, BigInt(micro));
+  const job = db.prepare(
+    `INSERT INTO media_jobs (chat_id, kind, model, api_model, reservation_id, state, created_at, finished_at)
+     VALUES (?, 'video', 'happyhorse-1.1', 'happyhorse-1.1-t2v', ?, 'done', ?, ?)`
+  ).run(chatId, reservationId, nowSec(), nowSec()).lastInsertRowid;
+  return Number(db.prepare(
+    `INSERT INTO items (chat_id, kind, job_id, summary, prompt, delivered_at, created_at) VALUES (?, 'video', ?, 'a clip', 'a clip', ?, ?)`
+  ).run(chatId, job, nowSec(), nowSec()).lastInsertRowid);
 }
 
 // An item row, as the bot would have made it.

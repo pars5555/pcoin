@@ -16,10 +16,10 @@ import { sendStarsInvoice, creditStarsPayment, refundStarsPayment, RefundRefused
 import { reserve, InsufficientFunds } from '../lib/billing.mjs';
 import { openAccount, payInviteReward, usdToMicro, giftsToday } from '../lib/rewards.mjs';
 import { STATE, FINAL_STATES, CHECK_MAX_AGE_SEC, recordCheck, noteCheck, dueChecks } from '../lib/wpcn.mjs';
-import { creditThenClaim } from '../lib/updates.mjs';
+import { creditThenClaim, PAYMENT_QUICK_TRIES, parkPayment, parkedCount, retryParked } from '../lib/updates.mjs';
 import { turnQueue } from '../lib/turns.mjs';
 import { DEFAULT_SETTINGS } from '../lib/settings.mjs';
-import { freshDb } from './fixtures.mjs';
+import { freshDb, paidVideo } from './fixtures.mjs';
 
 const S = { ...DEFAULT_SETTINGS };
 const bal = (db, c = 7) => db.prepare('SELECT balance_micro_usd b FROM users WHERE chat_id = ?').get(c).b;
@@ -64,6 +64,29 @@ test('a Stars credit runs before its update is claimed; a failure claims nothing
   const b = creditThenClaim(db, up, () => { runs++; return 'already credited'; });
   assert.equal(b.claimed, false);
   assert.equal(runs, 2);
+});
+
+// Review, 2026-09-27: "one bad payment freezes the bot".
+test('a Stars payment that will not credit is parked with its claim, and credited later by the sweep', () => {
+  const db = freshDb();
+  const up = { update_id: 555, message: { chat: { id: 7 }, from: { id: 7, language_code: 'hy' }, successful_payment: { total_amount: 250, telegram_payment_charge_id: 'ch_x' } } };
+  assert.ok(PAYMENT_QUICK_TRIES >= 2 && PAYMENT_QUICK_TRIES <= 5, 'a few seconds of retries, never for ever');
+  const rec = parkPayment(db, up, new Error('SQLITE_BUSY'));
+  assert.equal(rec.chat_id, 7);
+  assert.equal(parkedCount(db), 1);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM tg_updates WHERE update_id = 555').get().n, 1, 'claimed in the same write: the loop goes on');
+
+  let r = retryParked(db, () => { throw new Error('still failing'); });
+  assert.deepEqual([r.credited.length, r.failed], [0, 1]);
+  assert.equal(parkedCount(db), 1, 'a failure stays parked');
+
+  const seen = [];
+  r = retryParked(db, (p) => { seen.push(p); return 'credited'; });
+  assert.equal(r.credited.length, 1);
+  assert.equal(r.credited[0].reply, 'credited');
+  assert.deepEqual(seen[0].successful_payment, up.message.successful_payment, 'the whole payment was kept');
+  assert.equal(seen[0].from.language_code, 'hy');
+  assert.equal(parkedCount(db), 0);
 });
 
 test('a full set of slots queues the next turn instead of holding the poll loop', async () => {
@@ -191,7 +214,7 @@ async function invitedAndRewarded() {
   openAccount(db, { chatId: 1, model: 'studio', giftMicro: usdToMicro(3) });
   openAccount(db, { chatId: 7, model: 'studio', giftMicro: usdToMicro(3), invitedBy: 1 });
   const pay = await starsTopUp(db, 7);
-  const paid = payInviteReward(db, { referredId: 7, rewardMicro: usdToMicro(2), minTopupMicro: usdToMicro(1) });
+  const paid = payInviteReward(db, { referredId: 7, itemId: paidVideo(db, { chatId: 7 }), rewardMicro: usdToMicro(2), minTopupMicro: usdToMicro(1) });
   assert.equal(paid.paid, true);
   return { db, pay };
 }
@@ -206,12 +229,12 @@ test('refunding the top-up an invite reward was paid for is refused -- unless th
   const tg = tgFake();
   await assert.rejects(refundStarsPayment({ db, tg }, { paymentId: pay.id }), (e) => e instanceof RefundRefused && /invited by 1/.test(e.message));
   assert.equal(tg.calls.length, 0, 'Telegram is not asked');
-  assert.equal(bal(db, 7), 8_000_000, 'nothing moved');
+  assert.equal(bal(db, 7), 7_748_000, 'nothing moved ($3 gift + $5 Stars - a $0.252 video)');
 
   const r = await refundStarsPayment({ db, tg }, { paymentId: pay.id, clawback: true });
   assert.equal(r.ok, true);
   assert.deepEqual(r.clawback, { inviter: 1, micro: 2_000_000n });
-  assert.equal(bal(db, 7), 3_000_000, 'the gift is left');
+  assert.equal(bal(db, 7), 2_748_000, 'the gift is left, less the video');
   assert.equal(bal(db, 1), 3_000_000, '$3 gift + $2 reward − $2 taken back');
   const ref = db.prepare('SELECT status, void_reason FROM referrals WHERE referred_chat_id = 7').get();
   assert.equal(ref.status, 'void');
@@ -224,7 +247,7 @@ test('a refund Telegram refuses does not take the reward back', async () => {
   const refusing = tgFake({ refundStarPayment: { ok: false, unknown: false, description: 'Bad Request: CHARGE_NOT_FOUND' } });
   await assert.rejects(refundStarsPayment({ db, tg: refusing }, { paymentId: pay.id, clawback: true }), /refused/);
   assert.equal(bal(db, 1), 5_000_000, 'the inviter keeps it');
-  assert.equal(bal(db, 7), 8_000_000);
+  assert.equal(bal(db, 7), 7_748_000);
   assert.equal(db.prepare('SELECT status FROM referrals WHERE referred_chat_id = 7').get().status, 'rewarded');
   assert.ok(reconcile(db).ok);
 });

@@ -10,12 +10,12 @@ import assert from 'node:assert/strict';
 import { nowSec } from '../lib/db.mjs';
 import { Bucket } from '../lib/oonacode.mjs';
 import { MediaError } from '../lib/media.mjs';
-import { hold, reserve } from '../lib/billing.mjs';
+import { hold, reserve, settle, ageOutReservations } from '../lib/billing.mjs';
 import { reconcile } from '../lib/deposits.mjs';
 import {
   quoteSpec, createProposal, beginJob, refusalText, runImageJob, startVideoJob, pollVideos, deliverItem,
   redeliverSweep, sendOriginal, recoverAfterRestart, runningReservationIds, againSpec, cancelProposal,
-  expireCards, settleCapped, sourceImages, item,
+  expireCards, settleCapped, sourceImages, item, VIDEO_GIVE_UP_SEC,
 } from '../lib/jobs.mjs';
 import {
   MARGIN_E6, OFFER, LISTING, SETTINGS, PNG, JPEG, freshDb, user, fakeTg, fakeMedia, IMAGE_OK, imageSpec, videoSpec, addItem,
@@ -24,6 +24,11 @@ import { mediaOffer } from '../lib/media.mjs';
 
 const card = (db, spec, chatId = 7) => createProposal(db, chatId, spec, quoteSpec(OFFER[spec.model], spec, MARGIN_E6)).proposal;
 const deps = (db, tg, media, notes = []) => ({ db, tg, media, marginE6: MARGIN_E6, note: (c, t) => notes.push({ c, t }) });
+// Everything happened `secs` earlier: the real clock, so old and new code see the same time.
+const backdate = (db, secs) => {
+  db.prepare('UPDATE reservations SET created_at = created_at - ?').run(secs);
+  db.prepare('UPDATE media_jobs SET created_at = created_at - ?').run(secs);
+};
 const reservations = (db) => db.prepare('SELECT state, micro_usd, req_key FROM reservations ORDER BY id').all();
 
 test('reconcile passes while a reservation is HELD (it used to read as drift)', () => {
@@ -233,6 +238,60 @@ test('a video: started with the job written down, finished by the poller, charge
   assert.ok(it.delivered_at);
   assert.ok(tg.sent.some((s) => s.kind === 'video'));
   assert.equal((await pollVideos(deps(db, tg, media))).checked, 0, 'a job leaves running once');
+  assert.equal(reconcile(db).ok, true);
+});
+
+// Review, 2026-09-27: "a slow video can be free". A clip still running after the 60-minute age-out
+// had its hold released, and the finished clip settled at $0.
+test('a slow video is charged: the age-out leaves a running clip\'s hold alone', async () => {
+  const db = freshDb({ balanceMicro: 5_000_000 });
+  const tg = fakeTg();
+  const p = card(db, videoSpec());
+  const b = beginJob(db, { chatId: 7, proposalId: p.id, offer: OFFER, marginE6: MARGIN_E6 });
+  const media = fakeMedia({ video: { id: 'vid_slow', status: 'queued' }, videoView: { id: 'vid_slow', status: 'in_progress' } });
+  await startVideoJob(deps(db, tg, media), b);
+
+  backdate(db, 70 * 60);
+  assert.deepEqual(ageOutReservations(db), [], 'still being made: not released');
+  assert.deepEqual(user(db), { b: 5_000_000 - 2_520_000, r: 2_520_000 });
+  await pollVideos(deps(db, tg, media));
+  assert.equal(db.prepare('SELECT state FROM media_jobs').get().state, 'running', 'an hour is slow, not lost');
+
+  media.getVideo = async () => ({ id: 'vid_slow', status: 'completed', credits: 840, duration: 5, resolution: '720P', url: 'https://x.example/v.mp4', expires_at: new Date(Date.now() + 86400e3).toISOString() });
+  assert.equal((await pollVideos(deps(db, tg, media))).done, 1);
+  assert.deepEqual(user(db), { b: 5_000_000 - 2_520_000, r: 0 }, 'charged its price, not $0');
+  assert.equal(reservations(db)[0].state, 'settled');
+  assert.equal(reconcile(db).ok, true);
+});
+
+test('a result that arrives after its hold aged out is billed late, not free', () => {
+  const db = freshDb({ balanceMicro: 5_000_000 });
+  const r = reserve(db, { chatId: 7, reqKey: 'proposal:late', model: 'm', microUsd: 2_520_000n });
+  backdate(db, 70 * 60);
+  assert.equal(ageOutReservations(db).length, 1, 'no job holds it');
+  assert.deepEqual(user(db), { b: 5_000_000, r: 0 });
+  const s = settle(db, r.reservationId, 2_520_000n, { note: 'late clip' });
+  assert.equal(s.late, true);
+  assert.deepEqual(user(db), { b: 2_480_000, r: 0 });
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM ledger WHERE idem_key = 'turn:api:proposal:late'").get().n, 1);
+  assert.equal(settle(db, r.reservationId, 2_520_000n).alreadyClosed, true, 'and only once');
+  assert.equal(reconcile(db).ok, true);
+});
+
+test('a clip still unfinished after three hours is given up on; its hold then comes back', async () => {
+  const db = freshDb({ balanceMicro: 5_000_000 });
+  const tg = fakeTg();
+  const p = card(db, videoSpec());
+  const b = beginJob(db, { chatId: 7, proposalId: p.id, offer: OFFER, marginE6: MARGIN_E6 });
+  const media = fakeMedia({ video: { id: 'vid_stuck', status: 'queued' }, videoView: { id: 'vid_stuck', status: 'in_progress' } });
+  await startVideoJob(deps(db, tg, media), b);
+  backdate(db, VIDEO_GIVE_UP_SEC + 60);
+  assert.equal((await pollVideos(deps(db, tg, media))).failed, 1);
+  assert.equal(db.prepare('SELECT state FROM media_jobs').get().state, 'unknown');
+  assert.equal(reservations(db)[0].state, 'held', 'it may yet have been made: held, not released');
+  assert.ok(tg.sent.some((s) => s.kind === 'message' && /far longer/.test(s.text)));
+  assert.equal(ageOutReservations(db).length, 1, 'no longer running: the age-out returns it');
+  assert.deepEqual(user(db), { b: 5_000_000, r: 0 });
   assert.equal(reconcile(db).ok, true);
 });
 

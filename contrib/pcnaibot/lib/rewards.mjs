@@ -108,6 +108,23 @@ export function toppedUpMicro(db, chatId) {
 // A video of `referredId` was delivered: pay their inviter, if one is waiting and the conditions
 // hold. Returns { paid: true, referrerId, micro, balance } or { paid: false, why }. A 'pending' row
 // that does not qualify yet stays pending -- the next delivered video asks again.
+// What the user was charged for an item, from the ledger row its settle wrote (0 when none: a $0
+// settle writes no row, and an item with no job or reservation was never charged).
+export function itemChargedMicro(db, itemId) {
+  if (itemId === null || itemId === undefined) return 0n;
+  const row = db.prepare(
+    `SELECT COALESCE(-l.delta_micro_usd, 0) AS charged
+       FROM items i
+       JOIN media_jobs j   ON j.id = i.job_id
+       JOIN reservations r ON r.id = j.reservation_id
+       JOIN ledger l       ON l.kind = 'ai_turn'
+                          AND l.idem_key = CASE WHEN r.update_id IS NOT NULL THEN 'turn:' || r.update_id
+                                                ELSE 'turn:api:' || r.req_key END
+      WHERE i.id = ?`
+  ).get(itemId);
+  return BigInt(row?.charged ?? 0);
+}
+
 export function payInviteReward(db, { referredId, itemId = null, rewardMicro, minTopupMicro, enabled = true, now = nowSec() }) {
   const reward = BigInt(rewardMicro);
   if (!enabled || reward <= 0n) return { paid: false, why: 'off' };
@@ -123,6 +140,10 @@ export function payInviteReward(db, { referredId, itemId = null, rewardMicro, mi
       return { paid: false, why: 'referrer_gone' };
     }
     if (toppedUpMicro(db, referredId) < BigInt(minTopupMicro)) return { paid: false, why: 'not_topped_up' };
+    // ONLY A VIDEO THAT WAS PAID FOR COUNTS (review, 2026-09-27: "a video charged $0 still counts
+    // toward it"). A $0 video is not a sale, and paying $2 on one is paying for nothing. The invite
+    // stays pending, so the next paid video still earns it.
+    if (itemChargedMicro(db, itemId) <= 0n) return { paid: false, why: 'unpaid_video' };
 
     // The minimum is stamped: a later Stars refund may not take the invited person below it
     // (lib/stars.mjs), whatever the setting says by then.

@@ -140,6 +140,12 @@ export function settle(db, reservationId, actualMicroUsd, { note = null } = {}) 
   return immediate(db, () => {
     const r = db.prepare('SELECT * FROM reservations WHERE id = ?').get(reservationId);
     if (!r) throw new Error('settle: no reservation');
+    // A RESULT THAT ARRIVES AFTER ITS HOLD AGED OUT IS STILL BILLED (review, 2026-09-27). The age-out
+    // gave the whole hold back, so there is nothing reserved to return: the real charge comes off
+    // the balance now, even if that takes it negative -- the user has the result, and "closed" read
+    // as "$0" is how a slow video became free. Only 'expired' is billed late: 'released' means it
+    // positively did not run, and 'settled' was billed already.
+    if (r.state === 'expired') return settleLate(db, r, BigInt(actualMicroUsd), note);
     if (r.state !== 'open') return { alreadyClosed: true, state: r.state };
 
     const reserved = BigInt(r.micro_usd);
@@ -188,6 +194,25 @@ export function settle(db, reservationId, actualMicroUsd, { note = null } = {}) 
   });
 }
 
+// Inside settle()'s transaction: bill a result whose hold the age-out already gave back.
+function settleLate(db, r, actual, note) {
+  if (actual > 0n) {
+    db.prepare('UPDATE users SET balance_micro_usd = balance_micro_usd - ? WHERE chat_id = ?').run(Number(actual), r.chat_id);
+    const idem = r.update_id !== null ? `turn:${r.update_id}` : `turn:api:${r.req_key}`;
+    db.prepare(
+      `INSERT INTO ledger (chat_id, delta_micro_usd, kind, idem_key, note, created_at)
+       VALUES (?,?,?,?,?,?)`
+    ).run(r.chat_id, -Number(actual), 'ai_turn', idem, note, nowSec());
+  }
+  db.prepare(`UPDATE reservations SET state='settled', closed_at=?, note=? WHERE id=?`)
+    .run(nowSec(), `LATE: settled ${actual} after the hold had aged out`, r.id);
+  const bal = db.prepare('SELECT balance_micro_usd b FROM users WHERE chat_id=?').get(r.chat_id).b;
+  log.error('a result arrived after its hold aged out; billed late from the balance', {
+    reservation: r.id, chat: String(r.chat_id).slice(-4), micro: String(actual), balance_after: bal,
+  });
+  return { reserved: 0n, actual, overran: false, late: true, ratio: null, balanceAfter: bal, negative: bal < 0 };
+}
+
 // RELEASE IN FULL. Used for PERMANENT, BACKOFF and NOT_BILLED -- everything
 // that positively did not run.
 export function release(db, reservationId, reason) {
@@ -224,18 +249,27 @@ export function hold(db, reservationId, reason) {
 
 // AGE OUT. Release in full any reservation older than N minutes that produced
 // no usage we received, with a reserve_expired note, and alert on the count.
-export function ageOutReservations(db, { olderThanMinutes = 60 } = {}) {
-  const cutoff = nowSec() - olderThanMinutes * 60;
+//
+// NEVER ONE WHOSE VIDEO IS STILL BEING MADE (review, 2026-09-27: "a slow video can be free"). A
+// clip still running at the provider after N minutes had its hold released here, and when it
+// finished the settle found the reservation closed and charged $0. A running media job owns its
+// reservation until the job itself ends -- delivered (settle), failed (release) or given up on
+// (hold, lib/jobs.mjs pollVideos) -- so it is skipped here, and re-checked inside the transaction.
+const OWNED_BY_RUNNING_JOB =
+  "EXISTS (SELECT 1 FROM media_jobs j WHERE j.reservation_id = reservations.id AND j.state = 'running')";
+
+export function ageOutReservations(db, { olderThanMinutes = 60, now = nowSec() } = {}) {
+  const cutoff = now - olderThanMinutes * 60;
   const stale = db.prepare(
     `SELECT id, chat_id, micro_usd, state FROM reservations
-      WHERE state IN ('open','held') AND created_at < ?`
+      WHERE state IN ('open','held') AND created_at < ? AND NOT ${OWNED_BY_RUNNING_JOB}`
   ).all(cutoff);
 
   const freed = [];
   for (const r of stale) {
     immediate(db, () => {
-      const cur = db.prepare('SELECT * FROM reservations WHERE id = ?').get(r.id);
-      if (!cur || !['open', 'held'].includes(cur.state)) return;
+      const cur = db.prepare(`SELECT *, ${OWNED_BY_RUNNING_JOB} AS running FROM reservations WHERE id = ?`).get(r.id);
+      if (!cur || !['open', 'held'].includes(cur.state) || cur.running) return;
       db.prepare(
         `UPDATE users
             SET reserved_micro_usd = reserved_micro_usd - ?,
@@ -243,7 +277,7 @@ export function ageOutReservations(db, { olderThanMinutes = 60 } = {}) {
           WHERE chat_id = ?`
       ).run(cur.micro_usd, cur.micro_usd, cur.chat_id);
       db.prepare(`UPDATE reservations SET state='expired', closed_at=?, note=? WHERE id=?`)
-        .run(nowSec(), 'reserve_expired: no usage was ever received', r.id);
+        .run(now, 'reserve_expired: no usage was ever received', r.id);
       freed.push({ id: r.id, microUsd: cur.micro_usd });
     });
   }

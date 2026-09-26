@@ -44,7 +44,7 @@ import {
 } from './lib/stars.mjs';
 import { mdToHtml } from './lib/markdown.mjs';
 import { DraftStream } from './lib/drafts.mjs';
-import { creditThenClaim } from './lib/updates.mjs';
+import { creditThenClaim, PAYMENT_QUICK_TRIES, parkPayment, parkedCount, retryParked } from './lib/updates.mjs';
 import { turnQueue } from './lib/turns.mjs';
 import { t, langOf, LANGS, LANG_CODES, detectLang, isLang, everyLabel, whenLabel } from './lib/i18n.mjs';
 import { openAccount, parseInvite, inviteLink, inviteStats, payInviteReward, giftsToday, usdToMicro as dollarsToMicro } from './lib/rewards.mjs';
@@ -1426,6 +1426,20 @@ async function main() {
   };
   setInterval(sweep, 120000);
   sweep();
+  // Stars payments parked by the poll loop: credited as soon as they will go through.
+  const creditParked = () => {
+    try {
+      const r = retryParked(db, (rec) => handleStarsPaid(rec.chat_id, rec.successful_payment, rec.from));
+      for (const { rec, reply } of r.credited) {
+        log.info('parked Stars payment credited', { update: rec.update_id, chat: chatTag(rec.chat_id), parkedFor: nowSec() - rec.parked_at });
+        track(tg.sendLong(rec.chat_id, reply).catch((e) => log.warn('payment reply failed', errFields(e))));
+        for (const a of ADMIN_CHATS) tg.sendMessage(a, `✅ The parked Stars payment from chat ${rec.chat_id} is now credited.`).catch(() => undefined);
+      }
+      if (r.failed) log.error('parked Stars payments still not credited', { count: r.failed });
+    } catch (e) { log.error('parked-payment sweep failed', errFields(e)); }
+  };
+  setInterval(creditParked, 120000);
+  creditParked();
   // Pasted wPCN hashes without a final answer -- including one cut off by the restart that
   // started this process.
   let wpcnBusy = false;
@@ -1494,8 +1508,8 @@ async function main() {
   let processed = 0;
   let pollFailures = 0;
   const POLL_WARN_AFTER = 3;
-  // Stars updates the admins were already told are not credited yet (one alert each, not one per retry).
-  const paymentAlerted = new Set();
+  // Failed credit attempts per Stars update, before it is parked (lib/updates.mjs).
+  const paymentTries = new Map();
 
   for (;;) {
     const res = await tg.getUpdates(offset, { timeout: 30 });
@@ -1541,17 +1555,27 @@ async function main() {
         try {
           taken = creditThenClaim(db, up, (m) => handleStarsPaid(m.chat.id, m.successful_payment, m.from));
         } catch (e) {
-          // The DATABASE failed, not the payment. Fetch this update again rather than drop it.
-          log.error('STARS PAYMENT NOT CREDITED YET -- retrying the same update', { update: up.update_id, chat: chatTag(pm.chat.id), ...errFields(e) });
-          if (!paymentAlerted.has(up.update_id)) {
-            paymentAlerted.add(up.update_id);
-            for (const a of ADMIN_CHATS) {
-              tg.sendMessage(a, `⚠️ A Stars payment from chat ${pm.chat.id} is not credited yet (${escapeHtml(String(e.message).slice(0, 200))}). The bot keeps retrying it.`).catch(() => undefined);
-            }
+          // The credit threw: nothing was claimed. A few quick tries of the same update, then it is
+          // PARKED and the loop goes on (lib/updates.mjs) -- one payment must never hold the bot.
+          const tries = (paymentTries.get(up.update_id) ?? 0) + 1;
+          paymentTries.set(up.update_id, tries);
+          log.error('STARS PAYMENT NOT CREDITED YET', { update: up.update_id, chat: chatTag(pm.chat.id), tries, ...errFields(e) });
+          if (tries < PAYMENT_QUICK_TRIES) {
+            offset = up.update_id;
+            await new Promise((r) => setTimeout(r, 3000));
+            break;
           }
-          offset = up.update_id;
-          await new Promise((r) => setTimeout(r, 5000));
-          break;
+          // If even this write fails the database is down; the throw ends the process, the unit
+          // restarts it, the unclaimed update is fetched again -- and the stale heartbeat alerts.
+          parkPayment(db, up, e);
+          paymentTries.delete(up.update_id);
+          kvSetJson(db, 'tg:offset', { offset });
+          log.error('Stars payment PARKED -- retried every 2 minutes until it is credited', { update: up.update_id, chat: chatTag(pm.chat.id) });
+          for (const a of ADMIN_CHATS) {
+            tg.sendMessage(a, `⚠️ A Stars payment from chat ${pm.chat.id} (${escapeHtml(String(pm.successful_payment.total_amount))} ⭐) could not be credited: ${escapeHtml(String(e.message).slice(0, 200))}. `
+              + 'It is parked and retried every 2 minutes; the bot carries on meanwhile.').catch(() => undefined);
+          }
+          continue;
         }
         kvSetJson(db, 'tg:offset', { offset });
         // A second delivery (after a restart) credited nothing new; the first one already answered.
@@ -1681,7 +1705,12 @@ async function main() {
     }
 
     const making = db.prepare("SELECT COUNT(*) n FROM media_jobs WHERE state = 'running'").get().n;
-    await writeBotHeartbeat({ ok: true, processed, offset, in_flight: inFlightTurns.size, waiting: turns.waiting.length, making, last_error: null });
+    // A parked Stars payment is money taken and not credited: heartbeat-check.sh alerts on it.
+    const starsParked = parkedCount(db);
+    await writeBotHeartbeat({
+      ok: starsParked === 0, processed, offset, in_flight: inFlightTurns.size, waiting: turns.waiting.length, making,
+      stars_parked: starsParked, last_error: starsParked ? `${starsParked} Stars payment(s) parked, not credited` : null,
+    });
   }
 }
 

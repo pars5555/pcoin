@@ -27,6 +27,9 @@ import { escapeHtml } from './telegram.mjs';
 import { t, langOf } from './i18n.mjs';
 
 export const CARD_TTL_SEC = 24 * 3600;
+// A clip normally takes 1-5 minutes. One the provider still calls unfinished after this is given
+// up on (pollVideos), and its money held, then returned by the age-out.
+export const VIDEO_GIVE_UP_SEC = 3 * 3600;
 // Telegram refuses a PHOTO over 10 MB; a bigger picture goes as a file.
 export const PHOTO_MAX_BYTES = 10 * 1024 * 1024;
 // An input image larger than this is sent from Telegram's own (smaller) copy instead of the original.
@@ -410,7 +413,7 @@ export async function startVideoJob(deps, begun) {
 // Read every clip still being made; finish the ones that are done. Safe to run again on the same
 // job: a job leaves 'running' exactly once. A row with no remote id is never polled (restart
 // recovery handles it).
-export async function pollVideos(deps, { maxAgeSec = 45 * 60, now = nowSec } = {}) {
+export async function pollVideos(deps, { maxAgeSec = 45 * 60, giveUpSec = VIDEO_GIVE_UP_SEC, now = nowSec } = {}) {
   const { db, tg, media, marginE6 } = deps;
   const jobs = db.prepare("SELECT * FROM media_jobs WHERE kind = 'video' AND state = 'running' AND remote_id IS NOT NULL ORDER BY id").all();
   const counts = { checked: 0, done: 0, failed: 0 };
@@ -441,6 +444,18 @@ export async function pollVideos(deps, { maxAgeSec = 45 * 60, now = nowSec } = {
       continue;
     }
     if (v.status !== 'completed') {
+      // Still unfinished far past any normal time: given up on, its money HELD (it may yet be made
+      // and charged), and the job leaves 'running' -- which is what lets the age-out release it.
+      // The age-out never touches a running job's hold any more (lib/billing.mjs), so without
+      // this bound a clip stuck at the provider would hold the user's money for ever.
+      if (now() - j.created_at > giveUpSec) {
+        const text = unwind(deps, begun, new MediaError(Bucket.UNKNOWN, `still ${v.status ?? 'unfinished'} after ${Math.round(giveUpSec / 60)} min`), { what: 'video' });
+        await dropStatus(tg, j);
+        if (p) await setCardStatus(deps, p.id, 'card.st.not_made');
+        await tg.sendMessage(j.chat_id, t(langOf(db, j.chat_id), 'job.video_lost', { detail: text }));
+        counts.failed++;
+        continue;
+      }
       await touchStatus(tg, j, now(), langOf(db, j.chat_id));
       continue;
     }

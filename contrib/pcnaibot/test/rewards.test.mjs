@@ -11,7 +11,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { freshDb, fakeTg, fakeMedia, PNG, OFFER, SETTINGS } from './fixtures.mjs';
+import { freshDb, fakeTg, fakeMedia, PNG, OFFER, SETTINGS, paidVideo } from './fixtures.mjs';
 import { settingsProblems, mergeSettingsInput } from '../lib/settings.mjs';
 import { openAccount, payInviteReward, parseInvite, inviteLink, inviteStats, toppedUpMicro, usdToMicro } from '../lib/rewards.mjs';
 import { deliverItem } from '../lib/jobs.mjs';
@@ -27,7 +27,11 @@ const topUp = (db, c, micro, key = `stars:T${c}-${micro}`) => {
   db.prepare(`INSERT INTO ledger (chat_id, delta_micro_usd, kind, idem_key, note, created_at) VALUES (?,?, 'deposit_stars', ?, 'test', ?)`).run(c, Number(micro), key, nowSec());
   db.prepare('UPDATE users SET balance_micro_usd = balance_micro_usd + ? WHERE chat_id = ?').run(Number(micro), c);
 };
-const pay = (db, referredId, over = {}) => payInviteReward(db, { referredId, rewardMicro: REWARD, minTopupMicro: MIN, ...over });
+// A paid video by the invited person, unless the test names its own item.
+const pay = (db, referredId, over = {}) => payInviteReward(db, {
+  referredId, rewardMicro: REWARD, minTopupMicro: MIN, ...over,
+  itemId: 'itemId' in over ? over.itemId : paidVideo(db, { chatId: referredId }),
+});
 
 test('a new account gets the welcome gift once, as a gift ledger row', () => {
   const db = freshDb({ chats: [] });
@@ -98,14 +102,19 @@ test('the reward waits for a real top-up: the gift alone never pays the inviter'
   assert.equal(db.prepare('SELECT status FROM referrals WHERE referred_chat_id = 2').get().status, 'pending', 'still waiting');
 
   topUp(db, 2, 10_000);                                         // now exactly $1
-  const r = pay(db, 2, { itemId: 11 });
+  // A video charged $0 is not a sale: it does not pay, and the invite stays open (review, 2026-09-27).
+  assert.equal(pay(db, 2, { itemId: paidVideo(db, { chatId: 2, micro: 0 }) }).why, 'unpaid_video');
+  assert.equal(pay(db, 2, { itemId: 999 }).why, 'unpaid_video', 'nor does an item with no charge at all');
+  assert.equal(db.prepare('SELECT status FROM referrals WHERE referred_chat_id = 2').get().status, 'pending');
+  const video = paidVideo(db, { chatId: 2 });
+  const r = pay(db, 2, { itemId: video });
   assert.equal(r.paid, true);
   assert.equal(r.referrerId, 1);
   assert.equal(r.micro, REWARD);
   assert.equal(bal(db, 1), 5_000_000, '$3 gift + $2 reward');
   const row = db.prepare('SELECT * FROM referrals WHERE referred_chat_id = 2').get();
   assert.equal(row.status, 'rewarded');
-  assert.equal(row.trigger_item_id, 11);
+  assert.equal(row.trigger_item_id, video);
   const led = db.prepare("SELECT * FROM ledger WHERE kind = 'referral'").all();
   assert.equal(led.length, 1);
   assert.equal(led[0].chat_id, 1);

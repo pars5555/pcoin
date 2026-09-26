@@ -134,6 +134,18 @@ lib/
   referral): refused unless the admin ticks "take the invite reward back", which on success debits
   the inviter and voids the invite.
 
+Second review, 2026-09-27:
+
+* **A slow video is charged.** The 60-minute age-out never releases the hold of a clip still being
+  made; a clip the provider still calls unfinished after 3 h is given up on (money held, then
+  returned); and a result that arrives after its hold aged out is billed late from the balance,
+  never settled at $0.
+* **Only a paid video earns the invite reward** (`itemChargedMicro`); a $0 one leaves it pending.
+* **One bad payment cannot freeze the bot.** A Stars credit that keeps failing gets 3 quick tries,
+  then is PARKED (kv `stars:parked:<update_id>`, written with its claim) and retried every 2 min;
+  the loop goes on. The heartbeat carries `stars_parked` and `heartbeat-check.sh` alerts while it
+  is above 0 -- a fresh heartbeat alone no longer reads as healthy.
+
 ## Two processes, deliberately
 
 | unit | what |
@@ -246,7 +258,7 @@ the owner from a monitoring-setup step.
 ## Testing
 
 ```sh
-node --test test/          # 182 tests, no network
+node --test test/          # 191 tests, no network
 ```
 
 They need `better-sqlite3`, which has no Windows/node-24 prebuild — run them in the

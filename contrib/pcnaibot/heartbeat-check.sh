@@ -79,6 +79,26 @@ check() {
     fi
 }
 
+# A fresh heartbeat is not a healthy bot (review, 2026-09-27): a Stars payment Telegram took and the
+# bot could not credit is PARKED and retried, and the bot says so here. Alert every run until it
+# is credited. Unreadable is not zero -- read_field prints nothing and nothing is concluded.
+read_field() {
+    [ -r "$1" ] || return 0
+    python3 -c "import json,sys
+try:
+    v=json.load(open(sys.argv[1])).get(sys.argv[2])
+    print('' if v is None else v)
+except Exception:
+    pass" "$1" "$2" 2>/dev/null
+}
+parked=$(read_field "$BOT_HB" stars_parked)
+case "$parked" in
+    ''|0) ;;
+    *[!0-9]*) ;;
+    *) alert "PCN bot: $parked Stars payment(s) NOT CREDITED" \
+             "Telegram took the Stars and the bot could not credit them; they are parked and retried every 2 min. journalctl -u pcnaibot | grep -i parked -- and see kv 'stars:parked:%' in the bot's database." ;;
+esac
+
 check "pcnaibot (telegram)" "$BOT_HB" \
       "systemctl status pcnaibot -- note Restart=always means a crash loop still reports active (running)."
 check "pcnaibot (watcher)" "$WATCH_HB" \

@@ -11,9 +11,58 @@
 // credited"), never not at all. If `credit` throws, nothing is claimed and the caller fetches the
 // same update again.
 import { nowSec } from './time.mjs';
+import { immediate } from './db.mjs';
 
 export function creditThenClaim(db, up, credit, now = nowSec()) {
   const reply = credit(up.message);
   const claimed = db.prepare('INSERT OR IGNORE INTO tg_updates (update_id, claimed_at) VALUES (?,?)').run(up.update_id, now).changes === 1;
   return { reply, claimed };
+}
+
+// ---- a payment that will not credit must not hold the bot (review, 2026-09-27) -----------------
+//
+// "One bad payment freezes the bot": the loop re-fetched a failing Stars update for ever, so nobody
+// else was answered, while the heartbeat stayed fresh and said ok. Now the loop tries a few times
+// (PAYMENT_QUICK_TRIES), then PARKS the payment here -- the whole update, written in the same
+// transaction as its claim -- and goes on. retryParked() is run by a timer and credits it once it
+// can (idempotent on Telegram's charge id, like every Stars credit). The heartbeat carries the
+// parked count and heartbeat-check.sh alerts on it: a payment Telegram took and we have not
+// credited is never silent.
+export const PAYMENT_QUICK_TRIES = 3;
+const PARKED = 'stars:parked:';
+
+export function parkPayment(db, up, err, now = nowSec()) {
+  const m = up.message;
+  const rec = {
+    update_id: up.update_id,
+    chat_id: m.chat.id,
+    from: m.from ? { id: m.from.id, language_code: m.from.language_code ?? null } : null,
+    successful_payment: m.successful_payment,
+    parked_at: now,
+    error: String(err?.message ?? err).slice(0, 300),
+  };
+  immediate(db, () => {
+    db.prepare('INSERT OR REPLACE INTO kv (k, v, updated_at) VALUES (?,?,?)').run(`${PARKED}${up.update_id}`, JSON.stringify(rec), now);
+    db.prepare('INSERT OR IGNORE INTO tg_updates (update_id, claimed_at) VALUES (?,?)').run(up.update_id, now);
+  });
+  return rec;
+}
+
+export function parkedCount(db) {
+  return db.prepare('SELECT COUNT(*) n FROM kv WHERE k LIKE ?').get(`${PARKED}%`).n;
+}
+
+// Try every parked payment once. `credit(rec)` returns the user's reply or throws; a success is
+// removed, a failure stays for the next run. Returns { credited: [{ rec, reply }], failed: n }.
+export function retryParked(db, credit) {
+  const credited = [];
+  let failed = 0;
+  for (const row of db.prepare('SELECT k, v FROM kv WHERE k LIKE ? ORDER BY updated_at').all(`${PARKED}%`)) {
+    const rec = JSON.parse(row.v);
+    let reply;
+    try { reply = credit(rec); } catch { failed++; continue; }
+    db.prepare('DELETE FROM kv WHERE k = ?').run(row.k);
+    credited.push({ rec, reply });
+  }
+  return { credited, failed };
 }
