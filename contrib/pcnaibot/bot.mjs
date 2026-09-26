@@ -26,7 +26,7 @@ import { creditedUsdLast30Days } from './lib/deposits.mjs';
 import { microUsdToString, trimZeros, usdToPcnString, satsToPcnString, parseScaled } from './lib/money.mjs';
 import { OonaCodeClient } from './lib/oonacode.mjs';
 import { release, ageOutReservations } from './lib/billing.mjs';
-import { WpcnService, isTxHash, STATE as WSTATE } from './lib/wpcn.mjs';
+import { WpcnService, isTxHash, STATE as WSTATE, FINAL_STATES, recordCheck, noteCheck, dueChecks } from './lib/wpcn.mjs';
 import { startAdminApi } from './lib/admin-api.mjs';
 import QRCode from 'qrcode';
 import { MEDIA_MODELS, MediaClient, mediaOffer, priceFor, usdToMicro, moneyLabel, videoDurations } from './lib/media.mjs';
@@ -43,8 +43,9 @@ import {
 } from './lib/stars.mjs';
 import { mdToHtml } from './lib/markdown.mjs';
 import { DraftStream } from './lib/drafts.mjs';
+import { creditThenClaim } from './lib/updates.mjs';
 import { t, langOf, LANGS, LANG_CODES, detectLang, isLang, everyLabel, whenLabel } from './lib/i18n.mjs';
-import { openAccount, parseInvite, inviteLink, inviteStats, payInviteReward, usdToMicro as dollarsToMicro } from './lib/rewards.mjs';
+import { openAccount, parseInvite, inviteLink, inviteStats, payInviteReward, giftsToday, usdToMicro as dollarsToMicro } from './lib/rewards.mjs';
 
 const cfg = loadConfig();
 installCrashHandlers();
@@ -174,12 +175,26 @@ function account(chatId, from = null, invitedBy = null) {
   const r = openAccount(db, {
     chatId, model: USERS_MODEL_PLACEHOLDER, lang: detectLang(from?.language_code),
     giftMicro: open && s.giftEnabled ? dollarsToMicro(s.giftUsd) : 0n,
+    giftCapMicro: dollarsToMicro(s.giftDailyCapUsd),
     invitedBy: open && s.invitesEnabled ? invitedBy : null,
   });
   if (r.created) {
-    log.info('new user', { chat: chatTag(chatId), lang: r.user.lang, gift: Number(r.giftMicro), invite: r.invite ?? '-' });
+    log.info('new user', { chat: chatTag(chatId), lang: r.user.lang, gift: Number(r.giftMicro), capped: r.capped, invite: r.invite ?? '-' });
   }
+  if (r.capped) giftCapReached(s);
   return r;
+}
+
+// The daily cap on welcome gifts was reached: the admins hear it once that UTC day.
+function giftCapReached(s) {
+  const day = new Date().toISOString().slice(0, 10);
+  if (kvGetJson(db, `gift:capped:${day}`)) return;
+  kvSetJson(db, `gift:capped:${day}`, { at: nowSec() });
+  log.warn('welcome gift daily cap reached; new accounts get no gift until UTC midnight', { capUsd: s.giftDailyCapUsd });
+  for (const a of ADMIN_CHATS) {
+    tg.sendMessage(a, `🎁 Today's welcome gifts reached the $${escapeHtml(String(s.giftDailyCapUsd))} cap. New accounts get no gift until 00:00 UTC. Change it on admin.pc.am → PcoinAiBot → Gifts &amp; invites.`)
+      .catch(() => undefined);
+  }
 }
 const ensureUser = (chatId, from = null) => account(chatId, from).user;
 const langOfUser = (u) => (isLang(u?.lang) ? u.lang : 'en');
@@ -542,12 +557,36 @@ async function wpcnScreen(chatId, L) {
   };
 }
 
-// A pasted 0x hash: "checking…" at once (the verifier can take several seconds), then the verdict.
-async function handleTxHash(chatId, txhash, L) {
-  if (!WPCN_ENABLED) return t(L, 'wpcn.hash_off');
-  await tg.sendMessage(chatId, t(L, 'wpcn.checking')).catch(() => undefined);
-  const r = await wpcn.verifyAndCredit(chatId, txhash);
+// Hashes being asked about right now, "<chat>:<hash>" -- the sweep leaves them to their own message.
+const wpcnInFlight = new Set();
 
+// Ask the verifier once, and write down what it said (lib/wpcn.mjs noteCheck).
+async function checkWpcn(chatId, txhash) {
+  const key = `${chatId}:${txhash}`;
+  wpcnInFlight.add(key);
+  try {
+    const r = await wpcn.verifyAndCredit(chatId, txhash);
+    noteCheck(db, chatId, txhash, r.state);
+    return r;
+  } finally {
+    wpcnInFlight.delete(key);
+  }
+}
+
+// A pasted 0x hash: "checking…" at once (the verifier can take several seconds), then the verdict.
+// Anything short of a final answer is asked again every minute by the sweep, and the user is told
+// so -- a payment pasted while still confirming is credited without pasting it twice.
+async function handleTxHash(chatId, txhashRaw, L) {
+  if (!WPCN_ENABLED) return t(L, 'wpcn.hash_off');
+  const txhash = recordCheck(db, chatId, txhashRaw);
+  await tg.sendMessage(chatId, t(L, 'wpcn.checking')).catch(() => undefined);
+  const r = await checkWpcn(chatId, txhash);
+  const text = wpcnVerdict(chatId, r, L);
+  return FINAL_STATES.has(r.state) ? text : `${text}\n\n${t(L, 'wpcn.auto')}`;
+}
+
+// The verifier's answer, as the user reads it.
+function wpcnVerdict(chatId, r, L) {
   if (r.state === WSTATE.CREDITED && r.creditedMicro > 0n) {
     const bal = db.prepare('SELECT balance_micro_usd b FROM users WHERE chat_id = ?').get(chatId)?.b ?? 0;
     return t(L, 'wpcn.credited', { usd: escapeHtml(microUsdToString(r.creditedMicro, 4)), balance: balanceLabel(bal) })
@@ -568,6 +607,31 @@ async function handleTxHash(chatId, txhash, L) {
     // Anything else is NOT "you did not pay" -- it is "we could not check".
     default: return t(L, 'wpcn.unreadable');
   }
+}
+
+// Every minute (and at start): ask again about every pasted hash still without a final answer.
+// A credit, or a definite "no", is told to the user with the hash it is about; an answer that is
+// still not final is not repeated to them.
+async function wpcnSweep() {
+  if (!WPCN_ENABLED) return { asked: 0 };
+  let asked = 0;
+  for (const c of dueChecks(db)) {
+    if (wpcnInFlight.has(`${c.chat_id}:${c.txhash}`)) continue;
+    asked++;
+    const L = langOfUser(ensureUser(c.chat_id));
+    const r = await checkWpcn(c.chat_id, c.txhash);
+    const tell = (r.state === WSTATE.CREDITED && r.creditedMicro > 0n)
+      || r.state === WSTATE.NO_PAYMENT || r.state === WSTATE.REVERTED
+      || (r.state === WSTATE.ALREADY_CLAIMED && !r.yours);
+    if (r.state === WSTATE.CREDITED && r.creditedMicro > 0n) {
+      log.info('wpcn: a pasted hash was credited by the sweep', { chat: chatTag(c.chat_id), tx: c.txhash.slice(0, 12), micro: Number(r.creditedMicro), attempts: c.attempts + 1 });
+    }
+    if (tell) {
+      await tg.sendMessage(c.chat_id, `<code>${escapeHtml(c.txhash.slice(0, 12))}…</code>\n${wpcnVerdict(c.chat_id, r, L)}`)
+        .catch((e) => log.warn('wpcn sweep notice failed', errFields(e)));
+    }
+  }
+  return { asked };
 }
 
 // One screen, sent with its buttons. The text is what the slash command would have returned;
@@ -686,6 +750,8 @@ function ledgerLabel(l, L) {
   if (l.kind === 'gift') return t(L, 'led.gift');
   if (l.kind === 'referral') return t(L, 'led.referral');
   if (l.kind === 'grant') return t(L, 'led.grant');
+  // A refund Telegram refused, put back: an adjustment, not a second refund.
+  if (key.startsWith('stars-refund:') && key.endsWith(':undo')) return t(L, 'led.adjust');
   if (key.startsWith('stars-refund:')) return t(L, 'led.stars_refund');
   if (key.startsWith('rebate:')) return t(L, 'led.rebate');
   return t(L, 'led.adjust');
@@ -885,10 +951,14 @@ async function againCard(chatId, itemId) {
 // Telegram has taken the Stars. Credit once (keyed on Telegram's charge id), and say so. A credit
 // that cannot be made is an ERROR for the admins -- the user paid -- and the user is told it will
 // be sorted out, never that it failed silently.
-async function handleStarsPaid(chatId, sp, from = null) {
+//
+// SYNCHRONOUS, and called from the poll loop BEFORE the update is claimed (see there): a restart
+// can then only make it run twice, and the charge id makes the second run "already credited". A
+// throw here (the database, not the payment) is NOT turned into "could not be credited" -- the
+// loop fetches the same update again until it goes through.
+function handleStarsPaid(chatId, sp, from = null) {
   const L = langOfUser(ensureUser(chatId, from));
-  let r;
-  try { r = creditStarsPayment(db, { chatId, sp }); } catch (e) { r = { refused: e.message }; }
+  const r = creditStarsPayment(db, { chatId, sp });
   if (r.credited) {
     log.info('stars payment credited', { chat: chatTag(chatId), stars: r.stars, micro: Number(r.micro) });
     return t(L, 'stars.paid', { stars: r.stars, usd: moneyLabel(r.micro), balance: balanceLabel(r.balance) });
@@ -934,9 +1004,8 @@ async function handleMessage(msg) {
   if (msg.is_automatic_forward) return;                  // nor our own announcements
   const chatId = chat.id;
 
-  // A STARS PAYMENT, before anything else -- the allow-list, commands, the agent. Telegram has
-  // already taken the Stars; the credit must happen whatever else is true.
-  if (msg.successful_payment) return handleStarsPaid(chatId, msg.successful_payment, msg.from);
+  // A Stars payment never gets here: the poll loop credits it before the update is claimed.
+  if (msg.successful_payment) return null;
 
   // Before the account exists, speak the language Telegram says they use.
   const guess = () => {
@@ -1158,6 +1227,7 @@ function studioGet() {
       running: count("SELECT COUNT(*) n FROM media_jobs WHERE state = 'running'"),
       failedDay: count("SELECT COUNT(*) n FROM media_jobs WHERE state IN ('failed','unknown') AND created_at > ?", since),
       spentDay: db.prepare("SELECT COALESCE(-SUM(delta_micro_usd), 0) n FROM ledger WHERE kind = 'ai_turn' AND created_at > ?").get(since).n,
+      giftsTodayMicro: Number(giftsToday(db)),
     },
   };
 }
@@ -1187,7 +1257,8 @@ function studioJobs(limit = 50) {
 // Stars, for the Payments page: our books, and Telegram's.
 async function starsAdmin() {
   const payments = db.prepare(
-    `SELECT id, chat_id, stars, micro_usd, created_at, refunded_at, refund_note, charge_id FROM stars_payments ORDER BY id DESC LIMIT 200`
+    `SELECT id, chat_id, stars, micro_usd, created_at, refunded_at, refund_note, refund_state, refund_started_at, charge_id
+       FROM stars_payments ORDER BY id DESC LIMIT 200`
   ).all();
   const totals = db.prepare(
     `SELECT COUNT(*) n, COALESCE(SUM(stars),0) stars, COALESCE(SUM(micro_usd),0) micro,
@@ -1329,6 +1400,19 @@ async function main() {
   };
   setInterval(sweep, 120000);
   sweep();
+  // Pasted wPCN hashes without a final answer -- including one cut off by the restart that
+  // started this process.
+  let wpcnBusy = false;
+  const askWpcn = () => {
+    if (wpcnBusy) return;
+    wpcnBusy = true;
+    wpcnSweep()
+      .then((c) => { if (c.asked) log.info('wpcn: re-asked the verifier about pasted hashes', c); })
+      .catch((e) => log.warn('wpcn sweep failed', errFields(e)))
+      .finally(() => { wpcnBusy = false; });
+  };
+  setInterval(askWpcn, 60000);
+  askWpcn();
 
   for (const m of recovered) {
     await tg.sendMessage(m.chatId, m.text).catch(() => undefined);
@@ -1350,11 +1434,11 @@ async function main() {
     },
     stars: {
       get: starsAdmin,
-      refund: async ({ paymentId, note: why }) => {
+      refund: async ({ paymentId, note: why, clawback = false }) => {
         try {
-          const r = await refundStarsPayment({ db, tg }, { paymentId, note: why });
+          const r = await refundStarsPayment({ db, tg }, { paymentId, note: why, clawback: clawback === true });
           await tg.sendMessage(r.chatId, t(langOf(db, r.chatId), 'stars.refunded', { stars: r.stars, usd: moneyLabel(r.micro) })).catch(() => undefined);
-          return { ok: true, ...r, micro: Number(r.micro) };
+          return { ok: true, ...r, micro: Number(r.micro), clawback: r.clawback ? { inviter: r.clawback.inviter, micro: Number(r.clawback.micro) } : null };
         } catch (e) {
           if (e instanceof RefundRefused) return { ok: false, error: e.message };
           throw e;
@@ -1384,6 +1468,8 @@ async function main() {
   let processed = 0;
   let pollFailures = 0;
   const POLL_WARN_AFTER = 3;
+  // Stars updates the admins were already told are not credited yet (one alert each, not one per retry).
+  const paymentAlerted = new Set();
 
   for (;;) {
     const res = await tg.getUpdates(offset, { timeout: 30 });
@@ -1416,6 +1502,43 @@ async function main() {
 
     for (const up of res.result) {
       offset = up.update_id + 1;
+
+      // MONEY THAT HAS ALREADY MOVED IS HANDLED BEFORE THE CLAIM (review, 2026-09-26: "fix the
+      // lost-payment-on-restart bug"). The claim below makes work AT-MOST-ONCE, which is right for
+      // a chat turn and wrong for a payment: the update was claimed, then waited for a free slot,
+      // and a restart in that wait lost a Stars payment Telegram had already taken -- claimed, so
+      // never retried. A Stars credit is idempotent on Telegram's charge id, so it runs here,
+      // synchronously, first: a restart can only make it run twice, never not at all.
+      const pm = up.message;
+      if (pm?.successful_payment) {
+        let taken;
+        try {
+          taken = creditThenClaim(db, up, (m) => handleStarsPaid(m.chat.id, m.successful_payment, m.from));
+        } catch (e) {
+          // The DATABASE failed, not the payment. Fetch this update again rather than drop it.
+          log.error('STARS PAYMENT NOT CREDITED YET -- retrying the same update', { update: up.update_id, chat: chatTag(pm.chat.id), ...errFields(e) });
+          if (!paymentAlerted.has(up.update_id)) {
+            paymentAlerted.add(up.update_id);
+            for (const a of ADMIN_CHATS) {
+              tg.sendMessage(a, `⚠️ A Stars payment from chat ${pm.chat.id} is not credited yet (${escapeHtml(String(e.message).slice(0, 200))}). The bot keeps retrying it.`).catch(() => undefined);
+            }
+          }
+          offset = up.update_id;
+          await new Promise((r) => setTimeout(r, 5000));
+          break;
+        }
+        kvSetJson(db, 'tg:offset', { offset });
+        // A second delivery (after a restart) credited nothing new; the first one already answered.
+        if (taken.claimed) {
+          track(tg.sendLong(pm.chat.id, taken.reply).catch((e) => log.warn('payment reply failed', errFields(e))));
+        }
+        continue;
+      }
+      // A pasted wPCN hash is written down first too: the sweep asks the verifier about it until
+      // the answer is final, so a restart before (or during) its own check loses nothing.
+      if (WPCN_ENABLED && pm?.chat?.type === 'private' && typeof pm.text === 'string' && isTxHash(pm.text) && mayUse(pm.chat.id)) {
+        try { recordCheck(db, pm.chat.id, pm.text); } catch (e) { log.error('could not record a pasted wPCN hash', errFields(e)); }
+      }
 
       // CLAIM BEFORE WORK. This turns at-least-once DELIVERY into at-most-once
       // WORK, and it must happen before the expensive call, never after.

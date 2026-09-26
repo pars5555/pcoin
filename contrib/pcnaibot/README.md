@@ -63,7 +63,7 @@ watch.mjs                the deposit watcher, a SEPARATE process on a timer
 Dockerfile               one image, used by both processes
 migrate.mjs              explicit versioned migrations + the structural proof
 heartbeat-check.sh       staleness check for both heartbeats; RUNS AS ROOT
-migrations/              001_init .. 015_gifts_invites_lang, explicit and versioned
+migrations/              001_init .. 016_payment_safety, explicit and versioned
 systemd/                 units + timers + logrotate; systemd/docker/ for the container
 test/                    money path, billing path, studio (cards, jobs, chat agent), Markdown
 lib/
@@ -115,7 +115,24 @@ lib/
   length limits) and the test suite refuses any difference. The chat agent is not driven by this: it
   answers in the language of the user's latest message.
 * All five amounts and switches are on admin.pc.am → PcoinAiBot → Gifts & invites, behind the
-  authenticator code (they create money); each amount is at most $20.
+  authenticator code (they create money); each amount is at most $20. `giftDailyCapUsd` bounds the
+  gifts per UTC day (0 = no cap); an account opened past it gets no gift and the admins hear once.
+
+## Payment safety (2026-09-26, migration 016)
+
+* **A Stars credit runs before its update is claimed** (`lib/updates.mjs`). Claim-before-work is
+  at-most-once, which lost a payment Telegram had taken when a restart hit between the claim and the
+  credit. The credit is idempotent on the charge id, so it runs first; a database error re-fetches
+  the same update instead of answering "could not be credited".
+* **A pasted wPCN hash is written down before the verifier is asked** (`wpcn_checks`) and asked again
+  every minute until the answer is final (6 h at most). The verifier commits before it answers; a
+  restart between the two used to park the payment there until the user pasted the hash again.
+* **A Stars refund takes the money off first**, then asks Telegram: a ✅ during the call cannot spend
+  it. Refused → put back (`…:undo` ledger row). No answer → stays off, `pending`; Refund again asks
+  again (`CHARGE_ALREADY_REFUNDED` settles it as done).
+* **A refund cannot undo the top-up an invite reward was paid for** (the minimum is stamped on the
+  referral): refused unless the admin ticks "take the invite reward back", which on success debits
+  the inviter and voids the invite.
 
 ## Two processes, deliberately
 
@@ -229,7 +246,7 @@ the owner from a monitoring-setup step.
 ## Testing
 
 ```sh
-node --test test/          # 168 tests, no network
+node --test test/          # 181 tests, no network
 ```
 
 They need `better-sqlite3`, which has no Windows/node-24 prebuild — run them in the

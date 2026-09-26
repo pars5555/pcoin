@@ -184,6 +184,7 @@ export default {
   'wpcn.dup': 'That transaction was already credited to your balance.',
   'wpcn.claimed_other': 'That transaction has already been claimed by another account. If you believe that is wrong, send a message starting with SUPPORT.',
   'wpcn.unreadable': 'We could not reach the blockchain just now. <b>Your payment is safe</b> — please try again in a minute.',
+  'wpcn.auto': 'I will keep checking by myself and message you when there is an answer — no need to paste it again.',
   'wpcn.st.pending': 'We cannot see that transaction yet. Give it a minute and try again.',
   'wpcn.st.confirming': 'Payment seen — waiting for confirmations ({n}/{req}).',
   'wpcn.st.no_payment': 'That transaction did not send wPCN to our payment address.',

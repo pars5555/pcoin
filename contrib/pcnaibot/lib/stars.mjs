@@ -17,6 +17,7 @@ import { immediate } from './db.mjs';
 import { nowSec } from './time.mjs';
 import { log, chatTag } from './log.mjs';
 import { t, langOf } from './i18n.mjs';
+import { toppedUpMicro } from './rewards.mjs';
 import { randomBytes } from 'node:crypto';
 
 export const INVOICE_TTL_SEC = 24 * 3600;
@@ -110,27 +111,146 @@ export function expireInvoices(db, now = nowSec()) {
 
 export class RefundRefused extends Error {}
 
-// Give the Stars back and take the credit away. Refused unless the user still holds what the
-// payment credited -- a refund must never leave the house paying for pictures twice. Telegram
-// first: if it refuses, nothing here changes.
-export async function refundStarsPayment({ db, tg }, { paymentId, note }) {
-  const p = db.prepare('SELECT * FROM stars_payments WHERE id = ?').get(paymentId);
-  if (!p) throw new RefundRefused('no such payment');
-  if (p.refunded_at) throw new RefundRefused('already refunded');
-  const u = db.prepare('SELECT balance_micro_usd b FROM users WHERE chat_id = ?').get(p.chat_id);
-  if (!u || u.b < p.micro_usd) throw new RefundRefused(`the user's balance (${usdLabel(u?.b ?? 0)}) is below what this payment credited (${usdLabel(p.micro_usd)}): it has been spent`);
+// Give the Stars back and take the credit away (review, 2026-09-26: "fix ... the refund race").
+//
+// THE MONEY COMES OFF FIRST, THEN TELEGRAM IS ASKED. This used to check the balance, await
+// Telegram, and deduct afterwards -- and a ✅ pressed during the await reserved the same money, so
+// the balance went negative and the house paid for the picture as well as returning the Stars.
+// Now step 1 is one BEGIN IMMEDIATE: a conditional deduction (refused unless the SPENDABLE balance
+// covers it -- money set aside for something being made is not spendable), its ledger row, and the
+// payment marked 'pending'. Nothing can spend that money after it.
+//
+// Then Telegram's answer decides:
+//   ok, or CHARGE_ALREADY_REFUNDED  -> 'done'. The Stars are back with the user either way.
+//   a definite refusal              -> the money goes back, with its own ledger row (…:undo), and
+//                                      the payment is refundable again.
+//   no answer                       -> stays 'pending', money still off. The refund may or may not
+//                                      have happened, and neither guess is safe; pressing Refund
+//                                      again asks Telegram again, and one of the two lines above
+//                                      settles it.
+//
+// Each attempt's ledger key is stars-refund:<charge>:<n>, its reversal stars-refund:<charge>:<n>:undo
+// -- both match 'stars-refund:%', which is what the invite reward's "paid in" sum reads.
+//
+// THE INVITE LOOPHOLE (same review: "close the invite-reward refund loophole"). A top-up that an
+// invite reward required cannot be refunded out from under it: top up $5 in Stars, make a video on
+// the welcome gift (the inviter gets $2), refund the $5 -- and the inviter's $2 was free. If the
+// invited person's inviter has been paid, and this refund would leave what they paid in below the
+// minimum that payout required, the refund is refused -- unless the admin asks for `clawback`, in
+// which case, once Telegram confirms, the reward is taken back off the inviter (their balance may
+// go negative: they were paid for a top-up that no longer exists) and the invite is voided.
+export async function refundStarsPayment({ db, tg }, { paymentId, note = '', clawback = false, now = nowSec() }) {
+  const begun = beginRefund(db, { paymentId, note, clawback, now });
+  const p = begun.payment;
   const r = await tg.call('refundStarPayment', { user_id: p.chat_id, telegram_payment_charge_id: p.charge_id });
-  if (!r.ok) throw new RefundRefused(`Telegram refused the refund: ${r.description ?? 'no answer'}`);
-  const now = nowSec();
-  immediate(db, () => {
-    db.prepare('UPDATE stars_payments SET refunded_at = ?, refund_note = ? WHERE id = ?').run(now, String(note ?? '').slice(0, 200), p.id);
+
+  if (r.ok || (!r.unknown && /CHARGE_ALREADY_REFUNDED/i.test(String(r.description ?? '')))) {
+    const done = finishRefund(db, p.id, nowSec());
+    log.info('stars payment refunded', {
+      chat: chatTag(p.chat_id), stars: p.stars, micro: p.micro_usd,
+      telegram: r.ok ? 'refunded' : 'already refunded', clawback: done.clawback ? Number(done.clawback.micro) : 0,
+    });
+    return { ok: true, stars: p.stars, micro: p.micro_usd, chatId: p.chat_id, clawback: done.clawback };
+  }
+  if (!r.unknown) {
+    undoRefund(db, p.id, String(r.description ?? 'refused'), nowSec());
+    throw new RefundRefused(`Telegram refused the refund: ${r.description ?? 'no reason given'}. The balance was put back.`);
+  }
+  log.error('STARS REFUND OUTCOME UNKNOWN -- the credit stays off until Telegram answers', {
+    chat: chatTag(p.chat_id), payment: p.id, stars: p.stars, desc: r.description ?? null,
+  });
+  throw new RefundRefused(`Telegram did not answer (${r.description ?? 'no answer'}), so the refund may or may not have happened. `
+    + `${usdLabel(p.micro_usd)} stays off the balance until it is settled: press Refund again to ask Telegram again.`);
+}
+
+// The minimum paid-in top-up an invite reward stands on, or null if there is none to protect.
+function inviteDependency(db, chatId, refundMicro) {
+  const ref = db.prepare("SELECT * FROM referrals WHERE referred_chat_id = ? AND status = 'rewarded'").get(chatId);
+  if (!ref) return null;
+  // A reward paid before the minimum was stamped: assume it needed everything paid in so far.
+  const min = ref.min_topup_micro_usd === null ? null : BigInt(ref.min_topup_micro_usd);
+  const after = toppedUpMicro(db, chatId) - BigInt(refundMicro);
+  if (min !== null && after >= min) return null;
+  return { ref, min, after };
+}
+
+// Step 1, synchronous: take the money off and mark the payment pending. Returns { payment }.
+export function beginRefund(db, { paymentId, note = '', clawback = false, now = nowSec() }) {
+  return immediate(db, () => {
+    const p = db.prepare('SELECT * FROM stars_payments WHERE id = ?').get(paymentId);
+    if (!p) throw new RefundRefused('no such payment');
+    if (p.refund_state === 'done' || p.refunded_at) throw new RefundRefused('already refunded');
+    // Already off the balance, Telegram's answer still open: ask again, deduct nothing.
+    if (p.refund_state === 'pending') return { payment: p, resumed: true };
+
+    const dep = inviteDependency(db, p.chat_id, p.micro_usd);
+    if (dep && !clawback) {
+      throw new RefundRefused(`this user was invited by ${dep.ref.referrer_chat_id}, who was paid ${usdLabel(dep.ref.reward_micro_usd ?? 0)} `
+        + `because this user topped up; refunding this payment would leave them having paid in ${usdLabel(dep.after > 0n ? dep.after : 0n)}, `
+        + `below the ${dep.min === null ? 'top-up that reward' : usdLabel(dep.min)} required. `
+        + 'Tick "take the invite reward back" to refund it and take the reward off the inviter.');
+    }
+
+    const dec = db.prepare(
+      'UPDATE users SET balance_micro_usd = balance_micro_usd - ? WHERE chat_id = ? AND balance_micro_usd >= ?'
+    ).run(p.micro_usd, p.chat_id, p.micro_usd);
+    if (dec.changes !== 1) {
+      const u = db.prepare('SELECT balance_micro_usd b, reserved_micro_usd r FROM users WHERE chat_id = ?').get(p.chat_id);
+      throw new RefundRefused(`the user's spendable balance (${usdLabel(u?.b ?? 0)}${u?.r ? `, plus ${usdLabel(u.r)} set aside for something being made` : ''}) `
+        + `is below what this payment credited (${usdLabel(p.micro_usd)}): it has been spent`);
+    }
+    const attempt = db.prepare(
+      "SELECT COUNT(*) n FROM ledger WHERE idem_key LIKE ? AND idem_key NOT LIKE '%:undo'"
+    ).get(`stars-refund:${p.charge_id}:%`).n + 1;
     db.prepare(
       `INSERT INTO ledger (chat_id, delta_micro_usd, kind, idem_key, note, created_at) VALUES (?,?, 'adjust', ?, ?, ?)`
-    ).run(p.chat_id, -p.micro_usd, `stars-refund:${p.charge_id}`, `Stars refund (${p.stars} ⭐)${note ? `: ${String(note).slice(0, 120)}` : ''}`, now);
-    db.prepare('UPDATE users SET balance_micro_usd = balance_micro_usd - ? WHERE chat_id = ?').run(p.micro_usd, p.chat_id);
+    ).run(p.chat_id, -p.micro_usd, `stars-refund:${p.charge_id}:${attempt}`,
+      `Stars refund (${p.stars} ⭐)${note ? `: ${String(note).slice(0, 120)}` : ''}`, now);
+    db.prepare(
+      "UPDATE stars_payments SET refund_state = 'pending', refund_started_at = ?, refund_note = ?, refund_clawback = ? WHERE id = ?"
+    ).run(now, String(note ?? '').slice(0, 200), dep && clawback ? 1 : 0, p.id);
+    return { payment: db.prepare('SELECT * FROM stars_payments WHERE id = ?').get(p.id), resumed: false };
   });
-  log.info('stars payment refunded', { chat: chatTag(p.chat_id), stars: p.stars, micro: p.micro_usd });
-  return { ok: true, stars: p.stars, micro: p.micro_usd, chatId: p.chat_id };
+}
+
+// Telegram confirmed: the refund is done, and the invite reward is taken back if that was asked.
+export function finishRefund(db, paymentId, now = nowSec()) {
+  return immediate(db, () => {
+    const p = db.prepare('SELECT * FROM stars_payments WHERE id = ?').get(paymentId);
+    const up = db.prepare("UPDATE stars_payments SET refund_state = 'done', refunded_at = ? WHERE id = ? AND refund_state = 'pending'").run(now, paymentId);
+    if (up.changes !== 1) return { already: true, clawback: null };
+    let clawback = null;
+    if (p.refund_clawback) {
+      const ref = db.prepare("SELECT * FROM referrals WHERE referred_chat_id = ? AND status = 'rewarded'").get(p.chat_id);
+      if (ref && ref.reward_micro_usd > 0) {
+        db.prepare(
+          `INSERT INTO ledger (chat_id, delta_micro_usd, kind, idem_key, note, created_at) VALUES (?,?, 'referral', ?, ?, ?)`
+        ).run(ref.referrer_chat_id, -ref.reward_micro_usd, `referral-clawback:${p.chat_id}`,
+          `invite reward taken back: ${p.chat_id} was refunded their top-up`, now);
+        db.prepare('UPDATE users SET balance_micro_usd = balance_micro_usd - ? WHERE chat_id = ?').run(ref.reward_micro_usd, ref.referrer_chat_id);
+        db.prepare("UPDATE referrals SET status = 'void', void_reason = 'top-up refunded; reward taken back' WHERE id = ?").run(ref.id);
+        clawback = { inviter: ref.referrer_chat_id, micro: BigInt(ref.reward_micro_usd) };
+      }
+    }
+    return { already: false, clawback };
+  });
+}
+
+// Telegram definitely refused: put the money back, with its own ledger row.
+export function undoRefund(db, paymentId, why, now = nowSec()) {
+  return immediate(db, () => {
+    const p = db.prepare('SELECT * FROM stars_payments WHERE id = ?').get(paymentId);
+    if (!p || p.refund_state !== 'pending') return { noop: true };
+    const attempt = db.prepare(
+      "SELECT COUNT(*) n FROM ledger WHERE idem_key LIKE ? AND idem_key NOT LIKE '%:undo'"
+    ).get(`stars-refund:${p.charge_id}:%`).n;
+    db.prepare(
+      `INSERT INTO ledger (chat_id, delta_micro_usd, kind, idem_key, note, created_at) VALUES (?,?, 'adjust', ?, ?, ?)`
+    ).run(p.chat_id, p.micro_usd, `stars-refund:${p.charge_id}:${attempt}:undo`, `Stars refund refused by Telegram: ${String(why).slice(0, 120)}`, now);
+    db.prepare('UPDATE users SET balance_micro_usd = balance_micro_usd + ? WHERE chat_id = ?').run(p.micro_usd, p.chat_id);
+    db.prepare('UPDATE stars_payments SET refund_state = NULL, refund_started_at = NULL, refund_clawback = 0 WHERE id = ?').run(p.id);
+    return { restored: BigInt(p.micro_usd) };
+  });
 }
 
 // What Telegram says: the bot's Stars balance, and every transaction, to check our books against.

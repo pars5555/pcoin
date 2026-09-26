@@ -18,7 +18,9 @@
 //   * The payout is a conditional UPDATE ... WHERE status = 'pending' plus a ledger row keyed
 //     referral:<invited chat_id>, in one BEGIN IMMEDIATE: two deliveries racing pay once.
 //
-// No caps, by the owner's decision (2026-09-26: "No limits"). The amounts are admin settings.
+// No caps on invites, by the owner's decision (2026-09-26: "No limits"). The welcome gift has an
+// optional daily total (giftDailyCapUsd, 0 = none), asked for in the review the same day. The
+// amounts are admin settings.
 
 import { immediate } from './db.mjs';
 import { nowSec } from './time.mjs';
@@ -36,18 +38,34 @@ export function parseInvite(payload) {
 
 export const inviteLink = (botUsername, chatId) => `https://t.me/${botUsername}?start=r${chatId}`;
 
+// Welcome gifts given since UTC midnight, in micro-USD.
+export function giftsToday(db, now = nowSec()) {
+  const dayStart = now - (now % 86400);
+  return BigInt(db.prepare("SELECT COALESCE(SUM(delta_micro_usd), 0) n FROM ledger WHERE kind = 'gift' AND created_at >= ?").get(dayStart).n);
+}
+
 // Find or create the user. Only a call that CREATES the row may give the welcome gift or record an
-// invite. Returns { user, created, giftMicro, invite } where invite is null or one of
+// invite. Returns { user, created, giftMicro, capped, invite } where invite is null or one of
 // 'recorded' | 'self' | 'no_referrer' | 'taken'.
-export function openAccount(db, { chatId, model, lang = null, giftMicro = 0n, invitedBy = null, now = nowSec() }) {
+//
+// `giftCapMicro` (> 0) bounds the gifts given per UTC day. Read and written in the SAME transaction,
+// so two accounts opened at once cannot both slip under it. A new account over the cap gets no gift
+// -- then or later -- and `capped` says so.
+export function openAccount(db, { chatId, model, lang = null, giftMicro = 0n, giftCapMicro = 0n, invitedBy = null, now = nowSec() }) {
   return immediate(db, () => {
     const existing = db.prepare('SELECT * FROM users WHERE chat_id = ?').get(chatId);
-    if (existing) return { user: existing, created: false, giftMicro: 0n, invite: null };
+    if (existing) return { user: existing, created: false, giftMicro: 0n, capped: false, invite: null };
 
     db.prepare('INSERT INTO users (chat_id, model, lang, created_at) VALUES (?,?,?,?)').run(chatId, model, lang, now);
 
     let gave = 0n;
-    const gift = BigInt(giftMicro);
+    let capped = false;
+    let gift = BigInt(giftMicro);
+    const cap = BigInt(giftCapMicro);
+    if (gift > 0n && cap > 0n && giftsToday(db, now) + gift > cap) {
+      capped = true;
+      gift = 0n;
+    }
     if (gift > 0n) {
       const r = db.prepare(
         `INSERT INTO ledger (chat_id, delta_micro_usd, kind, idem_key, note, created_at)
@@ -72,7 +90,7 @@ export function openAccount(db, { chatId, model, lang = null, giftMicro = 0n, in
         invite = r.changes === 1 ? 'recorded' : 'taken';
       }
     }
-    return { user: db.prepare('SELECT * FROM users WHERE chat_id = ?').get(chatId), created: true, giftMicro: gave, invite };
+    return { user: db.prepare('SELECT * FROM users WHERE chat_id = ?').get(chatId), created: true, giftMicro: gave, capped, invite };
   });
 }
 
@@ -106,10 +124,12 @@ export function payInviteReward(db, { referredId, itemId = null, rewardMicro, mi
     }
     if (toppedUpMicro(db, referredId) < BigInt(minTopupMicro)) return { paid: false, why: 'not_topped_up' };
 
+    // The minimum is stamped: a later Stars refund may not take the invited person below it
+    // (lib/stars.mjs), whatever the setting says by then.
     const up = db.prepare(
-      `UPDATE referrals SET status = 'rewarded', reward_micro_usd = ?, trigger_item_id = ?, rewarded_at = ?
+      `UPDATE referrals SET status = 'rewarded', reward_micro_usd = ?, trigger_item_id = ?, rewarded_at = ?, min_topup_micro_usd = ?
         WHERE id = ? AND status = 'pending'`
-    ).run(Number(reward), itemId, now, ref.id);
+    ).run(Number(reward), itemId, now, Number(minTopupMicro), ref.id);
     if (up.changes !== 1) return { paid: false, why: 'raced' };
     // A plain INSERT: a second row for the same invited person is a UNIQUE violation, which rolls
     // the whole transaction back -- the once-only guard at the database, under the one above.

@@ -39,6 +39,51 @@ export function isTxHash(s) {
   return typeof s === 'string' && /^0x[0-9a-fA-F]{64}$/.test(s.trim());
 }
 
+// ---- pasted hashes that have not had a final answer (migration 016) ----------------------------
+//
+// The verifier commits its claim BEFORE it answers, so a restart between its answer and our credit
+// parked the payment there until the user happened to paste the hash again. Every pasted hash is
+// now written down FIRST and asked about again every minute until the answer is final.
+
+// Answers that asking again cannot change. Everything else -- pending, confirming, reorged,
+// unreadable -- is asked again.
+export const FINAL_STATES = new Set([STATE.CREDITED, STATE.ALREADY_CLAIMED, STATE.NO_PAYMENT, STATE.REVERTED, STATE.BAD_REQUEST]);
+export const CHECK_MAX_AGE_SEC = 6 * 3600;
+
+// A pasted hash, before anything else happens to it. A hash closed earlier is opened again.
+export function recordCheck(db, chatId, txhashRaw, now = nowSec()) {
+  const txhash = String(txhashRaw).trim().toLowerCase();
+  db.prepare(
+    `INSERT INTO wpcn_checks (chat_id, txhash, created_at) VALUES (?,?,?)
+     ON CONFLICT (chat_id, txhash) DO UPDATE SET created_at = excluded.created_at, done_at = NULL, attempts = 0, last_state = NULL
+       WHERE wpcn_checks.done_at IS NOT NULL`
+  ).run(chatId, txhash, now);
+  return txhash;
+}
+
+// What the verifier said this time; closes the row if the answer is final.
+export function noteCheck(db, chatId, txhash, state, now = nowSec()) {
+  db.prepare(
+    `UPDATE wpcn_checks SET checked_at = ?, attempts = attempts + 1, last_state = ?, done_at = CASE WHEN ? THEN ? ELSE done_at END
+      WHERE chat_id = ? AND txhash = ?`
+  ).run(now, String(state), FINAL_STATES.has(state) ? 1 : 0, now, chatId, String(txhash).toLowerCase());
+}
+
+// Open rows due another question: asked more than a minute ago, or never asked and older than 30 s
+// (a fresh paste is still being answered by its own message). Rows past CHECK_MAX_AGE_SEC are
+// closed as 'expired' first -- the user can always paste the hash again.
+export function dueChecks(db, now = nowSec()) {
+  const expired = db.prepare(
+    "UPDATE wpcn_checks SET done_at = ?, last_state = 'expired' WHERE done_at IS NULL AND created_at < ?"
+  ).run(now, now - CHECK_MAX_AGE_SEC).changes;
+  if (expired) log.warn('wpcn: pasted hashes given up on after 6 hours without a final answer', { count: expired });
+  return db.prepare(
+    `SELECT * FROM wpcn_checks WHERE done_at IS NULL
+        AND ((checked_at IS NULL AND created_at < ?) OR checked_at < ?)
+      ORDER BY created_at LIMIT 50`
+  ).all(now - 30, now - 55);
+}
+
 // Normalise verifier rows into what the ledger writer needs.
 //
 // ACCEPT BOTH FIELD SPELLINGS. A /verify transfer carries `logIndex`, `usd`,

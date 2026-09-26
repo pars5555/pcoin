@@ -104,15 +104,17 @@ test('a payment that does not match its invoice is not credited (and says why)',
   assert.equal(reconcile(db).ok, true);
 });
 
-test('a refund: Telegram first, then the credit comes off -- never once it is spent', async () => {
+test('a refund: the credit comes off, Telegram gives the Stars back -- never once it is spent', async () => {
   const db = freshDb({ balanceMicro: 0 });
   const { sp } = await paidInvoice(db, tgWith());
   creditStarsPayment(db, { chatId: 7, sp });
   const pay = db.prepare('SELECT * FROM stars_payments').get();
 
-  const refusing = tgWith({ refundStarPayment: { ok: false, description: 'CHARGE_ALREADY_REFUNDED' } });
+  const refusing = tgWith({ refundStarPayment: { ok: false, unknown: false, description: 'Bad Request: CHARGE_NOT_FOUND' } });
   await assert.rejects(refundStarsPayment({ db, tg: refusing }, { paymentId: pay.id }), (e) => e instanceof RefundRefused && /Telegram refused/.test(e.message));
-  assert.equal(user(db).b, 5000000, 'Telegram said no: nothing changed');
+  assert.equal(user(db).b, 5000000, 'Telegram said no: the credit was put back');
+  assert.equal(db.prepare('SELECT refund_state FROM stars_payments').get().refund_state, null);
+  assert.equal(reconcile(db).ok, true, 'the deduction and its reversal are both in the ledger');
 
   const tg = tgWith();
   const r = await refundStarsPayment({ db, tg }, { paymentId: pay.id, note: 'asked by the user' });

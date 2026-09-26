@@ -184,6 +184,7 @@ export default {
   'wpcn.dup': 'Diese Transaktion wurde deinem Guthaben bereits gutgeschrieben.',
   'wpcn.claimed_other': 'Diese Transaktion wurde bereits von einem anderen Konto beansprucht. Wenn du glaubst, dass das falsch ist, sende eine Nachricht, die mit SUPPORT beginnt.',
   'wpcn.unreadable': 'Wir konnten die Blockchain gerade nicht erreichen. <b>Deine Zahlung ist sicher</b> — bitte versuch es in einer Minute noch einmal.',
+  'wpcn.auto': 'Ich prüfe selbst weiter und melde mich, sobald es eine Antwort gibt — du musst den Hash nicht erneut einfügen.',
   'wpcn.st.pending': 'Wir sehen diese Transaktion noch nicht. Warte eine Minute und versuch es erneut.',
   'wpcn.st.confirming': 'Zahlung gesichtet — wir warten auf Bestätigungen ({n}/{req}).',
   'wpcn.st.no_payment': 'Diese Transaktion hat kein wPCN an unsere Zahlungsadresse gesendet.',

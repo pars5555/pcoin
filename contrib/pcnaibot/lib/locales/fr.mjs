@@ -185,6 +185,7 @@ export default {
   'wpcn.dup': 'Cette transaction a déjà été créditée sur votre solde.',
   'wpcn.claimed_other': 'Cette transaction a déjà été revendiquée par un autre compte. Si vous pensez que c’est une erreur, envoyez un message commençant par SUPPORT.',
   'wpcn.unreadable': 'Nous n’avons pas pu joindre la blockchain pour l’instant. <b>Votre paiement est en sécurité</b> — réessayez dans une minute.',
+  'wpcn.auto': 'Je continue à vérifier moi-même et je vous écris dès qu’il y a une réponse — inutile de coller le hash à nouveau.',
   'wpcn.st.pending': 'Nous ne voyons pas encore cette transaction. Attendez une minute et réessayez.',
   'wpcn.st.confirming': 'Paiement repéré — en attente de confirmations ({n}/{req}).',
   'wpcn.st.no_payment': 'Cette transaction n’a pas envoyé de wPCN à notre adresse de paiement.',

@@ -180,6 +180,7 @@ export default {
   'wpcn.dup': 'Esa transacción ya se acreditó en tu saldo.',
   'wpcn.claimed_other': 'Esa transacción ya la ha reclamado otra cuenta. Si crees que es un error, envía un mensaje que empiece por SUPPORT.',
   'wpcn.unreadable': 'No hemos podido conectar con la blockchain ahora mismo. <b>Tu pago está a salvo</b> — inténtalo de nuevo en un minuto.',
+  'wpcn.auto': 'Seguiré comprobándolo por mi cuenta y te escribiré cuando haya respuesta; no hace falta que vuelvas a pegar el hash.',
   'wpcn.st.pending': 'Aún no vemos esa transacción. Espera un minuto y vuelve a intentarlo.',
   'wpcn.st.confirming': 'Pago detectado — esperando confirmaciones ({n}/{req}).',
   'wpcn.st.no_payment': 'Esa transacción no envió wPCN a nuestra dirección de pago.',

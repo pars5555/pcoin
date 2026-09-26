@@ -187,8 +187,8 @@ export function startAdminApi({ db, token, port, host = '127.0.0.1', names = asy
         const b = await readJson(req);
         const paymentId = Number(b?.payment_id);
         if (!Number.isSafeInteger(paymentId)) return json(res, 400, { error: 'payment_id required' });
-        const r = await stars.refund({ paymentId, note: String(b?.note || '').slice(0, 200) });
-        log.info('admin stars refund', { payment: paymentId, ok: r.ok, err: r.error ?? '-' });
+        const r = await stars.refund({ paymentId, note: String(b?.note || '').slice(0, 200), clawback: b?.clawback === true });
+        log.info('admin stars refund', { payment: paymentId, clawback: b?.clawback === true, ok: r.ok, err: r.error ?? '-' });
         return json(res, r.ok ? 200 : 422, r);
       }
       return json(res, 404, { error: 'not found' });

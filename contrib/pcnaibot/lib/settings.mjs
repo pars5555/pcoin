@@ -8,7 +8,8 @@
 //   Pictures & video  pictureModel, videoModel, videoSeconds, videoResolution, videoEditModel,
 //                     margin (our price = OonaCode's x margin), cardTtlHours
 //   Payments          starsEnabled, starsPackages [{usd, stars}], paySupportText
-//   Gifts & invites   giftEnabled, giftUsd, invitesEnabled, inviteRewardUsd, inviteMinTopupUsd
+//   Gifts & invites   giftEnabled, giftUsd, giftDailyCapUsd, invitesEnabled, inviteRewardUsd,
+//                     inviteMinTopupUsd
 
 import { kvGetJson, kvSetJson } from './db.mjs';
 import { MEDIA_MODELS } from './media.mjs';
@@ -44,6 +45,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
   // after they have topped up at least inviteMinTopupUsd. No caps, by the owner's decision.
   giftEnabled: true,
   giftUsd: 3,
+  // The most given in welcome gifts per UTC day, all accounts together; 0 = no cap. An account
+  // opened after it is reached gets no gift, and the admins are told once that day.
+  giftDailyCapUsd: 0,
   invitesEnabled: true,
   inviteRewardUsd: 2,
   inviteMinTopupUsd: 1,
@@ -102,6 +106,7 @@ export function settingsProblems(s, { offer, chatChoices }) {
   const cents = (v, lo, hi) => typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi && Math.abs(v * 100 - Math.round(v * 100)) < 1e-6;
   if (typeof s.giftEnabled !== 'boolean') bad.push('the welcome gift on/off must be true or false');
   if (!cents(s.giftUsd, 0, 20)) bad.push('the welcome gift must be $0 to $20, in cents');
+  if (!cents(s.giftDailyCapUsd, 0, 10000)) bad.push('the daily cap on welcome gifts must be $0 (no cap) to $10,000, in cents');
   if (typeof s.invitesEnabled !== 'boolean') bad.push('invites on/off must be true or false');
   if (!cents(s.inviteRewardUsd, 0, 20)) bad.push('the invite reward must be $0 to $20, in cents');
   if (!cents(s.inviteMinTopupUsd, 0, 1000)) bad.push('the top-up an invited person must make must be $0 to $1,000, in cents');
@@ -121,7 +126,7 @@ export function mergeSettingsInput(cur, input) {
   const next = { ...cur };
   const str = ['chatModel', 'chatPrompt', 'pictureModel', 'videoModel', 'videoResolution', 'videoEditModel', 'paySupportText'];
   const num = ['chatPerHour', 'chatDailyBudget', 'chatMaxChars', 'historyMax', 'videoSeconds', 'margin', 'cardTtlHours',
-    'giftUsd', 'inviteRewardUsd', 'inviteMinTopupUsd'];
+    'giftUsd', 'giftDailyCapUsd', 'inviteRewardUsd', 'inviteMinTopupUsd'];
   for (const k of str) if (typeof input[k] === 'string') next[k] = input[k];
   for (const k of num) if (input[k] !== undefined && input[k] !== '') next[k] = Number(input[k]);
   for (const k of ['starsEnabled', 'giftEnabled', 'invitesEnabled']) {

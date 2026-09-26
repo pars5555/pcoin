@@ -98,7 +98,7 @@ export async function pcnaibotAction(form, { verifyCode, creds }) {
     if (!codeOnce(form.get('code'), verifyCode)) return { bad: true, flash: 'Wrong or reused authenticator code. Nothing was changed.' };
     const dollars = (k) => g(k).trim().replace(',', '.');
     return saveSettings(creds, {
-      giftEnabled: g('giftEnabled') === 'on', giftUsd: dollars('giftUsd'),
+      giftEnabled: g('giftEnabled') === 'on', giftUsd: dollars('giftUsd'), giftDailyCapUsd: dollars('giftDailyCapUsd'),
       invitesEnabled: g('invitesEnabled') === 'on', inviteRewardUsd: dollars('inviteRewardUsd'), inviteMinTopupUsd: dollars('inviteMinTopupUsd'),
     }, 'Gift and invite settings');
   }
@@ -110,9 +110,12 @@ export async function pcnaibotAction(form, { verifyCode, creds }) {
   }
   if (kind === 'refund') {
     if (!codeOnce(form.get('code'), verifyCode)) return { bad: true, flash: 'Wrong or reused authenticator code. Nothing was refunded.' };
-    const r = await call(creds, '/admin/stars/refund', { payment_id: Number(g('payment_id')), note: g('note').slice(0, 200) }, 30000);
-    if (!r.ok) return { bad: true, flash: `Not refunded: ${r.error}.` };
-    return { flash: `Refunded ${r.data.stars} ⭐ to ${r.data.chatId}; ${usd(r.data.micro)} was taken off their balance, and they were told.` };
+    const r = await call(creds, '/admin/stars/refund', {
+      payment_id: Number(g('payment_id')), note: g('note').slice(0, 200), clawback: g('clawback') === 'on',
+    }, 30000);
+    if (!r.ok) return { bad: true, flash: `Not refunded: ${r.error}` };
+    return { flash: `Refunded ${r.data.stars} ⭐ to ${r.data.chatId}; ${usd(r.data.micro)} was taken off their balance, and they were told.`
+      + (r.data.clawback ? ` The invite reward of ${usd(r.data.clawback.micro)} was taken back from ${r.data.clawback.inviter}.` : '') };
   }
 
   // A hand credit.
@@ -225,6 +228,7 @@ async function giftsPage({ base, creds }) {
 
   return tiles([
       ['🎁 Gifts given', usd(sum('gift_micro_usd'))],
+      ['🎁 Given today (UTC)', `${usd(st.data.stats?.giftsTodayMicro ?? 0)}${s.giftDailyCapUsd > 0 ? ` of $${esc(s.giftDailyCapUsd)}` : ''}`],
       ['🤝 Rewards paid', usd(sum('referral_micro_usd'))],
       ['Invites waiting', esc(counts.pending || 0)],
       ['Invites paid', esc(counts.rewarded || 0)],
@@ -234,7 +238,8 @@ async function giftsPage({ base, creds }) {
       <form method="POST" action="${base}/pcnaibot/gifts" autocomplete="off">
         <input type="hidden" name="form" value="gifts">
         <p><label><input type="checkbox" name="giftEnabled"${s.giftEnabled ? ' checked' : ''}> Give every new user a welcome gift of</label>
-          <label>$ <input name="giftUsd" type="text" inputmode="decimal" value="${esc(s.giftUsd)}" style="width:6em"></label></p>
+          <label>$ <input name="giftUsd" type="text" inputmode="decimal" value="${esc(s.giftUsd)}" style="width:6em"></label>
+          <label>— at most $ <input name="giftDailyCapUsd" type="text" inputmode="decimal" value="${esc(s.giftDailyCapUsd ?? 0)}" style="width:6em"> a day in total (0 = no cap)</label></p>
         <p><label><input type="checkbox" name="invitesEnabled"${s.invitesEnabled ? ' checked' : ''}> Pay an inviter</label>
           <label>$ <input name="inviteRewardUsd" type="text" inputmode="decimal" value="${esc(s.inviteRewardUsd)}" style="width:6em"></label>
           <label>when the person they invited makes their first video after topping up at least
@@ -245,7 +250,10 @@ async function giftsPage({ base, creds }) {
     + note('The gift is a <code>gift</code> ledger row, given once per Telegram account when it first messages the bot — never again, even if the account comes back. '
       + 'The invite reward is a <code>referral</code> row for the inviter, paid once per invited person, only for a person new to the bot, never for yourself. '
       + '"Topped up" counts Stars, PCN and wPCN deposits minus Stars refunds — never the gift — so an account living on its gift cannot pay its inviter. '
-      + 'Set the top-up to $0 to pay on the first video alone. There are no daily or monthly caps. Each amount is at most $20.'))
+      + 'Set the top-up to $0 to pay on the first video alone. '
+      + 'The daily cap counts gifts given since 00:00 UTC; an account opened after it is reached gets no gift, ever, and you are told once that day. '
+      + 'Invite rewards have no cap. A Stars refund that would undo the top-up an invite reward was paid for is refused unless you take the reward back. '
+      + 'Each gift or reward is at most $20.'))
     + card('Invites', rf.ok ? tbl(['#', 'Inviter', 'Invited', 'State', 'Paid', 'Joined (UTC)', 'Paid (UTC)'],
         refs.map((r) => [esc(r.id), who(r.referrer_chat_id), who(r.referred_chat_id),
           r.status === 'rewarded' ? '<span class="ok">paid</span>' : r.status === 'void' ? `<span class="muted">void — ${esc(r.void_reason || '')}</span>` : 'waiting',
@@ -385,15 +393,20 @@ async function paymentsPage({ base, creds }) {
         : failed('Telegram\'s Stars report', t.error))
       + card('Every Stars payment', tbl(['When (UTC)', 'User', 'Stars', 'Credited', 'State', ''],
         (sr.data.payments || []).map((p) => [at(p.created_at), `<code>${esc(p.chat_id)}</code>`, `${esc(p.stars)} ⭐`, usd(p.micro_usd),
-          p.refunded_at ? `<span class="muted">refunded ${at(p.refunded_at)}${p.refund_note ? ` — ${esc(p.refund_note)}` : ''}</span>` : 'credited',
+          p.refunded_at ? `<span class="muted">refunded ${at(p.refunded_at)}${p.refund_note ? ` — ${esc(p.refund_note)}` : ''}</span>`
+            : p.refund_state === 'pending' ? `<span class="bad">refund pending since ${at(p.refund_started_at)} — Telegram did not answer; press Refund again</span>`
+            : 'credited',
           p.refunded_at ? '' : `<form method="POST" action="${base}/pcnaibot/payments" class="inline" autocomplete="off"
               onsubmit="return confirm('Refund ${esc(p.stars)} Stars and take ${usd(p.micro_usd)} off this user\\'s balance?')">
               <input type="hidden" name="form" value="refund"><input type="hidden" name="payment_id" value="${esc(p.id)}">
               <input name="note" type="text" placeholder="why" maxlength="200" style="width:9em">
+              <label class="muted" title="Only needed when this top-up paid someone an invite reward"><input type="checkbox" name="clawback"> take the invite reward back</label>
               <input name="code" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="authenticator" style="width:8em" required>
               <button type="submit">Refund</button></form>`]),
         'No Stars payments yet.')
-        + note('A refund gives the Stars back through Telegram and takes the credit off the user\'s balance. It is refused if the user has already spent it. '
+        + note('A refund takes the credit off the user\'s balance FIRST, then gives the Stars back through Telegram; if Telegram refuses, the credit is put back. '
+          + 'It is refused if the user has already spent it. It is also refused when this top-up is what earned the user\'s inviter an invite reward — '
+          + 'tick "take the invite reward back" to refund anyway and take that reward off the inviter. '
           + `Invoices: ${(sr.data.invoices || []).map((i) => `${esc(i.state)} ${esc(i.n)}`).join(', ') || 'none yet'}.`));
   }
 
