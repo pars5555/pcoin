@@ -34,7 +34,7 @@ import { jobsPage, loadJobs, EXPECTED } from './jobs.mjs';
 import { overviewPage } from './overview.mjs';
 import { dependenciesPage, loadDependencies } from './dependencies.mjs';
 import { reserveMovesPage, reserveMovesAction } from './reserve-moves.mjs';
-import { pcnaibotPage, pcnaibotAction } from './pcnaibot.mjs';
+import { pcnaibotPage, pcnaibotAction, PCNAIBOT_SECTIONS } from './pcnaibot.mjs';
 import { aiPage } from './ai.mjs';
 import { exchangesPage } from './exchanges.mjs';
 import { approvalsPage } from './approvals.mjs';
@@ -241,7 +241,10 @@ const NAV = [
                      ['keeper', '\u2696\uFE0F wPCN keeper'],
                      ['reserve-moves', '\u{1F6E1}\uFE0F Reserve moves'],
                      ['services/wpcnpay', '\u{1F4B3} wPCN payments'],
-                     ['pcnaibot', '\u{1F916} PcoinAiBot users'],
+                     ['pcnaibot', '\u{1F916} PcoinAiBot'],
+                     ['pcnaibot/chat', 'Chat agent', 'sub'],
+                     ['pcnaibot/studio', 'Pictures & video', 'sub'],
+                     ['pcnaibot/payments', 'Payments & Stars', 'sub'],
                      ['send', '\u{1F4E4} Send PCN (market-hot)'],
                      ['transfer', '\u{1F4B8} Move PCN']]],
   ['Network',       [['miners', '\u26CF\uFE0F Miners & pools'],
@@ -1036,9 +1039,13 @@ async function handle(req, res) {
     return send(res, 200, shell2('reserve-moves', 'Reserve moves', reserveMovesPage({ base: BASE, result })));
   }
 
-  // @PcoinAiBot's users and hand credits, through the bot's loopback admin API.
-  // A credit creates spendable money, so it takes the authenticator code, once.
-  if (sub === '/pcnaibot') {
+  // @PcoinAiBot, the picture & video studio: users and hand credits, and one sub-page each for the
+  // chat agent, pictures & video, and payments & Stars -- all through the bot's loopback admin API.
+  // Money (a credit, a Stars refund) takes the authenticator code, once.
+  if (sub === '/pcnaibot' || sub.startsWith('/pcnaibot/')) {
+    const section = sub === '/pcnaibot' ? '' : sub.slice('/pcnaibot/'.length);
+    const found = PCNAIBOT_SECTIONS.find(([slug]) => slug === section);
+    if (!found) return send(res, 404, shell2('pcnaibot', 'PcoinAiBot', '<div class="card"><p class="bad">No such PcoinAiBot page.</p></div>'));
     let result = null;
     if (req.method === 'POST') {
       const form = await readBody(req);
@@ -1046,8 +1053,9 @@ async function handle(req, res) {
       result = await pcnaibotAction(form, { verifyCode: (c) => checkTotp(c, cred && cred.totp), creds: upstreamCreds() });
     }
     const chat = url.searchParams.get('chat');
-    return send(res, 200, shell2('pcnaibot', 'PcoinAiBot users',
-      await pcnaibotPage({ base: BASE, creds: upstreamCreds(), result, chat: chat && /^-?\d+$/.test(chat) ? chat : null })));
+    return send(res, 200, shell2(section ? `pcnaibot/${section}` : 'pcnaibot', section ? `PcoinAiBot — ${found[1]}` : 'PcoinAiBot',
+      await pcnaibotPage({ base: BASE, creds: upstreamCreds(), result, section, query: url.searchParams,
+        chat: chat && /^-?\d+$/.test(chat) ? chat : null })));
   }
 
   if (sub === '/send') {

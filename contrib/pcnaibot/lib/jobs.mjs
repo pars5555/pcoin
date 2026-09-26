@@ -55,7 +55,7 @@ export function quoteSpec(offer, spec, marginE6) {
 
 // A new card replaces every open one of the chat. Returns the new row and the cards it replaced
 // (their messages are edited by sendCard).
-export function createProposal(db, chatId, spec, { priceMicro, apiModel }, now = nowSec()) {
+export function createProposal(db, chatId, spec, { priceMicro, apiModel }, { now = nowSec(), ttlSec = CARD_TTL_SEC } = {}) {
   return immediate(db, () => {
     const replaced = db.prepare("SELECT id, message_id FROM proposals WHERE chat_id = ? AND state = 'open'").all(chatId);
     if (replaced.length) {
@@ -67,7 +67,7 @@ export function createProposal(db, chatId, spec, { priceMicro, apiModel }, now =
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'open', ?, ?)`
     ).run(chatId, spec.kind, spec.model, apiModel, spec.prompt, spec.summary, spec.shape,
       spec.kind === 'video' ? spec.seconds : null, spec.kind === 'video' ? spec.resolution : null,
-      JSON.stringify(spec.sources), spec.newVersionOf ?? null, Number(priceMicro), now + CARD_TTL_SEC, now);
+      JSON.stringify(spec.sources), spec.newVersionOf ?? null, Number(priceMicro), now + ttlSec, now);
     return { proposal: db.prepare('SELECT * FROM proposals WHERE id = ?').get(r.lastInsertRowid), replaced };
   });
 }

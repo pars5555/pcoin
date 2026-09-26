@@ -30,13 +30,17 @@ import { WpcnService, isTxHash, STATE as WSTATE, humanMessage } from './lib/wpcn
 import { startAdminApi } from './lib/admin-api.mjs';
 import QRCode from 'qrcode';
 import { MEDIA_MODELS, MediaClient, mediaOffer, priceFor, usdToMicro, moneyLabel, videoDurations } from './lib/media.mjs';
-import { getSettings, saveSettings, settingsProblems, mediaChoices } from './lib/settings.mjs';
+import { getSettings, saveSettings, settingsProblems, mediaChoices, mergeSettingsInput, DEFAULT_SETTINGS } from './lib/settings.mjs';
 import {
   quoteSpec, createProposal, sendCard, setCardStatus, cancelProposal, expireCards, beginJob, refusalText,
   runImageJob, startVideoJob, pollVideos, redeliverSweep, sendOriginal, recoverAfterRestart,
   runningReservationIds, againSpec,
 } from './lib/jobs.mjs';
-import { chatTurn, chatGate, noteFor, appendHistory, testChatModel, priceLines, MESSAGE_MAX_CHARS } from './lib/studio.mjs';
+import { chatTurn, chatGate, noteFor, appendHistory, testChatModel, priceLines, buildRequest, DEFAULT_CHAT_PROMPT } from './lib/studio.mjs';
+import {
+  packages as starsPackages, packageButtonText, sendStarsInvoice, checkPreCheckout, creditStarsPayment,
+  expireInvoices, refundStarsPayment, starsReport, RefundRefused,
+} from './lib/stars.mjs';
 import { mdToHtml } from './lib/markdown.mjs';
 import { DraftStream } from './lib/drafts.mjs';
 
@@ -67,7 +71,11 @@ const oona = new OonaCodeClient(
 // The builder's client: the same key, which is the kind OonaCode serves its media models to.
 const media = new MediaClient(cfg.strOr('OONACODE_BASE', 'https://api.oonacode.oonak.ai'), cfg.str('OONACODE_KEY'));
 
-const MARGIN_E6 = parseScaled(String(cfg.num('MARGIN', 3.0)), 6);
+// EVERY STUDIO KNOB IS THE ADMIN'S (admin.pc.am → PcoinAiBot), read fresh on each use. The margin
+// lived in pcnaibot.conf before; that value is now only the default until the admin sets one.
+const SETTINGS_BASE = { margin: cfg.num('MARGIN', 3.0) };
+const settings = () => getSettings(db, SETTINGS_BASE);
+const marginE6 = () => parseScaled(String(settings().margin), 6);
 // The chat models the admin may choose from.
 const CHAT_MODEL_CHOICES = cfg.list('MODEL_ALLOWLIST');
 const ALLOWED_CHATS = new Set(cfg.intList('ALLOWLIST_CHAT_IDS'));
@@ -83,10 +91,6 @@ const RL_FLOOR = cfg.int('RATELIMIT_REMAINING_FLOOR', 30);
 const REGISTRY_MAX_AGE = cfg.int('REGISTRY_MAX_AGE_SECONDS', 21600);
 const WPCN_ENABLED = cfg.bool('WPCN_ENABLED', false);
 const EXPLORER_PUBLIC = cfg.strOr('EXPLORER_URL', 'https://explorer.pc.am');
-// The free chat's limits: per user per hour, and a daily budget for the whole bot after which only
-// people with a balance may chat. ~$0.0002 a message on mimo-v2.5, so 5,000 is about $1 a day.
-const CHAT_PER_HOUR = cfg.int('CHAT_PER_HOUR', 120);
-const CHAT_DAILY_BUDGET = cfg.int('CHAT_DAILY_BUDGET', 5000);
 // `users.model` is NOT NULL and no longer means anything: the admin picks the models.
 const USERS_MODEL_PLACEHOLDER = 'studio';
 
@@ -133,7 +137,7 @@ function currentOffer() {
 // The chat model's last health check (a tool call it must make), for /stats and the logs.
 let chatHealth = { model: null, ok: null, why: 'not checked yet', at: 0 };
 async function checkChatModel() {
-  const model = getSettings(db).chatModel;
+  const model = settings().chatModel;
   const r = await testChatModel(oona, model);
   chatHealth = { model, ok: r.ok, why: r.why ?? null, at: nowSec() };
   if (r.ok) log.info('chat model answers with a tool call', { model });
@@ -141,7 +145,7 @@ async function checkChatModel() {
 }
 
 const note = noteFor(db);
-const jobDeps = (draft = null) => ({ db, tg, media, marginE6: MARGIN_E6, note, draft });
+const jobDeps = (draft = null) => ({ db, tg, media, marginE6: marginE6(), note, draft });
 
 // ---------------------------------------------------------------------------
 // Users
@@ -186,7 +190,7 @@ const BACK_KEYBOARD = { inline_keyboard: [[{ text: '« Menu', callback_data: 'na
 const balanceLabel = (micro) => `$${escapeHtml(trimZeros(microUsdToString(micro, 4)))}`;
 
 function startScreen(u) {
-  const prices = priceLines(currentOffer(), getSettings(db), MARGIN_E6);
+  const prices = priceLines(currentOffer(), settings(), marginE6());
   return [
     '👋 <b>Hi! I make pictures 🎨 and short videos 🎬</b> — you pay in PCN.',
     '',
@@ -204,7 +208,7 @@ function startScreen(u) {
 }
 
 function helpScreen() {
-  const prices = priceLines(currentOffer(), getSettings(db), MARGIN_E6);
+  const prices = priceLines(currentOffer(), settings(), marginE6());
   return [
     '<b>How it works</b>',
     '',
@@ -410,16 +414,19 @@ async function showScreen(chatId, u, which) {
       });
       return null;
     case 'topup': {
-      if (!WPCN_ENABLED) return showScreen(chatId, u, 'topup_pcn');
-      await tg.sendMessage(chatId, '<b>How would you like to top up?</b>', {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: 'PCN — on the PCoin chain', callback_data: 'nav:topup_pcn' }],
-            [{ text: 'wPCN — on BNB Smart Chain', callback_data: 'nav:topup_wpcn' }],
-            [{ text: '« Menu', callback_data: 'nav:start' }],
-          ],
-        },
-      });
+      // Telegram Stars first -- paid in two taps, credited at once -- then the PCN rails.
+      const pk = starsPackages(settings());
+      const rows = pk.map((p) => [{ text: packageButtonText(p), callback_data: `st:${p.index}` }]);
+      rows.push([{ text: 'PCN — on the PCoin chain', callback_data: 'nav:topup_pcn' }]);
+      if (WPCN_ENABLED) rows.push([{ text: 'wPCN — on BNB Smart Chain', callback_data: 'nav:topup_wpcn' }]);
+      rows.push([{ text: '« Menu', callback_data: 'nav:start' }]);
+      await tg.sendMessage(chatId, [
+        `<b>Top up</b> · your balance is <b>${balanceLabel(u.balance_micro_usd)}</b>`,
+        '',
+        pk.length ? '⭐ <b>Telegram Stars</b> — pay inside Telegram, credited instantly:' : '',
+        pk.length ? '' : null,
+        '<b>PCN</b> — send PCN to your own address; credited after 3 confirmations.',
+      ].filter((l) => l !== null && l !== undefined).join('\n'), { reply_markup: { inline_keyboard: rows } });
       return null;
     }
     case 'topup_pcn': {
@@ -479,7 +486,9 @@ function ledgerLabel(l) {
   }
   if (l.kind === 'deposit_pcn') return 'PCN deposit';
   if (l.kind === 'deposit_wpcn') return 'wPCN deposit';
+  if (l.kind === 'deposit_stars') return `⭐ ${escapeHtml(String(l.note ?? 'Stars').replace(/ Telegram Stars$/, ''))} Stars`;
   if (l.kind === 'grant') return 'free grant';
+  if (String(l.idem_key ?? '').startsWith('stars-refund:')) return '⭐ Stars refund';
   return 'adjustment';
 }
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -582,13 +591,14 @@ async function sendAgentText(chatId, text, fallback) {
 // One free chat turn: the agent talks, and may propose a card.
 async function runChat(chatId, updateId, userContent) {
   const u = ensureUser(chatId);
+  const s = settings();
   const gate = chatGate(db, chatId, {
-    perHour: CHAT_PER_HOUR, dailyBudget: CHAT_DAILY_BUDGET, balanceMicro: u.balance_micro_usd,
+    perHour: s.chatPerHour, dailyBudget: s.chatDailyBudget, balanceMicro: u.balance_micro_usd,
     rateRemaining: oona.rateLimitRemaining, rlFloor: RL_FLOOR,
   });
   if (gate.refuse) { await tg.sendMessage(chatId, gate.refuse); return; }
 
-  const settings = getSettings(db);
+  const m = marginE6();
   const offer = currentOffer();
   const draft = new DraftStream(tg, chatId, draftIdFor(updateId), { canStop: false });
   await draft.push('<i>✍️ …</i>').catch(() => undefined);
@@ -596,13 +606,13 @@ async function runChat(chatId, updateId, userContent) {
   let r;
   const started = Date.now();
   try {
-    r = await chatTurn({ db, oona, settings, offer, marginE6: MARGIN_E6, balanceMicro: BigInt(u.balance_micro_usd) }, { chatId, userContent });
+    r = await chatTurn({ db, oona, settings: s, offer, marginE6: m, balanceMicro: BigInt(u.balance_micro_usd) }, { chatId, userContent });
   } catch (e) {
-    log.warn('chat turn failed', { chat: chatTag(chatId), model: settings.chatModel, ...errFields(e) });
+    log.warn('chat turn failed', { chat: chatTag(chatId), model: s.chatModel, ...errFields(e) });
     await tg.sendMessage(chatId, 'The assistant is unavailable for a moment — please try again shortly. Nothing is charged for chatting.');
     return;
   }
-  log.info('chat turn', { chat: chatTag(chatId), model: settings.chatModel, ms: Date.now() - started, card: !!r.spec, failed: r.failed ?? null });
+  log.info('chat turn', { chat: chatTag(chatId), model: s.chatModel, ms: Date.now() - started, card: !!r.spec, failed: r.failed ?? null });
 
   if (r.failed === 'max_tokens') {
     await tg.sendMessage(chatId, 'Sorry, I lost my thread — could you say that again?');
@@ -613,9 +623,9 @@ async function runChat(chatId, updateId, userContent) {
   let cardNote = null;
   if (r.spec) {
     let quote = null;
-    try { quote = quoteSpec(offer[r.spec.model], r.spec, MARGIN_E6); } catch (e) { log.warn('a proposal could not be priced', { chat: chatTag(chatId), ...errFields(e) }); }
+    try { quote = quoteSpec(offer[r.spec.model], r.spec, m); } catch (e) { log.warn('a proposal could not be priced', { chat: chatTag(chatId), ...errFields(e) }); }
     if (quote) {
-      const created = createProposal(db, chatId, r.spec, quote);
+      const created = createProposal(db, chatId, r.spec, quote, { ttlSec: s.cardTtlHours * 3600 });
       if (r.text) await sendAgentText(chatId, r.text);
       await sendCard(jobDeps(), created);
       const p = created.proposal;
@@ -638,7 +648,7 @@ async function runChat(chatId, updateId, userContent) {
 // ✅ on a card: everything up to the reservation is synchronous (lib/jobs.mjs beginJob), then the
 // job runs in the background.
 function confirmCard(chatId, updateId, proposalId) {
-  const b = beginJob(db, { chatId, proposalId, offer: currentOffer(), marginE6: MARGIN_E6 });
+  const b = beginJob(db, { chatId, proposalId, offer: currentOffer(), marginE6: marginE6() });
   if (b.ok) {
     note(chatId, `(The user pressed ✅ on card P${proposalId}; it is being made.)`);
     const work = b.proposal.kind === 'image'
@@ -664,24 +674,66 @@ function confirmCard(chatId, updateId, proposalId) {
 }
 
 async function againCard(chatId, itemId) {
-  const spec = againSpec(db, { chatId, itemId, settings: getSettings(db) });
+  const s = settings();
+  const spec = againSpec(db, { chatId, itemId, settings: s });
   if (!spec) { await tg.sendMessage(chatId, 'I cannot repeat that one — tell me what you would like instead.'); return; }
   const offer = currentOffer();
   let quote;
-  try { quote = quoteSpec(offer[spec.model], spec, MARGIN_E6); } catch {
+  try { quote = quoteSpec(offer[spec.model], spec, marginE6()); } catch {
     await tg.sendMessage(chatId, 'That is not available right now — please try again in a little while.');
     return;
   }
-  const created = createProposal(db, chatId, spec, quote);
+  const created = createProposal(db, chatId, spec, quote, { ttlSec: s.cardTtlHours * 3600 });
   await sendCard(jobDeps(), created);
   note(chatId, `(The user pressed Again on #${itemId}; card P${created.proposal.id} shown, ${moneyLabel(created.proposal.price_micro)}.)`);
+}
+
+// ---------------------------------------------------------------------------
+// Payments by Telegram Stars (lib/stars.mjs), and messages to the admins
+// ---------------------------------------------------------------------------
+
+// Telegram has taken the Stars. Credit once (keyed on Telegram's charge id), and say so. A credit
+// that cannot be made is an ERROR for the admins -- the user paid -- and the user is told it will
+// be sorted out, never that it failed silently.
+async function handleStarsPaid(chatId, sp) {
+  ensureUser(chatId);
+  let r;
+  try { r = creditStarsPayment(db, { chatId, sp }); } catch (e) { r = { refused: e.message }; }
+  if (r.credited) {
+    log.info('stars payment credited', { chat: chatTag(chatId), stars: r.stars, micro: Number(r.micro) });
+    return `✅ Paid <b>${r.stars} ⭐</b> — <b>${moneyLabel(r.micro)}</b> added. Your balance is <b>${balanceLabel(r.balance)}</b>.`;
+  }
+  if (r.duplicate) return `That payment was already credited. Your balance is <b>${balanceLabel(r.balance)}</b>.`;
+  log.error('STARS PAYMENT NOT CREDITED -- the user paid; credit or refund by hand', {
+    chat: chatTag(chatId), stars: sp?.total_amount ?? null, charge: String(sp?.telegram_payment_charge_id ?? '').slice(0, 24), why: r.refused,
+  });
+  for (const a of ADMIN_CHATS) {
+    tg.sendMessage(a, `⚠️ A Stars payment of ${escapeHtml(String(sp?.total_amount ?? '?'))} ⭐ from chat ${chatId} could not be credited: ${escapeHtml(String(r.refused))}. Credit or refund it on admin.pc.am → PcoinAiBot → Payments.`)
+      .catch(() => undefined);
+  }
+  return 'Your payment arrived, but it could not be added to your balance automatically. The team has been told and will sort it out — nothing is lost.';
+}
+
+// A message that starts with SUPPORT (the /paysupport text asks for it) goes to the admins.
+async function relaySupport(chatId, msg, text) {
+  const who = (await telegramNames([chatId]).catch(() => ({})))[chatId] ?? String(chatId);
+  const u = ensureUser(chatId);
+  let told = 0;
+  for (const a of ADMIN_CHATS) {
+    const r = await tg.sendMessage(a, `🆘 <b>Support</b> from ${escapeHtml(who)} (<code>${chatId}</code>, balance ${balanceLabel(u.balance_micro_usd)}):\n\n${escapeHtml(text.slice(0, 3000))}`).catch(() => ({ ok: false }));
+    if (r.ok) told++;
+  }
+  log.info('support message relayed', { chat: chatTag(chatId), admins: told });
+  return told
+    ? 'Thank you — your message was passed to the people who run this bot. They will get back to you.'
+    : 'Your message could not be passed on just now. Please try again in a little while.';
 }
 
 // ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
 const COMMANDS = new Set([
-  '/start', '/menu', '/help', '/models', '/model', '/balance', '/topup',
+  '/start', '/menu', '/help', '/models', '/model', '/balance', '/topup', '/paysupport',
   '/pcn', '/topup_pcn', '/wpcn', '/topup_wpcn', '/clear', '/stats', '/stop',
 ]);
 
@@ -693,6 +745,10 @@ async function handleMessage(msg) {
   if (msg.from?.is_bot) return;                          // never answer a bot
   if (msg.is_automatic_forward) return;                  // nor our own announcements
   const chatId = chat.id;
+
+  // A STARS PAYMENT, before anything else -- the allow-list, commands, the agent. Telegram has
+  // already taken the Stars; the credit must happen whatever else is true.
+  if (msg.successful_payment) return handleStarsPaid(chatId, msg.successful_payment);
 
   const pictures = collectPictures(msg);
   const text = (typeof msg.text === 'string' ? msg.text : (typeof msg.caption === 'string' ? msg.caption : '')).trim();
@@ -742,6 +798,8 @@ async function handleMessage(msg) {
     case '/models':
     case '/model':
       return 'There is no model to choose any more — just tell me what picture or video you want, and I will show you a card with its price.';
+    case '/paysupport':
+      return escapeHtml(settings().paySupportText);
     case '/stop':
       return 'Nothing to stop: a picture or video is made only after you press ✅, and then it runs to the end.';
     case '/pcn':
@@ -769,6 +827,10 @@ async function handleMessage(msg) {
     return 'That command does not exist here. Try /help.';
   }
 
+  // A message to the people who run the bot (the /paysupport text says how): passed to the admin
+  // chats, never to the agent.
+  if (/^support\b/i.test(text)) return relaySupport(chatId, msg, text);
+
   // ---- the studio ----
   const notes = [];
   const replyTo = itemFromReply(chatId, msg);
@@ -786,8 +848,9 @@ async function handleMessage(msg) {
     }
     return `Got it — that is #${uploaded.join(', #')}. Tell me what to do with it: change something in it, or bring it to life as a video.`;
   }
-  if (text.length > MESSAGE_MAX_CHARS) {
-    return `That is a long message — please keep it under ${MESSAGE_MAX_CHARS} characters.`;
+  const maxChars = settings().chatMaxChars;
+  if (text.length > maxChars) {
+    return `That is a long message — please keep it under ${maxChars} characters.`;
   }
 
   const queued = enqueueChat(chatId, () => runChat(chatId, msg.__update_id, [...notes, text].join('\n')));
@@ -799,7 +862,7 @@ async function handleMessage(msg) {
 function statsText() {
   const st = poolStats(db);
   const dep = db.prepare('SELECT status, COUNT(*) n FROM pcn_deposits GROUP BY status').all();
-  const s = getSettings(db);
+  const s = settings();
   const offer = currentOffer();
   const running = db.prepare("SELECT kind, COUNT(*) n FROM media_jobs WHERE state = 'running' GROUP BY kind").all();
   const openCards = db.prepare("SELECT COUNT(*) n FROM proposals WHERE state = 'open'").get().n;
@@ -815,7 +878,7 @@ function statsText() {
     `picture: ${escapeHtml(s.pictureModel)} ${offer[s.pictureModel] ? 'on sale' : 'NOT ON SALE'}`,
     `video: ${escapeHtml(s.videoModel)} ${s.videoSeconds} s ${escapeHtml(s.videoResolution)} ${offer[s.videoModel] ? 'on sale' : 'NOT ON SALE'}`,
     `running: ${running.length ? running.map((r) => `${r.kind}=${r.n}`).join(' ') : 'nothing'} · open cards: ${openCards}`,
-    `chat messages today: ${calls} of ${CHAT_DAILY_BUDGET} free`,
+    `chat messages today: ${calls} of ${s.chatDailyBudget} free`,
   ].join(NEWLINE);
 }
 
@@ -829,13 +892,13 @@ function studioChoices() {
     chat: CHAT_MODEL_CHOICES,
     picture: mediaChoices(offer, 'image').map((id) => ({
       id, label: MEDIA_MODELS[id].label,
-      price: label(usdToMicro(priceFor(offer[id], { kind: 'image' }).usd, MARGIN_E6)),
+      price: label(usdToMicro(priceFor(offer[id], { kind: 'image' }).usd, marginE6())),
     })),
     video: mediaChoices(offer, 'video').map((id) => ({
       id, label: MEDIA_MODELS[id].label,
       durations: videoDurations(offer[id]),
       resolutions: Object.keys(offer[id].t2v.pricing.tiers).map((res) => ({
-        id: res, perSecond: label(usdToMicro(priceFor(offer[id], { kind: 'video', seconds: 1, resolution: res }).usd, MARGIN_E6)),
+        id: res, perSecond: label(usdToMicro(priceFor(offer[id], { kind: 'video', seconds: 1, resolution: res }).usd, marginE6())),
       })),
       fromPhoto: !!offer[id].i2v,
     })),
@@ -845,16 +908,11 @@ function studioChoices() {
 }
 
 async function saveStudioSettings(input) {
-  const cur = getSettings(db);
-  const next = {
-    ...cur,
-    ...(typeof input.chatModel === 'string' ? { chatModel: input.chatModel } : {}),
-    ...(typeof input.pictureModel === 'string' ? { pictureModel: input.pictureModel } : {}),
-    ...(typeof input.videoModel === 'string' ? { videoModel: input.videoModel } : {}),
-    ...(input.videoSeconds !== undefined ? { videoSeconds: Number(input.videoSeconds) } : {}),
-    ...(typeof input.videoResolution === 'string' ? { videoResolution: input.videoResolution } : {}),
-    ...(typeof input.videoEditModel === 'string' ? { videoEditModel: input.videoEditModel } : {}),
-  };
+  const cur = settings();
+  const next = mergeSettingsInput(cur, input && typeof input === 'object' ? input : {});
+  // Instructions saved unchanged from the built-in text are stored as "use the built-in ones", so
+  // they keep following the code's version.
+  if (next.chatPrompt.trim() === DEFAULT_CHAT_PROMPT.trim()) next.chatPrompt = '';
   const problems = settingsProblems(next, { offer: currentOffer(), chatChoices: CHAT_MODEL_CHOICES });
   if (problems.length) return { ok: false, problems };
   // A new chat model must actually call the tool, or the studio could never propose anything.
@@ -863,9 +921,73 @@ async function saveStudioSettings(input) {
     if (t.ok !== true) return { ok: false, problems: [`${next.chatModel} did not propose anything when tested (${t.why ?? 'no tool call'}); kept ${cur.chatModel}`] };
   }
   const saved = saveSettings(db, next);
-  log.info('studio settings changed', { from: JSON.stringify(cur), to: JSON.stringify(saved) });
+  // What changed, by name (the instructions can be long: their length, not their text).
+  const changed = Object.keys(saved).filter((k) => JSON.stringify(saved[k]) !== JSON.stringify(cur[k]))
+    .map((k) => (k === 'chatPrompt' ? `chatPrompt(${String(saved[k]).length} chars)` : `${k}=${JSON.stringify(saved[k])}`));
+  log.info('studio settings changed', { changed: changed.join(' ') || '(nothing)' });
   if (next.chatModel !== cur.chatModel) chatHealth = { model: next.chatModel, ok: true, why: null, at: nowSec() };
   return { ok: true, settings: saved };
+}
+
+// Everything the admin pages show about the studio.
+function studioGet() {
+  const s = settings();
+  const today = new Date().toISOString().slice(0, 10);
+  const count = (sql, ...a) => db.prepare(sql).get(...a).n;
+  const since = nowSec() - 86400;
+  return {
+    settings: s,
+    defaults: { ...DEFAULT_SETTINGS, margin: SETTINGS_BASE.margin, chatPrompt: DEFAULT_CHAT_PROMPT },
+    choices: studioChoices(),
+    chatHealth,
+    stats: {
+      chatToday: kvGetJson(db, `studio:chatcalls:${today}`)?.n ?? 0,
+      cardsDay: count('SELECT COUNT(*) n FROM proposals WHERE created_at > ?', since),
+      openCards: count("SELECT COUNT(*) n FROM proposals WHERE state = 'open'"),
+      picturesDay: count("SELECT COUNT(*) n FROM items WHERE kind = 'image' AND job_id IS NOT NULL AND created_at > ?", since),
+      videosDay: count("SELECT COUNT(*) n FROM items WHERE kind = 'video' AND created_at > ?", since),
+      running: count("SELECT COUNT(*) n FROM media_jobs WHERE state = 'running'"),
+      failedDay: count("SELECT COUNT(*) n FROM media_jobs WHERE state IN ('failed','unknown') AND created_at > ?", since),
+      spentDay: db.prepare("SELECT COALESCE(-SUM(delta_micro_usd), 0) n FROM ledger WHERE kind = 'ai_turn' AND created_at > ?").get(since).n,
+    },
+  };
+}
+
+// What the chat model would receive right now for this user and message -- built by the SAME code
+// a real turn uses (lib/studio.mjs buildRequest), so the preview cannot drift from the truth.
+function studioPreview({ chatId, text }) {
+  const u = db.prepare('SELECT * FROM users WHERE chat_id = ?').get(chatId);
+  if (!u) return { error: `no user ${chatId}` };
+  const { body } = buildRequest({ db, settings: settings(), offer: currentOffer(), marginE6: marginE6(), balanceMicro: BigInt(u.balance_micro_usd) },
+    { chatId, userContent: String(text || 'make me a picture of a cat') });
+  return { model: body.model, system: body.system, messages: body.messages };
+}
+
+// The latest cards and what became of them.
+function studioJobs(limit = 50) {
+  return db.prepare(
+    `SELECT p.id, p.chat_id, p.kind, p.model, p.api_model, p.shape, p.seconds, p.resolution, p.summary, p.price_micro,
+            p.state, p.created_at, p.decided_at, j.state AS job_state, j.credits, j.error, i.id AS item_id
+       FROM proposals p
+       LEFT JOIN media_jobs j ON j.proposal_id = p.id
+       LEFT JOIN items i ON i.proposal_id = p.id AND i.kind IN ('image','video')
+      ORDER BY p.id DESC LIMIT ?`
+  ).all(Math.min(200, Math.max(1, Number(limit) || 50)));
+}
+
+// Stars, for the Payments page: our books, and Telegram's.
+async function starsAdmin() {
+  const payments = db.prepare(
+    `SELECT id, chat_id, stars, micro_usd, created_at, refunded_at, refund_note, charge_id FROM stars_payments ORDER BY id DESC LIMIT 200`
+  ).all();
+  const totals = db.prepare(
+    `SELECT COUNT(*) n, COALESCE(SUM(stars),0) stars, COALESCE(SUM(micro_usd),0) micro,
+            COALESCE(SUM(CASE WHEN refunded_at IS NOT NULL THEN stars END),0) refunded_stars
+       FROM stars_payments`
+  ).get();
+  const invoices = db.prepare("SELECT state, COUNT(*) n FROM stars_invoices GROUP BY state").all();
+  const telegram = await starsReport(tg).catch((e) => ({ ok: false, error: e.message }));
+  return { payments, totals, invoices, telegram, packages: starsPackages(settings()) };
 }
 
 // ---------------------------------------------------------------------------
@@ -896,6 +1018,8 @@ const PUBLIC_COMMANDS = [
   { command: 'topup',   description: 'Add credit with PCN' },
   { command: 'clear',   description: 'New chat — forget the conversation' },
   { command: 'help',    description: 'How it works' },
+  // Telegram asks every bot that takes Stars to answer /paysupport.
+  { command: 'paysupport', description: 'Help with a payment' },
 ];
 
 const ADMIN_EXTRA = [
@@ -1013,8 +1137,24 @@ async function main() {
     port: cfg.int('ADMIN_API_PORT', 8797),
     names: telegramNames,
     studio: {
-      get: () => ({ settings: getSettings(db), choices: studioChoices(), chatHealth }),
+      get: studioGet,
       save: saveStudioSettings,
+      preview: studioPreview,
+      jobs: studioJobs,
+      test: async (model) => testChatModel(oona, model),
+    },
+    stars: {
+      get: starsAdmin,
+      refund: async ({ paymentId, note: why }) => {
+        try {
+          const r = await refundStarsPayment({ db, tg }, { paymentId, note: why });
+          await tg.sendMessage(r.chatId, `⭐ ${r.stars} Stars were refunded to you, and ${moneyLabel(r.micro)} was taken off your balance.`).catch(() => undefined);
+          return { ok: true, ...r, micro: Number(r.micro) };
+        } catch (e) {
+          if (e instanceof RefundRefused) return { ok: false, error: e.message };
+          throw e;
+        }
+      },
     },
   });
 
@@ -1030,6 +1170,7 @@ async function main() {
   setInterval(() => {
     try {
       ageOutReservations(db, { olderThanMinutes: cfg.int('RESERVATION_AGE_OUT_MINUTES', 60) });
+      expireInvoices(db);
       expireCards(db);
     } catch (e) { log.error('age-out failed', errFields(e)); }
   }, 300000);
@@ -1085,6 +1226,20 @@ async function main() {
       // A stop press on a draft from the old streaming answers. Nothing streams now.
       if (up.stopped_message_generation) continue;
 
+      // TELEGRAM'S LAST CHECK BEFORE IT TAKES THE STARS, answered within 10 seconds: a synchronous
+      // look-up against the invoice we wrote (lib/stars.mjs), then the answer. Never queued behind
+      // other work.
+      if (up.pre_checkout_query) {
+        const q = up.pre_checkout_query;
+        let verdict;
+        try { verdict = checkPreCheckout(db, q); } catch (e) { log.error('pre-checkout check threw', errFields(e)); verdict = { ok: false, error: 'Something went wrong — please try again.' }; }
+        const a = await tg.call('answerPreCheckoutQuery', verdict.ok
+          ? { pre_checkout_query_id: q.id, ok: true }
+          : { pre_checkout_query_id: q.id, ok: false, error_message: verdict.error });
+        log.info('stars pre-checkout', { chat: chatTag(q.from?.id ?? 0), stars: q.total_amount, ok: verdict.ok, why: verdict.error ?? '-', answered: a.ok });
+        continue;
+      }
+
       // Buttons. Answer the callback FIRST in spirit -- an unanswered callback leaves a spinner on
       // the button for a minute -- so anything slow runs in the background.
       if (up.callback_query) {
@@ -1098,6 +1253,13 @@ async function main() {
           } else if (/^sc:\d+$/.test(data)) {
             ensureUser(cid);
             toast = confirmCard(cid, up.update_id, Number(data.slice(3)));
+          } else if (/^st:\d+$/.test(data)) {
+            // A Stars package: write the invoice, send it.
+            ensureUser(cid);
+            toast = 'Opening the payment…';
+            track(sendStarsInvoice({ db, tg }, { chatId: cid, settings: settings(), index: Number(data.slice(3)) })
+              .then((r) => (r.ok ? null : tg.sendMessage(cid, r.text)))
+              .catch((e) => log.error('stars invoice threw', errFields(e))));
           } else if (/^sx:\d+$/.test(data)) {
             const id = Number(data.slice(3));
             if (cancelProposal(db, cid, id)) {

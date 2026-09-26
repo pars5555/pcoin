@@ -298,7 +298,9 @@ export class TelegramClient {
       // arrive. That is how the /models keyboard shipped DEAD: callback_data
       // was set, no callback_query was requested, and tapping a model did
       // nothing with no sign of why.
-      allowed_updates: ['message', 'callback_query', 'stopped_message_generation'],
+      // `pre_checkout_query` (2026-09-26): Telegram Stars. Without it a payment is never asked
+      // about, times out after 10 s, and fails for the user -- silently, from our side.
+      allowed_updates: ['message', 'callback_query', 'stopped_message_generation', 'pre_checkout_query'],
     }, { timeoutMs: (timeout + 15) * 1000 });
   }
 

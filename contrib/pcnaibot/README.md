@@ -15,6 +15,13 @@ happyhorse-1.1). Pictures can be changed (the picture model takes the old one as
 "change" makes a new version until OonaCode serves a video-edit model. The earlier chat-model
 product (a model chooser, the agentic API with sandboxes and files) was retired that day.
 
+**Top-ups:** Telegram Stars (webbuilderbot's packages, $5 = 250 ⭐ by default; `lib/stars.mjs`,
+credited once per Telegram charge id, refundable from admin while unspent) or PCN / wPCN as before.
+**Admin:** admin.pc.am → PcoinAiBot has four sections — Overview & users, Chat agent (model,
+editable instructions, limits, a preview built by the same code as a real turn), Pictures & video
+(models, video length/resolution, margin, card lifetime, latest cards) and Payments & Stars
+(packages, Telegram's books and hold, refunds, the /paysupport text).
+
 It is the **seventh PCN rail**. Everything in §7 of the build brief has already
 been shipped wrong by a real integration here and cost real money to find, and
 four of those were shipped wrong by *all four* rails that existed at the time —
@@ -56,7 +63,7 @@ watch.mjs                the deposit watcher, a SEPARATE process on a timer
 Dockerfile               one image, used by both processes
 migrate.mjs              explicit versioned migrations + the structural proof
 heartbeat-check.sh       staleness check for both heartbeats; RUNS AS ROOT
-migrations/              001_init .. 013_studio, explicit and versioned
+migrations/              001_init .. 014_stars, explicit and versioned
 systemd/                 units + timers + logrotate; systemd/docker/ for the container
 test/                    money path, billing path, studio (cards, jobs, chat agent), Markdown
 lib/
@@ -78,7 +85,8 @@ lib/
   studio.mjs             the free chat agent: prompt, `propose` tool, checks, history, limits
   jobs.mjs               cards, the ✅ that pays, picture/video jobs, delivery, restart recovery
   media.mjs              the builder: OonaCode's image/video models, prices, client
-  settings.mjs           the admin's model choices (kv 'studio:settings')
+  settings.mjs           every admin setting (kv 'studio:settings'), validated
+  stars.mjs              Telegram Stars: invoices, pre-checkout, credit, refunds, Telegram's books
   drafts.mjs             live status lines (sendMessageDraft)
   markdown.mjs           the agent's Markdown as Telegram HTML
 ```
@@ -195,7 +203,7 @@ the owner from a monitoring-setup step.
 ## Testing
 
 ```sh
-node --test test/          # 137 tests, no network
+node --test test/          # 149 tests, no network
 ```
 
 They need `better-sqlite3`, which has no Windows/node-24 prebuild — run them in the

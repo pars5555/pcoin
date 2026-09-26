@@ -59,7 +59,8 @@ export function listUsers(db) {
   return db.prepare(
     `SELECT u.chat_id, u.balance_micro_usd, u.reserved_micro_usd, u.created_at,
             COALESCE(SUM(CASE WHEN l.kind = 'ai_turn' THEN -l.delta_micro_usd END), 0) AS spent_micro_usd,
-            COALESCE(SUM(CASE WHEN l.kind IN ('deposit_pcn','deposit_wpcn') THEN l.delta_micro_usd END), 0) AS deposited_micro_usd,
+            COALESCE(SUM(CASE WHEN l.kind IN ('deposit_pcn','deposit_wpcn','deposit_stars') THEN l.delta_micro_usd END), 0) AS deposited_micro_usd,
+            COALESCE(SUM(CASE WHEN l.kind = 'deposit_stars' THEN l.delta_micro_usd END), 0) AS stars_micro_usd,
             COALESCE(SUM(CASE WHEN l.kind = 'adjust' THEN l.delta_micro_usd END), 0) AS credited_micro_usd,
             COUNT(CASE WHEN l.kind = 'ai_turn' THEN 1 END) AS turns,
             MAX(CASE WHEN l.kind = 'ai_turn' THEN l.created_at END) AS last_turn_at
@@ -89,18 +90,19 @@ const json = (res, code, body) => {
   res.end(JSON.stringify(body));
 };
 
+// 64 KB: the chat agent's instructions travel through here (at most 20,000 characters).
 const readJson = (req) => new Promise((resolve, reject) => {
   let n = 0; const parts = [];
-  req.on('data', (c) => { n += c.length; if (n > 16384) { reject(new Error('body too large')); req.destroy(); } else parts.push(c); });
+  req.on('data', (c) => { n += c.length; if (n > 65536) { reject(new Error('body too large')); req.destroy(); } else parts.push(c); });
   req.on('end', () => { try { resolve(JSON.parse(Buffer.concat(parts).toString('utf8') || '{}')); } catch (e) { reject(e); } });
   req.on('error', reject);
 });
 
 // `names(chatIds)` resolves Telegram display names; best effort, never fatal.
-// `studio` = { get(), save(input) }: the chat / picture / video models the admin chooses
+// `studio` = { get, save, preview, jobs, test }: every setting of the chat agent and the builder
 // (owner, 2026-09-26). The bot validates a save against what OonaCode serves, and tests a new chat
-// model live before accepting it.
-export function startAdminApi({ db, token, port, host = '127.0.0.1', names = async () => ({}), studio = null }) {
+// model live before accepting it. `stars` = { get, refund }: Telegram Stars payments.
+export function startAdminApi({ db, token, port, host = '127.0.0.1', names = async () => ({}), studio = null, stars = null }) {
   if (!token || token.length < 32) {
     log.warn('admin API off: ADMIN_API_TOKEN is unset or shorter than 32 characters');
     return null;
@@ -141,6 +143,30 @@ export function startAdminApi({ db, token, port, host = '127.0.0.1', names = asy
         const r = await studio.save(b && typeof b === 'object' ? b : {});
         log.info('admin settings', { ok: r.ok, problems: r.ok ? '-' : r.problems.join(' | ') });
         return json(res, r.ok ? 200 : 422, r.ok ? r : { error: r.problems.join('; '), problems: r.problems });
+      }
+      if (studio && req.method === 'GET' && url.pathname === '/admin/preview') {
+        const chatId = Number(url.searchParams.get('chat_id'));
+        if (!Number.isSafeInteger(chatId)) return json(res, 400, { error: 'chat_id required' });
+        const r = studio.preview({ chatId, text: String(url.searchParams.get('text') || '').slice(0, 2000) });
+        return json(res, r.error ? 404 : 200, r);
+      }
+      if (studio && req.method === 'GET' && url.pathname === '/admin/jobs') {
+        return json(res, 200, { jobs: studio.jobs(Number(url.searchParams.get('limit') || 50)) });
+      }
+      if (studio && req.method === 'POST' && url.pathname === '/admin/test-chat') {
+        const b = await readJson(req);
+        return json(res, 200, await studio.test(String(b?.model || '')));
+      }
+      if (stars && req.method === 'GET' && url.pathname === '/admin/stars') {
+        return json(res, 200, await stars.get());
+      }
+      if (stars && req.method === 'POST' && url.pathname === '/admin/stars/refund') {
+        const b = await readJson(req);
+        const paymentId = Number(b?.payment_id);
+        if (!Number.isSafeInteger(paymentId)) return json(res, 400, { error: 'payment_id required' });
+        const r = await stars.refund({ paymentId, note: String(b?.note || '').slice(0, 200) });
+        log.info('admin stars refund', { payment: paymentId, ok: r.ok, err: r.error ?? '-' });
+        return json(res, r.ok ? 200 : 422, r);
       }
       return json(res, 404, { error: 'not found' });
     } catch (e) {

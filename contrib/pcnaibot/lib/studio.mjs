@@ -40,10 +40,10 @@ export function normalizeHistory(msgs, max = HISTORY_MAX) {
   return trimmed;
 }
 
-export function loadHistory(db, chatId) {
+export function loadHistory(db, chatId, max = HISTORY_MAX) {
   const row = db.prepare('SELECT history FROM conversations WHERE chat_id = ?').get(chatId);
   if (!row) return [];
-  try { return normalizeHistory(JSON.parse(row.history)); } catch { return []; }
+  try { return normalizeHistory(JSON.parse(row.history), max); } catch { return []; }
 }
 
 // Re-read and append in ONE synchronous call: a record written while the model was thinking (a
@@ -54,7 +54,7 @@ export function appendHistory(db, chatId, entries) {
   if (row) { try { cur = JSON.parse(row.history); } catch { cur = []; } }
   // Records may start a conversation (an assistant line first); normalizeHistory drops it only from
   // what is SENT, so keep the raw list here and trim generously.
-  const merged = [...(Array.isArray(cur) ? cur : []), ...entries].slice(-HISTORY_MAX * 2);
+  const merged = [...(Array.isArray(cur) ? cur : []), ...entries].slice(-200);
   db.prepare(`INSERT INTO conversations (chat_id, history, updated_at) VALUES (?,?,?)
               ON CONFLICT(chat_id) DO UPDATE SET history=excluded.history, updated_at=excluded.updated_at`)
     .run(chatId, JSON.stringify(merged), nowSec());
@@ -125,36 +125,47 @@ export function priceLines(offer, settings, marginE6) {
   return out;
 }
 
-export function systemPrompt({ items = [], openCard = null, prices = [], balanceMicro = 0n, pictureInputs = 1, latest = '', now = nowSec() }) {
+// THE INSTRUCTIONS -- the part the admin may edit (admin.pc.am → PcoinAiBot → Chat agent). Facts
+// that change (prices, balance, the user's items, the open card, the language of this message) are
+// NOT here: systemPrompt() appends them after whatever the admin wrote, so an edit can never make
+// the agent quote a stale price or lose track of the user's pictures.
+export const DEFAULT_CHAT_PROMPT = [
+  'You are the assistant of a Telegram bot that makes AI pictures and short AI videos for its users. '
+  + 'You only help with that: planning, making and changing pictures and videos. If the user asks for anything else '
+  + '(questions, chat, facts, code, other services), say briefly and kindly that you only make pictures and videos, and offer to make one.',
+  '',
+  "LANGUAGE: always reply in the language of the user's latest message. The card `summary` is in that same language. The generator `prompt` is always in English.",
+  '',
+  'HOW IT WORKS',
+  '- Understand what the user wants. Ask at most one or two short questions, and only when something important is unclear '
+  + "(for example picture or video, when they did not say). Otherwise choose good details yourself.",
+  '- Then call the `propose` tool. The bot shows the user a card with the price and two buttons, ✅ Make it and ✖ Cancel. '
+  + "Only the user's ✅ makes it and charges them. You never make anything yourself, and never say that something is made, being made or done.",
+  '- After proposing, write at most one short sentence, e.g. "Here is the card — press ✅ to make it, or tell me what to change." Do not repeat the card or the price.',
+  '- One card at a time. If the user wants changes before pressing ✅, propose again; the new card replaces the old one.',
+  '- For several variations, propose one; after it is made the user can press 🔁 Again or ask for another.',
+  '- Write a rich, specific English prompt: subject, setting, style, lighting, composition, mood. Text that must appear in the picture goes in the prompt in quotes, exactly as the user wrote it.',
+  '',
+  'CHANGING PICTURES AND VIDEOS',
+  '- The user\'s pictures, videos and photos are listed below by number. To change a picture, propose kind "image" with sources [its number] '
+  + 'and a prompt that says exactly what to change and what to keep. Several pictures can be combined (the limit is given below).',
+  '- To make a video from a picture (animate it), propose kind "video" with sources [the picture\'s number].',
+  '- A video cannot be edited frame by frame yet. To change a video, propose kind "video" with sources [the video\'s number]: '
+  + 'the bot makes a NEW version with your corrected prompt, from the same starting picture if it had one. Tell the user it will be a new version.',
+  '- "It", "this" or "the last one" usually means the newest item, or the one the user replies to.',
+  '',
+  'Pictures take under a minute; videos 1–5 minutes. Money is charged only when the user presses ✅. Below the price the user still gets the card and can top up with the ➕ Top up button.',
+  '',
+  'Lines in parentheses in the conversation, such as "(Picture #12 was made and sent: …)", are the bot\'s records of what happened. Never write such lines yourself.',
+].join('\n');
+
+export function systemPrompt({ instructions = DEFAULT_CHAT_PROMPT, items = [], openCard = null, prices = [], balanceMicro = 0n, pictureInputs = 1, latest = '', now = nowSec() }) {
   return [
-    'You are the assistant of a Telegram bot that makes AI pictures and short AI videos for its users. '
-    + 'You only help with that: planning, making and changing pictures and videos. If the user asks for anything else '
-    + '(questions, chat, facts, code, other services), say briefly and kindly that you only make pictures and videos, and offer to make one.',
+    String(instructions || DEFAULT_CHAT_PROMPT).trim(),
     '',
-    "LANGUAGE: always reply in the language of the user's latest message. The card `summary` is in that same language. The generator `prompt` is always in English.",
-    '',
-    'HOW IT WORKS',
-    '- Understand what the user wants. Ask at most one or two short questions, and only when something important is unclear '
-    + "(for example picture or video, when they did not say). Otherwise choose good details yourself.",
-    '- Then call the `propose` tool. The bot shows the user a card with the price and two buttons, ✅ Make it and ✖ Cancel. '
-    + "Only the user's ✅ makes it and charges them. You never make anything yourself, and never say that something is made, being made or done.",
-    '- After proposing, write at most one short sentence, e.g. "Here is the card — press ✅ to make it, or tell me what to change." Do not repeat the card or the price.',
-    '- One card at a time. If the user wants changes before pressing ✅, propose again; the new card replaces the old one.',
-    '- For several variations, propose one; after it is made the user can press 🔁 Again or ask for another.',
-    '- Write a rich, specific English prompt: subject, setting, style, lighting, composition, mood. Text that must appear in the picture goes in the prompt in quotes, exactly as the user wrote it.',
-    '',
-    'CHANGING PICTURES AND VIDEOS',
-    '- The user\'s pictures, videos and photos are listed below by number. To change a picture, propose kind "image" with sources [its number] '
-    + `and a prompt that says exactly what to change and what to keep. Up to ${pictureInputs} pictures can be combined.`,
-    '- To make a video from a picture (animate it), propose kind "video" with sources [the picture\'s number].',
-    '- A video cannot be edited frame by frame yet. To change a video, propose kind "video" with sources [the video\'s number]: '
-    + 'the bot makes a NEW version with your corrected prompt, from the same starting picture if it had one. Tell the user it will be a new version.',
-    '- "It", "this" or "the last one" usually means the newest item, or the one the user replies to.',
-    '',
-    `PRICES (charged only on ✅): ${prices.join('; ')}. Pictures take under a minute; videos 1–5 minutes. `
-    + `The user's balance is ${balanceLabel(balanceMicro)}; below the price they still get the card and can top up with the ➕ Top up button.`,
-    '',
-    'Lines in parentheses in the conversation, such as "(Picture #12 was made and sent: …)", are the bot\'s records of what happened. Never write such lines yourself.',
+    '==== CONTEXT (written by the bot for this message; always current) ====',
+    `PRICES: ${prices.join('; ')}.`,
+    `The user's balance is ${balanceLabel(balanceMicro)}. Up to ${pictureInputs} pictures can be combined in one change.`,
     '',
     "THE USER'S ITEMS, newest first:",
     items.length ? items.map((it) => itemLine(it, now)).join('\n') : '(none yet)',
@@ -286,13 +297,16 @@ function readReply(resp) {
 // Talk once. Returns { text, spec, failed }: `spec` is a validated job for a card, or null.
 // Sends nothing and stores nothing -- the caller does both, in that order.
 //   deps: { db, oona, settings, offer, marginE6, balanceMicro }
-export async function chatTurn(deps, { chatId, userContent }) {
-  const { db, oona, settings, offer, marginE6 } = deps;
+// Exactly what the chat model receives for this chat and message -- used by every turn AND by the
+// admin's preview, so the preview cannot drift from what is really sent (webbuilderbot's did).
+export function buildRequest(deps, { chatId, userContent }) {
+  const { db, settings, offer, marginE6 } = deps;
   const openCard = db.prepare("SELECT * FROM proposals WHERE chat_id = ? AND state = 'open' ORDER BY id DESC LIMIT 1").get(chatId) ?? null;
   const pic = offer[settings.pictureModel];
   // The user's own words, without the bot's notes ("(The user is replying to #12.)").
   const latest = userContent.split('\n').filter((l) => !/^\(The user /.test(l)).join(' ').trim();
   const system = systemPrompt({
+    instructions: settings.chatPrompt || DEFAULT_CHAT_PROMPT,
     items: recentItems(db, chatId),
     openCard,
     prices: priceLines(offer, settings, marginE6),
@@ -300,8 +314,15 @@ export async function chatTurn(deps, { chatId, userContent }) {
     pictureInputs: pic ? Math.max(1, maxInputs(pic)) : 1,
     latest,
   });
-  const messages = normalizeHistory([...loadHistory(db, chatId), { role: 'user', content: userContent }]);
-  const body = { model: settings.chatModel, max_tokens: 2048, system, tools: [PROPOSE_TOOL], messages };
+  const max = settings.historyMax ?? HISTORY_MAX;
+  const messages = normalizeHistory([...loadHistory(db, chatId, max), { role: 'user', content: userContent }], max);
+  return { latest, body: { model: settings.chatModel, max_tokens: 2048, system, tools: [PROPOSE_TOOL], messages } };
+}
+
+export async function chatTurn(deps, { chatId, userContent }) {
+  const { db, oona, settings, offer } = deps;
+  const { latest, body } = buildRequest(deps, { chatId, userContent });
+  const messages = body.messages;
 
   const resp = await oona.messages(body);
   const r = readReply(resp);
