@@ -1,0 +1,9 @@
+[Unit]
+Description=PCoin: say once when an independent (third-party) pool comes alive
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pcoin-thirdparty-pool-watch
+Nice=10

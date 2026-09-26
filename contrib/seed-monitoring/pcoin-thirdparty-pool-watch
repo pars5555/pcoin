@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""Watch pools that OTHER people run for PCoin, and say once when one comes alive.
+
+Why: our own pool finds ~75% of blocks, the estate's biggest risk. Every
+independent pool that starts finding blocks is the fix arriving by itself, and
+the independent-pool bounty (pc.am/bounty, programme 2) pays one that reaches 5
+miners and blocks on 7 days within 30. The owner asked on 2026-09-26 to "watch"
+the Rabid Mining pool announced in Discord that day; its API then reported no
+active PCN pool at all.
+
+What it does: every run it reads each pool's public API and records what it
+sees. It alerts the ops channel ONCE per step -- first active pool, first
+hashrate, first block -- never on every run. An unreadable API is not a change
+(a failed read resolves nothing, CLAUDE.md 7.1): it is only noted in the journal.
+
+    pcoin-thirdparty-pool-watch            normal run (timer)
+    pcoin-thirdparty-pool-watch --dry-run  print what it sees and would send
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.request
+
+NOTIFY = "/usr/local/bin/pcoin-notify"
+STATE = os.environ.get("THIRDPARTY_POOL_STATE", "/var/lib/pcoin-monitor/thirdparty-pools.json")
+
+# name -> (public API URL, page shown to a person)
+POOLS = {
+    "Rabid Mining": ("https://pool.rabidmining.com/api/pools/pcn", "https://pool.rabidmining.com/pcn"),
+}
+
+
+def fetch(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "pcoin-thirdparty-pool-watch"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.load(r)
+
+
+def reading(j):
+    """(pools, hashrate, miners, blocks) from either API shape seen so far, or None."""
+    if not isinstance(j, dict):
+        return None
+    pools = j.get("pools")
+    if isinstance(pools, list):  # the shape Rabid Mining served on 2026-09-26
+        hr = miners = blocks = 0
+        for p in pools:
+            if not isinstance(p, dict):
+                continue
+            st = p.get("poolStats") or p
+            hr += float(st.get("poolHashrate") or st.get("hashrate") or 0)
+            miners += int(st.get("connectedMiners") or st.get("miners") or 0)
+            blocks += int(p.get("totalBlocks") or p.get("blocks") or 0)
+        return len(pools), hr, miners, blocks
+    p = j.get("pool") if isinstance(j.get("pool"), dict) else None
+    if p:  # a MiningCore-style single pool
+        st = p.get("poolStats") or {}
+        return 1, float(st.get("poolHashrate") or 0), int(st.get("connectedMiners") or 0), int(p.get("totalBlocks") or 0)
+    return None
+
+
+def load():
+    try:
+        with open(STATE) as fh:
+            s = json.load(fh)
+        return s if isinstance(s, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save(s):
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    tmp = STATE + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(s, fh, indent=2)
+    os.replace(tmp, STATE)
+
+
+def send(dry, subject, body):
+    if dry or not os.path.isfile(NOTIFY):
+        print("WOULD SEND:", subject, "|", body)
+        return
+    subprocess.run([NOTIFY, subject, body], timeout=60)
+
+
+def main():
+    dry = "--dry-run" in sys.argv
+    state = load()
+    for name, (api, page) in POOLS.items():
+        try:
+            r = reading(fetch(api))
+        except Exception as e:  # unreadable resolves nothing
+            print("%s: API unreadable (%s) -- no change recorded" % (name, type(e).__name__))
+            continue
+        if r is None:
+            print("%s: API answered in a shape this script does not know -- no change recorded" % name)
+            continue
+        pools, hr, miners, blocks = r
+        print("%s: pools=%d hashrate=%.0f H/s miners=%d blocks=%d" % (name, pools, hr, miners, blocks))
+        seen = state.setdefault(name, {})
+        steps = [
+            ("active", pools > 0, "has an active PCN pool now"),
+            ("hashing", hr > 0, "has miners hashing (%.0f H/s, %d miner(s))" % (hr, miners)),
+            ("block", blocks > 0, "found its first PCN block (%d so far)" % blocks),
+        ]
+        for key, now, words in steps:
+            if now and not seen.get(key):
+                send(dry, "🟢 Independent pool: %s %s" % (name, words),
+                     "An independent PCoin pool is coming alive -- good for the chain, whose biggest "
+                     "risk is that our own pool finds most blocks.\n"
+                     "What to do: nothing now. If it keeps finding blocks (5 separate miners, blocks on 7 "
+                     "days within 30) it can qualify for the independent-pool bounty; check it before "
+                     "listing it anywhere.\n%s" % page)
+                if not dry:
+                    seen[key] = int(time.time())
+        seen["last"] = {"at": int(time.time()), "pools": pools, "hashrate": hr, "miners": miners, "blocks": blocks}
+    if not dry:
+        save(state)
+
+
+if __name__ == "__main__":
+    main()

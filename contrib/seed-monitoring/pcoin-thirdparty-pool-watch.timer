@@ -1,0 +1,11 @@
+[Unit]
+Description=Check independent PCoin pools every 30 minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=30min
+RandomizedDelaySec=3min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
