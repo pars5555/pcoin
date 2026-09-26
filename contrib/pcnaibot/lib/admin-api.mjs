@@ -57,7 +57,7 @@ export function adminCredit(db, { chatId, microUsd, note, requestId }) {
 // rows, not from counters, for the same reason reconcile() does.
 export function listUsers(db) {
   return db.prepare(
-    `SELECT u.chat_id, u.balance_micro_usd, u.reserved_micro_usd, u.model, u.agent_mode, u.created_at,
+    `SELECT u.chat_id, u.balance_micro_usd, u.reserved_micro_usd, u.created_at,
             COALESCE(SUM(CASE WHEN l.kind = 'ai_turn' THEN -l.delta_micro_usd END), 0) AS spent_micro_usd,
             COALESCE(SUM(CASE WHEN l.kind IN ('deposit_pcn','deposit_wpcn') THEN l.delta_micro_usd END), 0) AS deposited_micro_usd,
             COALESCE(SUM(CASE WHEN l.kind = 'adjust' THEN l.delta_micro_usd END), 0) AS credited_micro_usd,
@@ -97,7 +97,10 @@ const readJson = (req) => new Promise((resolve, reject) => {
 });
 
 // `names(chatIds)` resolves Telegram display names; best effort, never fatal.
-export function startAdminApi({ db, token, port, host = '127.0.0.1', names = async () => ({}) }) {
+// `studio` = { get(), save(input) }: the chat / picture / video models the admin chooses
+// (owner, 2026-09-26). The bot validates a save against what OonaCode serves, and tests a new chat
+// model live before accepting it.
+export function startAdminApi({ db, token, port, host = '127.0.0.1', names = async () => ({}), studio = null }) {
   if (!token || token.length < 32) {
     log.warn('admin API off: ADMIN_API_TOKEN is unset or shorter than 32 characters');
     return null;
@@ -129,6 +132,15 @@ export function startAdminApi({ db, token, port, host = '127.0.0.1', names = asy
           if (e instanceof CreditRefused) return json(res, 422, { error: e.message });
           throw e;
         }
+      }
+      if (studio && req.method === 'GET' && url.pathname === '/admin/settings') {
+        return json(res, 200, studio.get());
+      }
+      if (studio && req.method === 'POST' && url.pathname === '/admin/settings') {
+        const b = await readJson(req);
+        const r = await studio.save(b && typeof b === 'object' ? b : {});
+        log.info('admin settings', { ok: r.ok, problems: r.ok ? '-' : r.problems.join(' | ') });
+        return json(res, r.ok ? 200 : 422, r.ok ? r : { error: r.problems.join('; '), problems: r.problems });
       }
       return json(res, 404, { error: 'not found' });
     } catch (e) {

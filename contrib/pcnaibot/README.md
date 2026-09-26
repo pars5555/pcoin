@@ -1,8 +1,19 @@
 # pcnaibot — the PCoin AI bot
 
-A Telegram bot (`@PcoinAiBot`) that sells paid AI models and takes payment in
-PCN. It sits on the **OonaCode gateway** for the models and on the estate's
+A Telegram bot (`@PcoinAiBot`) that makes **AI pictures and short videos** and takes
+payment in PCN. It sits on the **OonaCode gateway** for the models and on the estate's
 existing PCN deposit machinery for the money.
+
+**Since 2026-09-26 it is a picture & video studio** (owner: "change this bot to be only
+picture and video generator … similar to webbuilderbot"). A **free chat agent** (a cheap model
+on plain `/v1/messages`, `lib/studio.mjs`) talks with the user and proposes ONE picture or video
+as a **card** with its price; the user's **✅ on the card is the only thing that moves money**
+(`lib/jobs.mjs`); the **builder** (OonaCode's image/video endpoints, `lib/media.mjs`) makes it.
+There is **no model to choose** in the chat: the admin picks the chat, picture and video models
+on admin.pc.am → PcoinAiBot (`lib/settings.mjs`; defaults mimo-v2.5 / wan2.7-image-pro /
+happyhorse-1.1). Pictures can be changed (the picture model takes the old one as input); a video
+"change" makes a new version until OonaCode serves a video-edit model. The earlier chat-model
+product (a model chooser, the agentic API with sandboxes and files) was retired that day.
 
 It is the **seventh PCN rail**. Everything in §7 of the build brief has already
 been shipped wrong by a real integration here and cost real money to find, and
@@ -16,8 +27,8 @@ code rather than skim it.
 ## What it is, and what it is not
 
 **It is** a Telegram bot with its own token, its own systemd units and its own
-SQLite database. A user picks a model and talks — in Telegram only; there is no other way in (the outside-Telegram API and its keys were removed on 2026-09-14). Each turn is priced in USD from
-the provider's returned token counts × the house margin, and debited from an
+SQLite database. A user describes a picture or video and confirms a card — in Telegram only; there is no other way in (the outside-Telegram API and its keys were removed on 2026-09-14). Each item is priced in USD from
+OonaCode's live media price × the house margin, shown on the ✅ button before anything is made, and debited from an
 **integer micro-USD** balance. The user tops that up by sending PCN to a deposit
 address that is **theirs forever**, taken from a pool derived offline.
 
@@ -45,9 +56,9 @@ watch.mjs                the deposit watcher, a SEPARATE process on a timer
 Dockerfile               one image, used by both processes
 migrate.mjs              explicit versioned migrations + the structural proof
 heartbeat-check.sh       staleness check for both heartbeats; RUNS AS ROOT
-migrations/              001_init .. 011_drop_api_keys, explicit and versioned
+migrations/              001_init .. 013_studio, explicit and versioned
 systemd/                 units + timers + logrotate; systemd/docker/ for the container
-test/                    money path, billing path, agent sessions, delivery, Markdown
+test/                    money path, billing path, studio (cards, jobs, chat agent), Markdown
 lib/
   config.mjs             reads /etc/pcoin/pcnaibot.conf; keeps secrets OUT of env
   log.mjs                redact-by-allow-list logging; crash handlers
@@ -59,18 +70,17 @@ lib/
   deposits.mjs           the atomic credit + the reconciliation invariant
   rate.mjs               price.pc.am, three clocks, two catch arms
   explorer.mjs           explorer API, request budget, index health gate
-  registry.mjs           the model price table
-  oonacode.mjs           the gateway client and the error buckets
+  oonacode.mjs           the gateway client (the chat agent's calls) and the error buckets
   billing.mjs            reserve → settle | release | hold | age-out
-  tokens.mjs             byte-based token estimation + calibration fixture
   telegram.mjs           Bot API, HTML escaping, splitting, retry_after
   wpcn.mjs               wPCN top-ups, ported from checker_pc_am's WpcnService
   vendor/wpcn-pay.mjs    the shared verifier client, VENDORED VERBATIM
-  probe.mjs              asks each model what the registry will not tell you
-  agent.mjs              the agentic API client (sessions, runs, files)
-  agentstore.mjs         our record of every session, so we can always delete it
-  deliver.mjs            hands back the files the agent makes
-  markdown.mjs           the model's Markdown as Telegram HTML
+  studio.mjs             the free chat agent: prompt, `propose` tool, checks, history, limits
+  jobs.mjs               cards, the ✅ that pays, picture/video jobs, delivery, restart recovery
+  media.mjs              the builder: OonaCode's image/video models, prices, client
+  settings.mjs           the admin's model choices (kv 'studio:settings')
+  drafts.mjs             live status lines (sendMessageDraft)
+  markdown.mjs           the agent's Markdown as Telegram HTML
 ```
 
 ## Two processes, deliberately
@@ -185,30 +195,27 @@ the owner from a monitoring-setup step.
 ## Testing
 
 ```sh
-node --test test/          # 39 tests, no network
+node --test test/          # 137 tests, no network
 ```
 
-They need `better-sqlite3`, which has no Windows/node-24 prebuild — run them on
-the target host or any Linux box with node 20.
+They need `better-sqlite3`, which has no Windows/node-24 prebuild — run them in the
+bot's own image: `docker run --rm --network none --entrypoint node -v $PWD/lib:/app/lib:ro
+-v $PWD/test:/app/test:ro -v $PWD/migrations:/app/migrations:ro -w /app pcnaibot:latest --test test/`.
 
 ## Open items
 
-* **`BYTES_PER_TOKEN = 2.2` is still uncalibrated** for the fallback path. It
-  matters less now that `count_tokens` is known to work, but it is what the
-  estimator falls back to when counting fails, and the bot's users write
-  Armenian, where `chars / 3.5` runs **2.8× low** and Chinese **4.2× low**.
-* **Q5b, Q8b and Q10 remain OPEN** — they need the console's cumulative
-  `costUsd`, which sits behind a browser session token an API key cannot reach.
-  They decide credit-unit rounding, whether tiering is live, and how a truncated
-  stream is billed. The nightly console reconciliation is what would settle them.
+* **Video editing.** OonaCode has `happyhorse-1.0-video-edit` and `wan2.7-videoedit` in its specs
+  but serves neither (they need an Alibaba pay-as-you-go key). Until then "change this video"
+  makes a new version; `videoEditModel` in the settings is the switch, and `settingsProblems`
+  refuses anything but empty until the builder learns the edit call. The edit models take the
+  source video as a URL, which OonaCode keeps for 24 hours.
+* **Leftovers of the retired chat product**: the `agent_sessions`, `agent_files` and
+  `model_prices` tables and `@resvg/resvg-js` in package.json are unused since 2026-09-26; drop them
+  in a later migration / lockfile change.
 * **wPCN is implemented but OFF.** The verifier's rate basis is fixed and
   deployed. The loophole this line used to describe -- wrapping PCN and paying in
   wPCN yielded ~+4.5% more credit (10% bonus × 0.95 wrap fee) -- is closed: the
   wPCN bonus has been 0 since 2026-09-11, so paying in wPCN earns nothing extra.
-* **Streaming is not implemented**, and the API refuses `stream: true` rather
-  than silently returning a non-streamed body. Streaming would add the
-  `message_start` early-abort, which is the only mechanism that *stops* a
-  mid-answer overrun rather than discovering it afterwards.
 * **wPCN is off** (`WPCN_ENABLED=0`). The condition this line used to set, that
   the shared verifier stop crediting from `price`, is met: it credits from
   `creditRateUsd` (`serviceRate` only on an origin still serving the old body),

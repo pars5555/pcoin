@@ -89,6 +89,26 @@ export function tokensToMicroUsd(tokens, pricePerMe9, marginE6) {
   return ceilDiv(num, den);
 }
 
+// OonaCode prices in credits: 1000 credits = 1 USD at its retail.
+export const CREDITS_PER_USD = 1000;
+
+// credits -> micro-USD, with the house margin, in integers, rounded UP.
+//
+// `credits` arrives as a JSON number (2.674), so it is taken through a decimal
+// STRING rather than float arithmetic. (Moved here from lib/agent.mjs, 2026-09-26,
+// when the agentic path was retired; the arithmetic is unchanged.)
+export function creditsToMicroUsd(credits, marginE6) {
+  if (!Number.isFinite(Number(credits)) || Number(credits) < 0) {
+    throw new Error(`unusable credits value: ${JSON.stringify(credits)}`);
+  }
+  const creditsE6 = parseScaled(Number(credits).toFixed(6), 6);   // credits x 1e6
+  // micro_usd = credits * 1000 * margin, with both 1e6 scalings undone.
+  const num = creditsE6 * 1000n * BigInt(marginE6);
+  const den = 1000000n * 1000000n;
+  const q = num / den;
+  return num % den === 0n ? q : q + 1n;
+}
+
 export function ceilDiv(a, b) {
   const q = a / b;
   return a % b === 0n ? q : q + 1n;

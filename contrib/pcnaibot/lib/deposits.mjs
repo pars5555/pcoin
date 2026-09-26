@@ -292,8 +292,11 @@ export function reconcile(db) {
             u.balance_micro_usd,
             u.reserved_micro_usd,
             COALESCE((SELECT SUM(l.delta_micro_usd) FROM ledger l WHERE l.chat_id = u.chat_id), 0) AS ledger_sum,
+            -- A HELD reservation still sits in reserved_micro_usd (hold() moves nothing; the
+            -- age-out or a settle does), so it counts here too. Counting only 'open' made every
+            -- hold read as drift until it aged out (found 2026-09-26).
             COALESCE((SELECT SUM(r.micro_usd) FROM reservations r
-                       WHERE r.chat_id = u.chat_id AND r.state = 'open'), 0) AS open_resv
+                       WHERE r.chat_id = u.chat_id AND r.state IN ('open', 'held')), 0) AS open_resv
        FROM users u`
   ).all();
 
