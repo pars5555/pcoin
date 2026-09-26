@@ -19,7 +19,7 @@ It is one file, `server.mjs`, with its whole state in a JSON file next to it.
 |---|---|---|
 | `price` | the **ladder's marginal rung** — what the next PCN costs to buy | the market page, humans |
 | `buybackPrice` | the **constant-product curve** — what a sell-back pays | the buyback path only |
-| `serviceRate` | what the payment rails **credit** PCN at | checker.pc.am, webbuilderbot, aicontrol.pc.am, 3dmodels.pc.am, 3dmodel.oonak.ai (a DIFFERENT product from 3dmodels.pc.am, with its own wallet) |
+| `serviceRate` | what the payment rails **credit** PCN at | every PCN payment service (webai.pc.am, @MyWebsiteBuilderBot, aicontrol.pc.am and our other rails); published to them as `creditRateUsd` |
 
 Confusing the first two is the mistake waiting to be made. Once the ladder has
 moved they are decades apart, and using `price` to estimate a payout would

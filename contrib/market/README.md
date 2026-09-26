@@ -207,7 +207,9 @@ case is an order with no invoice, which the sweeper expires.
 > `serviceRate` walks describe the credit rate as it was before the index.
 
 **The market refuses to sell when the ladder price and the rate the products
-credit PCN at have drifted more than 20% apart.**
+credit PCN at have drifted more than `maxDivergencePct` apart** -- 20% when this
+was written; the live value has been 1000% since 2026-09-14, so in practice it
+fires only on a pool collapse (and only in curve mode).
 
 PCN is only worth buying here because the five products accept it over there. If
 the two prices come apart, someone buys a coin at one price and has it accepted

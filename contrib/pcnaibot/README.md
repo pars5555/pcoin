@@ -202,9 +202,9 @@ the target host or any Linux box with node 20.
   They decide credit-unit rounding, whether tiering is live, and how a truncated
   stream is billed. The nightly console reconciliation is what would settle them.
 * **wPCN is implemented but OFF.** The verifier's rate basis is fixed and
-  deployed, but wrapping PCN and paying in wPCN still yields **~+4.5%** more
-  credit than paying the same PCN directly (10% bonus × 0.95 wrap fee), which
-  bypasses the pool buy the bonus exists to force.
+  deployed. The loophole this line used to describe -- wrapping PCN and paying in
+  wPCN yielded ~+4.5% more credit (10% bonus × 0.95 wrap fee) -- is closed: the
+  wPCN bonus has been 0 since 2026-09-11, so paying in wPCN earns nothing extra.
 * **Streaming is not implemented**, and the API refuses `stream: true` rather
   than silently returning a non-streamed body. Streaming would add the
   `message_start` early-abort, which is the only mechanism that *stops* a

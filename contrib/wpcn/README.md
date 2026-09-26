@@ -213,9 +213,8 @@ downstream should follow it.
 `serviceRate` is what five live products credit real customers at. The pool is
 shallow — check the live pool before quoting a figure — so a small buy moves it
 ~10%. Wiring them together buys an attacker a
-rate they control for a few hundred dollars: pump wPCN, spend PCN across
-checker / webbuilderbot / aicontrol / 3dmodels.pc.am / 3dmodel.oonak.ai at the inflated
-rate, sell back. That is oracle manipulation, a thin pool is the textbook
+rate they control for a few hundred dollars: pump wPCN, spend PCN at every
+payment service at the inflated rate, sell back. That is oracle manipulation, a thin pool is the textbook
 vulnerable oracle, and the rails would be funding the attack.
 
 `price.pc.am` already knows this. From its own source:
