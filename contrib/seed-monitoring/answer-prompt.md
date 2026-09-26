@@ -903,10 +903,12 @@ with PCN at @MyWebsiteBuilderBot or @PcoinAiBot and 10% is added on top as credi
 service, automatically, with nothing to claim. It is credit where you paid, not
 coins sent to a wallet. Applies to payments from 16 September 2026.
 
-**4. Bring somebody to aicontrol.pc.am — 100 PCN, COMING SOON.** They get $1 of
-credit for signing up through your link and must then top up at least $20. It is
-run by the aicontrol team. Say it is **not live yet** and do not guess a date
-(rule 4).
+**4. Bring somebody to aicontrol.pc.am — 100 PCN, LIVE.** Sign in at aicontrol.pc.am
+and open *Invite & earn* for your link. The friend must create a NEW account through it
+(they get $1 of credit), then top up $20 or more in total through aicontrol's crypto
+checkout; top-ups paid in PCN or wPCN do NOT count. The 100 PCN is credited
+automatically within about five minutes; once the 3,000 PCN pool is nearly spent it
+becomes $2 of aicontrol credit. Run by the aicontrol team; details at pc.am/bounty/.
 
 **What is deliberately NOT paid for, if anybody asks or offers:** app-store
 reviews, ratings or installs (Google prohibits it and it would put the app at
