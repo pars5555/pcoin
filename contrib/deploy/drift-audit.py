@@ -88,7 +88,16 @@ DEPLOYMENTS = {
     "price-parsos": ("contrib/price", "/opt/pcoin-price", "~/.ssh/parsos_server", ["server.mjs", "index-relay.mjs"]),
     # Its /stats endpoint lived only on the server for twelve days (2026-09-12
     # to 09-24) before this entry existed.
-    "wpcn-pay": ("contrib/wpcn-pay", "/opt/pcoin-wpcn-pay", "~/.ssh/id_ed25519", ["server.mjs"]),
+    # rate.mjs since 2026-09-25: the credit-rate rule moved out of server.mjs, and
+    # an entry naming only server.mjs would have reported a stale rate.mjs clean.
+    "wpcn-pay": ("contrib/wpcn-pay", "/opt/pcoin-wpcn-pay", "~/.ssh/id_ed25519", ["server.mjs", "rate.mjs"]),
+    # The card generator kit. A 2026-09-13 copy sat here refusing to read the
+    # nine-key price body for a day, and no entry existed to notice (09-26).
+    "announce": ("contrib/announce", "/opt/pcoin-announce", "~/.ssh/id_ed25519", ["make_card.py"]),
+    # @PcoinAiBot's BUILD CONTEXT: the bot and its watcher run from an image
+    # built out of this directory, so a drift here ships on the next rebuild.
+    "pcnaibot": ("contrib/pcnaibot", "/opt/pcnaibot", "~/.ssh/id_ed25519",
+                 ["*.mjs", "lib/*.mjs", "migrations/*.sql", "Dockerfile"]),
     # The unified admin panel, including the pinned Move PCN crypto bundle: a
     # drifted bundle is refused by the panel itself, but a drifted server.mjs
     # is not, and it is the file that decides which routes can spend.
@@ -102,9 +111,13 @@ DEPLOYMENTS = {
 NOT_DEPLOYED_OK = {
     "pool": {"blocktest.mjs", "coinbasetest.mjs", "duptest.mjs",
              "storetest.mjs", "testminer.mjs"},
-    "market": {"gen_ladder.mjs", "ops-send-test.mjs"},
+    "market": {"gen_ladder.mjs", "ops-send-test.mjs", "announce-spool-test.mjs", "ipn-deploy-test.sh",
+               "ipn-deploy.sh", "ipn-e2e-test.mjs", "ipn-test.mjs", "ladder-index-test.mjs", "price-feed-test.mjs"},
     "admin": {"send-test.mjs", "transfer-test.mjs", "transfer-crypto.entry.mjs", "admin-gate-test.mjs",
-              "exchange-preview.mjs", "exchange-preview-drive.mjs", "exchange-preview-cf-drive.mjs"},
+              "exchange-preview.mjs", "exchange-preview-drive.mjs", "exchange-preview-cf-drive.mjs",
+              "pay-hot-test.mjs", "pay-keeper-test.mjs", "price-feed-test.mjs", "wrap-code-test.mjs"},
+    "wpcn-pay": {"rate-test.mjs"},
+    "pcnaibot": {"livetest.mjs"},
 }
 
 # Never compared: state, generated files, or files holding credentials.
