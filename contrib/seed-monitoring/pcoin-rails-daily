@@ -197,7 +197,9 @@ def collect_checker():
 
 
 # ===========================================================================
-# webbuilderbot -- on 116, PHP + PDO from config/app.php
+# webbuilderbot -- on 89.58.3.44 since 2026-09-26 (was 116), PHP + PDO from
+# config/app.php. 116 keeps a frozen copy through the rollback week; reading
+# it would report a live bot as idle.
 # ===========================================================================
 WEBBUILDER_PHP = r"""<?php
 $c = require '/var/www/ai-bots/bots/webbuilderbot/config/app.php';
@@ -233,8 +235,8 @@ echo json_encode($o);
 
 
 def collect_webbuilder():
-    r = blank("webbuilderbot", "116.203.221.42")
-    ok, out = remote("root@116.203.221.42", "php", WEBBUILDER_PHP)
+    r = blank("webbuilderbot", "89.58.3.44")
+    ok, out = remote("root@89.58.3.44", "php", WEBBUILDER_PHP)
     if not ok:
         r["error"] = out
         return r
