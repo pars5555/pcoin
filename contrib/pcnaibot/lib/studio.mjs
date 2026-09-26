@@ -87,7 +87,8 @@ export const PROPOSE_TOOL = {
     properties: {
       kind: { type: 'string', enum: ['image', 'video'], description: 'image = a picture; video = a short video clip.' },
       prompt: { type: 'string', description: 'The full description for the generator, in English. For a change to an existing picture: exactly what to change and what to keep.' },
-      summary: { type: 'string', description: "One short sentence for the card, in the user's language." },
+      // Seen live: mimo-v2.5 pasted the user's own message (".animate #2: the snow keeps …") as the summary.
+      summary: { type: 'string', description: "One short sentence for the card, in the user's language, describing what will be made — e.g. \"A red fox in a snowy meadow, snow falling.\" Not the user's message copied, no item numbers, no instructions." },
       shape: { type: 'string', enum: ['square', 'wide', 'tall'] },
       seconds: { type: 'integer', description: 'Video length in seconds. Videos only; leave it out for the usual length.' },
       sources: { type: 'array', items: { type: 'integer' }, description: 'Numbers of the items to change or start from (#12 -> 12). Leave empty to make something new.' },
@@ -178,7 +179,7 @@ export function validateProposal(db, chatId, input, { offer, settings }) {
   const kind = input?.kind;
   if (kind !== 'image' && kind !== 'video') return { error: 'kind must be "image" or "video".' };
   const prompt = String(input.prompt ?? '').trim();
-  const summary = String(input.summary ?? '').trim();
+  const summary = String(input.summary ?? '').trim().replace(/^[\s.,:;·—–-]+/, '');
   if (prompt.length < 3) return { error: 'prompt is empty.' };
   if (summary.length < 3) return { error: 'summary is empty.' };
   if (prompt.length > 2000) return { error: 'prompt is too long; keep it under 2000 characters.' };

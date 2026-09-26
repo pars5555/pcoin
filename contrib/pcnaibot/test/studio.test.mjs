@@ -118,6 +118,7 @@ test('proposals are checked: sources, kinds, limits, lengths', () => {
   assert.match(v({ kind: 'image', sources: [pic, photo] }, { ...SETTINGS, pictureModel: 'qwen-image-3.0-pro' }, mediaOffer(LISTING.map((m) => (m.id === 'qwen-image-3.0-pro' ? { ...m, limits: { input_images: { min: 0, max: 1 } } } : m)))).error, /at most 1 pictures/);
   assert.match(v({ kind: 'poster' }).error, /kind must be/);
   assert.equal(v({ kind: 'image', shape: 'hexagon' }).spec.shape, 'square');
+  assert.equal(v({ kind: 'image', summary: '.animate the fox' }).spec.summary, 'animate the fox', 'no leading punctuation on a card');
 
   // Animate a picture: photo-to-video from it.
   assert.deepEqual(v({ kind: 'video', sources: [pic] }).spec, { kind: 'video', model: 'happyhorse-1.1', prompt: 'a prompt', summary: 'a summary',
