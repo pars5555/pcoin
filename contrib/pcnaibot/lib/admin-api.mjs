@@ -85,9 +85,14 @@ function tokenOk(header, token) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+// Serialised BEFORE the headers go out: a value JSON cannot write (a BigInt, 2026-09-26) used to
+// fail after writeHead, and the error handler's own reply then threw "headers already sent" and
+// left the request hanging. Money amounts here are micro-USD, well inside a safe integer.
 const json = (res, code, body) => {
+  const text = JSON.stringify(body, (k, v) => (typeof v === 'bigint' ? Number(v) : v));
+  if (res.headersSent) { res.end(); return; }
   res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-  res.end(JSON.stringify(body));
+  res.end(text);
 };
 
 // 64 KB: the chat agent's instructions travel through here (at most 20,000 characters).

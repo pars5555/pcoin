@@ -80,3 +80,26 @@ test('a balance shows no trailing zeros', () => {
   assert.equal(trimZeros('-1.5000'), '-1.5');
   assert.equal(trimZeros('100'), '100');
 });
+
+// Live on 2026-09-26 the Stars page hung for 90 s: its report carried a BigInt, JSON.stringify threw
+// after the headers were out, and the error handler then threw "headers already sent".
+test('the admin API answers a reply carrying BigInts, and every route needs the token', async () => {
+  const { startAdminApi } = await import('../lib/admin-api.mjs');
+  const db = freshDb();
+  const token = 'x'.repeat(40);
+  const server = startAdminApi({
+    db, token, port: 0, host: '127.0.0.1',
+    stars: { get: async () => ({ packages: [{ stars: 250, micro: 5000000n }] }), refund: async () => ({ ok: false, error: 'no' }) },
+  });
+  await new Promise((r) => server.once('listening', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const ok = await fetch(`${base}/admin/stars`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5000) });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(await ok.json(), { packages: [{ stars: 250, micro: 5000000 }] });
+    const no = await fetch(`${base}/admin/stars`, { signal: AbortSignal.timeout(5000) });
+    assert.equal(no.status, 401);
+  } finally {
+    server.close();
+  }
+});
