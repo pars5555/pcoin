@@ -44,6 +44,7 @@ import {
 import { mdToHtml } from './lib/markdown.mjs';
 import { DraftStream } from './lib/drafts.mjs';
 import { creditThenClaim } from './lib/updates.mjs';
+import { turnQueue } from './lib/turns.mjs';
 import { t, langOf, LANGS, LANG_CODES, detectLang, isLang, everyLabel, whenLabel } from './lib/i18n.mjs';
 import { openAccount, parseInvite, inviteLink, inviteStats, payInviteReward, giftsToday, usdToMicro as dollarsToMicro } from './lib/rewards.mjs';
 
@@ -106,10 +107,13 @@ const wpcn = new WpcnService(db, {
 // A global ceiling on work being handled at once. Not about money -- about not letting a burst of
 // users open an unbounded number of upstream calls against a gateway that shares a box.
 const MAX_CONCURRENT_TURNS = cfg.int('MAX_CONCURRENT_TURNS', 8);
-// Work in flight. THE POLL LOOP MUST NOT AWAIT A TURN: a picture takes up to a minute and every
-// other user would wait for it.
-const inFlightTurns = new Set();
-const track = (p) => { inFlightTurns.add(p); p.finally(() => inFlightTurns.delete(p)); return p; };
+// Messages queued for a slot. Only a flood reaches it; then the loop holds as it used to.
+const MAX_WAITING_TURNS = 500;
+// Work in flight. THE POLL LOOP MUST NOT AWAIT A TURN, NOR A FREE SLOT (lib/turns.mjs): a picture
+// takes up to a minute, and a Stars pre-checkout behind it has 10 seconds.
+const turns = turnQueue(MAX_CONCURRENT_TURNS);
+const inFlightTurns = turns.running;
+const track = (p) => turns.track(p);
 
 // draft_id MUST be non-zero, and stable for the life of one answer. The update_id is unique.
 function draftIdFor(updateId) {
@@ -1633,13 +1637,14 @@ async function main() {
       if (!up.message) continue;
       up.message.__update_id = up.update_id;
 
-      // Wait for a slot, but NEVER for this particular turn to finish.
-      if (inFlightTurns.size >= MAX_CONCURRENT_TURNS) {
-        await Promise.race(inFlightTurns);
-      }
-
+      // Queued, never awaited: it starts when a slot is free, and the loop goes straight on to the
+      // next update (a pre-checkout may be right behind it).
       const msg = up.message;
-      track((async () => {
+      if (turns.waiting.length >= MAX_WAITING_TURNS) {
+        log.warn('turn queue full; holding the poll loop until it drains', { waiting: turns.waiting.length });
+        while (turns.waiting.length >= MAX_WAITING_TURNS) await new Promise((r) => setTimeout(r, 250));
+      }
+      turns.submit(async () => {
         try {
           const reply = await handleMessage(msg);
           if (reply) await tg.sendLong(msg.chat.id, reply);
@@ -1648,13 +1653,13 @@ async function main() {
           try { await tg.sendMessage(msg.chat.id, t(langOf(db, msg.chat.id), 'msg.error')); }
           catch { /* best effort */ }
         }
-      })());
+      });
 
       processed++;
     }
 
     const making = db.prepare("SELECT COUNT(*) n FROM media_jobs WHERE state = 'running'").get().n;
-    await writeBotHeartbeat({ ok: true, processed, offset, in_flight: inFlightTurns.size, making, last_error: null });
+    await writeBotHeartbeat({ ok: true, processed, offset, in_flight: inFlightTurns.size, waiting: turns.waiting.length, making, last_error: null });
   }
 }
 

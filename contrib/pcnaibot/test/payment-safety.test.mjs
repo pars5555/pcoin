@@ -17,6 +17,7 @@ import { reserve, InsufficientFunds } from '../lib/billing.mjs';
 import { openAccount, payInviteReward, usdToMicro, giftsToday } from '../lib/rewards.mjs';
 import { STATE, FINAL_STATES, CHECK_MAX_AGE_SEC, recordCheck, noteCheck, dueChecks } from '../lib/wpcn.mjs';
 import { creditThenClaim } from '../lib/updates.mjs';
+import { turnQueue } from '../lib/turns.mjs';
 import { DEFAULT_SETTINGS } from '../lib/settings.mjs';
 import { freshDb } from './fixtures.mjs';
 
@@ -63,6 +64,37 @@ test('a Stars credit runs before its update is claimed; a failure claims nothing
   const b = creditThenClaim(db, up, () => { runs++; return 'already credited'; });
   assert.equal(b.claimed, false);
   assert.equal(runs, 2);
+});
+
+test('a full set of slots queues the next turn instead of holding the poll loop', async () => {
+  const q = turnQueue(2);
+  let releaseA;
+  let releaseB;
+  q.track(new Promise((r) => { releaseA = r; }));   // a button's background work
+  q.submit(() => new Promise((r) => { releaseB = r; }));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(q.running.size, 2, 'both slots taken');
+
+  const started = [];
+  const t0 = Date.now();
+  q.submit(async () => { started.push('c'); });
+  q.submit(async () => { started.push('d'); });
+  assert.ok(Date.now() - t0 < 50, 'submit returned at once: a pre-checkout behind it is answered now');
+  assert.equal(q.waiting.length, 2);
+  assert.deepEqual(started, []);
+
+  releaseA();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(started, ['c', 'd'], 'in arrival order, as slots free up');
+  assert.equal(q.waiting.length, 0);
+  releaseB();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(q.running.size, 0);
+
+  // A turn that throws still frees its slot.
+  q.submit(async () => { throw new Error('boom'); });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(q.running.size, 0);
 });
 
 // ---- Stars: refunds ----------------------------------------------------------------------------

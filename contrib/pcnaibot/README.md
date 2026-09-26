@@ -246,7 +246,7 @@ the owner from a monitoring-setup step.
 ## Testing
 
 ```sh
-node --test test/          # 181 tests, no network
+node --test test/          # 182 tests, no network
 ```
 
 They need `better-sqlite3`, which has no Windows/node-24 prebuild — run them in the
