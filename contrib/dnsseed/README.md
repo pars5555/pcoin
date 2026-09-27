@@ -127,6 +127,12 @@ unaffected.
 
 ## Operational notes
 
+* **A seeder cannot honestly test its own host.** A connection to the box's
+  own public address goes over loopback and never meets the firewall, so the
+  crawl marks the host "good" even when nobody outside can reach it. Put such a
+  host in `exclude` (never served). ns2 runs with
+  `"exclude": ["167.233.113.189"]`: that box's firewall does not admit 9444,
+  and until 2026-09-27 ns2 handed its address to every new node.
 * The configured `seeds` are **never** retired from the node store, however
   long they stay unreachable. They are the floor the crawler stands on; a bad
   week must not leave it with nothing to crawl from.

@@ -62,6 +62,13 @@ const cfg = {
   minSuccesses: 2,
   handshakeTimeoutMs: 8000,
   ratePerMinute: 60,
+  // Hosts never served, however good the crawl says they are. THE CRAWLER
+  // CANNOT HONESTLY TEST ITS OWN HOST: a connection to this machine's own
+  // public address goes over loopback and never meets the firewall. ns2's box
+  // (167.233.113.189) listens on 9444 but its firewall does not admit it, so
+  // for days ns2 handed newcomers an address that nobody outside could reach
+  // (found 2026-09-27). List such a host here rather than trust its self-test.
+  exclude: [],
   ...(fs.existsSync(CONF) ? JSON.parse(fs.readFileSync(CONF, 'utf8')) : {}),
 };
 
@@ -347,7 +354,7 @@ function answersFor(qname, qtype) {
   }
 
   const now = Date.now();
-  let pool = [...nodes.values()].filter(n => good(n, now));
+  let pool = [...nodes.values()].filter(n => good(n, now) && !cfg.exclude.includes(n.host));
   if (requiredBits) pool = pool.filter(n => (n.services & requiredBits) === requiredBits);
   if (qtype !== TYPE.ANY) pool = pool.filter(n => n.v6 === (qtype === TYPE.AAAA));
 
