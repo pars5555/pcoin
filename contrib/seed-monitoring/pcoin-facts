@@ -634,6 +634,14 @@ def block(c):
             cap = (" USDT withdrawals are capped at $%s per account per UTC day; PCN has no daily cap."
                    % n(mx, 2) if mx is not None else
                    " There is no daily cap on USDT withdrawals right now.")
+            # The PCN floor IN PCN, exactly as the exchange enforces it (valued at
+            # its own index). Members ask "how many PCN is $30?" and the bot used
+            # to work it out itself. null = the exchange has no usable price just
+            # now, which is UNKNOWN, not zero.
+            mp = (d["assets"].get("PCN") or {}).get("min_withdraw")
+            cap += (" In PCN the minimum is %s PCN right now (it moves with the price)." % n(mp, 0)
+                    if mp is not None else
+                    " The minimum in PCN could not be worked out just now -- give it in dollars only.")
         out.append("WITHDRAWALS: minimum %s, paid by hand within %s hours. Fees: USDT on TRON "
                    "$%s, USDT on BNB Smart Chain $%s, PCN %s. Two-factor is required first.%s"
                    % (mins, w.get("turnaroundHours"),

@@ -686,7 +686,7 @@ credit(deposit, pcn * b.creditRateUsd, { credited_rate_usd: b.creditRateUsd });<
 
   <div class="note warn">
     <p><strong>PancakeSwap is not the price either.</strong> wPCN (a BEP-20 claim on PCN)
-    trades on BNB Smart Chain, and a bot holds that pool within 3% of the PCN index, in
+    trades on BNB Smart Chain, and a bot keeps that pool near a target set from the PCN index (it can sit below it), in
     both directions and within a daily budget &mdash; the pool follows the index, never the
     reverse. Its liquidity is thin, so a single small trade moves it by percent; reading it
     as a price lets anyone who spends $20 set your credit rate. Read price.pc.am, and only

@@ -70,7 +70,8 @@ export function pcnIndexPage(d) {
   const banner = card('What this is', note(inUse
     ? '<b>This is the PCN price.</b> price.pc.am publishes it with <code>inUse: true</code>, so '
       + '<code>creditRateUsd</code> is the index and the rails credit at it; market.pc.am sells at it plus its '
-      + 'premium; the keeper holds the pool to it when <code>anchor_index</code> is on; the exchange bots quote '
+      + 'premium; with <code>anchor_index</code> on, the keeper holds the pool to it less <code>target_discount_pct</code> '
+      + '(0 = parity; see the keeper page); the exchange bots quote '
       + 'from <code>bot_price_source = ' + botSrc + '</code>. If it goes <i>unknown</i> or stale, '
       + '<code>/credit-rate</code> answers 503 and the rails hold. Every move should still be explained by the '
       + 'fills below.'

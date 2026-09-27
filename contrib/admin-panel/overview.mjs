@@ -169,9 +169,20 @@ function keeperCard(base, k) {
       primary: '&mdash;', plabel: 'defends the pool at', why: 'the tuning file is unreadable, so the keeper refuses to trade' }) };
   }
   const status = eff && eff.error ? 'alert' : 'ok';
+  // Floor mode defends buy_floor_usd; otherwise the keeper holds the pool at its
+  // target = anchor x (1 - target_discount_pct/100). This card used to show the
+  // floor ($0.0000 with floor mode off) and say "parity" even with a discount set
+  // (12.2% since 2026-09-27), so show the target the keeper itself last computed.
+  const floor = !!(eff && eff.floor_mode);
+  const disc = Number(tun.target_discount_pct) || 0;
+  const anchor = t(eff && eff.anchor ? eff.anchor : 'anchor');
+  const mode = !eff ? '&mdash;' : floor ? 'floor'
+    : disc ? `${anchor} &minus; ${fmt(disc, 1)}%` : `parity with the ${anchor}`;
   return { status, html: card({ icon: '&#9878;&#65039;', title: 'wPCN keeper', href: `${base}/keeper`, status,
-    primary: usd(Number(tun.buy_floor_usd), 4), plabel: 'buys wPCN only below this floor',
-    lines: [['Mode', eff && eff.floor_mode ? 'floor' : eff ? 'parity' : '&mdash;'], ['Pool now', usd(Number(eff?.pool_price), 6)],
+    primary: floor ? usd(Number(tun.buy_floor_usd), 4) : usd(Number(eff?.target_price), 6),
+    plabel: floor ? 'buys wPCN only below this floor'
+      : `holds the pool within ${fmt(Number(tun.dead_band) * 100, 0) ?? '?'}% of this target`,
+    lines: [['Mode', mode], ['Pool now', usd(Number(eff?.pool_price), 6)],
       ['Buying', tun.buy ? 'on' : 'off'], ['Selling', tun.sell ? 'on' : 'off'],
       ['Spent today', st ? `$${fmt(Number(st.usdt_spent || 0), 2)} of $${fmt(Number(tun.daily_usdt_cap), 0)}` : '&mdash;']],
     why: eff && eff.error ? String(eff.error).slice(0, 140) : '' }) };

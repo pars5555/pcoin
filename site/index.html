@@ -1194,9 +1194,9 @@ Linux    pcoin-cli startmining &quot;&lt;your pc1q&hellip; address&gt;&quot; 4</
         difference from wrapped Bitcoin, whose supply is minted on deposit, and it is why the desk now
         asks for returns rather than burns; it is also why the price you pay for wPCN on PancakeSwap can
         be higher than PCN costs at market.pc.am &mdash; check both;
-        <b>we trade this pool ourselves</b>. Since 25 September a bot of ours holds it within 3% of the
-        PCN index in both directions: it checks every minute, buys wPCN when the pool is more than 3%
-        below the index and sells when it is more than 3% above, in steps of at most $10 or 400 wPCN, and
+        <b>we trade this pool ourselves</b>. Since 25 September a bot of ours holds it within 3% of a target set from the
+        PCN index (the target can sit below the index) in both directions: it checks every minute, buys wPCN when the pool is more than 3%
+        below that target and sells when it is more than 3% above, in steps of at most $10 or 400 wPCN, and
         spends at most $50 of USDT and 2,000 wPCN a day &mdash; a move bigger than that budget can outrun
         it. <b>The pool no longer sets any of our numbers</b>: the PCN price is the index of trades between
         users on exchange.pc.am, and both the rate our services credit PCN at and the price we sell PCN

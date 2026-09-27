@@ -218,7 +218,7 @@
       at 50,000 and cannot be minted, so every burn permanently shrinks what can ever be wrapped again.
       A return keeps it usable.</p>
       <p><b>wPCN and PCN can have different prices, and the two directions differ.</b> A bot of ours
-      holds the PancakeSwap pool within 3% of the PCN index in both directions, but only within a daily
+      keeps the PancakeSwap pool within 3% of a target set from the PCN index &mdash; the target can sit below the index &mdash; in both directions, but only within a daily
       budget ($50 of USDT and 2,000 wPCN), so a bigger move can outrun it. Beyond that: if wPCN trades
       below PCN, anyone can buy it, redeem 1:1 and pull it back up. If wPCN trades <i>above</i> PCN, only
       wPCN leaving the desk's inventory pushes it back down &mdash; somebody wrapping more PCN, or our bot

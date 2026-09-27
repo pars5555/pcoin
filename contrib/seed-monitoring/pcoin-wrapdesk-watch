@@ -101,6 +101,8 @@ RESERVE = os.environ.get("WRAP_RESERVE", "pc1q7hhzmdkkx0zjtzj6qkwmuvhlgwfqjrc6j2
 # 2026-09-25); this copy only decides whether the line says "within" or
 # "OUTSIDE", so a drift here mislabels a report and moves no money.
 KEEPER_BAND_PCT = float(os.environ.get("KEEPER_BAND_PCT", 3.0))
+# Written by the keeper after every run: the tuning values it actually used.
+KEEPER_EFFECTIVE = os.environ.get("KEEPER_EFFECTIVE", "/var/lib/pcoin-wrapdesk/keeper-effective.json")
 
 
 def cycle_advice(amt):
@@ -1162,13 +1164,28 @@ def main() -> int:
                                   "trade the pool by hand.")
     elif pool and pool.get("price") is not None:
         pp, iv = float(pool["price"]), float(ixv)
-        gap = (pp / iv - 1.0) * 100.0
+        # The keeper aims at index x (1 - target_discount_pct/100), not at the
+        # index itself. Since 2026-09-27 that discount is 12.2 by the owner's
+        # choice, and comparing with the raw index logged "OUTSIDE the band" on
+        # every run while the keeper held exactly on target. Read the discount
+        # the keeper itself last ran with; unreadable -> compare with the index
+        # and say so, rather than inventing a target.
+        disc, disc_note = 0.0, ""
+        try:
+            with open(KEEPER_EFFECTIVE) as fh:
+                disc = float((json.load(fh).get("values") or {}).get("target_discount_pct") or 0.0)
+        except Exception:
+            disc_note = " (keeper's discount unreadable -- compared with the index itself)"
+        tv = iv * (1.0 - disc / 100.0)
+        gap = (pp / tv - 1.0) * 100.0
         inside = abs(gap) <= KEEPER_BAND_PCT
         where = "within" if inside else "OUTSIDE"
+        target_txt = (f"the keeper's target ${tv:.6f} (PCN index ${iv:.6f} less {disc:g}%)"
+                      if disc else f"the PCN index ${iv:.6f}")
         tasks.append(("pool_vs_index", "info",
-                      f"Pool ${pp:.6f} is {gap:+.2f}% against the PCN index ${iv:.6f} -- "
+                      f"Pool ${pp:.6f} is {gap:+.2f}% against {target_txt}{disc_note} -- "
                       f"{where} the keeper's {KEEPER_BAND_PCT:g}% "
-                      f"band. The keeper holds the pool to the index in both directions on "
+                      f"band. The keeper holds the pool to that target in both directions on "
                       f"its own; nothing to do by hand."
                       + ("" if inside else
                          " If it is still outside on the next run, read the keeper's journal: "
