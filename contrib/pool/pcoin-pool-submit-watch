@@ -48,6 +48,18 @@ DATADIR = os.environ.get("POOL_DATADIR", "-datadir=/var/lib/pcoin")
 # Expected blocks with none found before we call it: 4.0 -> p(silence) < 2%.
 THRESHOLD = float(os.environ.get("POOL_EXPECTED_BLOCKS", "4.0"))
 FAIL_STREAK = int(os.environ.get("POOL_FAIL_STREAK", "3"))
+# A found block is written in steps (pool.mjs handleSubmit): store the share,
+# submitblock, flag the share is_block=1, and only THEN insert the blocks row.
+# A run that reads the ledger between the last two steps sees a found block
+# with no row. That happened at 13:28:52 UTC on 2026-09-26: height 9656's
+# share was written at .358, its row at .541, this watcher read in between and
+# paged "the pool is losing blocks it found"; it cleared five minutes later and
+# nothing had been lost. The share-to-row gap measured 0.17-0.28 s over the
+# blocks around it; each write can take up to the store's 15 s timeout under
+# load. So a found block younger than this is not judged yet -- the next run,
+# five minutes on, judges it. The default lives here, not in the unit, so a
+# run by hand behaves like the timer (CLAUDE.md 7.14).
+FOUND_GRACE_S = float(os.environ.get("POOL_FOUND_GRACE_S", "180"))
 
 FAILURE = re.compile(r"submitblock threw|block REJECTED by node")
 # The pool died of a V8 heap OOM at 12:13 UTC on 2026-09-05 and nothing said
@@ -228,9 +240,14 @@ def main():
         #   found == 0 -> nothing was found, so the submit path is not implicated.
         # Claiming "cannot submit" without checking this sent a real investigation
         # down the wrong road for an hour while the pool was verifiably healthy.
-        found = cur.execute("SELECT COUNT(*) FROM shares WHERE is_block=1 AND at > ?",
-                            (since,)).fetchone()[0] or 0
-        print("  shares flagged is_block since then: %d" % found)
+        cutoff = int(time.time() * 1000 - FOUND_GRACE_S * 1000)
+        found = cur.execute("SELECT COUNT(*) FROM shares WHERE is_block=1 AND at > ? AND at <= ?",
+                            (since, cutoff)).fetchone()[0] or 0
+        young = cur.execute("SELECT COUNT(*) FROM shares WHERE is_block=1 AND at > ?",
+                            (max(since, cutoff),)).fetchone()[0] or 0
+        print("  shares flagged is_block since then: %d" % found
+              + ("  (+%d younger than %.0fs: its row may not be written yet, judged next run)"
+                 % (young, FOUND_GRACE_S) if young else ""))
         if found:
             submit_broken = True
             alerts.append(("B.", "The pool found %d block(s) in the last %.0f minutes that never "
@@ -238,6 +255,11 @@ def main():
                           "the step that hands blocks to the node is broken.\ntech: %d share(s) "
                           "flagged as blocks since the last recorded block, none in the blocks table"
                           % (found, mins, found)))
+        elif young:
+            # A block was found moments ago; its row is on its way. That is the
+            # opposite of "no block for a while", so the luck check below must
+            # not fire on the work that led up to it either.
+            print("  a block was just found; not judging luck until its row is written")
         elif expected >= THRESHOLD:
             # THE THIRD CAUSE, WHICH THIS ALERT USED TO RULE OUT BY MISTAKE.
             #

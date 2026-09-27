@@ -12,10 +12,40 @@ are worthless against a majority miner -- they buy time, not safety. So the
 thing worth alerting on is not "was there a reorg" (by then the money is gone)
 but "is somebody in a position to cause one".
 
-HOW IT MEASURES. A pool block pays many addresses in its coinbase; a solo block
-pays one. That is the whole classifier, and it is read straight off the chain
-from the node this runs on -- no explorer, no third party, nothing to be lied to
-by. `getblock <hash> 2` carries the coinbase outputs, so one RPC per block.
+HOW IT MEASURES. Read straight off the chain from the node this runs on -- no
+explorer, no third party, nothing to be lied to by. `getblock <hash> 2` carries
+the coinbase outputs, so one RPC per block. Every block lands in one of three
+buckets, and each bucket names the PARTY that found it:
+
+  * OURS -- the coinbase pays one of OUR pools' own fee addresses (OUR_POOLS)
+    and has the pool shape (2+ paying outputs).
+  * OUTSIDE POOL -- any other pool-shaped coinbase. The party is the pool's fee
+    address: the output that is a round percentage of the coinbase (see
+    fee_address()).
+  * SOLO -- one paying output (or two that are not a pool). The party is the
+    payout address.
+
+UNTIL 2026-09-27 "3+ outputs" MEANT "OUR POOL", and that was wrong as soon as
+outside pools appeared, because they pay many outputs too. For heights
+9417-9716 it said our pool had 84.3% [80-88]; matching block hashes against
+both pool ledgers gave pool.pc.am 182 + pool2.pc.am 14 = 65.3%. The owner was
+paged "our pool found 74% -> 85%" all day on a figure 19 points too high.
+
+TWO ALERTS, and together they cover every single party:
+  * OUR share, against --crit (the "pool" state). The pool server picks what
+    every one of its miners builds on, so this is the share one operator -- us
+    -- steers.
+  * The LARGEST OTHER party -- one outside pool (by fee address) or one solo
+    address -- against --warn/--crit on the confidence interval (the "solo"
+    state, named before outside pools existed).
+Ours is not a candidate in the second alert on purpose: it has its own text,
+and a 65% pool made of many independent miners must not read "one miner has
+65%, hold deposits".
+
+A STALE OUR_POOLS LIST FAILS LOUD, NOT QUIET. If our pools' fee address ever
+changes and nobody updates the list, our blocks do not vanish: fee_address()
+finds our 2% output, and our whole share arrives in the second alert as one
+"outside pool" above 50% -- CRITICAL, with our own address in the text.
 
 WINDOW SIZE IS THE WHOLE GAME. A 60-block window at p=0.5 has a standard error
 of ~6.5 points, so single readings swing +/-13 points at 95% confidence and look
@@ -41,6 +71,9 @@ still prints every tick, so the journal shows the monitor alive either way.
 Usage:
     pcoin-concentration-watch [--window N] [--warn PCT] [--crit PCT]
                               [--remind-hours H] [--state PATH] [--dry-run]
+                              [--ours ADDR[=LABEL] ...] [--end-height H]
+
+--end-height judges a past window (an audit: it implies --dry-run).
 
 Exits 0 even when it alerts: this is a monitor, and a monitor that fails a
 timer unit just buries its own message.
@@ -63,6 +96,32 @@ CLI_CANDIDATES = [
 ]
 NOTIFY = "/usr/local/bin/pcoin-notify"
 STATE_PATH = "/var/lib/pcoin-concentration-watch.json"
+
+# OUR pools' own fee addresses -> how to name them. pool.pc.am and pool2.pc.am
+# pay the SAME address (the treasury: `poolAddress` in both pool.config.json
+# files) and their coinbases carry no pool tag, so the chain cannot split them
+# and they are one line here. The address is public -- it is on-chain and in
+# contrib/pool/pool.config.json -- so it lives in this file, not in the unit: a
+# bare run must give the same answer as the timer (CLAUDE.md 7.14). --ours
+# REPLACES this list.
+#
+# A single-output coinbase to this address is NOT ours-by-pool: no pool found
+# it, a fleet PC mined it solo to the treasury. It is reported with the solo
+# miners, marked as ours, which is what makes this figure match the two pool
+# ledgers block for block.
+OUR_POOLS = {
+    "pc1qlvw6kx8wkcz8f6p0d6kswv69fjt33ll079f64e": "pool.pc.am + pool2.pc.am",
+}
+
+# How a pool's fee output is recognised: a round percentage of the coinbase
+# (0.5% steps up to 10%) give or take FEE_SLACK_SATS of rounding.
+FEE_STEPS = range(1, 21)          # k/200 of the coinbase: 0.5% .. 10%
+FEE_SLACK_SATS = 1000             # a PPLNS split leaves < 1 sat per miner over
+# Pool-shaped blocks whose fee output cannot be found. They are counted as ONE
+# party, which can only overstate any single one of them -- the safe direction
+# for an alarm. Plain words: this string reaches Telegram, and an underscore or
+# asterisk would break its Markdown.
+UNIDENTIFIED = "(outside pools with no recognisable fee output, counted together)"
 
 
 def find_cli():
@@ -99,27 +158,60 @@ def rpc(cli, *args):
         return out
 
 
-def pool_miner_count(timeout=12):
-    """How many miners are connected to pool.pc.am, or None for UNKNOWN.
+POOL_APIS = [("pool.pc.am", "https://pool.pc.am/api/pools/pcoin"),
+             ("pool2.pc.am", "https://pool2.pc.am/api/pools/pcoin")]
 
-    Public endpoint, no credential. None must render as "unknown" and never as
+
+def pool_miner_counts(timeout=12):
+    """[(pool, connected miners or None for UNKNOWN)] for each of our pools.
+
+    Public endpoints, no credential. None must render as "unknown" and never as
     a number -- "the pool has no miners" and "I could not ask" are opposite
     facts and this alert is read by someone deciding whether to worry.
     """
-    import json as _json
     import urllib.request as _u
-    try:
-        with _u.urlopen("https://pool.pc.am/api/pools/pcoin", timeout=timeout) as r:
-            d = _json.load(r)
-        p = d.get("pool") or d
-        n = (p.get("poolStats") or {}).get("connectedMiners")
-        return int(n) if n is not None else None
-    except Exception:
-        return None
+    out = []
+    for name, url in POOL_APIS:
+        try:
+            with _u.urlopen(url, timeout=timeout) as r:
+                d = json.load(r)
+            p = d.get("pool") or d
+            n = (p.get("poolStats") or {}).get("connectedMiners")
+            out.append((name, int(n) if n is not None else None))
+        except Exception:
+            out.append((name, None))
+    return out
 
 
-def classify(block):
-    """-> ('pool', None) or ('solo', address) or (None, None) if unreadable.
+def fee_address(paying):
+    """The address a pool pays its fee to, or None.
+
+    A PPLNS pool takes a fixed percentage of the block and pays it -- plus a few
+    satoshis of rounding -- to its own address, while miners get arbitrary
+    amounts. Height 9495: 50000032 sat of a 5000002918-sat coinbase went to
+    pc1qdjd0...; 1% is 50000029, plus a 3-sat remainder. Ours pays 2% plus ~40
+    sat. So the output within FEE_SLACK_SATS of a round percentage is the fee,
+    and the closest one wins. On heights 9417-9716 this named the fee address of
+    all 254 pool-shaped blocks, ours and outside, and no miner.
+
+    `paying` is [(satoshis, address)]. The chance of a miner's share landing on
+    a round percentage by accident is ~1e-6 per output.
+    """
+    total = sum(v for v, _ in paying)
+    best = None
+    for v, a in paying:
+        for k in FEE_STEPS:
+            d = abs(v - total * k // 200)
+            if d <= FEE_SLACK_SATS and (best is None or d < best[0]):
+                best = (d, a)
+    return best[1] if best else None
+
+
+def classify(block, ours):
+    """-> (kind, key), kind 'ours' | 'outside' | 'solo', or (None, None).
+
+    key is who found it: our pool's label, an outside pool's fee address (or
+    UNIDENTIFIED), or a solo miner's payout address.
 
     An unreadable block resolves NOTHING. It is not a solo block and it is not a
     pool block; it is dropped from the denominator. Counting it either way would
@@ -138,12 +230,20 @@ def classify(block):
         if not addr:
             addrs = spk.get("addresses") or []
             addr = addrs[0] if addrs else None
-        paying.append(addr)
+        # Amounts arrive as bare JSON numbers: round to satoshis explicitly.
+        paying.append((int(round(float(o["value"]) * 1e8)), addr))
     if not paying:
         return None, None
-    if len(paying) >= 3:
-        return "pool", None
-    return "solo", paying[0]
+    if len(paying) >= 2:
+        for _, a in paying:
+            if a in ours:
+                return "ours", ours[a]
+        fee = fee_address(paying)
+        if fee:
+            return "outside", fee
+        if len(paying) >= 3:
+            return "outside", UNIDENTIFIED
+    return "solo", paying[0][1]
 
 
 def ci95(k, n):
@@ -208,7 +308,23 @@ def main():
     ap.add_argument("--remind-hours", type=float, default=6.0)
     ap.add_argument("--state", default=STATE_PATH)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--ours", action="append", metavar="ADDR[=LABEL]",
+                    help="our pools' fee address; repeatable; REPLACES the built-in list")
+    ap.add_argument("--end-height", type=int,
+                    help="judge the window ending here instead of at the tip (implies --dry-run)")
     a = ap.parse_args()
+
+    ours = OUR_POOLS
+    if a.ours:
+        ours = {}
+        for item in a.ours:
+            addr, _, label = item.partition("=")
+            ours[addr.strip()] = label.strip() or addr.strip()
+    if a.end_height is not None and not a.dry_run:
+        # A past window is an audit. Alerting on it, or recording it as the
+        # last thing said, would page someone about history.
+        print("--end-height implies --dry-run: nothing will be sent or saved")
+        a.dry_run = True
 
     cli = find_cli()
     if not cli:
@@ -217,36 +333,66 @@ def main():
         return 0
 
     tip = int(rpc(cli, "getblockcount"))
+    if a.end_height is not None:
+        tip = min(tip, a.end_height)
     lo = max(1, tip - a.window + 1)
 
-    pool = 0
-    solo = collections.Counter()
+    mine = collections.Counter()      # our pool label -> blocks
+    outside = collections.Counter()   # outside pool fee address -> blocks
+    solo = collections.Counter()      # solo payout address -> blocks
     unreadable = 0
     for h in range(lo, tip + 1):
         try:
             bh = rpc(cli, "getblockhash", str(h))
-            kind, addr = classify(rpc(cli, "getblock", bh, "2"))
+            kind, key = classify(rpc(cli, "getblock", bh, "2"), ours)
         except Exception:
-            kind, addr = None, None
-        if kind == "pool":
-            pool += 1
+            kind, key = None, None
+        if kind == "ours":
+            mine[key] += 1
+        elif kind == "outside":
+            outside[key] += 1
         elif kind == "solo":
-            solo[addr] += 1
+            solo[key] += 1
         else:
             unreadable += 1
 
-    n = pool + sum(solo.values())
+    pool = sum(mine.values())
+    n = pool + sum(outside.values()) + sum(solo.values())
     if n < a.window * 0.8:
         print("only %d/%d blocks readable -- refusing to judge" % (n, a.window),
               file=sys.stderr)
         return 0
 
-    top_addr, top_n = (solo.most_common(1) or [(None, 0)])[0]
+    # The largest party that is not our pools: one outside pool or one solo
+    # address. Keyed by address, so a pool operator who also mines solo to its
+    # own fee address is one party, not two.
+    parties = outside + solo
+    top_addr, top_n = (parties.most_common(1) or [(None, 0)])[0]
+    if top_addr == UNIDENTIFIED:
+        top_word, top_kind = "group of outside pools", "Outside pools we cannot tell apart"
+    elif top_addr in outside and top_addr in solo:
+        top_word, top_kind = "outside pool", "One outside pool (fee address, also mining solo)"
+    elif top_addr in outside:
+        top_word, top_kind = "outside pool", "One outside pool (a single fee address)"
+    else:
+        top_word, top_kind = "miner", "One miner (a single payout address)"
+    if top_addr in ours:
+        top_kind += ", which is OURS"
     tp, tlo, thi = ci95(top_n, n)
     pp, plo, phi = ci95(pool, n)
+    op = 100.0 * sum(outside.values()) / n
+    sp = 100.0 * sum(solo.values()) / n
+    ours_solo = sum(c for addr, c in solo.items() if addr in ours)
 
-    line = ("window %d-%d (%d blocks): top solo %.1f%% [%.0f-%.0f] %s | pool %.1f%% [%.0f-%.0f]"
-            % (lo, tip, n, tp, tlo, thi, (top_addr or "-"), pp, plo, phi))
+    line = ("window %d-%d (%d blocks): ours %.1f%% [%.0f-%.0f] (%s)%s"
+            " | outside pools %.1f%% (%d fee addresses) | solo %.1f%% (%d addresses)"
+            " | largest other party %.1f%% [%.0f-%.0f] %s%s"
+            % (lo, tip, n, pp, plo, phi,
+               ", ".join("%s %d" % kv for kv in mine.most_common()) or "none",
+               (" +%d solo to our address" % ours_solo) if ours_solo else "",
+               op, len(outside), sp, len(solo),
+               tp, tlo, thi, (top_addr or "-"),
+               " (pool)" if top_addr in outside else ""))
     print(line)
 
     state = load_state(a.state)
@@ -262,28 +408,31 @@ def main():
     elif tp >= a.warn:
         level = "WARNING"
 
+    # The "solo" state holds the LARGEST OTHER PARTY -- an outside pool or a solo
+    # address. The key keeps its old name so a state file written before outside
+    # pools were told apart still gates correctly.
     if level:
         reason = send_decision(state.get("solo"), level, top_addr, tp, remind_s, now)
         if reason:
             body = (
-                "One miner (a single payout address) found %.1f%% of the last %d blocks\n"
-                "(heights %d-%d; 95%% range %.0f-%.0f%%). Our pool found %.1f%% in the same blocks.\n"
-                "Why it matters: a miner above 50%% can rewrite recent blocks and reverse a\n"
+                "%s found %.1f%% of the last %d blocks\n"
+                "(heights %d-%d; 95%% range %.0f-%.0f%%). Our pools found %.1f%% in the same blocks.\n"
+                "Why it matters: one party above 50%% can rewrite recent blocks and reverse a\n"
                 "payment that already looked settled. Waiting for more confirmations buys\n"
                 "time, not safety.\n"
                 "What to do: %s\n"
                 "\u2014\n"
                 "tech: address %s. Re-alert because: %s. Next reminder in %.0fh unless it\n"
                 "changes. https://explorer.pc.am"
-                % (tp, n, lo, tip, tlo, thi, pp,
+                % (top_kind, tp, n, lo, tip, tlo, thi, pp,
                    ("hold large PCN credits for extra confirmations until it drops, and "
                     "look at who owns that address." if level == "CRITICAL" else
                     "nothing yet -- watch it. At 50% it becomes a real risk."),
                    top_addr or "?", reason, a.remind_hours)
             )
-            notify("%s One miner has %.0f%% of recent blocks (%s)"
-                   % ("\U0001F534" if level == "CRITICAL" else "\U0001F7E1", tp,
-                      "above 50%" if level == "CRITICAL" else "watch"),
+            notify("%s One %s has %.0f%% of recent blocks (%s)"
+                   % ("\U0001F534" if level == "CRITICAL" else "\U0001F7E1",
+                      top_word, tp, "above 50%" if level == "CRITICAL" else "watch"),
                    body, a.dry_run)
             state["solo"] = {"level": level, "addr": top_addr, "value": tp, "at": now}
             dirty = True
@@ -295,8 +444,8 @@ def main():
         # The all-clear is a state change too, and the one people stop watching
         # for. It is sent exactly once, because the state that caused it is
         # deleted in the same breath.
-        notify("\U0001F7E2 No single miner dominates any more",
-               "The biggest single miner now has %.1f%% of the last %d blocks (95%% range\n"
+        notify("\U0001F7E2 No single outside miner or pool dominates any more",
+               "The biggest one outside our pools now has %.1f%% of the last %d blocks (95%% range\n"
                "%.0f-%.0f%%) -- below the %.0f%% warning line. It was %s at %.1f%%.\n"
                "What to do: nothing."
                % (tp, n, tlo, thi, a.warn,
@@ -311,27 +460,32 @@ def main():
     if pp >= a.crit:
         reason = send_decision(state.get("pool"), "WARNING", None, pp, remind_s, now)
         if reason:
-            miners = pool_miner_count()
-            who = ("%d miners are connected to it right now" % miners
-                   if miners is not None
-                   else "the connected-miner count could not be read just now")
-            notify("\U0001F7E1 Our pool found %.0f%% of recent blocks" % pp,
-                   "pool.pc.am found *%.1f%%* of the last %d blocks (95%% range %.0f-%.0f%%),\n"
-                   "and %s.\n"
-                   "Not an attack risk: those are many independent miners, the biggest a few\n"
-                   "percent. The risk is that %.0f%% of the network runs through ONE server we\n"
-                   "operate -- if pool.pc.am goes down, all of that mining stops at once.\n"
-                   "What to do: nothing today. Only a second pool lowers this -- one already\n"
-                   "exists (198.244.169.49:3333) and there is a 500 PCN bounty for more.\n"
+            who = ", ".join("%s on %s" % ("unknown" if c is None else c, name)
+                            for name, c in pool_miner_counts())
+            notify("\U0001F7E1 Our pools found %.0f%% of recent blocks" % pp,
+                   "Our pools (%s) found *%.1f%%* of the last %d blocks (95%% range %.0f-%.0f%%).\n"
+                   "Miners connected right now: %s.\n"
+                   "Those are many independent miners, the biggest a few percent -- but the pool\n"
+                   "server decides what all of them build on, so %.0f%% of the network follows one\n"
+                   "operator (us), and if the pools go down that mining stops at once.\n"
+                   "Outside pools found %.1f%% and solo miners %.1f%% of the same blocks.\n"
+                   "What to do: nothing today. Only more mining outside our pools lowers this --\n"
+                   "there is a 500 PCN bounty for another pool.\n"
                    "\u2014\n"
-                   "tech: re-alert because: %s."
-                   % (pp, n, plo, phi, who, pp, reason), a.dry_run)
+                   "tech: blocks are ours when the coinbase pays our pools' fee address. "
+                   "Re-alert because: %s."
+                   % (", ".join(mine) or "none", pp, n, plo, phi, who, pp, op, sp, reason),
+                   a.dry_run)
             state["pool"] = {"level": "WARNING", "addr": None, "value": pp, "at": now}
             dirty = True
+        else:
+            nxt = (state["pool"].get("at", 0) + remind_s - now) / 3600
+            print("ours: suppressed: unchanged (%.1f%% vs %.1f%% last sent); reminder in %.1fh"
+                  % (pp, state["pool"].get("value", 0.0), max(0, nxt)))
     elif state.get("pool"):
-        notify("\U0001F7E2 Our pool is back under half of the blocks",
-               "pool.pc.am now finds *%.1f%%* of the last %d blocks (95%% range %.0f-%.0f%%).\n"
-               "More of the network is mined outside our pool -- the direction we want.\n"
+        notify("\U0001F7E2 Our pools are back under half of the blocks",
+               "Our pools now find *%.1f%%* of the last %d blocks (95%% range %.0f-%.0f%%).\n"
+               "More of the network is mined outside our pools -- the direction we want.\n"
                "What to do: nothing."
                % (pp, n, plo, phi), a.dry_run)
         del state["pool"]
