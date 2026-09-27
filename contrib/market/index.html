@@ -45,8 +45,10 @@ border:1px solid var(--border,#2a3346);background:transparent;color:inherit}
   <div class="grid">
     <div class="card"><div class="k">Price now</div><div class="v" id="price">&mdash;</div>
       <div class="s">USD for the next PCN</div></div>
+    <!-- The figure under it is filled by the server from the ladder (page-render.mjs):
+         this said "of 100,000 PCN" in the markup, true only while the ladder was that size. -->
     <div class="card"><div class="k">Available to buy</div><div class="v" id="remaining">&mdash;</div>
-      <div class="s" id="soldPct">of 100,000 PCN</div></div>
+      <div class="s" id="soldPct"><!--LIVE:stock--></div></div>
     <div class="card"><div class="k">Order limits</div><div class="v" id="minOrder">&mdash;</div>
       <div class="s" id="minOrderNote">per order</div></div>
   </div>
@@ -98,12 +100,15 @@ border:1px solid var(--border,#2a3346);background:transparent;color:inherit}
       <div class="note" id="quoteBox">Enter an amount to see what you receive.</div>
       <button id="buyBtn" onclick="buy()" disabled>Loading limits…</button>
       <div class="msg" id="buyMsg"></div>
+      <!-- The auto-send limit is rendered by the SERVER from autoMaxUsd
+           (page-render.mjs), not typed here and not patched in by the script.
+           This said "$25" in the markup while the live limit was $50, and only a
+           browser that ran the script ever saw the real number -- link previews,
+           search engines and no-JS visitors read the stale one. -->
       <div class="note" id="deliveryNote">
         You are sent to NOWPayments to pay. Coins are released once the payment confirms
         &mdash; not instantly, because a payment that is still confirming can still be
-        reversed. <b>Orders up to $25 are sent automatically</b>, usually within a minute
-        of confirmation. <b>Larger orders are released by hand</b> and can take anywhere
-        from a minute to 24 working hours.
+        reversed. <!--LIVE:delivery-->
       </div>
     </div>
 
@@ -119,13 +124,18 @@ border:1px solid var(--border,#2a3346);background:transparent;color:inherit}
          true -- exchange.pc.am opened on 2026-09-16, and the keeper stopped
          defending the posted price on 2026-09-19 -- and the first is flatly
          false once this market prices off exchange.pc.am's trades. Written now
-         to be true whichever way the price is set. -->
+         to be true whichever way the price is set.
+         The wrap desk's terms are NOT repeated here (2026-09-27). This read "250 PCN
+         per person while it is new, 5% fee, 100 confirmations" long after the desk
+         moved to an account-based daily and monthly limit; those numbers live in the
+         desk's own environment on another host, so this page cannot render them live
+         and must not type them in. The desk states its own terms. -->
     <p><b>This market does not buy PCN back, and nothing here promises you can sell
     it for money.</b> PCN trades in two small places:
     <a href="https://exchange.pc.am" rel="noopener">exchange.pc.am</a>, a small order
     book the project runs, and PancakeSwap, as wPCN &mdash; made by wrapping PCN at the
-    <a href="https://wrapdesk.pc.am" rel="noopener">wrap desk</a> (250 PCN per person
-    while it is new, 5% fee, released by hand after 100 confirmations). Both are thin:
+    <a href="https://wrapdesk.pc.am" rel="noopener">wrap desk</a>, which has its own
+    limits, fee and waiting time, stated on its page. Both are thin:
     selling any real amount moves the price against you. So treat anything you buy here
     as spent: use it on <a href="https://pc.am">the services that accept PCN</a>.
     <b>Do not buy PCN expecting to get money out of it.</b></p>
@@ -183,11 +193,19 @@ border:1px solid var(--border,#2a3346);background:transparent;color:inherit}
 })();</script>
 <script>
 let mode = 'in';
-// Server-owned limits, fetched at load. The defaults only cover the instant
-// before that returns; every one is overwritten from /api/ladder/state.
+// Server-owned limits, fetched at load. The starting values cover the instant
+// before that returns, and a failed fetch; every one is overwritten from
+// /api/ladder/state. They are RENDERED BY THE SERVER from the live settings
+// (page-render.mjs) -- they used to be typed in here as $20 / $2,000 / $25
+// while the live maximum was $380 and the auto-send limit $50. The object
+// between the markers is only what an unrendered copy of this file would run:
+// null means "not known", never a limit. LIMITS_LOADED still gates buying on
+// the API's answer, exactly as before.
 let LIMITS_LOADED = false;
-let LIMITS = { minOrderUsd: 20, maxOrderUsd: 2000, maxOrderPcn: 12000,
-               maxOrderUsdNow: null, autoMaxUsd: 25 };
+let LIMITS = /*LIVE:limits*/{ minOrderUsd: null, maxOrderUsd: null, maxOrderPcn: null, maxOrderUsdNow: null, autoMaxUsd: null }/*/LIVE*/;
+// The ladder's step count, for the ladder-mode calculator text. From
+// /api/ladder/state; null until it answers, and the text then names no total.
+let RUNG_COUNT = null;
 const $ = id => document.getElementById(id);
 const show = (el, cls, text) => { el.className = 'msg ' + cls; el.textContent = text; };
 
@@ -478,14 +496,17 @@ function calc() {
       // clamped to the cap, a 5,000 PCN order crosses SEVEN steps and the page
       // told the buyer it was "inside a single step".
       const capped = !c.priceMoves && steps > 1;
+      // "of the 100 steps" was typed in; the count is the ladder's, from
+      // /api/ladder/state. Unknown -> no total named rather than a guessed one.
+      const ofSteps = RUNG_COUNT ? ' of the ' + RUNG_COUNT + ' steps' : ' steps';
       const movement = c.exhausted
         ? 'It would take <b>every remaining step</b> and empty the ladder.'
         : c.priceMoves
-          ? 'It climbs <b>' + steps + '</b> of the 100 steps, taking the price for the next '
+          ? 'It climbs <b>' + steps + '</b>' + ofSteps + ', taking the price for the next '
             + 'buyer from ' + money(c.priceBefore) + ' to <b>' + money(c.marginalPriceAfter)
             + '</b>.'
           : capped
-            ? 'It climbs <b>' + steps + '</b> of the 100 steps, but the price does not move: '
+            ? 'It climbs <b>' + steps + '</b>' + ofSteps + ', but the price does not move: '
               + 'every step above <b>' + money(c.priceBefore) + '</b> is currently being sold '
               + 'AT that price, because the ask is capped to stay close to the open market. '
               + 'That is why the average per coin is the same whether you buy 10 or 10,000 '
@@ -601,6 +622,7 @@ $('signout').onclick = async () => { await fetch('/api/logout'); refresh(); };
     const sellable  = (l.sellableNowPcn === null || l.sellableNowPcn === undefined)
       ? null : Math.round(Number(l.sellableNowPcn));
     $('remaining').textContent = sellable === null ? '\u2014' : sellable.toLocaleString();
+    RUNG_COUNT = Number(l.rungCount) > 0 ? Number(l.rungCount) : null;
     const indexMode = l.pricingMode === 'index';
     $('soldPct').textContent = l.pctSold.toFixed(2) + '% of '
       + Number(l.totalPcn).toLocaleString() + ' PCN sold'
@@ -660,12 +682,9 @@ $('signout').onclick = async () => { await fetch('/api/logout'); refresh(); };
     // The limits are now the server's, so the form may be used.
     LIMITS_LOADED = true;
     $('buyBtn').textContent = 'Continue to payment';
-    $('deliveryNote').innerHTML =
-      'You are sent to NOWPayments to pay. Coins are released once the payment confirms '
-      + '&mdash; not instantly, because a payment that is still confirming can still be reversed. '
-      + '<b>Orders up to $' + l.autoMaxUsd + ' are sent automatically</b>, usually within a minute '
-      + 'of confirmation. <b>Larger orders are released by hand</b> and can take anywhere from a '
-      + 'minute to 24 working hours.';
+    // #deliveryNote is NOT rewritten here any more: the server renders it from
+    // the same autoMaxUsd this response carries (page-render.mjs), so there is
+    // one implementation of that sentence, and it is right without JavaScript.
   } catch {
     // The limits never arrived. Say so and keep the form shut rather than
     // inviting a payment against numbers this page cannot vouch for — the

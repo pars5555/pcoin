@@ -33,7 +33,12 @@ contrib/market/
   delivery.mjs      hot wallet, auto-send, never-send-twice, backing
   notify.mjs        Telegram, to a PRIVATE channel only
   market-admin.mjs  the operator CLI
-  index.html        the page, including the average-price calculator
+  index.html        the page, including the average-price calculator. Carries NO
+                    figures of its own: markers the server fills (page-render.mjs)
+  page-render.mjs   fills the page's figures (auto-send limit, stock, starting
+                    limits) from the live settings and ladder, so link previews,
+                    search engines and no-JS visitors read live numbers
+  page-render-test.mjs  pure; fails if any number a no-JS visitor can read is not live
   style.css
 ```
 

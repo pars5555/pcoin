@@ -4,8 +4,25 @@ Private operator view: chain health, a miner census over the last N blocks,
 peers seen by the seed, and on-chain balances for every address you care about —
 your own miners and the deposit addresses of every PCN payment integration.
 
-Deployed at **`https://explorer.pc.am/admin/`** (178.105.3.51, `/opt/pcoin-ops`,
-systemd unit `pcoin-ops`, loopback-bound on 8787, proxied by Caddy).
+Runs on 178.105.3.51, `/opt/pcoin-ops`, systemd unit `pcoin-ops`, loopback-bound
+on 8787.
+
+> **RETIRED AS A BROWSER UI on 2026-09-27 (owner-approved).** The owner's admin is
+> **https://admin.pc.am**. Every browser path under `explorer.pc.am/admin` — the
+> pages below, the login form, `/logout`, the 2FA screen — is a **302 to
+> `https://admin.pc.am/`**, for everyone. Two routes still answer, both
+> machine-to-machine:
+>
+> * `POST /admin/collect` with a bearer token — the collectors below, through Caddy;
+> * `GET /api` with the read-only bearer — the unified panel, over **loopback**
+>   (`http://127.0.0.1:8787/api`), never through Caddy.
+>
+> It is enforced twice: in Caddy (the block below) and in `server.mjs` itself, so
+> restoring an older Caddyfile cannot bring the login page back. The page
+> renderers are still in `server.mjs`, unreachable, so reinstating one is a
+> one-line change. 302 rather than 301 because a browser caches a 301
+> indefinitely and this has to stay reversible. The page table below describes
+> what the renderers produce, not anything a browser can reach.
 
 ## Layout
 
@@ -41,25 +58,39 @@ offer: on this chain **a deposit address IS a customer**, and index order IS
 signup order. It sends `noindex,nofollow,noarchive`, and it must never be
 exposed or linked from anything public.
 
-## The trailing slash is load-bearing
+## The Caddy block (explorer.pc.am, since 2026-09-27)
 
-The app emits RELATIVE links (`action="./login"`). That is what lets it be
-mounted under a prefix at all — but at `/admin` with no trailing slash,
-`./login` resolves to `/login`, which is not proxied to this app and lands on
-the explorer's file_server as *"only GET and HEAD are served here"*. So Caddy
-must redirect `/admin` to `/admin/` before anything renders:
+The Caddyfile lives only on the host (`/etc/caddy/Caddyfile`; Caddy there is
+shared with another project, so it is validated as the `caddy` user and applied
+with a graceful `caddy reload`, never a restart). This is the part that concerns
+this app:
 
 ```
 handle /admin {
-	redir * /admin/ permanent
+	redir https://admin.pc.am/ 302
 }
 handle /admin/* {
-	reverse_proxy 127.0.0.1:8787
+	@ops_collect {
+		method POST
+		path /admin/collect
+		header Authorization "Bearer *"
+	}
+	handle @ops_collect {
+		reverse_proxy 127.0.0.1:8787
+	}
+	handle {
+		redir https://admin.pc.am/ 302
+	}
 }
 ```
 
-The cookie `Path` must match the mount point too, or a successful login hands
-back a cookie the next request will not send.
+`method POST` matters: the previous machine matcher checked only the path and the
+header, so a GET of `/admin/collect` carrying any `Bearer x` header slipped past
+the owner-IP lock and was handed the login page.
+
+If a page is ever reinstated: the app emits RELATIVE links (`action="./login"`),
+so it only works mounted at `/admin/` WITH the trailing slash, and the session
+cookie's `Path` must match the mount point.
 
 ## The collectors
 

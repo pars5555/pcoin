@@ -886,6 +886,29 @@ const jsonBodyOr400 = (raw, res) => {
 };
 
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+// ── the public page's live figures ─────────────────────────────────────────
+import { renderMarketPage } from './page-render.mjs';
+// The ladder figures the page shows before its script runs. BOUNDED: a page
+// view must not hang on a slow database. A failed or late read renders as no
+// figure at all (page-render.mjs), never a remembered or default one. Promise.race
+// subscribes to both promises, so a ladder read that fails after the timer has
+// won is still handled -- an unhandled rejection here would page the operator.
+async function pageLadder() {
+  let timer;
+  try {
+    const st = await Promise.race([
+      L.ladderState(),
+      new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('timeout')), 2000); }),
+    ]);
+    return { totalPcn: st.totalPcn, pctSold: st.pctSold };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const CSS = readFileSync('/opt/pcoin-market/style.css', 'utf8');
 const shell = (title, b) => `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title><link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230d1117'/><path d='M16 5 L18.4 13.6 L27 16 L18.4 18.4 L16 27 L13.6 18.4 L5 16 L13.6 13.6 Z' fill='%232dd4bf'/></svg>">
@@ -1879,11 +1902,20 @@ createServer(async (req, res) => {
     }
 
     // ---- pages ----
+    // Every figure in the page is filled HERE from the live settings and ladder
+    // (page-render.mjs), not typed into index.html and not left to the script:
+    // link previews, search engines and no-JS visitors never run the script, and
+    // read "Orders up to $25" for as long as the limit was $50.
     if (p === '/' || p.startsWith('/order/')) {
+      const html = renderMarketPage(readFileSync('/opt/pcoin-market/index.html', 'utf8'), {
+        settings: {
+          autoMaxUsd: S.get('autoMaxUsd'), minOrderUsd: S.get('minOrderUsd'),
+          maxOrderUsd: S.get('maxOrderUsd'), maxOrderPcn: S.get('maxOrderPcn'),
+        },
+        ladder: await pageLadder(),
+      }).replace('<!--HCAPTCHA-->', HCAPTCHA_TAG);
       return res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' })
-        && res.end(shell('Buy PCoin',
-             readFileSync('/opt/pcoin-market/index.html', 'utf8')
-               .replace('<!--HCAPTCHA-->', HCAPTCHA_TAG)));
+        && res.end(shell('Buy PCoin', html));
     }
     return json(res, 404, { error: 'not found' });
   } catch (e) {

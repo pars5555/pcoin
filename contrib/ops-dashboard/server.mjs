@@ -44,6 +44,9 @@ const STATE  = '/opt/pcoin-ops/state.json';
 // Not in the repo: it names accounts and hosts, and this repository is public.
 const DEPS_FILE = process.env.PCOIN_OPS_DEPS || '/opt/pcoin-ops/dependencies.json';
 const PORT   = 8787;
+// Where every browser request is sent since this stopped being a browser UI
+// (2026-09-27). See the RETIRED block in the request handler.
+const ADMIN_URL = 'https://admin.pc.am/';
 const EXPLORER = 'http://127.0.0.1:8080/api';   // the explorer runs on this box
 const GATE = 2800;
 const PER  = 25;                                 // rows per page, everywhere
@@ -1363,6 +1366,25 @@ async function wrapPage() {
       return send(200, 'application/json', '{"ok":true}');
     }
 
+    // ── RETIRED AS A BROWSER UI, 2026-09-27 (owner-approved) ────────────────
+    // The owner's admin is https://admin.pc.am. This dashboard's pages, its login
+    // form (user, password, six-digit code), /logout and the 2FA screen were
+    // still answering 200 at explorer.pc.am/admin/ for the owner's addresses: a
+    // second, older login for the same estate. Caddy now redirects every browser
+    // path under /admin before it reaches this process. THIS is the backstop, so
+    // that restoring an older Caddyfile (two dozen backups sit beside it) cannot
+    // bring the login page back.
+    //
+    // Exactly two routes still answer, both machine-to-machine:
+    //   POST /collect  (above)  bearer; the seed and both pools post snapshots
+    //   GET  /api      (below)  read-only bearer; the unified panel, over loopback
+    // Everything else is a 302 to admin.pc.am -- 302, not 301, because a browser
+    // caches a 301 indefinitely and this must stay reversible.
+    //
+    // The page renderers further down are deliberately left in place and are
+    // unreachable: bringing a page back is then a one-line change, not a restore.
+    if (path !== '/api') return send(302, 'text/html', '', { Location: ADMIN_URL });
+
     const cookie = (req.headers.cookie || '').split(/;\s*/).find(c => c.startsWith('ops='));
     const authed = verify(cookie ? cookie.slice(4) : '');
 
@@ -1415,7 +1437,9 @@ async function wrapPage() {
       }, null, 2));
     }
 
-    if (!authed) return send(200, 'text/html', loginPage(null));
+    // /api without the read token (or a session) is refused as JSON. It used to
+    // get the login page with a 200, which a caller could mistake for an answer.
+    if (!authed) return send(401, 'application/json', '{"error":"read token required"}');
 
     if (path === '/')         return send(200, 'text/html', await dashboardPage());
     if (path === '/census')   return send(200, 'text/html', await censusPage(url));
