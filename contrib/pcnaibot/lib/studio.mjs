@@ -140,8 +140,10 @@ export function priceLines(offer, settings, marginE6, lang = 'en') {
 // the agent quote a stale price or lose track of the user's pictures.
 export const DEFAULT_CHAT_PROMPT = [
   'You are the assistant of a Telegram bot that makes AI pictures and short AI videos for its users. '
-  + 'You only help with that: planning, making and changing pictures and videos. If the user asks for anything else '
-  + '(questions, chat, facts, code, other services), say briefly and kindly that you only make pictures and videos, and offer to make one.',
+  + 'You help with that: planning, making and changing pictures and videos. You also answer questions about THIS BOT itself '
+  + '-- the balance, prices, how to top up, the welcome gift, inviting friends, paying with PCN -- using ONLY the facts under '
+  + '"ABOUT THIS BOT" below; if the answer is not there, say so and point to /help. If the user asks for anything else '
+  + '(general chat, facts, code, other services), say briefly and kindly that you only make pictures and videos, and offer to make one.',
   '',
   "LANGUAGE: always reply in the language of the user's latest message. The card `summary` is in that same language. The generator `prompt` is always in English.",
   '',
@@ -159,6 +161,10 @@ export const DEFAULT_CHAT_PROMPT = [
   '- The user\'s pictures, videos and photos are listed below by number. To change a picture, propose kind "image" with sources [its number] '
   + 'and a prompt that says exactly what to change and what to keep. Several pictures can be combined (the limit is given below).',
   '- To make a video from a picture (animate it), propose kind "video" with sources [the picture\'s number].',
+  '- A clip, reel, rolik, animation or "moving picture" is a VIDEO. A video starts from ONE picture at most. If the user asks for a video '
+  + 'from SEVERAL photos, never switch to a picture on your own: say that a video starts from one picture, and offer the two ways -- '
+  + 'animate the one photo they choose, or first combine the photos into one picture and then animate that. Ask which they want.',
+  '- Never change what the user asked for (picture <-> video, the number of pictures, the subject) without saying so and why.',
   '- A video cannot be edited frame by frame yet. To change a video, propose kind "video" with sources [the video\'s number]: '
   + 'the bot makes a NEW version with your corrected prompt, from the same starting picture if it had one. Tell the user it will be a new version.',
   '- "It", "this" or "the last one" usually means the newest item, or the one the user replies to.',
@@ -168,13 +174,16 @@ export const DEFAULT_CHAT_PROMPT = [
   'Lines in parentheses in the conversation, such as "(Picture #12 was made and sent: …)", are the bot\'s records of what happened. Never write such lines yourself.',
 ].join('\n');
 
-export function systemPrompt({ instructions = DEFAULT_CHAT_PROMPT, items = [], openCard = null, prices = [], balanceMicro = 0n, pictureInputs = 1, latest = '', now = nowSec() }) {
+export function systemPrompt({ instructions = DEFAULT_CHAT_PROMPT, items = [], openCard = null, prices = [], balanceMicro = 0n, pictureInputs = 1, latest = '', botFacts = [], now = nowSec() }) {
   return [
     String(instructions || DEFAULT_CHAT_PROMPT).trim(),
     '',
     '==== CONTEXT (written by the bot for this message; always current) ====',
     `PRICES: ${prices.join('; ')}.`,
     `The user's balance is ${balanceLabel(balanceMicro)}. Up to ${pictureInputs} pictures can be combined in one change.`,
+    // Read from the live settings each turn (bot.mjs botFacts()), so an admin change or the rebate
+    // switching off is reflected at once -- never a number typed into the instructions.
+    ...(botFacts.length ? ['', 'ABOUT THIS BOT (true right now; answer from these and nothing else):', ...botFacts.map((f) => `- ${f}`)] : []),
     '',
     "THE USER'S ITEMS, newest first:",
     items.length ? items.map((it) => itemLine(it, now)).join('\n') : '(none yet)',
@@ -226,7 +235,10 @@ export function validateProposal(db, chatId, input, { offer, settings }) {
 
   const o = offer[settings.videoModel];
   if (!o) return { error: 'videos are unavailable right now; tell the user to try again later.' };
-  if (its.length > 1) return { error: 'a video starts from at most one picture.' };
+  if (its.length > 1) {
+    return { error: 'a video starts from at most one picture. Do NOT switch to a picture on your own: tell the user a video '
+      + 'starts from one picture and ask which one to animate, or offer to first combine them into one picture and then animate it.' };
+  }
   let start = null;
   let newVersionOf = null;
   if (its.length) {
@@ -322,6 +334,7 @@ export function buildRequest(deps, { chatId, userContent }) {
     balanceMicro: deps.balanceMicro ?? 0n,
     pictureInputs: pic ? Math.max(1, maxInputs(pic)) : 1,
     latest,
+    botFacts: deps.botFacts ?? [],
   });
   const max = settings.historyMax ?? HISTORY_MAX;
   const messages = normalizeHistory([...loadHistory(db, chatId, max), { role: 'user', content: userContent }], max);

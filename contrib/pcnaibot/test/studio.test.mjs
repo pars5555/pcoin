@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 
 import {
   chatTurn, validateProposal, normalizeHistory, loadHistory, appendHistory, noteFor, chatGate,
-  systemPrompt, priceLines, testChatModel, PROPOSE_TOOL, dominantScript,
+  systemPrompt, priceLines, testChatModel, PROPOSE_TOOL, dominantScript, DEFAULT_CHAT_PROMPT,
 } from '../lib/studio.mjs';
 import { settingsProblems, DEFAULT_SETTINGS, getSettings, saveSettings } from '../lib/settings.mjs';
 import { mediaOffer } from '../lib/media.mjs';
@@ -228,3 +228,25 @@ test('a chat model is accepted only if it calls the tool', async () => {
   assert.equal((await testChatModel(fakeOona([textAnswer('I cannot draw.')]), 'x')).ok, false);
   assert.equal((await testChatModel(fakeOona([new Error('HTTP 503')]), 'x')).ok, null);
 });
+
+test('the agent may answer about the bot itself, only from the live facts it is given', () => {
+  const facts = ['Commands: /balance shows the balance.', 'Pay with PCN, get 10% back -- up to 50 PCN a month.'];
+  const withFacts = systemPrompt({ prices: ['a picture costs $0.27'], botFacts: facts });
+  assert.match(withFacts, /ABOUT THIS BOT \(true right now/);
+  assert.match(withFacts, /- Pay with PCN, get 10% back/);
+  assert.doesNotMatch(systemPrompt({ prices: ['a picture costs $0.27'] }), /ABOUT THIS BOT \(true right now/, 'no facts, no section');
+  assert.match(DEFAULT_CHAT_PROMPT, /questions about THIS BOT/);
+});
+
+test('a video from several photos is explained, never silently turned into a picture', () => {
+  assert.match(DEFAULT_CHAT_PROMPT, /A video starts from ONE picture at most/);
+  assert.match(DEFAULT_CHAT_PROMPT, /never switch to a picture on your own/);
+  const db = freshDb();
+  const a = addItem(db, { kind: 'upload', summary: null });
+  const b2 = addItem(db, { kind: 'upload', summary: null });
+  const r = validateProposal(db, 7, { kind: 'video', prompt: 'a clip of these two', summary: 'a clip', sources: [a, b2] },
+    { offer: OFFER, settings: SETTINGS });
+  assert.match(r.error, /at most one picture/);
+  assert.match(r.error, /Do NOT switch to a picture/);
+});
+

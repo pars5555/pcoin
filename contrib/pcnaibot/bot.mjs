@@ -67,6 +67,27 @@ function promoLine(L) {
   return p ? t(L, p.key, p.vars) : null;
 }
 
+// What the chat agent may say about THIS bot, built from the live settings each turn. Before this
+// its instructions forbade every question that was not a picture or a video, so "how do I top up?"
+// or "what is the 10% back?" got "I only make pictures and videos".
+function botFacts(s) {
+  const facts = [
+    'Commands: /balance shows the balance and recent activity; /topup adds money; /invite gives a personal invite link; /help explains everything.',
+    `Top up with ${[s.starsEnabled ? 'Telegram Stars (credited at once)' : null, 'PCN (credited after '
+      + MIN_CONF + ' confirmations, about 30 minutes)', WPCN_ENABLED ? 'wPCN on BNB Smart Chain (about a minute)' : null]
+      .filter(Boolean).join(', ')}. Everything is charged only when the user presses ✅ on a card.`,
+  ];
+  const promo = promoLine('en');
+  if (promo) facts.push(promo.replace(/<[^>]+>/g, '').replace(/^\W+/u, ''));
+  if (s.giftEnabled && Number(s.giftUsd) > 0) facts.push(`A NEW account gets a one-time welcome gift of $${Number(s.giftUsd)} (while the day's gift budget lasts).`);
+  if (s.invitesEnabled && Number(s.inviteRewardUsd) > 0) {
+    facts.push(`Invites: share the /invite link. When an invited NEW user tops up at least $${Number(s.inviteMinTopupUsd)} `
+      + `and their first video is delivered, the inviter gets $${Number(s.inviteRewardUsd)} on their balance.`);
+  }
+  facts.push('Anything about a payment problem: send a message starting with SUPPORT and it goes to the people who run the bot.');
+  return facts;
+}
+
 const DB_PATH = cfg.str('DB_PATH');
 const db = openDb(DB_PATH);
 if (pendingMigrations(db).length) {
@@ -887,7 +908,7 @@ async function runChat(chatId, updateId, userContent) {
   let r;
   const started = Date.now();
   try {
-    r = await chatTurn({ db, oona, settings: s, offer, marginE6: m, balanceMicro: BigInt(u.balance_micro_usd) }, { chatId, userContent });
+    r = await chatTurn({ db, oona, settings: s, offer, marginE6: m, balanceMicro: BigInt(u.balance_micro_usd), botFacts: botFacts(s) }, { chatId, userContent });
   } catch (e) {
     log.warn('chat turn failed', { chat: chatTag(chatId), model: s.chatModel, ...errFields(e) });
     await tg.sendMessage(chatId, t(L, 'chat.unavailable'));
@@ -1263,7 +1284,7 @@ function studioGet() {
 function studioPreview({ chatId, text }) {
   const u = db.prepare('SELECT * FROM users WHERE chat_id = ?').get(chatId);
   if (!u) return { error: `no user ${chatId}` };
-  const { body } = buildRequest({ db, settings: settings(), offer: currentOffer(), marginE6: marginE6(), balanceMicro: BigInt(u.balance_micro_usd) },
+  const { body } = buildRequest({ db, settings: settings(), offer: currentOffer(), marginE6: marginE6(), balanceMicro: BigInt(u.balance_micro_usd), botFacts: botFacts(settings()) },
     { chatId, userContent: String(text || 'make me a picture of a cat') });
   return { model: body.model, system: body.system, messages: body.messages };
 }
