@@ -40,12 +40,16 @@ import {
 import { chatTurn, chatGate, noteFor, appendHistory, testChatModel, priceLines, buildRequest, DEFAULT_CHAT_PROMPT } from './lib/studio.mjs';
 import {
   packages as starsPackages, packageButtonText, sendStarsInvoice, checkPreCheckout, creditStarsPayment,
-  expireInvoices, refundStarsPayment, starsReport, RefundRefused,
+  expireInvoices, refundStarsPayment, starsReport, RefundRefused, notifyStarsPaid, unnotifiedPayments,
 } from './lib/stars.mjs';
+import { readStarTransactions, compareStarsBooks, nextBooksState } from './lib/stars-books.mjs';
 import { mdToHtml } from './lib/markdown.mjs';
 import { DraftStream } from './lib/drafts.mjs';
-import { creditThenClaim, PAYMENT_QUICK_TRIES, parkPayment, parkedCount, retryParked } from './lib/updates.mjs';
+import { takePaymentUpdate, parkedCount, parkedChargeIds, retryParked } from './lib/updates.mjs';
 import { turnQueue } from './lib/turns.mjs';
+import { claimMessage, startTurn, finishTurn, recoverTurns } from './lib/inbox.mjs';
+import { gracefulStop, installShutdown, DRAIN_TIMEOUT_MS } from './lib/shutdown.mjs';
+import { botHeartbeat } from './lib/heartbeat.mjs';
 import { t, langOf, LANGS, LANG_CODES, detectLang, isLang, everyLabel, whenLabel } from './lib/i18n.mjs';
 import { openAccount, parseInvite, inviteLink, inviteStats, payInviteReward, giftsToday, usdToMicro as dollarsToMicro } from './lib/rewards.mjs';
 
@@ -151,6 +155,16 @@ const MAX_WAITING_TURNS = 500;
 const turns = turnQueue(MAX_CONCURRENT_TURNS);
 const inFlightTurns = turns.running;
 const track = (p) => turns.track(p);
+// Set by a shutdown signal (lib/shutdown.mjs): the poll loop takes no more updates. Every timer is
+// kept here so the shutdown can stop them all.
+let stopping = false;
+const timers = [];
+const every = (fn, ms) => { timers.push(setInterval(fn, ms)); };
+const later = (fn, ms) => { timers.push(setTimeout(fn, ms)); };
+// The last heartbeat's fields, rewritten by the shutdown.
+let lastBeat = null;
+// Telegram's Stars books against ours (lib/stars-books.mjs), hourly; carried in the heartbeat.
+let starsBooks = null;
 
 // draft_id MUST be non-zero, and stable for the life of one answer. The update_id is unique.
 function draftIdFor(updateId) {
@@ -1003,14 +1017,19 @@ async function againCard(chatId, itemId) {
 // can then only make it run twice, and the charge id makes the second run "already credited". A
 // throw here (the database, not the payment) is NOT turned into "could not be credited" -- the
 // loop fetches the same update again until it goes through.
+// Returns { chargeId } for a payment that is credited -- now or by an earlier delivery -- whose user
+// is then told by notifyStarsPaid (lib/stars.mjs), or { text } for one that could not be credited.
 function handleStarsPaid(chatId, sp, from = null) {
   const L = langOfUser(ensureUser(chatId, from));
   const r = creditStarsPayment(db, { chatId, sp });
+  const chargeId = String(sp?.telegram_payment_charge_id ?? '');
   if (r.credited) {
     log.info('stars payment credited', { chat: chatTag(chatId), stars: r.stars, micro: Number(r.micro) });
-    return t(L, 'stars.paid', { stars: r.stars, usd: moneyLabel(r.micro), balance: balanceLabel(r.balance) });
+    return { chargeId };
   }
-  if (r.duplicate) return t(L, 'stars.dup', { balance: balanceLabel(r.balance) });
+  // A second delivery of a payment already credited: "✅ Paid" if its user was never told, nothing if
+  // they were. Never "already credited" -- right after paying that reads like an error.
+  if (r.duplicate) return { chargeId };
   log.error('STARS PAYMENT NOT CREDITED -- the user paid; credit or refund by hand', {
     chat: chatTag(chatId), stars: sp?.total_amount ?? null, charge: String(sp?.telegram_payment_charge_id ?? '').slice(0, 24), why: r.refused,
   });
@@ -1018,7 +1037,33 @@ function handleStarsPaid(chatId, sp, from = null) {
     tg.sendMessage(a, `⚠️ A Stars payment of ${escapeHtml(String(sp?.total_amount ?? '?'))} ⭐ from chat ${chatId} could not be credited: ${escapeHtml(String(r.refused))}. Credit or refund it on admin.pc.am → PcoinAiBot → Payments.`)
       .catch(() => undefined);
   }
-  return t(L, 'stars.not_credited');
+  return { text: t(L, 'stars.not_credited') };
+}
+
+// One chat message, from its durable claim (lib/inbox.mjs): started exactly once, marked done after.
+// A turn that was queued, or cut off, when the process ended is dealt with at the next start.
+function runTurn(msg) {
+  return async () => {
+    if (!startTurn(db, msg.__update_id)) return;
+    try {
+      const reply = await handleMessage(msg);
+      if (reply) await tg.sendLong(msg.chat.id, reply);
+    } catch (e) {
+      log.error('handler threw', errFields(e));
+      try { await tg.sendMessage(msg.chat.id, t(langOf(db, msg.chat.id), 'msg.error')); }
+      catch { /* best effort */ }
+    } finally {
+      finishTurn(db, msg.__update_id);
+    }
+  };
+}
+
+// "✅ Paid", once Telegram accepts it (lib/stars.mjs). Never awaited by the poll loop.
+const notifying = new Set();
+function tellPaid(chargeId) {
+  return track(notifyStarsPaid({ db, tg }, chargeId, { inFlight: notifying })
+    .then((r) => { if (r.sent === false) log.warn('payment reply not sent yet; the sweep retries it', { error: r.error }); })
+    .catch((e) => log.warn('payment reply failed; the sweep retries it', errFields(e))));
 }
 
 // A message that starts with SUPPORT (the /paysupport text asks for it) goes to the admins.
@@ -1400,6 +1445,27 @@ async function legacyButton(chatId, data) {
 }
 
 async function main() {
+  // A deploy lets running work finish (lib/shutdown.mjs): no new updates, nothing queued started,
+  // running turns get DRAIN_TIMEOUT_MS -- inside the unit's `docker stop -t 20` -- then exit 0.
+  let adminServer = null;
+  installShutdown({
+    log,
+    stop: () => gracefulStop({
+      turns,
+      log,
+      timeoutMs: DRAIN_TIMEOUT_MS,
+      stopIntake: () => {
+        stopping = true;
+        for (const h of timers) clearInterval(h);
+        adminServer?.close();
+      },
+      finalize: async () => {
+        await writeBotHeartbeat({ ...(lastBeat ?? {}), stopping: true, in_flight: turns.running.size, waiting: turns.waiting.length });
+        db.close();
+      },
+    }),
+  });
+
   const me = await tg.getMe();
   if (!me.ok) { log.error('getMe failed; refusing to start', { desc: me.description }); process.exit(1); }
   // Verify privacy mode from getMe, NOT from the BotFather screen.
@@ -1434,7 +1500,7 @@ async function main() {
       .catch((e) => log.warn('video poll failed', errFields(e)))
       .finally(() => { videosBusy = false; });
   };
-  setInterval(pollClips, 15000);
+  every(pollClips, 15000);
   pollClips();
   let sweepBusy = false;
   const sweep = () => {
@@ -1445,21 +1511,24 @@ async function main() {
       .catch((e) => log.warn('re-send sweep failed', errFields(e)))
       .finally(() => { sweepBusy = false; });
   };
-  setInterval(sweep, 120000);
+  every(sweep, 120000);
   sweep();
-  // Stars payments parked by the poll loop: credited as soon as they will go through.
+  // Stars payments parked by the poll loop: credited as soon as they will go through. Then every
+  // payment whose user was never told gets its "✅ Paid" (lib/stars.mjs notifyStarsPaid).
   const creditParked = () => {
     try {
       const r = retryParked(db, (rec) => handleStarsPaid(rec.chat_id, rec.successful_payment, rec.from));
       for (const { rec, reply } of r.credited) {
         log.info('parked Stars payment credited', { update: rec.update_id, chat: chatTag(rec.chat_id), parkedFor: nowSec() - rec.parked_at });
-        track(tg.sendLong(rec.chat_id, reply).catch((e) => log.warn('payment reply failed', errFields(e))));
+        if (reply.chargeId) tellPaid(reply.chargeId);
+        else track(tg.sendLong(rec.chat_id, reply.text).catch((e) => log.warn('payment reply failed', errFields(e))));
         for (const a of ADMIN_CHATS) tg.sendMessage(a, `✅ The parked Stars payment from chat ${rec.chat_id} is now credited.`).catch(() => undefined);
       }
       if (r.failed) log.error('parked Stars payments still not credited', { count: r.failed });
+      for (const chargeId of unnotifiedPayments(db)) tellPaid(chargeId);
     } catch (e) { log.error('parked-payment sweep failed', errFields(e)); }
   };
-  setInterval(creditParked, 120000);
+  every(creditParked, 120000);
   creditParked();
   // Pasted wPCN hashes without a final answer -- including one cut off by the restart that
   // started this process.
@@ -1472,7 +1541,7 @@ async function main() {
       .catch((e) => log.warn('wpcn sweep failed', errFields(e)))
       .finally(() => { wpcnBusy = false; });
   };
-  setInterval(askWpcn, 60000);
+  every(askWpcn, 60000);
   askWpcn();
 
   for (const m of recovered) {
@@ -1481,7 +1550,7 @@ async function main() {
 
   await publishCommands();
 
-  startAdminApi({
+  adminServer = startAdminApi({
     db,
     token: cfg.strOr('ADMIN_API_TOKEN', ''),
     port: cfg.int('ADMIN_API_PORT', 8797),
@@ -1509,21 +1578,49 @@ async function main() {
   });
 
   await refreshMedia();
-  setInterval(() => refreshMedia().catch((e) => log.error('media refresh failed', errFields(e))),
+  every(() => refreshMedia().catch((e) => log.error('media refresh failed', errFields(e))),
     cfg.int('REGISTRY_REFRESH_SECONDS', 600) * 1000);
 
   // The chat model must call its tool. Checked now and daily; a failure is logged loudly and the
   // chat says "unavailable" -- the bot does NOT exit, because clips being made must still arrive.
   checkChatModel().catch((e) => log.error('chat model check failed', errFields(e)));
-  setInterval(() => checkChatModel().catch((e) => log.error('chat model check failed', errFields(e))), 86400 * 1000);
+  every(() => checkChatModel().catch((e) => log.error('chat model check failed', errFields(e))), 86400 * 1000);
 
-  setInterval(() => {
+  every(() => {
     try {
       ageOutReservations(db, { olderThanMinutes: cfg.int('RESERVATION_AGE_OUT_MINUTES', 60) });
       expireInvoices(db);
       expireCards(db);
     } catch (e) { log.error('age-out failed', errFields(e)); }
   }, 300000);
+
+  // Telegram's Stars books against ours, hourly and two minutes after start (lib/stars-books.mjs).
+  // The result rides in the heartbeat; heartbeat-check.sh alerts the private ops channel on it.
+  const checkStarsBooks = async () => {
+    const read = await readStarTransactions(tg);
+    const ignore = new Set(parkedChargeIds(db));
+    starsBooks = nextBooksState(starsBooks, read, (txs) => compareStarsBooks(db, txs, { ignore }));
+    if (starsBooks.state === 'ok') log.info('stars books match Telegram', starsBooks.counts ?? {});
+    else log.warn('stars books check', { state: starsBooks.state, failures: starsBooks.failures, problems: starsBooks.problems.length, error: starsBooks.last_error ?? '-' });
+  };
+  const runBooks = () => checkStarsBooks().catch((e) => log.error('stars books check threw', errFields(e)));
+  every(runBooks, 3600 * 1000);
+  later(runBooks, 120000);
+
+  // Chat messages claimed but not answered when the last process ended (lib/inbox.mjs): recent
+  // queued ones are answered now; older ones, and any that were cut off mid-turn, are never re-run
+  // -- their users are asked to send the message again, once per chat.
+  const turnsLeft = recoverTurns(db);
+  for (const msg of turnsLeft.resume) turns.submit(runTurn(msg));
+  const toldLost = new Set();
+  for (const l of turnsLeft.lost) {
+    if (l.chatId === null || toldLost.has(l.chatId)) continue;
+    toldLost.add(l.chatId);
+    await tg.sendMessage(l.chatId, t(langOf(db, l.chatId), 'turn.lost')).catch(() => undefined);
+  }
+  if (turnsLeft.resume.length || turnsLeft.lost.length) {
+    log.info('messages left by the last process', { resumed: turnsLeft.resume.length, lost: turnsLeft.lost.length, told: toldLost.size });
+  }
 
   let offset = (kvGetJson(db, 'tg:offset') ?? { offset: 0 }).offset;
   let processed = 0;
@@ -1532,8 +1629,11 @@ async function main() {
   // Failed credit attempts per Stars update, before it is parked (lib/updates.mjs).
   const paymentTries = new Map();
 
-  for (;;) {
+  while (!stopping) {
     const res = await tg.getUpdates(offset, { timeout: 30 });
+    // A shutdown began during the poll: take nothing. What was fetched is not claimed, so the next
+    // process fetches it again.
+    if (stopping) break;
     if (!res.ok) {
       if (res.errorCode === 409) {
         // TWO CONSUMERS STEAL EACH OTHER'S UPDATES AND EACH SEES HALF A
@@ -1562,6 +1662,7 @@ async function main() {
     pollFailures = 0;
 
     for (const up of res.result) {
+      if (stopping) break;
       offset = up.update_id + 1;
 
       // MONEY THAT HAS ALREADY MOVED IS HANDLED BEFORE THE CLAIM (review, 2026-09-26: "fix the
@@ -1572,37 +1673,28 @@ async function main() {
       // synchronously, first: a restart can only make it run twice, never not at all.
       const pm = up.message;
       if (pm?.successful_payment) {
-        let taken;
-        try {
-          taken = creditThenClaim(db, up, (m) => handleStarsPaid(m.chat.id, m.successful_payment, m.from));
-        } catch (e) {
-          // The credit threw: nothing was claimed. A few quick tries of the same update, then it is
-          // PARKED and the loop goes on (lib/updates.mjs) -- one payment must never hold the bot.
-          const tries = (paymentTries.get(up.update_id) ?? 0) + 1;
-          paymentTries.set(up.update_id, tries);
-          log.error('STARS PAYMENT NOT CREDITED YET', { update: up.update_id, chat: chatTag(pm.chat.id), tries, ...errFields(e) });
-          if (tries < PAYMENT_QUICK_TRIES) {
-            offset = up.update_id;
-            await new Promise((r) => setTimeout(r, 3000));
-            break;
-          }
-          // If even this write fails the database is down; the throw ends the process, the unit
-          // restarts it, the unclaimed update is fetched again -- and the stale heartbeat alerts.
-          parkPayment(db, up, e);
-          paymentTries.delete(up.update_id);
-          kvSetJson(db, 'tg:offset', { offset });
-          log.error('Stars payment PARKED -- retried every 2 minutes until it is credited', { update: up.update_id, chat: chatTag(pm.chat.id) });
+        // A few quick tries of the same update, then it is PARKED and the loop goes on -- one payment
+        // must never hold the bot. The decision is lib/updates.mjs takePaymentUpdate.
+        const taken = takePaymentUpdate(db, up, (m) => handleStarsPaid(m.chat.id, m.successful_payment, m.from), paymentTries);
+        if (taken.outcome === 'retry') {
+          log.error('STARS PAYMENT NOT CREDITED YET', { update: up.update_id, chat: chatTag(pm.chat.id), tries: taken.tries, ...errFields(taken.error) });
+          offset = up.update_id;
+          await new Promise((r) => setTimeout(r, 3000));
+          break;
+        }
+        kvSetJson(db, 'tg:offset', { offset });
+        if (taken.outcome === 'parked') {
+          log.error('Stars payment PARKED -- retried every 2 minutes until it is credited', { update: up.update_id, chat: chatTag(pm.chat.id), ...errFields(taken.error) });
           for (const a of ADMIN_CHATS) {
-            tg.sendMessage(a, `⚠️ A Stars payment from chat ${pm.chat.id} (${escapeHtml(String(pm.successful_payment.total_amount))} ⭐) could not be credited: ${escapeHtml(String(e.message).slice(0, 200))}. `
+            tg.sendMessage(a, `⚠️ A Stars payment from chat ${pm.chat.id} (${escapeHtml(String(pm.successful_payment.total_amount))} ⭐) could not be credited: ${escapeHtml(String(taken.error?.message ?? taken.error).slice(0, 200))}. `
               + 'It is parked and retried every 2 minutes; the bot carries on meanwhile.').catch(() => undefined);
           }
           continue;
         }
-        kvSetJson(db, 'tg:offset', { offset });
-        // A second delivery (after a restart) credited nothing new; the first one already answered.
-        if (taken.claimed) {
-          track(tg.sendLong(pm.chat.id, taken.reply).catch((e) => log.warn('payment reply failed', errFields(e))));
-        }
+        // Credited, now or by an earlier delivery: "✅ Paid" unless its user was told already. A payment
+        // that could not be credited is answered by the delivery that claimed it.
+        if (taken.reply.chargeId) tellPaid(taken.reply.chargeId);
+        else if (taken.claimed) track(tg.sendLong(pm.chat.id, taken.reply.text).catch((e) => log.warn('payment reply failed', errFields(e))));
         continue;
       }
       // A pasted wPCN hash is written down first too: the sweep asks the verifier about it until
@@ -1612,10 +1704,12 @@ async function main() {
       }
 
       // CLAIM BEFORE WORK. This turns at-least-once DELIVERY into at-most-once
-      // WORK, and it must happen before the expensive call, never after.
-      const claim = db.prepare('INSERT OR IGNORE INTO tg_updates (update_id, claimed_at) VALUES (?,?)')
-        .run(up.update_id, nowSec());
-      if (claim.changes !== 1) {
+      // WORK, and it must happen before the expensive call, never after. A chat message's claim
+      // carries the message, so one waiting for a slot survives a restart (lib/inbox.mjs).
+      const claimed = up.message
+        ? claimMessage(db, up)
+        : db.prepare('INSERT OR IGNORE INTO tg_updates (update_id, claimed_at) VALUES (?,?)').run(up.update_id, nowSec()).changes === 1;
+      if (!claimed) {
         log.info('update already claimed; skipping', { update: up.update_id });
         continue;
       }
@@ -1709,29 +1803,22 @@ async function main() {
       const msg = up.message;
       if (turns.waiting.length >= MAX_WAITING_TURNS) {
         log.warn('turn queue full; holding the poll loop until it drains', { waiting: turns.waiting.length });
-        while (turns.waiting.length >= MAX_WAITING_TURNS) await new Promise((r) => setTimeout(r, 250));
+        while (turns.waiting.length >= MAX_WAITING_TURNS && !stopping) await new Promise((r) => setTimeout(r, 250));
       }
-      turns.submit(async () => {
-        try {
-          const reply = await handleMessage(msg);
-          if (reply) await tg.sendLong(msg.chat.id, reply);
-        } catch (e) {
-          log.error('handler threw', errFields(e));
-          try { await tg.sendMessage(msg.chat.id, t(langOf(db, msg.chat.id), 'msg.error')); }
-          catch { /* best effort */ }
-        }
-      });
+      turns.submit(runTurn(msg));
 
       processed++;
     }
 
+    if (stopping) break;
     const making = db.prepare("SELECT COUNT(*) n FROM media_jobs WHERE state = 'running'").get().n;
-    // A parked Stars payment is money taken and not credited: heartbeat-check.sh alerts on it.
-    const starsParked = parkedCount(db);
-    await writeBotHeartbeat({
-      ok: starsParked === 0, processed, offset, in_flight: inFlightTurns.size, waiting: turns.waiting.length, making,
-      stars_parked: starsParked, last_error: starsParked ? `${starsParked} Stars payment(s) parked, not credited` : null,
+    // A parked Stars payment is money taken and not credited, and the Stars books check can find
+    // money on one side only: heartbeat-check.sh alerts on both (lib/heartbeat.mjs).
+    lastBeat = botHeartbeat({
+      processed, offset, inFlight: inFlightTurns.size, waiting: turns.waiting.length, making,
+      starsParked: parkedCount(db), starsBooks,
     });
+    await writeBotHeartbeat(lastBeat);
   }
 }
 

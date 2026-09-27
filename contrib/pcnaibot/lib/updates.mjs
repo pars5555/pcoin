@@ -19,6 +19,31 @@ export function creditThenClaim(db, up, credit, now = nowSec()) {
   return { reply, claimed };
 }
 
+// ONE successful_payment delivery, decided here rather than inline in the poll loop (review,
+// 2026-09-27, item F2: a change to the loop that removed the retry limit passed every test).
+//   { outcome: 'handled', reply, claimed }    credited (or refused for good) -- carry on
+//   { outcome: 'retry', tries, error }        fetch the SAME update again after a short pause
+//   { outcome: 'parked', tries, error }       written down for the sweep; carry on with the next
+// `tries` is the loop's Map of failed attempts per update_id.
+export function takePaymentUpdate(db, up, credit, tries, now = nowSec()) {
+  try {
+    const r = creditThenClaim(db, up, credit, now);
+    tries.delete(up.update_id);
+    return { outcome: 'handled', ...r };
+  } catch (error) {
+    const n = (tries.get(up.update_id) ?? 0) + 1;
+    if (n < PAYMENT_QUICK_TRIES) {
+      tries.set(up.update_id, n);
+      return { outcome: 'retry', tries: n, error };
+    }
+    // If even this write fails the database is down: it throws, the process ends, the unit restarts
+    // it, the unclaimed update is fetched again -- and the stale heartbeat alerts.
+    parkPayment(db, up, error, now);
+    tries.delete(up.update_id);
+    return { outcome: 'parked', tries: n, error };
+  }
+}
+
 // ---- a payment that will not credit must not hold the bot (review, 2026-09-27) -----------------
 //
 // "One bad payment freezes the bot": the loop re-fetched a failing Stars update for ever, so nobody
@@ -50,6 +75,13 @@ export function parkPayment(db, up, err, now = nowSec()) {
 
 export function parkedCount(db) {
   return db.prepare('SELECT COUNT(*) n FROM kv WHERE k LIKE ?').get(`${PARKED}%`).n;
+}
+
+// Their Telegram charge ids: the Stars books check leaves these to the parked alert.
+export function parkedChargeIds(db) {
+  return db.prepare('SELECT v FROM kv WHERE k LIKE ?').all(`${PARKED}%`)
+    .map((r) => { try { return String(JSON.parse(r.v).successful_payment?.telegram_payment_charge_id ?? ''); } catch { return ''; } })
+    .filter(Boolean);
 }
 
 // Try every parked payment once. `credit(rec)` returns the user's reply or throws; a success is

@@ -244,7 +244,7 @@ export default {
 
   // ---- Telegram Stars ----
   'stars.paid': '✅ Has pagado <b>{stars} ⭐</b> — se han añadido <b>{usd}</b>. Tu saldo es <b>{balance}</b>.',
-  'stars.dup': 'Ese pago ya se acreditó. Tu saldo es <b>{balance}</b>.',
+  'turn.lost': 'Lo sentimos: el bot se reinició y tu último mensaje quedó sin respuesta. Por favor, envíalo de nuevo.',
   'stars.not_credited': 'Tu pago ha llegado, pero no se ha podido añadir a tu saldo automáticamente. El equipo ya está avisado y lo resolverá — no se pierde nada.',
   'stars.refunded': '⭐ Se te han reembolsado {stars} Stars, y se han descontado {usd} de tu saldo.',
   'stars.pkg_gone': 'Ese paquete ya no está disponible — abre {topup} otra vez.',

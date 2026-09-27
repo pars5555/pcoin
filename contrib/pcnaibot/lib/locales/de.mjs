@@ -248,7 +248,7 @@ export default {
 
   // ---- Telegram Stars ----
   'stars.paid': '✅ <b>{stars} ⭐</b> bezahlt — <b>{usd}</b> gutgeschrieben. Dein Guthaben: <b>{balance}</b>.',
-  'stars.dup': 'Diese Zahlung wurde bereits gutgeschrieben. Dein Guthaben: <b>{balance}</b>.',
+  'turn.lost': 'Entschuldigung — der Bot wurde neu gestartet und deine letzte Nachricht blieb unbeantwortet. Bitte sende sie noch einmal.',
   'stars.not_credited': 'Deine Zahlung ist angekommen, konnte deinem Guthaben aber nicht automatisch gutgeschrieben werden. Das Team ist informiert und kümmert sich darum — nichts geht verloren.',
   'stars.refunded': '⭐ {stars} Stars wurden dir erstattet, und {usd} wurden von deinem Guthaben abgezogen.',
   'stars.pkg_gone': 'Dieses Paket ist nicht mehr verfügbar — öffne {topup} erneut.',

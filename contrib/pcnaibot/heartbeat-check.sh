@@ -99,6 +99,60 @@ case "$parked" in
              "Telegram took the Stars and the bot could not credit them; they are parked and retried every 2 min. journalctl -u pcnaibot | grep -i parked -- and see kv 'stars:parked:%' in the bot's database." ;;
 esac
 
+# Telegram's Stars books against ours (lib/stars-books.mjs, hourly, review 2026-09-27 item D).
+# Alerts when the answer CHANGES -- a new mismatch, reads failing, or the check going stale -- and
+# once more when it is ok again. 'pending' (no read completed yet) and a missing field say nothing;
+# the bot's own staleness is checked below.
+BOOKS_SENT="$STATE_DIR/stars-books.alerted"
+books=$(python3 -c "
+import json, sys, time, hashlib
+try:
+    b = json.load(open(sys.argv[1])).get('stars_books')
+except Exception:
+    sys.exit(0)
+if not isinstance(b, dict):
+    sys.exit(0)
+st = b.get('state') or ''
+ca = b.get('checked_at')
+if st in ('ok', 'mismatch') and isinstance(ca, (int, float)) and time.time() - ca > 4 * 3600:
+    st = 'stale'
+probs = [str(p) for p in (b.get('problems') or [])]
+detail = ''
+sig = st
+if st == 'mismatch':
+    detail = '; '.join(probs[:5]) + (' (+%d more)' % (len(probs) - 5) if len(probs) > 5 else '')
+    sig = 'mismatch:' + hashlib.sha256(json.dumps(sorted(probs)).encode()).hexdigest()[:16]
+elif st == 'unknown':
+    detail = '%s failed reads in a row: %s' % (b.get('failures'), b.get('last_error'))
+elif st == 'stale':
+    detail = 'the last completed check was %d h ago' % int((time.time() - ca) / 3600)
+print(st + '|' + sig + '|' + detail.replace('|', '/').replace('\n', ' '))
+" "$BOT_HB" 2>/dev/null || true)
+if [ -n "$books" ]; then
+    b_state=${books%%|*}; b_rest=${books#*|}; b_sig=${b_rest%%|*}; b_detail=${b_rest#*|}
+    b_last=$(cat "$BOOKS_SENT" 2>/dev/null || true)
+    case "$b_state" in
+        mismatch|unknown|stale)
+            if [ "$b_sig" != "$b_last" ]; then
+                case "$b_state" in
+                    mismatch) alert "PCN bot: Stars books DO NOT MATCH Telegram" \
+                                    "$b_detail. Telegram has Stars our records do not show, or the reverse. admin.pc.am -> PcoinAiBot -> Payments shows both sides." ;;
+                    unknown)  alert "PCN bot: Stars books check cannot read Telegram" \
+                                    "$b_detail. This is NOT 'the books match' -- nothing is being compared." ;;
+                    stale)    alert "PCN bot: Stars books check has stopped" \
+                                    "$b_detail; it runs hourly. The comparison is not being made." ;;
+                esac
+                printf '%s\n' "$b_sig" > "$BOOKS_SENT" 2>/dev/null || true
+            fi ;;
+        ok)
+            if [ -n "$b_last" ]; then
+                [ -x "$NOTIFY" ] && "$NOTIFY" "PCN bot: Stars books match Telegram again" "The earlier Stars books alert has cleared." >/dev/null 2>&1
+                log "stars books match again (was: $b_last)"
+                rm -f "$BOOKS_SENT"
+            fi ;;
+    esac
+fi
+
 check "pcnaibot (telegram)" "$BOT_HB" \
       "systemctl status pcnaibot -- note Restart=always means a crash loop still reports active (running)."
 check "pcnaibot (watcher)" "$WATCH_HB" \

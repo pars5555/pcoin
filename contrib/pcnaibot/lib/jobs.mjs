@@ -413,7 +413,7 @@ export async function startVideoJob(deps, begun) {
 // Read every clip still being made; finish the ones that are done. Safe to run again on the same
 // job: a job leaves 'running' exactly once. A row with no remote id is never polled (restart
 // recovery handles it).
-export async function pollVideos(deps, { maxAgeSec = 45 * 60, giveUpSec = VIDEO_GIVE_UP_SEC, now = nowSec } = {}) {
+export async function pollVideos(deps, { giveUpSec = VIDEO_GIVE_UP_SEC, now = nowSec } = {}) {
   const { db, tg, media, marginE6 } = deps;
   const jobs = db.prepare("SELECT * FROM media_jobs WHERE kind = 'video' AND state = 'running' AND remote_id IS NOT NULL ORDER BY id").all();
   const counts = { checked: 0, done: 0, failed: 0 };
@@ -426,8 +426,10 @@ export async function pollVideos(deps, { maxAgeSec = 45 * 60, giveUpSec = VIDEO_
       v = await media.getVideo(j.remote_id);
     } catch (e) {
       // Not knowing is not an ending. Only a clip far past any normal time is given up on, and
-      // its money is HELD, never released: it may yet have been made and charged.
-      if (now() - j.created_at > maxAgeSec) {
+      // its money is HELD, never released: it may yet have been made and charged. The SAME bound as
+      // a clip still in progress (review, 2026-09-27, item F1): this branch kept the old 45 minutes,
+      // so one network error on a 50-minute clip abandoned a video the provider went on to finish.
+      if (now() - j.created_at > giveUpSec) {
         const text = unwind(deps, begun, new MediaError(Bucket.UNKNOWN, `unreadable past its time: ${e?.message ?? e}`), { what: 'video' });
         await dropStatus(tg, j);
         await tg.sendMessage(j.chat_id, t(langOf(db, j.chat_id), 'job.video_lost', { detail: text }));

@@ -278,6 +278,35 @@ test('a result that arrives after its hold aged out is billed late, not free', (
   assert.equal(reconcile(db).ok, true);
 });
 
+// Review, 2026-09-27, item F1: a read error kept the old 45-minute bound while a clip in progress
+// got 3 hours, so one network error on a 50-minute clip abandoned a video the provider finished.
+test('a read error on a 50-minute clip keeps it running; only past three hours is it given up on', async () => {
+  const db = freshDb({ balanceMicro: 5_000_000 });
+  const tg = fakeTg();
+  const p = card(db, videoSpec());
+  const b = beginJob(db, { chatId: 7, proposalId: p.id, offer: OFFER, marginE6: MARGIN_E6 });
+  const media = fakeMedia({ video: { id: 'vid_flaky', status: 'queued' }, videoView: new Error('ECONNRESET') });
+  await startVideoJob(deps(db, tg, media), b);
+  backdate(db, 50 * 60);
+  await pollVideos(deps(db, tg, media));
+  assert.equal(db.prepare('SELECT state FROM media_jobs').get().state, 'running', 'one read error at 50 minutes is not an ending');
+  assert.equal(reservations(db)[0].state, 'open');
+
+  media.getVideo = async () => ({ id: 'vid_flaky', status: 'completed', credits: 840, duration: 5, resolution: '720P', url: 'https://x.example/v.mp4', expires_at: new Date(Date.now() + 86400e3).toISOString() });
+  assert.equal((await pollVideos(deps(db, tg, media))).done, 1, 'so it is delivered and billed when it finishes');
+  assert.deepEqual(user(db), { b: 5_000_000 - 2_520_000, r: 0 });
+
+  const db2 = freshDb({ balanceMicro: 5_000_000 });
+  const p2 = card(db2, videoSpec());
+  const b2 = beginJob(db2, { chatId: 7, proposalId: p2.id, offer: OFFER, marginE6: MARGIN_E6 });
+  await startVideoJob(deps(db2, tg, media), b2);
+  backdate(db2, VIDEO_GIVE_UP_SEC + 60);
+  media.getVideo = async () => { throw new Error('ECONNRESET'); };
+  await pollVideos(deps(db2, tg, media));
+  assert.equal(db2.prepare('SELECT state FROM media_jobs').get().state, 'unknown', 'past three hours an unreadable clip is given up on');
+  assert.equal(reservations(db2)[0].state, 'held', 'its money held, not released');
+});
+
 test('a clip still unfinished after three hours is given up on; its hold then comes back', async () => {
   const db = freshDb({ balanceMicro: 5_000_000 });
   const tg = fakeTg();

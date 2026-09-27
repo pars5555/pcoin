@@ -249,7 +249,7 @@ export default {
 
   // ---- Telegram Stars ----
   'stars.paid': '✅ Paiement de <b>{stars} ⭐</b> reçu — <b>{usd}</b> de crédit ajouté. Votre solde est de <b>{balance}</b>.',
-  'stars.dup': 'Ce paiement a déjà été crédité. Votre solde est de <b>{balance}</b>.',
+  'turn.lost': 'Désolé — le bot a redémarré et votre dernier message est resté sans réponse. Merci de l\'envoyer à nouveau.',
   'stars.not_credited': 'Votre paiement est bien arrivé, mais il n’a pas pu être ajouté automatiquement à votre solde. L’équipe a été prévenue et va régler cela — rien n’est perdu.',
   'stars.refunded': '⭐ Nous vous avons remboursé {stars} Stars, et un montant de {usd} a été déduit de votre solde.',
   'stars.pkg_gone': 'Cette formule n’est plus disponible — ouvrez à nouveau {topup}.',

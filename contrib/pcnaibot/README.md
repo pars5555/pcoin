@@ -63,7 +63,7 @@ watch.mjs                the deposit watcher, a SEPARATE process on a timer
 Dockerfile               one image, used by both processes
 migrate.mjs              explicit versioned migrations + the structural proof
 heartbeat-check.sh       staleness check for both heartbeats; RUNS AS ROOT
-migrations/              001_init .. 016_payment_safety, explicit and versioned
+migrations/              001_init .. 017_durable_turns, explicit and versioned
 systemd/                 units + timers + logrotate; systemd/docker/ for the container
 test/                    money path, billing path, studio (cards, jobs, chat agent), Markdown
 lib/
@@ -86,7 +86,13 @@ lib/
   jobs.mjs               cards, the ✅ that pays, picture/video jobs, delivery, restart recovery
   media.mjs              the builder: OonaCode's image/video models, prices, client
   settings.mjs           every admin setting (kv 'studio:settings'), validated
-  stars.mjs              Telegram Stars: invoices, pre-checkout, credit, refunds, Telegram's books
+  stars.mjs              Telegram Stars: invoices, pre-checkout, credit, "✅ Paid" until told, refunds
+  stars-books.mjs        hourly: Telegram's Stars books against ours (heartbeat -> heartbeat-check.sh)
+  inbox.mjs              a claimed message survives a restart (queued -> started -> done | lost)
+  turns.mjs              the slot queue in front of the chat turns; pause and drain for a shutdown
+  shutdown.mjs           SIGTERM: stop intake, drain running turns (15 s), close, exit 0
+  updates.mjs            payment-before-claim, the retry/park decision, parked payments
+  heartbeat.mjs          what the bot heartbeat says
   rewards.mjs            the welcome gift and the invite reward (see "Gifts, invites, languages")
   i18n.mjs               the eight languages: t(), detection, the user's language
   locales/<code>.mjs     every user-facing text; en.mjs is the master
@@ -145,6 +151,24 @@ Second review, 2026-09-27:
   then is PARKED (kv `stars:parked:<update_id>`, written with its claim) and retried every 2 min;
   the loop goes on. The heartbeat carries `stars_parked` and `heartbeat-check.sh` alerts while it
   is above 0 -- a fresh heartbeat alone no longer reads as healthy.
+
+Re-audit, 2026-09-27 (migration 017):
+
+* **A claimed message survives a restart.** Its claim carries the message and a state
+  (`tg_updates.state`: queued -> started -> done). At start, queued rows under 30 min are answered;
+  older ones and every `started` one become `lost` and the user is asked, once, to send it again.
+  A started turn is never re-run by itself.
+* **A paid user is always told "✅ Paid", once.** `stars_payments.notified_at` is set only after
+  Telegram accepts the message; the loop and a 2-minute sweep send it until then. "Already
+  credited" is gone.
+* **A deploy lets work finish.** On SIGTERM/SIGINT the bot takes no more updates, starts nothing
+  queued (it is durable), waits up to 15 s for running turns -- inside the unit's `docker stop -t
+  20` -- writes the heartbeat, closes the database and exits 0. A second signal exits at once.
+* **Telegram's Stars books are checked against ours hourly** (`lib/stars-books.mjs`), matched on
+  the transaction id = `charge_id`. The result rides in the heartbeat (`stars_books`);
+  `heartbeat-check.sh` alerts the private ops channel when it CHANGES (mismatch, reads failing,
+  check stale) and once when it clears. A failed or partial read is never "the books match".
+* A read error on a clip gets the same 3 h as a clip in progress, not 45 min.
 
 ## Two processes, deliberately
 
@@ -258,7 +282,7 @@ the owner from a monitoring-setup step.
 ## Testing
 
 ```sh
-node --test test/          # 191 tests, no network
+node --test test/          # 226 tests, no network
 ```
 
 They need `better-sqlite3`, which has no Windows/node-24 prebuild — run them in the

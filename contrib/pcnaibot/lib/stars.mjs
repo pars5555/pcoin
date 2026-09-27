@@ -18,6 +18,7 @@ import { nowSec } from './time.mjs';
 import { log, chatTag } from './log.mjs';
 import { t, langOf } from './i18n.mjs';
 import { toppedUpMicro } from './rewards.mjs';
+import { moneyLabel, balanceLabel } from './media.mjs';
 import { randomBytes } from 'node:crypto';
 
 export const INVOICE_TTL_SEC = 24 * 3600;
@@ -103,6 +104,46 @@ export function creditStarsPayment(db, { chatId, sp, now = nowSec() }) {
     db.prepare('UPDATE users SET balance_micro_usd = balance_micro_usd + ? WHERE chat_id = ?').run(inv.micro_usd, chatId);
     return { credited: true, micro: BigInt(inv.micro_usd), stars: inv.stars, balance: bal() };
   });
+}
+
+// ---- telling the user (review, 2026-09-27, item B) ---------------------------------------------
+//
+// "✅ Paid" used to go out only from the delivery that also wrote the claim, and only after it: a
+// crash between credit and claim made the redelivery say "already credited" (reads like an error
+// right after paying), and a crash between claim and send told the user nothing at all. The row
+// now records when the user was told (stars_payments.notified_at, migration 017), and this is the
+// one function that tells them -- called by the loop on every delivery and by a 2-minute sweep.
+// It sets notified_at only after Telegram accepted the message, so a failure is retried; a crash
+// between the send and that write can repeat the message once, which is the right way to fail.
+// A payment refunded before it was ever announced is closed without a "Paid".
+export async function notifyStarsPaid({ db, tg }, chargeId, { inFlight = new Set(), now = nowSec } = {}) {
+  const id = String(chargeId ?? '');
+  if (!id || inFlight.has(id)) return { skipped: 'in_flight' };
+  const p = db.prepare('SELECT * FROM stars_payments WHERE charge_id = ?').get(id);
+  if (!p) return { skipped: 'unknown' };
+  if (p.notified_at !== null) return { skipped: 'notified' };
+  if (p.refund_state !== null) {
+    db.prepare('UPDATE stars_payments SET notified_at = ? WHERE id = ? AND notified_at IS NULL').run(now(), p.id);
+    return { skipped: 'refunded' };
+  }
+  inFlight.add(id);
+  try {
+    const balance = db.prepare('SELECT balance_micro_usd b FROM users WHERE chat_id = ?').get(p.chat_id)?.b ?? 0;
+    const text = t(langOf(db, p.chat_id), 'stars.paid', { stars: p.stars, usd: moneyLabel(p.micro_usd), balance: balanceLabel(balance) });
+    const r = await tg.sendMessage(p.chat_id, text);
+    if (!r?.ok) return { sent: false, error: r?.description ?? 'send failed' };
+    db.prepare('UPDATE stars_payments SET notified_at = ? WHERE id = ? AND notified_at IS NULL').run(now(), p.id);
+    return { sent: true, chatId: p.chat_id };
+  } finally {
+    inFlight.delete(id);
+  }
+}
+
+// Payments whose user has not been told yet, for the sweep. Younger than `graceSec` is left to the
+// delivery that is telling them right now.
+export function unnotifiedPayments(db, { graceSec = 60, now = nowSec() } = {}) {
+  return db.prepare('SELECT charge_id FROM stars_payments WHERE notified_at IS NULL AND created_at <= ? ORDER BY id')
+    .all(now - graceSec).map((r) => r.charge_id);
 }
 
 export function expireInvoices(db, now = nowSec()) {
