@@ -446,6 +446,14 @@ export function wrapdeskWork() {
     if (cur) {
       const to = t.match(/^TO\s*:\s*(0x[0-9a-fA-F]{40})/);
       if (to) cur.to = to[1];
+      // A still-confirming wrap has no close-out line, so the watcher prints its
+      // identity as "KEY: <txid>:<address>" -- only so the request number
+      // (#77) shows while it confirms, not just once it is payable. Never shown.
+      // Kept in depositKey and NOT in key: `key` is what the send/refund/close
+      // forms act on, and refundForm renders for ANY item that has one -- a
+      // wrap still confirming must never get a money button.
+      const kk = t.match(/^KEY:\s*([0-9a-f]{64}:\S+)$/);
+      if (kk) { cur.depositKey = kk[1]; continue; }
       if (/^pcoin-wrapdesk-watch --(released|refunded)/.test(t)) {
         cur.close = t;
         // The wrap's identity, <pcoin-txid>:<deposit-address>. Taken from the
@@ -514,7 +522,8 @@ function requestsByAddress() {
 
 function workCard(w) {
   const reqs = requestsByAddress();
-  const reqOf = (i) => (i && i.key ? reqs.get(String(i.key).split(':')[1] || '') || null : null);
+  const idOf = (i) => (i ? i.key || i.depositKey || null : null);
+  const reqOf = (i) => (idOf(i) ? reqs.get(String(idOf(i)).split(':')[1] || '') || null : null);
   const reqNo = (i) => { const q = reqOf(i); return q && q.index ? `#${q.index}` : ''; };
   const reqLabel = (i) => {
     const q = reqOf(i);

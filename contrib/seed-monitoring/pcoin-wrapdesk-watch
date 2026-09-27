@@ -881,7 +881,11 @@ def main() -> int:
                               f"WRAP {amt:.2f} PCN, tx {txid[:16]}...\n"
                               f"{confs}/{CONFIRMATIONS} confirmations. "
                               f"Do NOT release wPCN yet -- the depth is the whole "
-                              f"defence against a reorg."))
+                              f"defence against a reorg.\n"
+                              # The admin panel joins this to the desk's request
+                              # (its number, #77) by the deposit address; without it
+                              # a confirming wrap showed no number until 100 confs.
+                              f"KEY: {txid}:{watch_addr}"))
             else:
                 over = ""
                 eligible = amt
