@@ -9,7 +9,10 @@
 // Matching is on the transaction id. Telegram documents that a StarTransaction's id "coincides with
 // SuccessfulPayment.telegram_payment_charge_id for successful incoming payments from users", and a
 // refund carries "the identifier of the original transaction" -- so both sides key on charge_id.
-// Still to be confirmed on the first real payment (review item E).
+// CONFIRMED for incoming payments on 2026-09-27 with webcrafter's real data (same Bot API): all 11
+// of its Stars payments' telegram_payment_charge_id equal a getStarTransactions incoming `id`, and
+// compareStarsBooks() found no problem on them. The REFUND shape is still documented-not-observed:
+// if Telegram lists refunds differently, the effect is a false ops alert, never a money error.
 //
 // A read that failed, or that could not be completed, is UNKNOWN -- never "the books match".
 import { nowSec } from './time.mjs';

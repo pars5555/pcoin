@@ -1779,8 +1779,13 @@ async function main() {
                 track(setLanguage(cid, code).catch((e) => log.error('language change threw', errFields(e))));
               }
             } else if (data.startsWith('nav:')) {
-              // A menu button is the same screen its slash command shows.
-              await showScreen(cid, ensureUser(cid, cq.from), data.slice(4));
+              // A menu button is the same screen its slash command shows. NOT awaited: this
+              // loop also answers Stars pre_checkout_query, which Telegram fails after 10 s,
+              // and some screens make slow network calls (topup_pcn reads the rate and sends a
+              // QR photo; topup_wpcn asks the verifier). One user's menu tap must never make
+              // another user's payment fail. Every other button here is already tracked.
+              track(showScreen(cid, ensureUser(cid, cq.from), data.slice(4))
+                .catch((e) => log.error('screen threw', errFields(e))));
             } else if (data.startsWith('mj:') || data.startsWith('m:') || data.startsWith('stop:')) {
               toast = data.startsWith('stop:') ? t(L, 'toast.nothing_to_stop') : '';
               track(legacyButton(cid, data).catch((e) => log.warn('legacy button threw', errFields(e))));
