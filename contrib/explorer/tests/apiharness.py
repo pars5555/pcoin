@@ -34,7 +34,7 @@ class Env:
                  broadcast_global_rate=None, broadcast_global_burst=None,
                  cache_seconds=0.0, enabled=True, allow_wallet_node=False,
                  witness_rpc=None, wait_seconds=0.0, serve=True,
-                 max_addresses=500):
+                 max_addresses=500, trust_proxy=False, read_exempt_networks=()):
         self.tmpdir = tempfile.mkdtemp(prefix="pcoin-api-test-")
         self.db_path = os.path.join(self.tmpdir, "index.sqlite")
         self.chain = chain or FakeChain(genesis_address=None)
@@ -62,7 +62,8 @@ class Env:
                 broadcast_rate, broadcast_burst,
                 global_rate=broadcast_global_rate,
                 global_burst=broadcast_global_burst),
-            cors_origin="*")
+            cors_origin="*", trust_proxy=trust_proxy,
+            read_exempt_networks=read_exempt_networks)
         self.server = None
         if serve:
             self.server = ApiServer(("127.0.0.1", 0), self.app)

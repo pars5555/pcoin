@@ -18,7 +18,7 @@ import { loadConfig } from './lib/config.mjs';
 import { log, errFields, addrTag, installCrashHandlers, setLevel } from './lib/log.mjs';
 import { openDb, assertSchema, pendingMigrations, kvGet, kvSet, kvGetJson, kvSetJson } from './lib/db.mjs';
 import { nowSec } from './lib/time.mjs';
-import { ExplorerClient, indexHealth, addressTouched, isIndependentHost, BudgetExhausted } from './lib/explorer.mjs';
+import { ExplorerClient, indexHealth, addressTouched, BudgetExhausted, explorerUrls, corroboratorIndependence } from './lib/explorer.mjs';
 import { readRate, floorParity } from './lib/rate.mjs';
 import { issuedAddresses, poolStats } from './lib/pool.mjs';
 import { creditDepositSafe, reconcile, creditedUsdLast30Days, CreditResult, configureRebate } from './lib/deposits.mjs';
@@ -141,17 +141,21 @@ const kvStore = {
   setJson: (k, v) => kvSetJson(db, k, v),
 };
 
-const explorer = new ExplorerClient(cfg.strOr('EXPLORER_URL', 'https://explorer.pc.am'), {
+// Reads go to EXPLORER_API_URL (loopback on the explorer's own host), falling
+// back to EXPLORER_URL. See explorerUrls() for why the two are kept apart.
+const EXPLORER = explorerUrls(cfg);
+const explorer = new ExplorerClient(EXPLORER.apiUrl, {
   budget: cfg.int('EXPLORER_REQ_BUDGET', 40),
 });
 
 // D11. Configured or not, this is resolved ONCE at startup and compared by
 // HOSTNAME -- HTTPS://, :443, //api and a trailing dot all slip past a string
 // compare and make the oracle corroborate itself.
+// Checked against BOTH explorer URLs -- see corroboratorIndependence().
 const corroborateUrl = cfg.strOr('EXPLORER_CORROBORATE_URL', null);
 let corroborator = null;
 if (corroborateUrl) {
-  const ind = isIndependentHost(cfg.strOr('EXPLORER_URL', 'https://explorer.pc.am'), corroborateUrl);
+  const ind = corroboratorIndependence(EXPLORER, corroborateUrl);
   if (!ind.independent) {
     log.error('EXPLORER_CORROBORATE_URL is NOT an independent host; refusing to use it', { reason: ind.reason });
   } else {

@@ -1059,6 +1059,19 @@ Clients are keyed on the peer address of the socket. `X-Forwarded-For` is honour
 you control appended. Without that flag any client can spoof the header and the
 per-client limit becomes decorative.
 
+`--read-limit-exempt CIDR[,CIDR...]` (repeatable, or `$PCOIN_API_READ_LIMIT_EXEMPT`)
+lifts the **read** limit for callers on the explorer's own host that connect
+straight to the socket rather than through the reverse proxy. Off by default.
+Every such caller would otherwise share the one key `127.0.0.1`, so one local
+burst 429s every other local reader. A request qualifies only when its **socket
+peer** is in a listed network **and** it carries none of `X-Forwarded-For`,
+`X-Forwarded-Host`, `X-Forwarded-Proto`, `Forwarded`, `X-Real-IP`,
+`CF-Connecting-IP`, `True-Client-IP`, `CDN-Loop` or `Via` — present with an empty
+value still counts as present. The rate-limit key is deliberately not consulted:
+under `--trust-proxy` it comes from `X-Forwarded-For`, and the proxy connects from
+loopback too. The broadcast limits apply to exempt callers unchanged. On
+explorer.pc.am the setting is `127.0.0.0/8,::1/128`.
+
 ---
 
 ## Deployment

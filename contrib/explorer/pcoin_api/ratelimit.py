@@ -9,11 +9,78 @@ caps the whole process.
 Keying is on the peer address the socket actually reports. ``X-Forwarded-For``
 is honoured only when the operator passes ``--trust-proxy``, because otherwise
 any client can spoof that header and the per-client limit becomes decorative.
+
+One deliberate hole, OFF unless the operator lists networks for it
+(``--read-limit-exempt``): a caller on the explorer's own host that connects
+straight to the socket -- not through the reverse proxy -- is not read-limited.
+Every such caller shares the one key ``127.0.0.1``, so without this a single
+local burst 429s every other local reader, payment rails included.
+
+The decision is taken on the SOCKET PEER plus the ABSENCE of every forwarding
+header, never on the rate-limit key. The key is the wrong input: with
+``--trust-proxy`` it is read out of ``X-Forwarded-For``, a header the proxy
+fills in from a request header of its own, so exempting by key would let a
+public request that names 127.0.0.1 there walk past the limiter. The proxy
+itself connects from loopback too, which is why the peer alone is not enough
+either: Caddy always adds ``X-Forwarded-Proto``/``-Host`` (and on
+explorer.pc.am ``X-Forwarded-For``), and Cloudflare adds ``CF-Connecting-IP``
+and ``CDN-Loop``, so anything that came through them carries at least one of
+``FORWARDING_HEADERS`` and is limited exactly as before.
 """
 
+import ipaddress
 import threading
 import time
 from collections import OrderedDict
+
+# A request carrying ANY of these, even with an empty value, came through a
+# proxy and is never a direct local caller.
+FORWARDING_HEADERS = (
+    "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Forwarded",
+    "X-Real-IP", "CF-Connecting-IP", "True-Client-IP", "CDN-Loop", "Via",
+)
+
+
+def parse_networks(values):
+    """``["127.0.0.0/8,::1/128", ...]`` -> a tuple of ``ip_network``.
+
+    Raises ``ValueError`` on anything it cannot parse, on host bits set
+    (``127.0.0.1/8``) and on a ``/0``. An exemption list is a security setting:
+    a typo must stop the process at startup, not quietly exempt nothing -- or
+    everything.
+    """
+    out = []
+    for value in values or ():
+        for part in str(value).replace(" ", ",").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            net = ipaddress.ip_network(part, strict=True)
+            if net.prefixlen == 0:
+                raise ValueError("refusing to exempt all of %s" % net)
+            out.append(net)
+    return tuple(out)
+
+
+def is_direct_local(peer, headers, networks):
+    """True only for a request that came STRAIGHT from an exempt network.
+
+    `peer` is the socket's peer address, `headers` the request's headers as a
+    case-insensitive mapping (``http.server``'s ``self.headers``). No networks
+    configured means False, always.
+    """
+    if not networks:
+        return False
+    for name in FORWARDING_HEADERS:
+        if headers.get(name) is not None:
+            return False
+    try:
+        ip = ipaddress.ip_address(str(peer).split("%", 1)[0])
+    except ValueError:
+        return False
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return any(ip in net for net in networks)
 
 
 class TokenBucket:

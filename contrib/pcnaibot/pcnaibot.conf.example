@@ -74,16 +74,23 @@ RATE_CACHE_MAX_AGE_S=21600
 RATE_MAX_JUMP_FACTOR=10
 
 # ---- explorer ------------------------------------------------------------
+# The PUBLIC explorer: the link a user is shown. Never a loopback address.
 EXPLORER_URL=https://explorer.pc.am
-# D11: must be a DIFFERENT HOST from both EXPLORER_URL's host and the OonaCode
+# Where the watcher's API READS go. Unset = EXPLORER_URL. On 178.105.3.51, the
+# host that IS explorer.pc.am, set it to the local explorer: the containers run
+# --network host, so this skips Cloudflare and the rate-limit bucket that every
+# process on the box shares when it reads the public name. http(s) only; any
+# other value stops the watcher at startup.
+#EXPLORER_API_URL=http://127.0.0.1:8080
+# D11: must be a DIFFERENT HOST from both explorer URLs' hosts and the OonaCode
 # gateway's host, or one outage is two failures. explorer2.pc.am is
 # 178.105.178.27 and is recorded in servers.md as "corroboration source only".
 # Compared by HOSTNAME, never by string: HTTPS://, :443, //api and a trailing
 # dot all slip past a string compare and make the oracle corroborate itself.
 EXPLORER_CORROBORATE_URL=https://explorer2.pc.am
-# Per-tick HTTP request budget. The explorer runs WITHOUT --trust-proxy, so every
-# request through Caddy is keyed on 127.0.0.1 and shares ONE 20/s bucket with the
-# iOS wallet's POST /api/tx broadcasts.
+# Per-tick HTTP request budget. Reads through the public name are limited to
+# 20/s, burst 60, per client address -- and every process on this host that
+# uses the public name is ONE client (the host's own address).
 EXPLORER_REQ_BUDGET=40
 WATCH_POLL_SECONDS=60
 

@@ -243,8 +243,12 @@ class Router:
             return int(text) <= search.MAX_HEIGHT
         return True
 
-    def handle(self, path, query_string, *, method="GET", body=b"", client=""):
-        """-> (status, content_type, body_bytes, extra_headers)"""
+    def handle(self, path, query_string, *, method="GET", body=b"", client="",
+               read_exempt=False):
+        """-> (status, content_type, body_bytes, extra_headers)
+
+        `read_exempt` is the HTTP layer's finding that this is a direct local
+        caller (see `Handler._read_exempt`); it only reaches the mounted API."""
         if len(path) > MAX_PATH or len(query_string) > MAX_QUERY:
             return self._plain(414, "request-target too long")
         try:
@@ -254,7 +258,8 @@ class Router:
         params = parse_qs(query_string, keep_blank_values=True)
 
         if self.api_app is not None and (path == "/api" or path.startswith("/api/")):
-            return self._delegate(method, path, params, body, client)
+            return self._delegate(method, path, params, body, client,
+                                  read_exempt=read_exempt)
         if method not in ("GET", "HEAD"):
             return self._plain(405, "only GET and HEAD are served here")
 
@@ -375,17 +380,24 @@ class Router:
         return self._html(404, views.error_page(
             ctx, 404, "No such page", "Nothing is served at %s." % path))
 
-    def _delegate(self, method, path, params, body, client):
+    def _delegate(self, method, path, params, body, client, *, read_exempt=False):
         """Hand an /api request to the mounted API application.
 
         The query is flattened the way that application flattens it -- last
         value wins for a repeated key -- so a request means the same thing
         whichever of the two servers receives it.
+
+        `read_exempt` is passed ONLY when true, so an api_app with the plain
+        five-argument `handle()` this class documents is never handed a keyword
+        it does not know. It can only be true when the app itself said so
+        (`read_exempt_for`), i.e. when it is pcoin_api's ApiApplication.
         """
         query = {k: v[len(v) - 1] for k, v in params.items()}
         cors = getattr(self.api_app, "cors_origin", "*")
+        extra = {"read_exempt": True} if read_exempt else {}
         try:
-            status, payload = self.api_app.handle(method, path, query, body, client)
+            status, payload = self.api_app.handle(method, path, query, body, client,
+                                                  **extra)
         except Exception as exc:                        # noqa: BLE001
             traceback.print_exc(file=sys.stderr)
             # The mounted API failed to produce an answer. That is a failure to
@@ -555,13 +567,24 @@ class Handler(BaseHTTPRequestHandler):
         parts = [p.strip() for p in forwarded.split(",") if p.strip()]
         return parts[len(parts) - 1] if parts else peer
 
+    def _read_exempt(self):
+        """Is this a direct local caller the mounted API exempts from its read
+        limit? The API decides, on the socket peer and the forwarding headers
+        (pcoin_api.ratelimit.is_direct_local) -- never on `_client_key()`,
+        which with --trust-proxy is whatever X-Forwarded-For says."""
+        check = getattr(getattr(self.router, "api_app", None), "read_exempt_for", None)
+        if check is None:
+            return False
+        return bool(check(self.client_address[0], self.headers))
+
     def _serve(self, *, body=True, request_body=b""):
         started = time.monotonic()
         parts = urlsplit(self.path)
         try:
             status, ctype, payload, extra = self.router.handle(
                 parts.path, parts.query, method=self.command,
-                body=request_body, client=self._client_key())
+                body=request_body, client=self._client_key(),
+                read_exempt=self._read_exempt())
         except Exception:                       # noqa: BLE001 - last line of defence
             traceback.print_exc(file=sys.stderr)
             status, ctype, payload, extra = (

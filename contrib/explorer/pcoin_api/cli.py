@@ -11,15 +11,43 @@ from pcoin_indexer import rpc as rpcmod
 from . import __version__
 from .broadcast import DEFAULT_WAIT_SECONDS, Broadcaster
 from .nodeview import DEFAULT_CACHE_SECONDS, NodeView
-from .ratelimit import RateLimiter
+from .ratelimit import RateLimiter, parse_networks
 from .server import ApiApplication, ApiServer
 from .service import MAX_ADDRESSES, Service
 from .store import IndexUnavailable, Store
 
 
+READ_EXEMPT_ENV = "PCOIN_API_READ_LIMIT_EXEMPT"
+
+
 def _log(msg):
     sys.stderr.write("[%s] %s\n" % (time.strftime("%H:%M:%S"), msg))
     sys.stderr.flush()
+
+
+def _networks_arg(text):
+    try:
+        return parse_networks([text])
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc))
+
+
+def read_exempt_networks(args, environ=None):
+    """Every --read-limit-exempt value plus PCOIN_API_READ_LIMIT_EXEMPT.
+
+    Both empty -- the default -- is an empty tuple, which exempts nobody. A bad
+    value in the environment raises ValueError: the process must not start with
+    an exemption list it could not read.
+    """
+    environ = os.environ if environ is None else environ
+    nets = [n for group in (args.read_limit_exempt or []) for n in group]
+    spec = environ.get(READ_EXEMPT_ENV, "")
+    if spec.strip():
+        try:
+            nets.extend(parse_networks([spec]))
+        except ValueError as exc:
+            raise ValueError("%s: %s" % (READ_EXEMPT_ENV, exc))
+    return tuple(dict.fromkeys(nets))
 
 
 def build_parser():
@@ -54,6 +82,15 @@ def build_parser():
                    help="rate-limit on the last X-Forwarded-For entry. Only set "
                         "this when a proxy you control appends it -- otherwise "
                         "any client spoofs the header and evades the limiter.")
+    p.add_argument("--read-limit-exempt", action="append", type=_networks_arg,
+                   metavar="CIDR[,CIDR...]",
+                   help="do not read-limit a request whose SOCKET PEER is in one "
+                        "of these networks AND that carries no forwarding header "
+                        "(X-Forwarded-*, Forwarded, CF-Connecting-IP, CDN-Loop, "
+                        "Via, ...): a local caller on this host that connects "
+                        "straight here rather than through the reverse proxy. "
+                        "Repeatable; also read from $%s. Default: nobody. "
+                        "Broadcasts stay limited either way." % READ_EXEMPT_ENV)
 
     p.add_argument("--no-broadcast", action="store_true",
                    help="serve reads only; POST /api/tx answers 503")
@@ -96,6 +133,7 @@ def build_parser():
 
 
 def build_app(args, log):
+    exempt = read_exempt_networks(args)      # before anything is opened
     store = Store(args.db)
     node_rpc = rpcmod.client_from_args(
         url=args.rpc_url, datadir=args.datadir, chain=args.chain,
@@ -123,7 +161,10 @@ def build_app(args, log):
             global_rate=args.broadcast_global_rate,
             global_burst=args.broadcast_global_burst),
         cors_origin=args.cors_origin or None, trust_proxy=args.trust_proxy,
-        log=log)
+        read_exempt_networks=exempt, log=log)
+    if exempt:
+        log("read limit: exempt for direct connections from %s that carry no "
+            "forwarding header" % ", ".join(str(n) for n in exempt))
     return store, app
 
 

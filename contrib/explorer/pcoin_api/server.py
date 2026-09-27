@@ -25,6 +25,7 @@ from pcoin_indexer.rpc import RpcError, RpcTransportError
 
 from . import __version__
 from .errors import ApiError
+from .ratelimit import is_direct_local
 from .service import parse_int
 from .store import IndexUnavailable
 
@@ -65,18 +66,21 @@ class ApiApplication:
 
     def __init__(self, service, broadcaster, *, read_limiter=None,
                  broadcast_limiter=None, cors_origin="*", trust_proxy=False,
-                 log=None, started_at=None):
+                 read_exempt_networks=(), log=None, started_at=None):
         self.service = service
         self.broadcaster = broadcaster
         self.read_limiter = read_limiter
         self.broadcast_limiter = broadcast_limiter
         self.cors_origin = cors_origin
         self.trust_proxy = trust_proxy
+        # Empty -- the default -- exempts nobody. See ratelimit.is_direct_local.
+        self.read_exempt_networks = tuple(read_exempt_networks or ())
         self.log = log or (lambda msg: None)
         self.started_at = started_at or time.time()
 
     # -- routing ---------------------------------------------------------
-    def handle(self, method, path, query, body, client, *, already_limited=False):
+    def handle(self, method, path, query, body, client, *, already_limited=False,
+               read_exempt=False):
         """-> (status, payload_dict). Raises nothing; every failure is a payload.
 
         The read limiter is checked **here**, not only in this package's own HTTP
@@ -86,9 +90,13 @@ class ApiApplication:
         `--with-api` deployment. `already_limited=True` is how this package's own
         handler says it has already spent the token -- it checks before reading
         a request body, so an oversized POST is refused without being read.
+
+        `read_exempt=True` means the HTTP layer found a direct local caller
+        (`read_exempt_for`). It skips the READ limiter only; the broadcast
+        limiter on POST /api/tx still applies to everyone.
         """
         try:
-            if not already_limited:
+            if not already_limited and not read_exempt:
                 self.check_read_limit(client)
             return self._route(method, path, query, body, client)
         except ApiError as exc:
@@ -261,6 +269,12 @@ class ApiApplication:
 
     def check_read_limit(self, client):
         self._limit(self.read_limiter, client, "read")
+
+    def read_exempt_for(self, peer, headers):
+        """Is this a direct caller from an exempt network? Decided on the
+        socket peer and the forwarding headers -- never on the rate-limit key,
+        which --trust-proxy reads out of X-Forwarded-For."""
+        return is_direct_local(peer, headers, self.read_exempt_networks)
 
     def server_block(self):
         return {"api_version": __version__,
@@ -470,8 +484,10 @@ class _Handler(BaseHTTPRequestHandler):
         query = {k: v[len(v) - 1] for k, v in
                  urllib.parse.parse_qs(parsed.query, keep_blank_values=True).items()}
         client = self.client_key()
+        exempt = self.app.read_exempt_for(self.client_address[0], self.headers)
         try:
-            self.app.check_read_limit(client)
+            if not exempt:
+                self.app.check_read_limit(client)
             body = self._read_body() if method == "POST" else b""
         except ApiError as exc:
             self._respond(exc.status, exc.payload(), head=head)

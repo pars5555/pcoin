@@ -2,20 +2,43 @@
 //
 // TWO THINGS SHAPE THIS FILE.
 //
-// 1. THE RATE LIMIT IS SHARED WITH THE iOS WALLET. Reads are 20/s, burst 60,
-//    per client, and clients are keyed on the PEER ADDRESS of the socket --
-//    X-Forwarded-For is honoured only with --trust-proxy, which the running
-//    explorer does NOT have. So every request arriving through Caddy is keyed on
-//    127.0.0.1 and shares ONE bucket, including POST /api/tx broadcasts from the
-//    iOS wallet. A tick that bursts past 60 429s itself AND the wallet. Hence
-//    the per-tick request budget, and hence 429 being treated as UNREADABLE
-//    rather than as an answer.
+// 1. THE RATE LIMIT IS SHARED. Reads are 20/s, burst 60, per client. Since
+//    2026-09-18 explorer.pc.am runs --trust-proxy, so a client is its real
+//    address -- and a request from 178.105.3.51 to the PUBLIC name goes out
+//    through Cloudflare and comes back as that host's own address, sharing one
+//    bucket with every other process on the box that does the same. On
+//    2026-09-27 that bucket was drained ~250 times an hour by another service's
+//    bursts, and this watcher skipped ticks with "rate limited (429)". Hence
+//    EXPLORER_API_URL (see explorerUrls below), the per-tick request budget,
+//    and 429 being treated as UNREADABLE rather than as an answer.
 //
 // 2. UNKNOWN IS ITS OWN STATE. Every method here returns a discriminated
 //    result -- { readable: true, ... } or { readable: false, reason } -- and
 //    never a bare value that a caller could `?? 0` into a decision. A request
 //    that threw resolves nothing; a 200 whose body says "no transactions" is a
 //    real fact. Those are different and must stay different.
+
+export const DEFAULT_EXPLORER_URL = 'https://explorer.pc.am';
+
+// WHERE THE WATCHER READS, AND WHERE A PERSON IS SENT. Two URLs, on purpose.
+//
+//   publicUrl  EXPLORER_URL. What a user clicks (bot.mjs's explorer button,
+//              which reads EXPLORER_URL itself). Must stay a public https name.
+//   apiUrl     EXPLORER_API_URL, falling back to EXPLORER_URL. What the
+//              watcher's API reads go to. On 178.105.3.51 -- the host that IS
+//              explorer.pc.am, with the containers on --network host -- it is
+//              http://127.0.0.1:8080, which skips Cloudflare, the TLS round
+//              trip and the shared rate-limit bucket (the explorer exempts
+//              direct loopback callers there).
+//
+// The fallback is what makes this safe to ship: with no EXPLORER_API_URL in
+// the config, both are EXPLORER_URL and nothing changes. A loopback URL must
+// never become a link a user is shown, which is why the two are never merged.
+export function explorerUrls(cfg) {
+  const publicUrl = cfg.strOr('EXPLORER_URL', DEFAULT_EXPLORER_URL);
+  const apiUrl = cfg.strOr('EXPLORER_API_URL', publicUrl);
+  return { publicUrl, apiUrl };
+}
 
 export class BudgetExhausted extends Error {
   constructor() {
@@ -26,6 +49,14 @@ export class BudgetExhausted extends Error {
 
 export class ExplorerClient {
   constructor(baseUrl, { budget = 40, timeoutMs = 20000, fetchImpl = fetch } = {}) {
+    // A base that is not http(s) fails HERE, at startup, where OnFailure= sees
+    // it -- not as "request failed" on every tick. `localhost:8080` parses as a
+    // URL with the scheme "localhost:", so parsing alone is not the check.
+    let parsed;
+    try { parsed = new URL(baseUrl); } catch { parsed = null; }
+    if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
+      throw new Error('ExplorerClient: base URL must be http:// or https://');
+    }
     this.base = baseUrl.replace(/\/+$/, '');
     this.budgetTotal = budget;
     this.budgetLeft = budget;
@@ -192,6 +223,18 @@ export function isIndependentHost(urlA, urlB) {
   if (a === null || b === null) return { independent: false, reason: 'unparseable URL' };
   if (a === b) return { independent: false, reason: `same hostname ${a}` };
   return { independent: true, a, b };
+}
+
+// D11 against BOTH explorer URLs from explorerUrls(). The API URL may be
+// 127.0.0.1 -- the same machine as EXPLORER_URL's host without sharing its
+// name -- so checking only the URL the watcher reads from would let
+// EXPLORER_CORROBORATE_URL=https://explorer.pc.am "corroborate" itself.
+export function corroboratorIndependence({ apiUrl, publicUrl }, corroborateUrl) {
+  for (const u of new Set([apiUrl, publicUrl])) {
+    const r = isIndependentHost(u, corroborateUrl);
+    if (!r.independent) return r;
+  }
+  return { independent: true };
 }
 
 // "Touched" is detected on lifetime.tx_count and lifetime.received_sat ONLY.
