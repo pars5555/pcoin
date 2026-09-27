@@ -1463,6 +1463,8 @@ async function legacyButton(chatId, data) {
   await tg.sendMessage(chatId, t(L, 'legacy.old_button'), { reply_markup: quickKeyboard(L) });
 }
 
+const STARTED_AT = nowSec();   // in the heartbeat: see lib/heartbeat.mjs
+
 async function main() {
   // A deploy lets running work finish (lib/shutdown.mjs): no new updates, nothing queued started,
   // running turns get DRAIN_TIMEOUT_MS -- inside the unit's `docker stop -t 20` -- then exit 0.
@@ -1844,7 +1846,7 @@ async function main() {
     // money on one side only: heartbeat-check.sh alerts on both (lib/heartbeat.mjs).
     lastBeat = botHeartbeat({
       processed, offset, inFlight: inFlightTurns.size, waiting: turns.waiting.length, making,
-      starsParked: parkedCount(db), starsBooks,
+      starsParked: parkedCount(db), starsBooks, startedAt: STARTED_AT,
     });
     await writeBotHeartbeat(lastBeat);
   }

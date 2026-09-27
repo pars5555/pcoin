@@ -101,21 +101,32 @@ esac
 
 # Telegram's Stars books against ours (lib/stars-books.mjs, hourly, review 2026-09-27 item D).
 # Alerts when the answer CHANGES -- a new mismatch, reads failing, or the check going stale -- and
-# once more when it is ok again. 'pending' (no read completed yet) and a missing field say nothing;
-# the bot's own staleness is checked below.
+# once more when it is ok again. STALE = no completed check for 3 h: either the last one is older
+# than that, or none has completed since the bot started 3+ h ago ('pending' or a missing field
+# from a bot that has been up that long -- follow-up to the 2026-09-27 review). A bot that has only
+# just started is given the 3 h. The bot's own staleness is checked below.
 BOOKS_SENT="$STATE_DIR/stars-books.alerted"
 books=$(python3 -c "
 import json, sys, time, hashlib
+STALE = 3 * 3600
 try:
-    b = json.load(open(sys.argv[1])).get('stars_books')
+    hb = json.load(open(sys.argv[1]))
 except Exception:
     sys.exit(0)
+b = hb.get('stars_books')
+started = hb.get('started_at')
+up = time.time() - started if isinstance(started, (int, float)) else None
 if not isinstance(b, dict):
+    if up is not None and up > STALE:
+        print('stale|stale|no Stars books check has completed since the bot started %d h ago' % int(up / 3600))
     sys.exit(0)
 st = b.get('state') or ''
 ca = b.get('checked_at')
-if st in ('ok', 'mismatch') and isinstance(ca, (int, float)) and time.time() - ca > 4 * 3600:
+if st in ('ok', 'mismatch') and isinstance(ca, (int, float)) and time.time() - ca > STALE:
     st = 'stale'
+elif st == 'pending' and ca is None and up is not None and up > STALE:
+    print('stale|stale|no Stars books check has completed since the bot started %d h ago' % int(up / 3600))
+    sys.exit(0)
 probs = [str(p) for p in (b.get('problems') or [])]
 detail = ''
 sig = st

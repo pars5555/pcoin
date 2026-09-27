@@ -150,6 +150,37 @@ test('B: a payment already announced, delivered again, gets no second "Paid"; a 
   assert.equal(paidTexts(tg).length, 1);
 });
 
+test('B: a user who blocked the bot is retried with backoff, not every 2 min; a timeout is not', async () => {
+  const db = freshDb();
+  const sp = await paidInvoice(db);
+  creditStarsPayment(db, { chatId: 7, sp });
+  const id = sp.telegram_payment_charge_id;
+  const blocked = { sendMessage: async () => ({ ok: false, unknown: false, errorCode: 403, description: 'Forbidden: bot was blocked by the user' }) };
+  const t0 = nowSec();
+  const r1 = await notifyStarsPaid({ db, tg: blocked }, id, { now: () => t0 });
+  assert.equal(r1.sent, false);
+  assert.equal(r1.backoffSec, 240);
+  assert.equal(db.prepare('SELECT notified_at FROM stars_payments').get().notified_at, null, 'not told: still owed');
+  assert.deepEqual(unnotifiedPayments(db, { now: t0 + 120 }), [], 'the next 2-minute sweep skips it');
+  assert.deepEqual(unnotifiedPayments(db, { now: t0 + 241 }), [id], 'due again after the backoff');
+  const r2 = await notifyStarsPaid({ db, tg: blocked }, id, { now: () => t0 + 241 });
+  assert.equal(r2.backoffSec, 480, 'doubles');
+  for (let i = 0; i < 20; i++) await notifyStarsPaid({ db, tg: blocked }, id, { now: () => t0 });
+  assert.equal((await notifyStarsPaid({ db, tg: blocked }, id, { now: () => t0 })).backoffSec, 86_400, 'capped at a day');
+  // They unblock: the "Paid" goes out and the backoff is cleared.
+  const tg = fakeTg();
+  assert.equal((await notifyStarsPaid({ db, tg }, id)).sent, true);
+  assert.equal(paidTexts(tg).length, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM kv WHERE k LIKE 'stars:notify-backoff:%'").get().n, 0);
+  // A timeout is not "blocked": no backoff, the 2-minute sweep keeps trying.
+  const db2 = freshDb();
+  const sp2 = await paidInvoice(db2);
+  creditStarsPayment(db2, { chatId: 7, sp: sp2 });
+  const slow = { sendMessage: async () => ({ ok: false, unknown: true, description: 'timeout' }) };
+  assert.equal((await notifyStarsPaid({ db: db2, tg: slow }, sp2.telegram_payment_charge_id)).backoffSec, undefined);
+  assert.deepEqual(unnotifiedPayments(db2, { now: nowSec() + 120 }), [sp2.telegram_payment_charge_id]);
+});
+
 test('B: two notices racing for the same payment send one message', async () => {
   const db = freshDb();
   const sp = await paidInvoice(db);

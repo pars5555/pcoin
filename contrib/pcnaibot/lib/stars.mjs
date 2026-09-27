@@ -13,7 +13,7 @@
 // Stars are credited as USD at the package's price. The Stars themselves are the bot owner's on
 // Telegram (withdrawable after Telegram's 21-day hold); nothing here touches PCN.
 
-import { immediate } from './db.mjs';
+import { immediate, kvGetJson, kvSetJson } from './db.mjs';
 import { nowSec } from './time.mjs';
 import { log, chatTag } from './log.mjs';
 import { t, langOf } from './i18n.mjs';
@@ -131,19 +131,41 @@ export async function notifyStarsPaid({ db, tg }, chargeId, { inFlight = new Set
     const balance = db.prepare('SELECT balance_micro_usd b FROM users WHERE chat_id = ?').get(p.chat_id)?.b ?? 0;
     const text = t(langOf(db, p.chat_id), 'stars.paid', { stars: p.stars, usd: moneyLabel(p.micro_usd), balance: balanceLabel(balance) });
     const r = await tg.sendMessage(p.chat_id, text);
-    if (!r?.ok) return { sent: false, error: r?.description ?? 'send failed' };
+    if (!r?.ok) {
+      if (!unreachable(r)) return { sent: false, error: r?.description ?? 'send failed' };
+      // Blocked the bot / deactivated / chat gone: the 2-minute sweep would ask Telegram every
+      // 2 minutes for ever. Back off (4 min, 8, 16 ... one day). notified_at stays NULL -- they
+      // were NOT told -- so the "Paid" still reaches them if they come back.
+      const prev = kvGetJson(db, backoffKey(id));
+      const n = (prev?.n ?? 0) + 1;
+      const delay = Math.min(NOTIFY_RETRY_SEC * 2 ** n, NOTIFY_BACKOFF_MAX_SEC);
+      kvSetJson(db, backoffKey(id), { n, next: now() + delay, why: r.description ?? null });
+      return { sent: false, error: r.description ?? 'unreachable', backoffSec: delay };
+    }
     db.prepare('UPDATE stars_payments SET notified_at = ? WHERE id = ? AND notified_at IS NULL').run(now(), p.id);
+    if (kvGetJson(db, backoffKey(id)) !== null) db.prepare('DELETE FROM kv WHERE k = ?').run(backoffKey(id));
     return { sent: true, chatId: p.chat_id };
   } finally {
     inFlight.delete(id);
   }
 }
 
+// Telegram's answer for a user we can no longer write to. Only these back off; a timeout, a 429 or
+// a 5xx is ours or Telegram's problem and keeps the 2-minute retry.
+export const NOTIFY_RETRY_SEC = 120;
+export const NOTIFY_BACKOFF_MAX_SEC = 86_400;
+const backoffKey = (chargeId) => `stars:notify-backoff:${chargeId}`;
+export function unreachable(r) {
+  if (!r || r.ok || r.unknown) return false;
+  return r.errorCode === 403 || /blocked by the user|user is deactivated|chat not found/i.test(r.description ?? '');
+}
+
 // Payments whose user has not been told yet, for the sweep. Younger than `graceSec` is left to the
-// delivery that is telling them right now.
+// delivery that is telling them right now; one whose user is unreachable waits out its backoff.
 export function unnotifiedPayments(db, { graceSec = 60, now = nowSec() } = {}) {
   return db.prepare('SELECT charge_id FROM stars_payments WHERE notified_at IS NULL AND created_at <= ? ORDER BY id')
-    .all(now - graceSec).map((r) => r.charge_id);
+    .all(now - graceSec).map((r) => r.charge_id)
+    .filter((c) => !((kvGetJson(db, backoffKey(c))?.next ?? 0) > now));
 }
 
 export function expireInvoices(db, now = nowSec()) {

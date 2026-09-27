@@ -289,7 +289,8 @@ the owner from a monitoring-setup step.
 ## Testing
 
 ```sh
-node --test test/          # 227 tests, no network
+node --test test/          # 228 tests, no network
+sh test/heartbeat-check.test.sh   # the host alert script's Stars books rules (needs python3)
 ```
 
 They need `better-sqlite3`, which has no Windows/node-24 prebuild — run them in the
