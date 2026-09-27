@@ -116,6 +116,28 @@ check("OFFICIAL post from the PCoin channel" in ctx_ours, "context says an offic
 check("not an official PCoin statement" in ctx_other and "Some Coin" in ctx_other,
       "context says a foreign forward is not official")
 
+# ---- 5. which drafts must WAIT for the owner (hold) -------------------------
+H = ans.hold_reasons
+check(H("How do I install the Windows miner?", "Open PowerShell and paste: irm https://pc.am/dl/install.ps1 | iex", "high", None, {}) == [],
+      "a plain how-to answer is not held")
+check(H("Is this a scam DM?", "Nobody from PCoin will ever DM you first or ask for your recovery phrase.", "high", None, {}) == [],
+      "a scam warning is not held")
+check(any("money" in w for w in H("When is my withdrawal paid?", "Withdrawals are sent by hand within 24 hours.", "high", None, {})),
+      "a withdrawal answer is held")
+check(any("mining defaults" in w for w in H("Solo mining", "Solo takes weeks or months; the pool is the default.", "high", None, {})),
+      "a mining-default answer is held")
+check(any("denies" in w for w in H("Is the pinned counter real?", "The project has never tied a listing to purchases; it is not official.", "high", None, {})),
+      "a denial is held")
+check(any("confident" in w for w in H("hi", "Hello!", "medium", None, {})), "medium confidence is held")
+check(any("disputing" in w for w in H("that's wrong", "Sorry.", "high", None, {"reply_to_from": "PCoin (@PCoinPCNBot)"})),
+      "a reply to the bot is held")
+check(any("disputing" in w for w in H("Please flag it for a person", "ok", "high", None, {}, ["PCoin (you, an earlier reply that WAS posted): x"])),
+      "a dispute after a bot reply in the thread is held")
+check(any("follow up" in w for w in H("my miner is stuck", "A person will look into it.", "high", None, {})),
+      "a promise of a person with no report is held")
+check(not any("follow up" in w for w in H("my miner is stuck", "A person will look into it.", "high", {"kind": "bug", "summary": "x"}, {})),
+      "the same promise WITH a report is not held for that reason")
+
 print()
 print("%d FAILED" % len(FAILS) if FAILS else "ALL PASSED")
 sys.exit(1 if FAILS else 0)

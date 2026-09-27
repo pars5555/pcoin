@@ -254,6 +254,12 @@ EXPIRE_HOURS = float(os.environ.get("APPROVE_EXPIRE_HOURS", "48"))
 # submitted, and MAX_PENDING stops a process in a loop delivering a flood. What
 # no longer stands is that a person sees every public message first.
 AUTO_DELIVER_SECONDS = int(os.environ.get("APPROVE_AUTO_SECONDS", "900"))
+# A HELD item (submit --hold REASONS) is never auto-delivered: it waits for an
+# explicit decision, and the owner is reminded at the auto-deliver moment and
+# then every this-many seconds until it is decided or expires (owner,
+# 2026-09-27, after a review of every answer-bot reply found 12 of 15 wrong or
+# misleading ones had gone out on the 15-minute timeout, unreviewed).
+HOLD_REMIND_SECONDS = int(os.environ.get("APPROVE_HOLD_REMIND_SECONDS", str(6 * 3600)))
 MAX_TEXT = 3900          # Telegram's own limit is 4096; leave room for the footer.
 MAX_CAPTION = 1000       # Telegram caps a photo caption at 1024.
 # How many publish attempts before an item is declared FAILED and stops
@@ -844,6 +850,9 @@ def _submit_locked(a, text, photo_sha, photo_b64):
         # to balance is a model that will eventually emit a lone asterisk and
         # have its message refused by Telegram.
         "parse_mode": ("Markdown" if getattr(a, "markdown", False) else ""),
+        # Non-empty = never publish on the timeout; wait for a decision. Not in
+        # the digest: it changes WHEN something may publish, never WHAT.
+        "hold": (getattr(a, "hold", "") or "").strip()[:300],
         "photo_b64": photo_b64,
         "photo_sha": photo_sha,
         "state": "pending",
@@ -969,6 +978,31 @@ def _tick_locked(a):
             waited = now() - int(i.get("dm_at") or i["created"])
             if waited < AUTO_DELIVER_SECONDS:
                 continue
+            if i.get("hold"):
+                # NEVER published on the timeout. Remind instead -- plain text,
+                # no buttons, so there is still exactly one live set of buttons
+                # per item (the original prompt, which a decision edits).
+                last = int(i.get("hold_reminded_at") or 0)
+                if not last or now() - last >= HOLD_REMIND_SECONDS:
+                    try:
+                        api(token, "sendMessage", {
+                            "chat_id": str(OWNER),
+                            "text": ("\u23f8 STILL WAITING FOR YOUR DECISION -- item %s, %d min so far\n"
+                                     "To: %s\n"
+                                     "This draft is never published on its own. Use the buttons on "
+                                     "the approval message above, or admin.pc.am -> Approvals.\n"
+                                     "Why it waits: %s"
+                                     % (i["id"], waited // 60,
+                                        (dest_of(i["dest"]) or {}).get("label", i["dest"]),
+                                        i["hold"])),
+                            "disable_web_page_preview": "true",
+                        }, timeout=10)
+                        i["hold_reminded_at"] = now()
+                        changed = True
+                        print("held %s: reminded the owner (waited %d s)" % (i["id"], waited))
+                    except Exception as e:
+                        print("held %s: reminder not sent (%s)" % (i["id"], type(e).__name__))
+                continue
             i["state"] = "confirmed"
             i["decided_at"] = now()
             i["decided_by"] = "auto after %d min, NOT reviewed" % (AUTO_DELIVER_SECONDS // 60)
@@ -1007,8 +1041,14 @@ def _tick_locked(a):
             continue
         header = ("⚠️ APPROVAL NEEDED\n"
                   "Destination: %s\nFrom: %s\nQueued: %s\n"
-                  "──────────\n"
                   % (dest["label"], i["source"], stamp(i["created"])))
+        if i.get("hold"):
+            header += ("\u23f8 WAITS FOR YOUR DECISION -- never published on its own.\n"
+                       "Why: %s\n" % i["hold"])
+        elif AUTO_DELIVER_SECONDS > 0:
+            header += ("Publishes itself in %d min unless you decide.\n"
+                       % (AUTO_DELIVER_SECONDS // 60))
+        header += "──────────\n"
         try:
             # The REAL thing first -- the exact photo and the exact words that
             # will be published -- so what is approved is what goes out, never a
@@ -1791,6 +1831,9 @@ def main():
     s.add_argument("--key", default="")
     s.add_argument("--reply-to", dest="reply_to", default="")
     s.add_argument("--source", default="")
+    s.add_argument("--hold", default="",
+                   help="never auto-publish this item; wait for an explicit decision. "
+                        "The text is the reason, shown to the owner.")
     s.add_argument("--markdown", action="store_true",
                    help="render with Telegram's legacy Markdown. Off by default: "
                         "unbalanced Markdown is REFUSED by Telegram, and a message "

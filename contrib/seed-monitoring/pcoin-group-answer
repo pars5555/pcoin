@@ -918,7 +918,58 @@ def remove_advert(tg_token, row, author, text, model):
     return deleted or gone
 
 
-def reply(token, message_id, text, dest="group"):
+# WHICH DRAFTS MUST WAIT FOR THE OWNER (owner, 2026-09-27).
+#
+# A review of every reply this bot ever published found 8 wrong and 7
+# misleading; 12 of the 15 had gone out on the gate's 15-minute timeout, and 11
+# were marked "high" confidence -- so confidence alone does not separate good
+# from bad. What did: the TOPIC (money, price, listing, bounties, withdrawals,
+# mining defaults), a DENIAL, a reply to someone DISPUTING the bot, and a
+# promise of a human with nothing filed. Those drafts are queued with --hold:
+# the gate never publishes them on its own. How-to answers, links and scam
+# warnings keep the 15-minute auto-publish.
+HOLD_TOPIC = re.compile(
+    r"(?i)(\$|\busdt?\b|\bprice|\brate\b|\bpay(out|ment|s|ing)?\b|\bpaid\b|withdraw|deposit|"
+    r"\bminimum|\bfees?\b|refund|\bwrap|redeem|\bwpcn\b|listing|\blisted\b|coinmarketcap|coingecko|"
+    r"\bcmc\b|bount|referr|\breward|cash ?out|\bsell|\bbuy|invest|\bexchange\b)")
+HOLD_MINING = re.compile(
+    r"(?i)(by default|default (mode|pool|setting)|\bsolo\b|how long.{0,40}(block|mine|mining)|"
+    r"time to (find|mine) a block|blocks? per (day|hour))")
+HOLD_DENIAL = re.compile(
+    r"(?i)(not official|unofficial|ha(s|ve)(n't| not) (announced|said|published)|never (announced|tied|said)|"
+    r"can(no|')?t (confirm|verify)|treat (it|this|that) as a scam|is not ours|does(n't| not) exist|"
+    r"no such (goal|thing|programme|program|counter|announcement|plan))")
+HOLD_DEFLECT = re.compile(
+    r"(?i)\b(a person|someone|a human|the team|a moderator|an admin)\b.{0,20}\b(will|would|can|is going to)\b.{0,20}"
+    r"\b(follow|look|check|answer|explain|get back|reply|respond)")
+HOLD_DISPUTE = re.compile(
+    r"(?i)(\bwrong\b|not true|incorrect|that's not|thats not|you said|you told|\bofficial chan|"
+    r"flag it|for a person|a real person|\bhuman\b)")
+BOT_HANDLE = "@pcoinpcnbot"
+
+
+def hold_reasons(question, answer, confidence, report, row, thread=()):
+    """The reasons this draft must wait for the owner, or [] to allow auto-publish."""
+    q, a = question or "", answer or ""
+    why = []
+    if HOLD_TOPIC.search(q) or HOLD_TOPIC.search(a):
+        why.append("money, price, listing, bounty or withdrawal")
+    if HOLD_MINING.search(q) or HOLD_MINING.search(a):
+        why.append("mining defaults or block times")
+    if HOLD_DENIAL.search(a):
+        why.append("it denies or disowns something")
+    if str(confidence or "").lower() != "high":
+        why.append("the model was not highly confident")
+    replied_to_bot = BOT_HANDLE in str((row or {}).get("reply_to_from") or "").lower()
+    bot_in_thread = any(str(l).startswith("PCoin (you") for l in (thread or ()))
+    if replied_to_bot or (bot_in_thread and HOLD_DISPUTE.search(q)):
+        why.append("it answers someone replying to or disputing an earlier bot answer")
+    if HOLD_DEFLECT.search(a) and not report:
+        why.append("it promises a person will follow up but files nothing")
+    return why
+
+
+def reply(token, message_id, text, dest="group", hold=None):
     """QUEUE a reply for the owner's approval. This function no longer publishes.
 
     It used to POST straight into the public group. It does not any more, and the
@@ -946,13 +997,14 @@ def reply(token, message_id, text, dest="group"):
               file=sys.stderr)
         return False
     try:
-        r = subprocess.run(
-            [APPROVE, "submit", "--dest", dest,
-             "--reply-to", str(message_id),
-             "--source", "pcoin-group-answer",
-             "--key", "answer-%s" % message_id,
-             "--text", text],
-            capture_output=True, text=True, timeout=60)
+        cmd = [APPROVE, "submit", "--dest", dest,
+               "--reply-to", str(message_id),
+               "--source", "pcoin-group-answer",
+               "--key", "answer-%s" % message_id,
+               "--text", text]
+        if hold:
+            cmd += ["--hold", "; ".join(hold)]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     except Exception as e:
         print("  could not reach the approval gate (%s)" % type(e).__name__, file=sys.stderr)
         return False
@@ -1289,10 +1341,12 @@ def main():
                             "(chat %s) -- NOT answered" % r.get("chat"))
                 st["held"] += 1
                 print("  held %s: %s" % (mid, held_why), file=sys.stderr)
-            elif reply(tg, r.get("message_id"), answer, dest):
+            elif reply(tg, r.get("message_id"), answer, dest,
+                       hold=hold_reasons(text, answer, conf_level, rep, r, recent_thread(r))):
                 act(action="queued-for-approval", message_id=mid, who=author,
                     asked=text[:300], answer=answer[:600],
-                    model=used_model, confidence=conf_level)
+                    model=used_model, confidence=conf_level,
+                    hold="; ".join(hold_reasons(text, answer, conf_level, rep, r, recent_thread(r))) or None)
                 posted += 1
                 # QUEUED, not answered. At this moment the words are in the
                 # approval queue and may never be published. `answered` is left
