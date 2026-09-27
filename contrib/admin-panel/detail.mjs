@@ -500,18 +500,23 @@ async function renderExplorer(c) {
     kv([
       ['Blocks read', N(cen.blocksRead, 0), 'at tip ' + (num(cen.tip, 0) ?? '?')],
       ['Distinct miners', N(cen.distinct, 0)],
-      ['Pool blocks', N(cen.poolBlocks, 0),
-        cen.total ? PCT(cen.poolBlocks / cen.total * 100, 1) + ' of the window' : ''],
-      ['Ours', N(cen.yours, 0)],
+      ['Our pools\' blocks', N(cen.poolBlocks, 0),
+        (cen.total ? PCT(cen.poolBlocks / cen.total * 100, 1) + ' of the window' : '') +
+        ' &middot; pool.pc.am + pool2, which share one fee address'],
+      ['Outside pools\' blocks', N(cen.otherPoolBlocks, 0),
+        cen.total && cen.otherPoolBlocks != null ? PCT(cen.otherPoolBlocks / cen.total * 100, 1) + ' of the window' : ''],
+      ['Our solo blocks', N(cen.yours, 0)],
     ]) +
     tbl(['Miner', 'Blocks', 'Share', 'Kind'],
       (cen.rows || []).map(x => [
-        x.address === '__pool__' ? '<b>the pool</b>' : addr(x.address),
+        x.address === '__pool__' ? '<b>our pools</b>'
+          : x.address === '__otherpools__' ? '<b>outside pools</b>' : addr(x.address),
         N(x.blocks, 0), PCT((x.share || 0) * 100, 1),
-        x.pool ? '<span class="muted">pool</span>'
+        x.pool ? (x.ours ? '<span class="ok">our pools</span>' : '<span class="muted">outside pools</span>')
           : x.mine ? '<span class="ok">ours</span>' : '<span class="muted">outside</span>'])) +
     note('A pool block pays many addresses and a solo block pays one, which is how they are told ' +
-         'apart. Judge concentration on a window of 300+ blocks and on the upper bound of the ' +
+         'apart; a pool block is ours only when it pays our pools\' fee address (the same rule as ' +
+         'the concentration alert). Judge concentration on a window of 300+ blocks and on the upper bound of the ' +
          'interval, not the point estimate — a 60-block window swings &plusmn;13 points.')) +
 
   card(`Who is mining — last ${num(cen.blocksRead, 0) ?? '?'} blocks read`,

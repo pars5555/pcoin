@@ -151,3 +151,32 @@ journalctl -t pcoin-deposit-watch -n 5 --no-pager -o cat
 
 # run twice with the same STATE_DIR: the second must be silent (change-gated)
 ```
+
+## pcoin-timer-rearm: a timer that stops scheduling is silent
+
+Installed 2026-09-27 on every host with `pcoin-*` timers (178.105.3.51,
+178.105.178.27, 152.53.171.190, 89.58.3.44, 116.203.221.42, 35.239.156.16).
+
+After the kernel-update reboot of 178.105.3.51 that day, three timers came back
+`active (elapsed)` with **no next run**: the wPCN keeper, the concentration
+watch and the third-party pool watch. systemd 252 read each one's `Persistent=`
+stamp from before the reboot, counted `OnBootSec` as already spent, and
+`OnUnitActiveSec` had no base because the service had not run in the new boot.
+Nothing failed and nothing logged. `systemctl restart <timer>` does **not** fix
+it; running the service once does.
+
+`pcoin-timer-rearm` runs 20 min after boot and then hourly. It starts, once,
+the service of every active `pcoin-*` timer that repeats (`OnUnitActiveSec` /
+`OnUnitInactiveSec`) but has no next elapse, and tells the ops channel which.
+One-shot timers (a fixed `OnCalendar` date, a bare `OnBootSec`) are left alone.
+`--dry-run` lists and starts nothing. It was proven against a reproduced stuck
+timer (a `Persistent=true` stamp dated 5 min back) before it was installed.
+
+**After any reboot, check anyway:** `systemctl list-timers --all | awk '$1=="-"'`.
+
+## pcoin-concentration-watch runs on ONE host
+
+178.105.3.51 only, since 2026-09-27. It ran on 152.53.171.190 as well, and every
+pool-share alert reached the ops channel twice, about 6 hours apart. The
+152.53.171.190 timer is disabled, not deleted; `systemctl enable --now` brings it
+back if 178.105.3.51 is ever retired.

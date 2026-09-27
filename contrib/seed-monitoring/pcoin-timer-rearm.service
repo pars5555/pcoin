@@ -1,0 +1,6 @@
+[Unit]
+Description=Re-arm PCoin repeating timers that systemd stopped scheduling
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pcoin-timer-rearm

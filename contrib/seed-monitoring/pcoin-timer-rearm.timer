@@ -1,0 +1,13 @@
+[Unit]
+Description=Check after boot, then hourly, that every PCoin repeating timer still has a next run
+
+[Timer]
+# 20 min after boot: past every OnBootSec in the estate (the longest is 10 min),
+# so a timer that is merely waiting for its first run is not mistaken for stuck.
+OnBootSec=20min
+OnUnitActiveSec=1h
+# Deliberately NO Persistent=: on systemd 252 a Persistent stamp from before a
+# reboot is what stranded the timers this unit exists to rescue.
+
+[Install]
+WantedBy=timers.target

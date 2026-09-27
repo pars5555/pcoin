@@ -1,0 +1,75 @@
+#!/bin/bash
+# Re-arm any PCoin repeating timer that systemd has stopped scheduling.
+#
+# WHY THIS EXISTS. After the kernel-update reboot of 178.105.3.51 on
+# 2026-09-27 14:02 UTC, three timers came back "active (elapsed)" with no next
+# run at all: pcoin-wpcn-keeper, pcoin-concentration-watch and
+# pcoin-thirdparty-pool-watch. systemd 252 read each one's Persistent= stamp
+# (the last run before the reboot), treated OnBootSec as already spent, and
+# OnUnitActiveSec had no base because the service had not run in this boot.
+# Nothing failed and nothing logged: the keeper simply stopped defending the
+# floor, and the pool-concentration alarm went quiet, until someone happened to
+# read `systemctl list-timers`. Restarting the timer does NOT fix it; running
+# the service once does, because that gives OnUnitActiveSec its base again.
+#
+# So: for every active pcoin-*.timer that REPEATS (has OnUnitActiveSec or
+# OnUnitInactiveSec) but has no next elapse, start its service once, then say
+# so in the ops channel. One-shot timers (OnCalendar at a fixed date, a bare
+# OnBootSec) legitimately end "elapsed" and are left alone.
+#
+# Starting the service is exactly what the timer would have done. It changes no
+# setting and forces nothing a normal tick would not do.
+#
+#   --dry-run   list what would be started, start nothing, send nothing
+set -u
+
+NOTIFY=/usr/local/bin/pcoin-notify
+DRY=0
+[ "${1:-}" = "--dry-run" ] && DRY=1
+
+log() { logger -t pcoin-timer-rearm -- "$*" 2>/dev/null; printf '%s\n' "$*"; }
+
+stuck=()
+while read -r t; do
+  [ -n "$t" ] || continue
+  # Never itself: while this runs, its own timer is between ticks.
+  [ "$t" = "pcoin-timer-rearm.timer" ] && continue
+  props=$(systemctl show "$t" -p ActiveState -p TimersMonotonic \
+            -p NextElapseUSecRealtime -p NextElapseUSecMonotonic -p Unit 2>/dev/null) || continue
+  state=$(printf '%s\n' "$props" | sed -n 's/^ActiveState=//p')
+  [ "$state" = "active" ] || continue
+  printf '%s\n' "$props" | grep -qE 'OnUnit(In)?[Aa]ctiveUSec=' || continue
+  rt=$(printf '%s\n' "$props" | sed -n 's/^NextElapseUSecRealtime=//p')
+  mono=$(printf '%s\n' "$props" | sed -n 's/^NextElapseUSecMonotonic=//p')
+  if [ -z "$rt" ] && { [ -z "$mono" ] || [ "$mono" = "infinity" ] || [ "$mono" = "0" ]; }; then
+    svc=$(printf '%s\n' "$props" | sed -n 's/^Unit=//p')
+    # A service still running from its last tick is not stuck; the timer waits for it.
+    [ "$(systemctl show "$svc" -p ActiveState --value)" = "inactive" ] || continue
+    stuck+=("$t:$svc")
+  fi
+done < <(systemctl list-units --type=timer --all --no-legend --plain 'pcoin-*.timer' | awk '{print $1}')
+
+if [ ${#stuck[@]} -eq 0 ]; then
+  log "all repeating pcoin timers have a next run"
+  exit 0
+fi
+
+names=()
+for pair in "${stuck[@]}"; do
+  t=${pair%%:*}; svc=${pair#*:}
+  names+=("${t%.timer}")
+  if [ $DRY -eq 1 ]; then
+    log "would start $svc (its timer $t has no next run)"
+  else
+    systemctl start --no-block "$svc" && log "started $svc: its timer $t had no next run"
+  fi
+done
+
+[ $DRY -eq 1 ] && exit 0
+if [ -x "$NOTIFY" ]; then
+  host=$(hostname)
+  list=$(printf '%s, ' "${names[@]}"); list=${list%, }
+  "$NOTIFY" "Timers restarted on $host" \
+    "These checks had stopped running (systemd kept them but scheduled no next run), usually after a reboot: $list. Each was run once now, which puts it back on its schedule. Nothing else was changed." \
+    || true
+fi

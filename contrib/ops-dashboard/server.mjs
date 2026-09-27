@@ -155,10 +155,12 @@ async function j(url, ttl = 20e3) {
  *  attributed to the pool as one entity — NOT to each participant, which
  *  would count one block twenty times and drown the solo miners. The real
  *  workers behind the pool entity are on the ./pool page, from the pool's
- *  own share log.
+ *  own share log. A split coinbase is OURS only when it pays our pools' fee
+ *  address; every other one is an outside pool, counted apart.
  *
  *  Still a PROXY for solo miner count, not a miner count -- see the header. */
-const POOL_KEY = '__pool__';
+const POOL_KEY = '__pool__';            // our pools (fee address in the coinbase)
+const OTHER_POOLS_KEY = '__otherpools__'; // every other split coinbase
 async function census(window = 200) {
   const st = await j(`${EXPLORER}/status`, 15e3);
   const tip = st.index.indexed_height;
@@ -198,6 +200,14 @@ let censusRefreshing = false;
 
 async function computeCensus(tip, window, key) {
 
+  // A block is OUR POOL'S only when its split coinbase pays our pools' fee
+  // address (pool.pc.am and pool2 share one, so they are one entity here).
+  // Until 2026-09-27 every split coinbase counted as "the pool", so outside
+  // pools inflated our share: ~85% here while the pool ledgers and
+  // pcoin-concentration-watch said ~64%. Same rule as that script's OUR_POOLS.
+  let ourPoolAddress = null;
+  try { ourPoolAddress = (readState().pool || {}).address || null; } catch { /* unknown */ }
+
   const counts = new Map();
   const poolBlocksSeen = [];      // every multi-payout coinbase, kept for clustering
   const soloBlocks = new Map();   // address -> blocks mined alone
@@ -211,8 +221,10 @@ async function computeCensus(tip, window, key) {
     const paid = [...new Set((cb.outputs || [])
       .filter(o => o.address && (o.value_sat || 0) > 0).map(o => o.address))];
     if (paid.length > 1) {
-      counts.set(POOL_KEY, (counts.get(POOL_KEY) || 0) + 1);
-      poolBlocksSeen.push({ height: h, paid });
+      const ours = !!ourPoolAddress && paid.includes(ourPoolAddress);
+      const k = ours ? POOL_KEY : OTHER_POOLS_KEY;
+      counts.set(k, (counts.get(k) || 0) + 1);
+      poolBlocksSeen.push({ height: h, paid, ours });
     } else if (paid.length === 1) {
       counts.set(paid[0], (counts.get(paid[0]) || 0) + 1);
       soloBlocks.set(paid[0], (soloBlocks.get(paid[0]) || 0) + 1);
@@ -233,13 +245,18 @@ async function computeCensus(tip, window, key) {
     const ra = find(a), rb = find(b);
     if (ra !== rb) parent.set(ra, rb);
   };
+  // Our blocks are identified by the fee address and grouped as one entity
+  // BEFORE the clustering, and kept out of it: a miner who works on our pool and
+  // an outside one would otherwise merge that outside pool into ours.
+  const OURS_ROOT = '__ours__';
   for (const blk of poolBlocksSeen) {
+    if (blk.ours) continue;
     for (const a of blk.paid) if (!parent.has(a)) parent.set(a, a);
     for (let i = 1; i < blk.paid.length; i++) union(blk.paid[0], blk.paid[i]);
   }
   const groups = new Map();
   for (const blk of poolBlocksSeen) {
-    const root = find(blk.paid[0]);
+    const root = blk.ours ? OURS_ROOT : find(blk.paid[0]);
     let g = groups.get(root);
     if (!g) { g = { blocks: 0, miners: new Set(), firstHeight: blk.height, lastHeight: blk.height }; groups.set(root, g); }
     g.blocks++;
@@ -247,15 +264,12 @@ async function computeCensus(tip, window, key) {
     g.firstHeight = Math.min(g.firstHeight, blk.height);
     g.lastHeight = Math.max(g.lastHeight, blk.height);
   }
-  // Ours is the component containing our pool's own payout address. If that is
-  // unknown we say so rather than guessing, because labelling somebody else's
-  // pool as ours would misstate concentration in the safe-looking direction.
-  let ourPoolAddress = null;
-  try { ourPoolAddress = (readState().pool || {}).address || null; } catch { /* unknown */ }
-  const ourRoot = ourPoolAddress && parent.has(ourPoolAddress) ? find(ourPoolAddress) : null;
+  // If our fee address is unknown we say so rather than guessing, because
+  // labelling somebody else's pool as ours would misstate concentration in the
+  // safe-looking direction.
   const pools = [...groups.entries()].map(([root, g], i) => ({
-    id: root.slice(0, 10),
-    ours: ourRoot ? root === ourRoot : null,
+    id: root === OURS_ROOT ? 'pool.pc.am + pool2' : root.slice(0, 10),
+    ours: ourPoolAddress ? root === OURS_ROOT : null,
     blocks: g.blocks,
     miners: g.miners.size,
     firstHeight: g.firstHeight,
@@ -263,8 +277,8 @@ async function computeCensus(tip, window, key) {
   })).sort((a, b) => b.blocks - a.blocks);
   pools.forEach((p, i) => { p.rank = i + 1; });
   const rows = [...counts.entries()]
-    .map(([address, blocks]) => address === POOL_KEY
-      ? { address, blocks, pool: true, mine: false, label: null }
+    .map(([address, blocks]) => address === POOL_KEY || address === OTHER_POOLS_KEY
+      ? { address, blocks, pool: true, ours: address === POOL_KEY, mine: false, label: null }
       : { address, blocks, pool: false, mine: !!FLEET[address], label: FLEET[address] || null })
     .sort((a, b) => b.blocks - a.blocks);
   const total = rows.reduce((s, r) => s + r.blocks, 0) || 1;
@@ -272,13 +286,14 @@ async function computeCensus(tip, window, key) {
   const v = {
     tip, window, blocksRead: read, rows, total,
     distinct: rows.filter(r => !r.pool).length,
-    poolBlocks: counts.get(POOL_KEY) || 0,
+    poolBlocks: counts.get(POOL_KEY) || 0,          // OUR pools only, since 2026-09-27
+    otherPoolBlocks: counts.get(OTHER_POOLS_KEY) || 0,
     yours: rows.filter(r => r.mine).reduce((s, r) => s + r.blocks, 0),
     // The breakdown the single POOL_KEY bucket could never give.
     pools,
     poolCount: pools.length,
     poolMiners: pools.reduce((n, p) => n + p.miners, 0),
-    ourPoolKnown: !!ourRoot,
+    ourPoolKnown: !!ourPoolAddress,
     solo: {
       miners: soloBlocks.size,
       blocks: [...soloBlocks.values()].reduce((n, v) => n + v, 0),
@@ -601,7 +616,8 @@ const identTag = (mine, label) => mine
 /** One census table row. The pool is a single entity here on purpose — its
  *  real workers live on ./pool, not in this table. */
 const censusCells = r => r.pool
-  ? `<td><a href="./pool"><b>Mining pool</b></a> <span class="muted">(split coinbase — workers on the pool page)</span></td>
+  ? (r.ours ? `<td><a href="./pool"><b>Our pools</b></a> <span class="muted">(pool.pc.am + pool2 — workers on the pool page)</span></td>`
+            : `<td><b>Outside pools</b> <span class="muted">(split coinbase not paying our fee address)</span></td>`) + `
      <td><span class="tag pay">POOL</span></td>`
   : `<td class="mono"><a href="./address?a=${encodeURIComponent(r.address)}">${esc(r.address)}</a></td>
      <td>${identTag(r.mine, r.label)}</td>`;
@@ -663,7 +679,7 @@ async function dashboardPage() {
   const mp = st.mempoolCount ?? c.mempool?.tx_count;   // unknown stays unknown
 
   const topMiners = ce.rows.slice(0, 6).map(r => `<tr>
-      ${r.pool ? '<td><a href="./pool"><b>Mining pool</b></a></td><td><span class="tag pay">POOL</span></td>'
+      ${r.pool ? (r.ours ? '<td><a href="./pool"><b>Our pools</b></a></td>' : '<td><b>Outside pools</b></td>') + '<td><span class="tag pay">POOL</span></td>'
                : `<td>${addrCell(r.address)}</td><td>${identTag(r.mine, r.label)}</td>`}
       <td class="num">${r.blocks}</td>
       <td class="num">${(r.share * 100).toFixed(1)}%</td>
@@ -733,7 +749,7 @@ async function censusPage(url) {
   const winSel = [100, 200, 500].map(n => n === w ? `<span class="cur" style="padding:4px 10px;border-radius:7px;background:var(--accent);color:#0d0f14;font-weight:700">${n}</span>`
     : `<a style="padding:4px 10px" href="./census?w=${n}">${n}</a>`).join(' ');
 
-  return shell('census', 'Miner census', `${ce.distinct} distinct solo winners + the pool (${ce.poolBlocks} blocks) over the last ${ce.blocksRead} · your solo: ${ce.yours} of ${ce.total}`, `
+  return shell('census', 'Miner census', `${ce.distinct} distinct solo winners + our pools (${ce.poolBlocks} blocks) + outside pools (${ce.otherPoolBlocks ?? 0}) over the last ${ce.blocksRead} · your solo: ${ce.yours} of ${ce.total}`, `
   <div class="panel">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:8px">
       <h2 style="margin:0">Who won the blocks</h2>
@@ -841,7 +857,7 @@ async function poolPage(url) {
   try {
     const ce = await census(200);
     const pct = ce.total ? Math.round(ce.poolBlocks / ce.total * 100) : 0;
-    censusLine = ` The pool won <b>${ce.poolBlocks} of the last ${ce.blocksRead} blocks</b> (${pct}%);
+    censusLine = ` Our pools won <b>${ce.poolBlocks} of the last ${ce.blocksRead} blocks</b> (${pct}%);
       the rest went to <a href="./census">${ce.distinct} solo miner${ce.distinct === 1 ? '' : 's'}</a> mining on their own.`;
   } catch { /* explorer unreadable -- say nothing rather than guess */ }
 
