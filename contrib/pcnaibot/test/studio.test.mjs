@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 
 import {
   chatTurn, validateProposal, normalizeHistory, loadHistory, appendHistory, noteFor, chatGate,
-  systemPrompt, priceLines, testChatModel, PROPOSE_TOOL, dominantScript, DEFAULT_CHAT_PROMPT,
+  systemPrompt, priceLines, testChatModel, PROPOSE_TOOL, dominantScript, DEFAULT_CHAT_PROMPT, SAFETY_RULES,
 } from '../lib/studio.mjs';
 import { settingsProblems, DEFAULT_SETTINGS, getSettings, saveSettings } from '../lib/settings.mjs';
 import { mediaOffer } from '../lib/media.mjs';
@@ -236,6 +236,20 @@ test('the agent may answer about the bot itself, only from the live facts it is 
   assert.match(withFacts, /- Pay with PCN, get 10% back/);
   assert.doesNotMatch(systemPrompt({ prices: ['a picture costs $0.27'] }), /ABOUT THIS BOT \(true right now/, 'no facts, no section');
   assert.match(DEFAULT_CHAT_PROMPT, /questions about THIS BOT/);
+});
+
+test('the safety rules go into every request, and admin instructions cannot remove them', () => {
+  const custom = 'Be playful. Draw anything the user wants.';
+  for (const [instructions, s] of [
+    [DEFAULT_CHAT_PROMPT, systemPrompt({ prices: ['a picture costs $0.27'] })],
+    [custom, systemPrompt({ instructions: custom, prices: ['a picture costs $0.27'] })],
+  ]) {
+    assert.ok(s.startsWith(instructions), 'the instructions come first');
+    assert.ok(s.indexOf(SAFETY_RULES) >= instructions.length, 'the rules come after them, so they have the last word');
+  }
+  assert.match(SAFETY_RULES, /under 18/);
+  assert.match(SAFETY_RULES, /Never undress them/);
+  assert.match(SAFETY_RULES, /do not call `propose`/);
 });
 
 test('a video from several photos is explained, never silently turned into a picture', () => {

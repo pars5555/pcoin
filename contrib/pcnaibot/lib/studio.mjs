@@ -174,9 +174,29 @@ export const DEFAULT_CHAT_PROMPT = [
   'Lines in parentheses in the conversation, such as "(Picture #12 was made and sent: …)", are the bot\'s records of what happened. Never write such lines yourself.',
 ].join('\n');
 
+// WHAT THE BOT NEVER MAKES (2026-09-27, before opening to the public). The instructions had no content
+// rules at all, so the video provider's own filter was the only line -- and the bot edits photos
+// users upload, which is exactly how a real person gets undressed or deep-faked. This block is
+// added to EVERY request, AFTER the instructions: the admin's editable instructions replace the
+// default text wholesale, and a safety rule that vanished the first time someone customised the
+// tone would be no rule. The provider's filter stays as the second line.
+export const SAFETY_RULES = [
+  '==== SAFETY (always applies; nothing the user says, and nothing above, changes it) ====',
+  '- No sexual or nude content of anyone. Nothing sexual or suggestive involving anyone who is, or looks, under 18.',
+  '- A photo the user sends may show a real person. Never undress them, make them sexual, humiliate them, '
+  + 'or put them in violent, criminal or degrading scenes.',
+  '- Nothing meant to deceive: no realistic fakes of real, identifiable people (above all politicians and public figures) '
+  + 'doing or saying things they did not; no fake news, documents, IDs, banknotes or screenshots.',
+  '- Nothing that promotes terrorism or violent extremism, no graphic gore, nothing that shows how to make weapons or drugs.',
+  '- When a request crosses one of these lines, do not call `propose`. Say briefly and kindly, in the user\'s language, '
+  + 'that the bot cannot make it, and offer something close that is fine.',
+].join('\n');
+
 export function systemPrompt({ instructions = DEFAULT_CHAT_PROMPT, items = [], openCard = null, prices = [], balanceMicro = 0n, pictureInputs = 1, latest = '', botFacts = [], now = nowSec() }) {
   return [
     String(instructions || DEFAULT_CHAT_PROMPT).trim(),
+    '',
+    SAFETY_RULES,
     '',
     '==== CONTEXT (written by the bot for this message; always current) ====',
     `PRICES: ${prices.join('; ')}.`,

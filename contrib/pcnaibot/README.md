@@ -170,6 +170,13 @@ Re-audit, 2026-09-27 (migration 017):
   check stale) and once when it clears. A failed or partial read is never "the books match".
 * A read error on a clip gets the same 3 h as a clip in progress, not 45 min.
 
+**Content rules (2026-09-27, before opening to the public).** `SAFETY_RULES` in `lib/studio.mjs` goes
+into EVERY chat request, after the instructions, so editing the instructions in admin cannot drop it:
+no sexual or nude content (and nothing suggestive involving anyone under 18); never undress,
+sexualise or humiliate a real person from an uploaded photo; no deceptive fakes of real people,
+documents, IDs, banknotes or screenshots; no extremism, gore or weapon/drug how-tos. A request that
+crosses a line gets a kind refusal and no card. The provider's own filter is the second line.
+
 ## Two processes, deliberately
 
 | unit | what |
@@ -282,7 +289,7 @@ the owner from a monitoring-setup step.
 ## Testing
 
 ```sh
-node --test test/          # 226 tests, no network
+node --test test/          # 227 tests, no network
 ```
 
 They need `better-sqlite3`, which has no Windows/node-24 prebuild — run them in the
