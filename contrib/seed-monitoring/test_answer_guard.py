@@ -68,12 +68,15 @@ CHAT = -1003975107618
 tmp = tempfile.mkdtemp()
 qpath = os.path.join(tmp, "queue.json")
 with open(qpath, "w", encoding="utf-8") as fh:
-    json.dump({
-        "a": {"dest": "group", "state": "published", "published_at": 1000, "text": "EARLIER REPLY ONE"},
-        "b": {"dest": "group", "state": "cancelled", "published_at": 1100, "text": "CANCELLED DRAFT"},
-        "c": {"dest": "channel", "state": "published", "published_at": 1150, "text": "CHANNEL POST"},
-        "d": {"dest": "group", "state": "published", "published_at": 5000, "text": "LATER REPLY"},
-    }, fh)
+    # THE REAL SHAPE of /var/lib/pcoin-approve/queue.json: {"items": [...]}.
+    # The first version of this test used an id->item map, passed, and the
+    # feature then did nothing in production for four hours.
+    json.dump({"items": [
+        {"dest": "group", "state": "published", "published_at": 1000, "text": "EARLIER REPLY ONE"},
+        {"dest": "group", "state": "cancelled", "published_at": 1100, "text": "CANCELLED DRAFT"},
+        {"dest": "channel", "state": "published", "published_at": 1150, "text": "CHANNEL POST"},
+        {"dest": "group", "state": "published", "published_at": 5000, "text": "LATER REPLY"},
+    ]}, fh)
 ans.APPROVE_QUEUE = qpath
 spool = [
     {"chat": CHAT, "message_id": 1, "date": 900, "from": "Tony", "text": "first question"},

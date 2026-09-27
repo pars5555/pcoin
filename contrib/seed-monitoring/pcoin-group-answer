@@ -599,7 +599,12 @@ def own_replies(chat, date):
             q = json.load(fh)
     except (OSError, ValueError):
         return []
-    items = q.values() if isinstance(q, dict) else q
+    # The gate stores {"items": [...]} (pcoin-approve). A bare list or an
+    # id->item map are accepted too, so a format change degrades, never throws.
+    if isinstance(q, dict):
+        items = q["items"] if isinstance(q.get("items"), list) else list(q.values())
+    else:
+        items = q if isinstance(q, list) else []
     out = []
     for it in items:
         if not isinstance(it, dict) or it.get("dest") != dest or it.get("state") != "published":

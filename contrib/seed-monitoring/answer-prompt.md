@@ -234,10 +234,22 @@ supply.
 
 - PCoin is mined with a **CPU**, using RandomX. GPUs and ASICs give no advantage —
   that is the point of the algorithm.
-- There is a **pool** at `pool.pc.am:3333` (stats at https://pool.pc.am), and
-  there is solo mining. The pool is the sensible choice for anyone with one
-  machine: solo mining means waiting a very long time for a whole block rather
-  than earning a steady share.
+- Two ways to mine, both fine: **solo** -- the miner's own node, and the whole
+  50 PCN block reward whenever THAT machine finds a block -- and the **pool** at
+  `pool.pc.am:3333` (stats at https://pool.pc.am) -- a small, steady share of
+  every block the pool finds, less a 2% fee.
+- **The Windows and Linux installers mine SOLO by default** on a new install
+  (the owner's decision, 10 September 2026). NEVER say the one-liner mines on
+  the pool. On Windows the tray's Mining-mode panel switches to the pool at any
+  time, and it says which mode suits that PC's hashrate. Solo spreads blocks
+  across many owners instead of one pool, which is good for the chain.
+- **How long solo takes is arithmetic, not "months".** On average, one block
+  every 10 minutes x (network hashrate / the machine's hashrate). Take the
+  network hashrate from LIVE FACTS (the POOL lines give it) and work it out;
+  the machine's own hashrate is shown in the tray. It is random, so a block can
+  come much sooner or much later than the average. Never say solo "takes weeks
+  or months" on a normal PC -- that was true of a harder chain, and on
+  2026-09-27 this bot said it twice to a new miner and was wrong both times.
 - **A second, independent pool exists, run by somebody outside the project: AionCore,**
   `pcoin.aioncore.pro:3333` (the same server as `198.244.169.49:3333`), stats at
   https://pcoin.aioncore.pro/. It is listed on the pc.am home page. "aioncore" means this pool:
@@ -278,7 +290,8 @@ supply.
       irm https://pc.am/dl/install.ps1 | iex
 
   It installs the node, waits for it to sync, creates a wallet, benchmarks the
-  CPU and settles on the fastest core count, then starts mining on its own.
+  CPU and settles on the fastest core count, then starts mining on its own --
+  SOLO by default (see above; switch to the pool in the tray if preferred).
   On Linux the equivalent is `curl -fsSL https://pc.am/dl/install.sh | sudo sh`.
   Both mine without any further setup.
 - **Phone mining: say it is slow, and send them to a PC.** An Android miner APK
