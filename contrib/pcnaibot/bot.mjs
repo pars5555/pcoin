@@ -199,8 +199,21 @@ async function checkChatModel() {
   const r = await testChatModel(oona, model);
   chatHealth = { model, ok: r.ok, why: r.why ?? null, at: nowSec() };
   if (r.ok) log.info('chat model answers with a tool call', { model });
-  else log.error('CHAT MODEL CHECK FAILED -- the studio cannot propose anything', { model, why: r.why ?? null });
+  else {
+    log.error('CHAT MODEL CHECK FAILED -- the studio cannot propose anything', { model, why: r.why ?? null });
+    // Re-check soon rather than tomorrow. Seen 2026-09-27 12:49: a restart landed in a minute-long
+    // provider maintenance window ("503 overloaded_error"), and /stats would have said FAILING for
+    // the next 24 hours while chats worked. One pending retry at a time.
+    if (!chatRecheck) {
+      chatRecheck = setTimeout(() => {
+        chatRecheck = null;
+        checkChatModel().catch((e) => log.error('chat model check failed', errFields(e)));
+      }, 10 * 60 * 1000);
+      chatRecheck.unref?.();
+    }
+  }
 }
+let chatRecheck = null;
 
 const note = noteFor(db);
 const jobDeps = (draft = null) => ({ db, tg, media, marginE6: marginE6(), note, draft, onDelivered: afterDelivery });
@@ -1025,6 +1038,12 @@ function handleStarsPaid(chatId, sp, from = null) {
   const chargeId = String(sp?.telegram_payment_charge_id ?? '');
   if (r.credited) {
     log.info('stars payment credited', { chat: chatTag(chatId), stars: r.stars, micro: Number(r.micro) });
+    // The admins hear about every Stars payment, as webcrafter's do. Fire-and-forget: a slow or
+    // dead Telegram must never delay the user's own "Paid" or the poll loop.
+    for (const a of ADMIN_CHATS) {
+      tg.sendMessage(a, `⭐ Stars payment: ${escapeHtml(String(r.stars))} ⭐ = $${escapeHtml(microUsdToString(r.micro, 2))} credited to chat ${chatId}.`)
+        .catch(() => undefined);
+    }
     return { chargeId };
   }
   // A second delivery of a payment already credited: "✅ Paid" if its user was never told, nothing if
@@ -1703,6 +1722,24 @@ async function main() {
         try { recordCheck(db, pm.chat.id, pm.text); } catch (e) { log.error('could not record a pasted wPCN hash', errFields(e)); }
       }
 
+      // TELEGRAM'S LAST CHECK BEFORE IT TAKES THE STARS, answered within 10 seconds: a synchronous
+      // look-up against the invoice we wrote (lib/stars.mjs), then the answer. Never queued behind
+      // other work -- and answered BEFORE the claim below, so it waits on no write lock, and a crash
+      // between a claim and the answer cannot leave the payment unanswered. It needs no claim:
+      // answering the same query twice is harmless (Telegram ignores the second), and it spends
+      // nothing. Its offset is saved with the next claimed update; a restart before that just
+      // answers it again.
+      if (up.pre_checkout_query) {
+        const q = up.pre_checkout_query;
+        let verdict;
+        try { verdict = checkPreCheckout(db, q); } catch (e) { log.error('pre-checkout check threw', errFields(e)); verdict = { ok: false, error: t(detectLang(q.from?.language_code), 'pc.error') }; }
+        const a = await tg.call('answerPreCheckoutQuery', verdict.ok
+          ? { pre_checkout_query_id: q.id, ok: true }
+          : { pre_checkout_query_id: q.id, ok: false, error_message: verdict.error });
+        log.info('stars pre-checkout', { chat: chatTag(q.from?.id ?? 0), stars: q.total_amount, ok: verdict.ok, why: verdict.error ?? '-', answered: a.ok });
+        continue;
+      }
+
       // CLAIM BEFORE WORK. This turns at-least-once DELIVERY into at-most-once
       // WORK, and it must happen before the expensive call, never after. A chat message's claim
       // carries the message, so one waiting for a slot survives a restart (lib/inbox.mjs).
@@ -1718,20 +1755,6 @@ async function main() {
 
       // A stop press on a draft from the old streaming answers. Nothing streams now.
       if (up.stopped_message_generation) continue;
-
-      // TELEGRAM'S LAST CHECK BEFORE IT TAKES THE STARS, answered within 10 seconds: a synchronous
-      // look-up against the invoice we wrote (lib/stars.mjs), then the answer. Never queued behind
-      // other work.
-      if (up.pre_checkout_query) {
-        const q = up.pre_checkout_query;
-        let verdict;
-        try { verdict = checkPreCheckout(db, q); } catch (e) { log.error('pre-checkout check threw', errFields(e)); verdict = { ok: false, error: t(detectLang(q.from?.language_code), 'pc.error') }; }
-        const a = await tg.call('answerPreCheckoutQuery', verdict.ok
-          ? { pre_checkout_query_id: q.id, ok: true }
-          : { pre_checkout_query_id: q.id, ok: false, error_message: verdict.error });
-        log.info('stars pre-checkout', { chat: chatTag(q.from?.id ?? 0), stars: q.total_amount, ok: verdict.ok, why: verdict.error ?? '-', answered: a.ok });
-        continue;
-      }
 
       // Buttons. Answer the callback FIRST in spirit -- an unanswered callback leaves a spinner on
       // the button for a minute -- so anything slow runs in the background.
