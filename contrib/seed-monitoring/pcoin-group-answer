@@ -374,6 +374,37 @@ def _strip_public(text):
     return text
 
 
+# THE STANDARD SCAM WARNING IS NOT A DISCLOSURE.
+#
+# "Nobody will ever ask for your recovery phrase or private key" is the one line
+# the prompt REQUIRES (rule 2, SCAMS) -- and the "how funds are held" rule below
+# held every answer that said it, because it matches the bare words "private
+# key". Six answers were held that way between 2026-09-15 and 2026-09-26, two of
+# them scam warnings nobody then saw, and a held answer is no answer at all.
+#
+# So a sentence is removed before that rule looks, but only if it is plainly
+# the warning: it names a private key, carries a negation (never / nobody /
+# don't ...) AND a sharing verb (share, post, send, ask ...), and says nothing
+# about where anything is kept. "We never share the private key; it is kept in
+# a vault" still has "kept" and "vault" and is still held. Test both ways in
+# test_answer_guard.py before changing a word of this.
+_PK_RE = re.compile(r"(?i)\bprivate keys?\b")
+_NEG_RE = re.compile(r"(?i)\b(never|nobody|no one|no-one|don'?t|do not|won'?t|will not|"
+                     r"must not|mustn'?t|shouldn'?t|should not)\b")
+_SHARE_RE = re.compile(r"(?i)\b(share|shares|sharing|give|giving|send|sending|post|posting|"
+                       r"paste|type|enter|tell|show|reveal|ask|asks|asking|request|dm)\b")
+_KEPT_RE = re.compile(r"(?i)\b(stored|store|stores|kept|held|holds|vault|cold|hot wallet|keystore|"
+                      r"wallet\.dat|multisig|backup|offline|hardware|server)\b")
+
+
+def _strip_key_warnings(text):
+    """Remove the sentences that are the standard 'never share your key' warning."""
+    parts = re.split(r"(?<=[.!?\n])", text)
+    return "".join(p for p in parts
+                   if not (_PK_RE.search(p) and _NEG_RE.search(p)
+                           and _SHARE_RE.search(p) and not _KEPT_RE.search(p)))
+
+
 FORBIDDEN = [
     (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "an IP address", _strip_public),
     (re.compile(r"(?i)(?<![\w/])(?:/opt/|/etc/|/var/lib/|/usr/local/|/var/www/)"), "a server path"),  # \b NEVER MATCHED HERE: there is no word boundary between a space and a slash, so this rule only ever fired on the useless case (a/opt/x) and missed every real one (it is in /opt/x). Broken in all 11 backups; found 2026-09-17 by a test that asserted the rule FIRES, rather than one that asserted an answer passed.
@@ -400,7 +431,7 @@ FORBIDDEN = [
     (re.compile(r"(?i)\b(hetzner|netcup|contabo|digitalocean|linode|vultr|"
                 r"google cloud|gcp|aws|oracle cloud)\b"), "a hosting provider"),
     (re.compile(r"(?i)\b(private key|wallet\.dat|keystore|cold wallet|hot wallet|"
-                r"multisig|backup server|vault)\b"), "how funds are held"),
+                r"multisig|backup server|vault)\b"), "how funds are held", _strip_key_warnings),
 ]
 
 
@@ -508,6 +539,10 @@ def models_for(cfg):
 # question stays the thing being answered rather than one line in a transcript.
 THREAD_CONTEXT = 6
 THREAD_CONTEXT_CHARS = 220
+# Where the approval gate keeps what was actually published, and which of its
+# destinations is which chat -- so the bot can see its own earlier replies.
+APPROVE_QUEUE = os.environ.get("APPROVE_QUEUE", "/var/lib/pcoin-approve/queue.json")
+DEST_FOR_CHAT = {"-1003975107618": "group"}
 THREAD_CONTEXT_MAX_AGE = 6 * 3600     # older than this is a different conversation
 
 
@@ -522,7 +557,7 @@ def recent_thread(row, spool=None, limit=THREAD_CONTEXT):
     rows = spool if spool is not None else read_spool()
     chat, mid = row.get("chat"), row.get("message_id")
     date = int(row.get("date") or 0)
-    out = []
+    entries = []
     for r in rows[-400:]:
         if r.get("chat") != chat or r.get("message_id") == mid:
             continue
@@ -532,10 +567,50 @@ def recent_thread(row, spool=None, limit=THREAD_CONTEXT):
         body = (r.get("text") or r.get("described") or "").strip()
         if not body:
             continue
-        if len(body) > THREAD_CONTEXT_CHARS:
-            body = body[:THREAD_CONTEXT_CHARS].rstrip() + "..."
-        out.append("%s: %s" % ((r.get("from") or "someone"), body))
-    return out[-limit:]
+        entries.append((rd, "%s: %s" % ((r.get("from") or "someone"), _clip(body))))
+    # ITS OWN EARLIER REPLIES. The spool never holds them -- group-watch skips
+    # bot messages -- so the model answered every follow-up without knowing what
+    # it had just said. On 2026-09-27 it gave one person three contradicting
+    # deflections in forty minutes because each turn started blind.
+    entries.extend(own_replies(chat, date))
+    entries.sort(key=lambda e: e[0])
+    return [e[1] for e in entries][-limit:]
+
+
+def _clip(body):
+    if len(body) > THREAD_CONTEXT_CHARS:
+        return body[:THREAD_CONTEXT_CHARS].rstrip() + "..."
+    return body
+
+
+def own_replies(chat, date):
+    """(when, line) for this bot's own replies PUBLISHED into this chat recently.
+
+    Read from the approval gate's queue -- the only record of what actually went
+    out. Only published items, only the Telegram group this row came from, and
+    only inside the same time window as the thread. Unreadable queue: no lines,
+    never an error -- missing context degrades the answer, it must not stop it.
+    """
+    dest = DEST_FOR_CHAT.get(str(chat))
+    if not dest:
+        return []
+    try:
+        with open(APPROVE_QUEUE, encoding="utf-8") as fh:
+            q = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    items = q.values() if isinstance(q, dict) else q
+    out = []
+    for it in items:
+        if not isinstance(it, dict) or it.get("dest") != dest or it.get("state") != "published":
+            continue
+        at = int(it.get("published_tg_at") or it.get("published_at") or 0)
+        if not at or at > date or (date and date - at > THREAD_CONTEXT_MAX_AGE):
+            continue
+        body = (it.get("text") or it.get("caption") or "").strip()
+        if body:
+            out.append((at, "PCoin (you, an earlier reply that WAS posted): %s" % _clip(body)))
+    return out
 
 
 def with_context(row, text):
@@ -555,6 +630,15 @@ def with_context(row, text):
                    "top. Read it before you ask for anything: if the program, the "
                    "version, the platform or the address is already here, you have it "
                    "and asking again reads as not listening." + NL + NL + NL.join(thread))
+    fwd = row.get("forwarded_from") or {}
+    if fwd.get("official"):
+        out.append("This message is a FORWARD of an OFFICIAL post from the PCoin channel "
+                   "@PCoinPCN. Everything in it is PCoin's own public statement: treat it as "
+                   "true, answer from it, and never deny it or call it unofficial.")
+    elif fwd:
+        out.append("This message was FORWARDED from %s. It is not the person's own words "
+                   "and not an official PCoin statement."
+                   % (fwd.get("title") or fwd.get("username") or "somewhere else"))
     if row.get("reply_to_text"):
         out.append("This is a REPLY to an earlier message, from %s:\n%s"
                    % (row.get("reply_to_from") or "someone", row["reply_to_text"]))

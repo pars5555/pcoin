@@ -586,6 +586,25 @@ def link_allowed(url):
     return False
 
 
+OUR_CHANNEL_ID = -1003712285504     # @PCoinPCN
+
+
+def forward_info(msg):
+    """None, or {title, username, official} for a forwarded message."""
+    fo = msg.get("forward_origin") or {}
+    fchat = fo.get("chat") or msg.get("forward_from_chat") or {}
+    if not fo and not fchat and not msg.get("forward_from"):
+        return None
+    uname = (fchat.get("username") or "").lower()
+    return {
+        "title": fchat.get("title") or (fo.get("sender_user_name")
+                                        or ((fo.get("sender_user") or msg.get("forward_from") or {})
+                                            .get("first_name"))),
+        "username": fchat.get("username"),
+        "official": bool(fchat) and (fchat.get("id") == OUR_CHANNEL_ID or uname == "pcoinpcn"),
+    }
+
+
 def moderation_reason(msg, regular=False):
     """(reason, delete) for a message that breaks the rules, or (None, False).
 
@@ -928,6 +947,11 @@ def main():
                                           if msg.get("reply_to_message") else None),
                         # An attachment the bot CANNOT READ. It has to know one
                         # exists, or it answers as though the message were whole.
+                        # A FORWARD, and from where. A post forwarded from our own
+                        # channel is PCoin speaking; the answer bot denied one three
+                        # times on 2026-09-27 because it could not tell a forward
+                        # from the person's own claim.
+                        "forwarded_from": forward_info(msg),
                         "has_image": bool(msg.get("photo") or msg.get("document")
                                           or msg.get("video") or msg.get("sticker")),
                         # KEEP THE HANDLE TO THE IMAGE. Telegram only lets a file be
