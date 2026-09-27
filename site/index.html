@@ -1177,9 +1177,10 @@ Linux    pcoin-cli startmining &quot;&lt;your pc1q&hellip; address&gt;&quot; 4</
         be refused.
         <br><br>
         <b>wPCN is not PCN.</b> It is an IOU on another chain, backed 1:1 by PCN held in a reserve
-        address printed above &mdash; check the balance against the token's fixed 50,000 supply yourself,
-        or read <a href="https://wrapdesk.pc.am/proof" rel="noopener">wrapdesk.pc.am/proof</a>, which does
-        the comparison live; that is why both are published. The contract has <b>no owner and no mint function</b>, so nobody,
+        <b>wallet</b>: the reserve address printed above plus the wrap desk's deposit addresses, which
+        belong to the same wallet. <a href="https://wrapdesk.pc.am/proof" rel="noopener">wrapdesk.pc.am/proof</a>
+        adds them all up live and sets the total against the token's fixed 50,000 supply &mdash; that is the
+        figure to check, because the one address on its own holds only part of the reserve. The contract has <b>no owner and no mint function</b>, so nobody,
         including us, can create more. Six things to know before buying: the pool is <b>small</b>
         (about $900 across both sides on 2&nbsp;September&nbsp;2026, when a $20 trade moved the price roughly 9%, which is arithmetic, not a
         flaw); the <b>liquidity is not locked</b> and the project holds the LP tokens;
@@ -1224,11 +1225,11 @@ Linux    pcoin-cli startmining &quot;&lt;your pc1q&hellip; address&gt;&quot; 4</
         The same applies to the <a href="https://explorer.pc.am/addresses" rel="noopener">rich
         list</a> we publish ourselves. One of the largest addresses on it is the <b>wPCN reserve</b>,
         <a href="https://explorer.pc.am/address/pc1q7hhzmdkkx0zjtzj6qkwmuvhlgwfqjrc6j2dk52" rel="noopener"><code>pc1q7hhz&hellip;dk52</code></a>
-        &mdash; it is ours, and it backs every wPCN in existence 1:1. Its balance is published live,
-        with the contract's own supply beside it, at
-        <a href="https://wrapdesk.pc.am/proof" rel="noopener">wrapdesk.pc.am/proof</a>; the figure there
-        also counts the desk's deposit addresses, which belong to the same wallet, so it reads higher
-        than that one address. We do not print balances here, because they move: read them from the
+        &mdash; it is ours, and it is the core of the reserve that backs every wPCN in existence 1:1. The rest
+        of the reserve sits on the wrap desk's deposit addresses, which belong to the same wallet, so that
+        one address on its own holds only part of it. The whole reserve is added up live, with the
+        contract's own supply beside it, at
+        <a href="https://wrapdesk.pc.am/proof" rel="noopener">wrapdesk.pc.am/proof</a>. We do not print balances here, because they move: read them from the
         rich list and the proof page, and walk the addresses yourself rather than take this
         paragraph's word for it.
         <br><br>
