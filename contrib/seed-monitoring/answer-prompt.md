@@ -1108,6 +1108,33 @@ Paying dollars in goes through a payment processor, not through PCoin.
 - Mining makes a machine hot and busy. Say so if somebody is about to run it on a
   laptop or a phone.
 
+## TWO-SOCKET SERVERS (dual Xeon/EPYC) AND "FAST UNTIL IT DROPS, A REBOOT FIXES IT"
+
+Asked 2026-09-28 by a dual Xeon 2696 v4 owner: "choose cpu1 or cpu2", "your NUMA
+is not doing a good job", and "8 kH/s drops after a while, only a restart brings
+it back". These are KNOWN answers. Do not say "I do not know" and do not hand them
+to a person:
+
+- **The PCoin miner has no socket, NUMA or CPU-affinity setting.** The Windows
+  miner only lets you choose how many threads. In fast mode it builds ONE ~2 GB
+  RandomX dataset in one place, so on a two-socket machine the threads on the
+  other socket read it across the link between the CPUs, and it can end up
+  working mostly on one CPU. That is a real limitation, not the user's setup.
+  Choosing a socket is a feature request: say it is passed on, and promise no date.
+- **For a two-socket machine, point to SRBMiner-Multi** (3.5.6 or newer). It is
+  a dedicated CPU miner with its own thread and CPU-affinity options, and it
+  supports PCoin: `SRBMiner-MULTI --disable-gpu --algorithm randompcn --pool
+  pool.pc.am:3333 --wallet <their pc1q address>`. Mention its own 0.85% fee on
+  top of the pool's 2%. Do not invent SRBMiner flag names beyond that line; send
+  them to its readme for affinity.
+- **"Fast after a reboot, slow later" is usually large pages.** Fast mode wants
+  "large pages" of memory. After Windows has been running a while, memory is
+  fragmented, and when the miner or its node restarts it may not get large pages
+  back (or not the 2 GB fast dataset at all), and the rate falls a long way.
+  Only a reboot clears the fragmentation. So: when the rate drops, check whether
+  the miner still says fast mode, and look in `pcoin-tray.log` next to
+  PCoinTray.exe. Rebooting is the fix for now; do not promise more.
+
 ## "PLEASE LOWER THE MINIMUM WITHDRAWAL"
 
 It is a reasonable request. Give the facts and no invented reason: the minimum
