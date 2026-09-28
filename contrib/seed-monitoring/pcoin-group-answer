@@ -618,6 +618,42 @@ def own_replies(chat, date):
     return out
 
 
+BURST_SECONDS = int(os.environ.get("ANSWER_BURST_SECONDS", 180))
+
+
+def _queue_items():
+    try:
+        with open(APPROVE_QUEUE, encoding="utf-8") as fh:
+            q = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    if isinstance(q, dict):
+        return q["items"] if isinstance(q.get("items"), list) else list(q.values())
+    return q if isinstance(q, list) else []
+
+
+def published_replies_by_target():
+    """{replied-to message_id: published_at} for group replies that actually went
+    out. Unreadable queue: empty -- a missing record means answer normally,
+    never skip a question."""
+    out = {}
+    for it in _queue_items():
+        if (isinstance(it, dict) and it.get("state") == "published"
+                and it.get("dest") in DEST_FOR_CHAT.values() and it.get("reply_to")):
+            at = int(it.get("published_tg_at") or it.get("published_at") or 0)
+            if at:
+                t = str(it["reply_to"])
+                out[t] = max(out.get(t, 0), at)
+    return out
+
+
+def find_spool_row(mid):
+    for r in reversed(read_spool()[-400:]):
+        if str(r.get("message_id")) == str(mid):
+            return r
+    return None
+
+
 def with_context(row, text):
     """The question, plus whatever it leans on and does not contain.
 
@@ -1182,6 +1218,23 @@ def main():
     for r in rows:
         newest_pending[str(r.get("from_id") or "?")] = str(r.get("message_id"))
 
+    # ONE REPLY PER BURST. People type a question as several short messages --
+    # on 2026-09-28 one member sent five in two minutes ("I tune Xeon...",
+    # "...drops...", "Can you add...", "Cause...", "What if I want cpu2"). Each
+    # was drafted separately, minutes apart, and the later drafts repeated a
+    # reply that had already been posted: own_replies() only shows replies
+    # published BEFORE a message, and a reply to the burst lands after all of it.
+    # So: a message followed within BURST_SECONDS by another askable message from
+    # the same person is merged into that later one, whose thread context already
+    # holds it. Only the last message of a burst is answered.
+    later_from_same = {}
+    for r in rows:
+        if askable_text(r):
+            later_from_same.setdefault(str(r.get("from_id") or "?"), []).append(
+                (int(r.get("date") or 0), str(r.get("message_id"))))
+    covered = published_replies_by_target()
+    spool_by_mid = {str(x.get("message_id")): x for x in rows}
+
     reports, posted = [], 0
     for r in rows:
         mid = str(r.get("message_id"))
@@ -1190,6 +1243,41 @@ def main():
         author = r.get("from") or "someone"
         if not text:
             st["handled"][mid] = int(now)
+            continue
+        if mid in st["handled"]:
+            continue
+        d = int(r.get("date") or 0)
+        def later(t, m):
+            # Same second: the higher message id is the later one.
+            if t != d:
+                return t > d
+            return m.isdigit() and mid.isdigit() and int(m) > int(mid)
+        nxt = [m for (t, m) in later_from_same.get(uid, [])
+               if m != mid and m not in st["handled"] and t - d <= BURST_SECONDS and later(t, m)]
+        if nxt:
+            st["handled"][mid] = int(now)
+            act(action="merged", message_id=mid, who=author, asked=text[:300],
+                reason="part of a burst; answered with the later message %s" % nxt[-1])
+            print("  merged %s into %s (same person, within %d s)" % (mid, nxt[-1], BURST_SECONDS))
+            continue
+        # ALREADY ANSWERED IN THE GROUP. A reply published AFTER this message,
+        # to this message or to another message of the same person's burst, has
+        # answered it -- whether the bot or a reviewer wrote it.
+        hit = None
+        for target, at in covered.items():
+            if at <= d:
+                continue
+            tr = spool_by_mid.get(target) or find_spool_row(target)
+            if not tr or str(tr.get("from_id") or "?") != uid:
+                continue
+            if abs(int(tr.get("date") or 0) - d) <= BURST_SECONDS:
+                hit = target
+                break
+        if hit:
+            st["handled"][mid] = int(now)
+            act(action="already-answered", message_id=mid, who=author, asked=text[:300],
+                reason="a reply to %s (same person, same burst) was already posted" % hit)
+            print("  %s already answered by the reply to %s" % (mid, hit))
             continue
         # RE-CHECK INSIDE THE LOOP. group-watch re-reads a batch whose relay
         # failed, so the spool deliberately holds duplicates -- "duplicates are
