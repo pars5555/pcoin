@@ -84,6 +84,7 @@ def load_state():
     s.setdefault("last_alert", "")
     s.setdefault("fails", 0)
     s.setdefault("restarts", None)   # None = first run: seed, do not alert
+    s.setdefault("luck_alert_block", None)   # found_at of the last block when luck alerted
     return s
 
 
@@ -218,6 +219,11 @@ def main():
                       % (len(new_failures), " | ".join(new_failures[-5:]))))
 
     submit_broken = False
+    # Whether the luck check reached a verdict this run. An unreadable ledger or
+    # node is NOT "luck is normal": it used to fall through to the OK branch and
+    # announce "finding blocks again" about a check that never ran.
+    luck_known = False
+    last_block = None
     # ---- B: work done vs blocks found ----------------------------------------
     try:
         work, bits = net_block_work()
@@ -240,6 +246,7 @@ def main():
         #   found == 0 -> nothing was found, so the submit path is not implicated.
         # Claiming "cannot submit" without checking this sent a real investigation
         # down the wrong road for an hour while the pool was verifiably healthy.
+        luck_known = True
         cutoff = int(time.time() * 1000 - FOUND_GRACE_S * 1000)
         found = cur.execute("SELECT COUNT(*) FROM shares WHERE is_block=1 AND at > ? AND at <= ?",
                             (since, cutoff)).fetchone()[0] or 0
@@ -260,7 +267,18 @@ def main():
             # opposite of "no block for a while", so the luck check below must
             # not fire on the work that led up to it either.
             print("  a block was just found; not judging luck until its row is written")
-        elif expected >= THRESHOLD:
+        elif expected >= THRESHOLD or (
+                st.get("luck_alert_block") is not None
+                and st["luck_alert_block"] == last_block):
+            # ONCE RAISED, THE LUCK ALERT HOLDS UNTIL A BLOCK IS ACTUALLY FOUND.
+            #
+            # `expected` divides accumulated work by the CURRENT block's work,
+            # and LWMA retargets every block, so it wobbles several percent
+            # either side of the threshold with no block found at all. On
+            # 2026-09-28 pool2 read 4.25 at 22:00 UTC and 3.94 at 22:05 -- an
+            # alert, then "finding blocks again" five minutes later about a pool
+            # that had still found nothing. Only a new row in `blocks` ends it.
+            st["luck_alert_block"] = last_block
             # THE THIRD CAUSE, WHICH THIS ALERT USED TO RULE OUT BY MISTAKE.
             #
             # It said "no share cleared the network target -- so the submit
@@ -322,6 +340,10 @@ def main():
             print("  (same condition as last run -- not re-sending)")
         for _, x in alerts:
             print("  !! " + x.splitlines()[0])
+    elif not luck_known:
+        # Nothing alarming was seen, but the luck check could not run. That
+        # resolves nothing: keep whatever state was held, send no all-clear.
+        print("  no alert, but the luck check was UNAVAILABLE -- state left as it was")
     else:
         print("  OK - no failed submissions, and the work/blocks ratio is normal")
         if st["last_alert"] not in ("", "ok"):
@@ -329,6 +351,7 @@ def main():
                    "Blocks are reaching the chain and the pool's luck is back to normal.\n"
                    "What to do: nothing.")
         st["last_alert"] = "ok"
+        st["luck_alert_block"] = None
 
     if not a.dry_run and a.force_expected is None:
         save_state(st)
