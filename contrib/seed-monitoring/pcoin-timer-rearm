@@ -29,25 +29,47 @@ DRY=0
 
 log() { logger -t pcoin-timer-rearm -- "$*" 2>/dev/null; printf '%s\n' "$*"; }
 
-stuck=()
+# True when the timer is active, repeats, and has no next elapse at all.
+no_next_run() {
+  local props rt mono
+  props=$(systemctl show "$1" -p ActiveState -p TimersMonotonic \
+            -p NextElapseUSecRealtime -p NextElapseUSecMonotonic 2>/dev/null) || return 1
+  [ "$(printf '%s\n' "$props" | sed -n 's/^ActiveState=//p')" = "active" ] || return 1
+  printf '%s\n' "$props" | grep -qE 'OnUnit(In)?[Aa]ctiveUSec=' || return 1
+  rt=$(printf '%s\n' "$props" | sed -n 's/^NextElapseUSecRealtime=//p')
+  mono=$(printf '%s\n' "$props" | sed -n 's/^NextElapseUSecMonotonic=//p')
+  [ -z "$rt" ] && { [ -z "$mono" ] || [ "$mono" = "infinity" ] || [ "$mono" = "0" ]; }
+}
+
+candidates=()
 while read -r t; do
   [ -n "$t" ] || continue
   # Never itself: while this runs, its own timer is between ticks.
   [ "$t" = "pcoin-timer-rearm.timer" ] && continue
-  props=$(systemctl show "$t" -p ActiveState -p TimersMonotonic \
-            -p NextElapseUSecRealtime -p NextElapseUSecMonotonic -p Unit 2>/dev/null) || continue
-  state=$(printf '%s\n' "$props" | sed -n 's/^ActiveState=//p')
-  [ "$state" = "active" ] || continue
-  printf '%s\n' "$props" | grep -qE 'OnUnit(In)?[Aa]ctiveUSec=' || continue
-  rt=$(printf '%s\n' "$props" | sed -n 's/^NextElapseUSecRealtime=//p')
-  mono=$(printf '%s\n' "$props" | sed -n 's/^NextElapseUSecMonotonic=//p')
-  if [ -z "$rt" ] && { [ -z "$mono" ] || [ "$mono" = "infinity" ] || [ "$mono" = "0" ]; }; then
-    svc=$(printf '%s\n' "$props" | sed -n 's/^Unit=//p')
+  no_next_run "$t" && candidates+=("$t")
+done < <(systemctl list-units --type=timer --all --no-legend --plain 'pcoin-*.timer' | awk '{print $1}')
+
+# A TIMER WHOSE SERVICE IS MID-RUN ALSO HAS NO NEXT ELAPSE -- systemd schedules
+# the next OnUnitActiveSec tick only once the run ends. The first version read
+# the timer, then the service a moment later, and a one-second job had finished
+# in between: the service read "inactive", the timer "no next run", and a
+# healthy timer was reported stuck. Four false "Timers restarted" alerts in one
+# day on 2026-09-28 (pcoin-deposit-watch at :24, colliding with this timer's own
+# :24 tick), every one with the watcher running on schedule before and after.
+# So wait, then ask again. A really stuck timer stays stuck across 20 seconds;
+# a timer that was only between "run finished" and "next tick scheduled" does
+# not. The wait is only paid when there is a candidate.
+stuck=()
+if [ ${#candidates[@]} -gt 0 ]; then
+  sleep 20
+  for t in "${candidates[@]}"; do
+    no_next_run "$t" || continue
+    svc=$(systemctl show "$t" -p Unit --value)
     # A service still running from its last tick is not stuck; the timer waits for it.
     [ "$(systemctl show "$svc" -p ActiveState --value)" = "inactive" ] || continue
     stuck+=("$t:$svc")
-  fi
-done < <(systemctl list-units --type=timer --all --no-legend --plain 'pcoin-*.timer' | awk '{print $1}')
+  done
+fi
 
 if [ ${#stuck[@]} -eq 0 ]; then
   log "all repeating pcoin timers have a next run"
