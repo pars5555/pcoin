@@ -1,0 +1,10 @@
+[Unit]
+Description=PCoin hourly report, on the hour
+
+[Timer]
+OnCalendar=hourly
+AccuracySec=1min
+Unit=pcoin-hourly-report.service
+
+[Install]
+WantedBy=timers.target

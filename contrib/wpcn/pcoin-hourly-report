@@ -1,0 +1,242 @@
+#!/usr/bin/env python3
+"""One message every hour with every number the owner watches.
+
+    pcoin-hourly-report             build and send
+    pcoin-hourly-report --dry-run   print what it would send, send nothing
+
+WHY THIS EXISTS, 2026-09-28. The owner, about a pcoin-price-watch alert: "this
+is good monitoring message, i wana get that every hour ... keeper balance, usdt
+and wpcn balance, and market hot wallet balance, the pcn price wpcn price,
+everything important in 1 message every hour".
+
+pcoin-price-watch reports CHANGE and stays quiet otherwise. This is the other
+half: a fixed-shape snapshot that always arrives, so its absence is itself the
+alarm and every hour reads the same way.
+
+THE RULES IT KEEPS, the same as the watcher's:
+  * An unreadable figure prints as "unknown", never as 0 or a last-known value.
+    A digest that quietly shows a stale number is worse than one that says
+    "unknown" -- the owner reads this to decide whether to act.
+  * Plain text. A Telegram parse error comes back as ok:false and the message
+    just never appears, which reads as a quiet hour.
+  * Read-only. It holds no key it can spend with. The keeper's ADDRESS is
+    derived from the key file, exactly as pcoin-price-watch does, and nothing
+    is signed.
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.request
+
+NOTIFY = os.environ.get("PCOIN_NOTIFY", "/usr/local/bin/pcoin-notify")
+WPCN_CONF = os.environ.get("WPCN_CONF", "/opt/wpcn/wpcn.conf")
+KEEPER_CONF = os.environ.get("KEEPER_CONF", "/etc/pcoin/keeper.conf")
+INVENTORY = "0x37cefF465A3a2f72979062aD781DDa7293477b8a"
+USDT = "0x55d398326f99059fF775485246999027B3197955"
+DRY = "--dry-run" in sys.argv
+
+
+def conf(path, want):
+    """Read named keys only. Never scan a secrets file for a value pattern."""
+    out = {}
+    try:
+        for line in open(path):
+            line = line.strip()
+            if line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            if k.strip() in want:
+                out[k.strip()] = v.strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return out
+
+
+def get_json(url, timeout=20):
+    with urllib.request.urlopen(url, timeout=timeout) as r:
+        return json.load(r)
+
+
+def safe(fn):
+    try:
+        return fn()
+    except Exception:
+        return None
+
+
+def f(v, fmt, unknown="unknown"):
+    return fmt.format(v) if v is not None else unknown
+
+
+def bsc():
+    """Pool price, keeper float, outside supply. All or nothing: a partial read
+    of the same block range is not worth the confusion."""
+    from web3 import Web3
+    from eth_account import Account
+    c = conf(WPCN_CONF, {"RPC", "TOKEN", "PAIR"})
+    w3 = Web3(Web3.HTTPProvider(c["RPC"], request_kwargs={"timeout": 25}))
+    CS = Web3.to_checksum_address
+    erc = [{"constant": True, "inputs": [{"name": "a", "type": "address"}],
+            "name": "balanceOf", "outputs": [{"name": "", "type": "uint256"}],
+            "type": "function"},
+           {"constant": True, "inputs": [], "name": "totalSupply",
+            "outputs": [{"name": "", "type": "uint256"}], "type": "function"}]
+    tok = w3.eth.contract(address=CS(c["TOKEN"]), abi=erc)
+    E = 10 ** 8
+    pair = w3.eth.contract(address=CS(c["PAIR"]), abi=[
+        {"constant": True, "inputs": [], "name": "getReserves",
+         "outputs": [{"name": "r0", "type": "uint112"}, {"name": "r1", "type": "uint112"},
+                     {"name": "t", "type": "uint32"}], "type": "function"},
+        {"constant": True, "inputs": [], "name": "token0",
+         "outputs": [{"name": "", "type": "address"}], "type": "function"}]).functions
+    r0, r1, _ = pair.getReserves().call()
+    wp, us = ((r0 / E, r1 / 1e18) if CS(pair.token0().call()) == CS(c["TOKEN"])
+              else (r1 / E, r0 / 1e18))
+    kp = Account.from_key(
+        conf(KEEPER_CONF, {"KEEPER_PRIVATE_KEY"})["KEEPER_PRIVATE_KEY"]).address
+    bal = lambda a: tok.functions.balanceOf(CS(a)).call() / E
+    keeper_w, inv_w = bal(kp), bal(INVENTORY)
+    supply = tok.functions.totalSupply().call() / E
+    usdt = w3.eth.contract(address=CS(USDT), abi=erc)
+    return {
+        "pool_price": us / wp, "pool_wpcn": wp, "pool_usdt": us,
+        "keeper_usdt": usdt.functions.balanceOf(CS(kp)).call() / 1e18,
+        "keeper_wpcn": keeper_w,
+        "keeper_bnb": w3.eth.get_balance(CS(kp)) / 1e18,
+        "inventory_wpcn": inv_w,
+        "outside": supply - wp - keeper_w - inv_w,
+    }
+
+
+def wraps():
+    """What the wrap watcher said on its last run: payable now, and still
+    confirming. Read from its own journal so this can only repeat what the
+    watcher itself decided, never re-derive it."""
+    out = subprocess.run(
+        ["journalctl", "-u", "pcoin-wrapdesk-watch", "--since", "-40min",
+         "-o", "cat", "--no-pager"], capture_output=True, text=True, timeout=30).stdout
+    runs = out.split("Starting pcoin-wrapdesk-watch")
+    last = runs[-1] if len(runs) > 1 else out
+    if "[action]" not in last and "confirmations" not in last and "Allocation" not in last:
+        return None
+    # The owner knows wraps by the desk's request number (#78), not by a
+    # deposit. The watcher prints "KEY: <txid>:<address>" under each wrap and
+    # the desk stores each request with its address, so join on that -- the
+    # same join the admin panel makes. No match prints no number, never a guess.
+    reqs = {}
+    try:
+        r = json.load(open("/var/lib/wrapdesk/requests.json"))
+        for q in (r.get("requests") or {}).values():
+            if q.get("address"):
+                reqs[str(q["address"]).lower()] = q.get("index")
+    except Exception:
+        pass
+    pay, confirming, cur = [], [], None
+    for l in last.splitlines():
+        t = l.strip()
+        if t.startswith("[action] ACTION: send"):
+            cur = ("pay", None)
+        elif t.startswith("[info] WRAP "):
+            cur = ("wait", None)
+        elif "/100 confirmations" in t and cur and cur[0] == "wait":
+            cur = ("wait", t.split("/")[0])
+        elif t.startswith("KEY:") and cur:
+            n = reqs.get(t.split(":")[-1].strip().lower())
+            label = "#%s" % n if n else "a wrap"
+            if cur[0] == "pay":
+                pay.append(label)
+            elif cur[1]:
+                confirming.append("%s %s/100" % (label, cur[1]))
+            cur = None
+        elif t.startswith("pcoin-wrapdesk-watch --released") and cur and cur[0] == "pay":
+            n = reqs.get(t.split(":")[-1].split()[0].strip().lower())
+            pay.append("#%s" % n if n else "a wrap")
+            cur = None
+    return pay, confirming
+
+
+def main():
+    price = safe(lambda: get_json("https://price.pc.am"))
+    ladder = safe(lambda: get_json("https://market.pc.am/api/ladder/state"))
+    ex = safe(lambda: get_json("https://exchange.pc.am/api/public"))
+    wd = safe(lambda: get_json("https://exchange.pc.am/api/withdrawals-summary"))
+    chain = safe(lambda: get_json("https://explorer.pc.am/api/status"))
+    pool = safe(lambda: get_json("https://pool.pc.am/api/pools/pcoin"))
+    b = safe(bsc) or {}
+    w = safe(wraps)
+
+    index = (price or {}).get("creditRateUsd") if not (price or {}).get("stale") else None
+    ask = (ladder or {}).get("marginalPrice")
+    pp = b.get("pool_price")
+    disc = (pp / index - 1) * 100 if pp and index else None
+
+    NL = chr(10)
+    L = []
+    L.append("PRICES")
+    L.append("PCN index  " + f(index, "${:.6f}") + "  (" + str((price or {}).get("state", "unknown")) + ")")
+    L.append("market.pc.am sells at " + f(ask, "${:.6f}"))
+    book = (ex or {}).get("book") or {}
+    bid = safe(lambda: float(book["bids"][0]["priceUsd"]))
+    ask_x = safe(lambda: float(book["asks"][0]["priceUsd"]))
+    L.append("exchange: bid " + f(bid, "${:.6f}") + " / ask " + f(ask_x, "${:.6f}"))
+    L.append("wPCN Pancake " + f(pp, "${:.6f}") + (f"  ({disc:+.1f}% vs index)" if disc is not None else ""))
+
+    L.append("")
+    L.append("BALANCES")
+    L.append("keeper  " + f(b.get("keeper_usdt"), "{:,.2f} USDT") + " | "
+             + f(b.get("keeper_wpcn"), "{:,.2f} wPCN") + " | "
+             + f(b.get("keeper_bnb"), "{:.4f} BNB"))
+    L.append("market-hot  " + f((ladder or {}).get("sellableNowPcn"), "{:,.2f} PCN"))
+    L.append("wPCN inventory  " + f(b.get("inventory_wpcn"), "{:,.0f}"))
+    L.append("Pancake pool  " + f(b.get("pool_wpcn"), "{:,.0f} wPCN") + " + "
+             + f(b.get("pool_usdt"), "{:,.2f} USDT"))
+    L.append("wPCN held by others  " + f(b.get("outside"), "{:,.0f}"))
+
+    L.append("")
+    L.append("WAITING ON YOU")
+    q = (wd or {})
+    if wd is None:
+        L.append("exchange withdrawals: unknown")
+    elif q.get("queueOldestSeconds") is None:
+        L.append("exchange withdrawals: none waiting")
+    else:
+        L.append("exchange withdrawals: WAITING, oldest %d h" % (q["queueOldestSeconds"] // 3600))
+    if w is None:
+        L.append("wraps: unknown")
+    else:
+        pay, confirming = w
+        L.append("wraps payable now: " + (", ".join(pay) if pay else "none"))
+        if confirming:
+            L.append("wraps confirming: " + ", ".join(confirming))
+
+    L.append("")
+    L.append("CHAIN")
+    idx = (chain or {}).get("index") or {}
+    age = safe(lambda: (time.time() - idx["indexed_time"]) / 60)
+    L.append("height " + f(idx.get("node_height"), "{:,}") + ", last block "
+             + f(age, "{:.0f} min ago") + ("" if not idx.get("stale") else "  EXPLORER STALE"))
+    ps = ((pool or {}).get("pool") or {})
+    st, ns = ps.get("poolStats") or {}, ps.get("networkStats") or {}
+    share = safe(lambda: st["poolHashrate"] / ns["networkHashrate"] * 100)
+    L.append("pool.pc.am " + f(st.get("connectedMiners"), "{} miners") + ", "
+             + f(share, "{:.0f}% of network"))
+    L.append("exchange " + ("open" if (ex or {}).get("exchangeOpen")
+                            else "unknown" if ex is None else "CLOSED"))
+
+    body = NL.join(L)
+    title = "PCoin hourly"
+    if DRY or not os.path.exists(NOTIFY):
+        print(title + NL + body)
+        return 0
+    r = subprocess.run([NOTIFY, title, body], timeout=60, capture_output=True, text=True)
+    if r.returncode != 0:
+        print("notifier exited %d: %s" % (r.returncode, (r.stderr or r.stdout).strip()[:200]),
+              file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

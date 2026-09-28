@@ -1,0 +1,31 @@
+[Unit]
+# One fixed-shape message to the ops channel every hour: prices, keeper and
+# market-hot balances, what is waiting on the owner, and chain health.
+# The owner asked for it (2026-09-28); pcoin-price-watch reports only CHANGE.
+#
+# It holds no key it can spend with, signs nothing and writes nothing.
+Description=PCoin hourly report — prices, balances, waiting payouts, chain
+After=network-online.target
+Wants=network-online.target
+OnFailure=pcoin-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/wpcn/.venv/bin/python /usr/local/bin/pcoin-hourly-report
+TimeoutStartSec=180
+Nice=10
+# pcoin-notify would suppress an identical text sent within 6 h. This report is
+# meant to arrive every hour, and its absence is the alarm, so never suppress.
+Environment=REPEAT_HOURS=0
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+# pcoin-notify records every send in /var/lib/pcoin-monitor/telegram-log.db.
+# Without this the sandbox makes that read-only: the message is DELIVERED but
+# `pcoin-telegram-log show` never lists it (found on the first run, 2026-09-28).
+ReadWritePaths=/var/lib/pcoin-monitor
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes

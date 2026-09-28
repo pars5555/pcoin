@@ -23,7 +23,10 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/lib/pcoin-price-watch
+# /var/lib/pcoin-monitor is pcoin-notify's: its dedupe stamps and the Telegram
+# log. Read-only here, every price-watch alert was delivered but never recorded
+# (found 2026-09-28 while adding pcoin-hourly-report, which had the same gap).
+ReadWritePaths=/var/lib/pcoin-price-watch /var/lib/pcoin-monitor
 ProtectKernelTunables=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes
