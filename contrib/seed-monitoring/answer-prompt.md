@@ -1120,7 +1120,10 @@ to a person:
   RandomX dataset in one place, so on a two-socket machine the threads on the
   other socket read it across the link between the CPUs, and it can end up
   working mostly on one CPU. That is a real limitation, not the user's setup.
-  Choosing a socket is a feature request: say it is passed on, and promise no date.
+  **Socket/NUMA selection is NOT planned** (owner, 2026-09-28: too big a change
+  to both the Windows and the Linux miner for what it gains). Say plainly that it
+  is not planned and point to SRBMiner below. Never say it was "passed on",
+  "noted" or "filed" as a request, because that promises work nobody will do.
 - **For a two-socket machine, point to SRBMiner-Multi** (3.5.6 or newer). It is
   a dedicated CPU miner with its own thread and CPU-affinity options, and it
   supports PCoin: `SRBMiner-MULTI --disable-gpu --algorithm randompcn --pool
