@@ -27,7 +27,7 @@ import {
   throttleMs, noteFailure, clearFailures,
 } from './auth.mjs';
 import { execFileSync } from 'node:child_process';
-import { collect, upstreamCreds } from './services.mjs';
+import { collect, upstreamCreds, upstreamGet } from './services.mjs';
 import { detailFor } from './detail.mjs';
 import { telegramPage } from './telegram.mjs';
 import { jobsPage, loadJobs, EXPECTED } from './jobs.mjs';
@@ -38,7 +38,7 @@ import { pcnaibotPage, pcnaibotAction, PCNAIBOT_SECTIONS } from './pcnaibot.mjs'
 import { aiPage } from './ai.mjs';
 import { exchangesPage } from './exchanges.mjs';
 import { approvalsPage } from './approvals.mjs';
-import { wrapdeskPage, wrapdeskState, wrapdeskWork, markReleased, sendWrap, refundWrap, CLOSED_FILE } from './wrapdesk.mjs';
+import { wrapdeskPage, wrapdeskState, wrapdeskWork, wrapReqNoFn, markReleased, sendWrap, refundWrap, CLOSED_FILE } from './wrapdesk.mjs';
 import { announceFeed, markAnnounced, BACKLOG_LOUD_AT } from './wrapdesk-announce.mjs';
 import { keeperPage, keeperData, validate as keeperValidate, writeTuning } from './keeper.mjs';
 import { minersPage, minersData } from './miners.mjs';
@@ -1395,7 +1395,7 @@ async function handle(req, res) {
   // card instead of taking the page down with it.
   const tasks = loadTasks();
   const exCreds = upstreamCreds();
-  const [svcs, exOver, price] = await Promise.all([
+  const [svcs, exOver, price, exPub] = await Promise.all([
     collect().catch(() => []),
     exCreds && exCreds.exchange
       ? exchangeCall(exCreds.exchange, 'dashboard', 'GET', '/admin/api/overview')
@@ -1405,19 +1405,30 @@ async function handle(req, res) {
     // the Price and PCN index cards show the evidence behind the price, which
     // leaves the root body in the 2026-09-25 simplification.
     readPrice().then(r => (r.ok ? r.data : null)).catch(() => null),
+    // The exchange's public book, for the bid/ask on the Prices card. The same
+    // cached getter every service read uses (60 s).
+    upstreamGet('https://exchange.pc.am/api/public').then(r => (r.ok ? r.data : null)).catch(() => null),
   ]);
   let reports = [];
   try { reports = loadReports(DATA); } catch { reports = []; }
   const wrap = wrapdeskState();
+  const work = cachedWrapdeskWork();
+  let reqNos = () => '';
+  try { reqNos = wrapReqNoFn(); } catch { /* no numbers rather than wrong ones */ }
+  // The BSC snapshot (pcoin-bsc-snapshot.timer, every 5 min): keeper balances
+  // and the pool. Missing or unparsable is null, which the cards show as unknown.
+  let snap = null;
+  try { snap = JSON.parse(readFileSync(process.env.BSC_SNAPSHOT || '/var/lib/pcoin-bsc-snapshot/snapshot.json', 'utf8')); }
+  catch { snap = null; }
   const needs = needsYou({
-    svcs, tasks, exOver, wrap, reports,
+    svcs, tasks, exOver, wrap, work, reqNos, reports,
     answeredIds: answeredReplies(loadApprovals()), base: BASE,
   });
   let keeper = null;
   try { keeper = keeperData(); } catch { keeper = null; }
 
   return send(res, 200, shell2('', 'Overview', overviewPage({
-    base: BASE, svcs, ex: exOver, price, wrap, work: cachedWrapdeskWork(), keeper,
+    base: BASE, svcs, ex: exOver, exPublic: exPub, price, snap, wrap, work, reqNos, keeper,
     // 3900 s: twice the collector's half-hourly cadence, the same threshold the
     // Scheduled jobs page uses (jobs.mjs STALE_SECONDS).
     jobs: loadJobs(DATA), expected: EXPECTED, staleSeconds: 3900,

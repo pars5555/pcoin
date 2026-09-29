@@ -2,11 +2,9 @@
 //
 // WHY THIS IS NOT A RAW JSON DUMP. "Show everything" and "print the payload" are
 // different instructions, and on this estate the difference is a secret.
-// pcnearner's /v1/admin/overview returns a LIVE app API key in
-// `by_app[].api_key`; a page that pretty-printed what it received would publish
-// that key to a browser. So every field below is named on purpose and the app key
-// is masked to eight characters -- enough to tell two apps apart, not enough to
-// use. That is the "redact by allow-list, never by pattern" rule applied to a
+// The GPU earner's admin API (removed from this panel 2026-09-29) returned a LIVE
+// app API key; a page that pretty-printed what it received would have published
+// it to a browser. So every field below is named on purpose. That is the "redact by allow-list, never by pattern" rule applied to a
 // rendering layer rather than to a grep.
 //
 // It keeps the same three rules services.mjs keeps: unknown renders as an
@@ -22,7 +20,7 @@ const OPS_API = process.env.ADMIN_OPS_API || 'http://127.0.0.1:8787/api';
 
 const B = t => (t ? { Authorization: 'Bearer ' + t } : {});
 
-// -- the four services ------------------------------------------------------
+// -- the three services ------------------------------------------------------
 export const SERVICES = [
   {
     slug: 'market', name: 'market.pc.am', host: '178.105.178.27',
@@ -47,16 +45,6 @@ export const SERVICES = [
       ['GET /health', 'public', 'is the verifier up'],
     ],
     render: renderWpcnpay,
-  },
-  {
-    slug: 'pcnearner', name: 'pcnearner.pc.am', host: '178.105.178.27',
-    unit: 'pcnearner.service', dir: '/opt/pcnearner',
-    what: 'The GPU earner network: people run a worker, the queue hands it jobs, and ' +
-          'they are paid in PCN.',
-    endpoints: [
-      ['GET /v1/admin/overview', 'X-Admin-Key', 'fleet, queue, devices, earners, accounts, totals'],
-    ],
-    render: renderEarner,
   },
   {
     slug: 'explorer', name: 'explorer.pc.am/admin', host: '178.105.3.51',
@@ -269,124 +257,6 @@ async function renderWpcnpay(c) {
   ])) : '');
 
   return { status: up ? 'ok' : 'bad', body };
-}
-
-// -- pcnearner --------------------------------------------------------------
-async function renderEarner(c) {
-  const r = await upstreamGet('https://pcnearner.pc.am/v1/admin/overview',
-    c.pcnearner?.adminKey ? { 'X-Admin-Key': c.pcnearner.adminKey } : {});
-  if (!r.ok) return { status: 'unreadable', body: failed('pcnearner.pc.am', r.error) };
-  const d = r.data, f = d.fleet || {}, q = d.queue || {}, t = d.totals || {}, s = d.settings || {};
-
-  const body = tiles([
-    ['Devices online', N(f.devices_online, 0) +
-      '<span class="muted" style="font-size:14px">/' + (num(f.devices_total, 0) ?? '?') + '</span>',
-      f.devices_online ? 'green' : 'yellow'],
-    ['Earners online', N(f.earners_online, 0) +
-      '<span class="muted" style="font-size:14px">/' + (num(f.earners_total, 0) ?? '?') + '</span>'],
-    ['Queued', N(q.queued, 0)],
-    ['Tasks done', N(t.done, 0)],
-    ['Paid out', USD(t.usd, 4)],
-    ['GPU time', t.gpu_seconds !== undefined
-      ? N(t.gpu_seconds / 3600, 1) + ' <span class="muted" style="font-size:14px">h</span>' : DASH],
-  ]) +
-
-  card('Fleet', kv([
-    ['Devices', N(f.devices_total, 0),
-      N(f.devices_online, 0) + ' online &middot; ' + N(f.devices_working, 0) + ' working'],
-    ['Earners (workers)', N(f.earners_total, 0),
-      N(f.earners_online, 0) + ' online &middot; ' + N(f.earners_working, 0) + ' working &middot; ' +
-      N(f.earners_paused, 0) + ' paused'],
-    ['Worker processes', N(f.worker_processes, 0)],
-    ['VRAM pooled', N(f.vram_total_gb, 0) + ' GB', 'across online devices only'],
-    ['Accounts', N(f.accounts_total, 0), N(f.signed_in_devices, 0) + ' signed-in devices'],
-  ])) +
-
-  card('Queue', kv([
-    ['Queued', N(q.queued, 0)],
-    ['Running', N(q.running, 0)],
-    ['Done', N(q.done, 0)],
-    ['Failed', q.failed ? `<span class="warn">${N(q.failed, 0)}</span>` : N(q.failed, 0)],
-    ['Cancelled', N(q.cancelled, 0)],
-    ['Runnable right now', (d.runnable_now || []).length
-      ? esc((d.runnable_now || []).join(', ')) : '<span class="warn">nothing</span>',
-      (d.runnable_now || []).length ? ''
-        : 'no online worker holds the models any queued task needs'],
-  ])) +
-
-  card('Devices', tbl(['Machine', 'GPU', 'VRAM', 'Disk free', 'State', 'Jobs', 'Earned', 'Last seen'],
-    (d.devices || []).map(x => [
-      `<code>${esc(x.machine_id)}</code>`, esc(x.gpu || '—'),
-      x.vram_gb ? N(x.vram_gb, 0) + ' GB' : DASH,
-      x.disk_free_gb ? N(x.disk_free_gb, 1) + ' GB' : DASH,
-      x.alive ? (x.working ? '<span class="ok">working</span>' : '<span class="ok">idle</span>')
-              : '<span class="muted">offline</span>',
-      N(x.jobs_done, 0), USD(x.usage_usd, 4),
-      `<span class="muted">${agoIso(x.last_seen)}</span>`]))) +
-
-  card('Earners', tbl(['Worker', 'Account', 'State', 'Models', 'Jobs', 'GPU time', 'Last job'],
-    (d.earners || []).map(x => [
-      `<code>${esc(x.worker_id)}</code>`, esc(x.account || '—'),
-      x.alive ? `<span class="ok">${esc(x.state || 'up')}</span>`
-              : `<span class="muted">offline, ${agoIso(x.last_seen)}</span>`,
-      N((x.models_held || []).length, 0) + ' held',
-      N(x.jobs_done, 0),
-      x.usage_gpu_s ? N(x.usage_gpu_s / 60, 1) + ' min' : DASH,
-      `<span class="muted">${agoIso(x.last_job_at)}</span>`]))) +
-
-  card('Accounts', tbl(['Account', 'Payout address', 'Devices', 'Earned', 'Paid', 'Unpaid', 'Jobs paid'],
-    (d.accounts || []).map(x => [
-      esc(x.username) + (x.disabled ? ' <span class="bad">disabled</span>' : ''),
-      addr(x.payout_address), N(x.devices, 0),
-      USD(x.earned_usd, 4), USD(x.paid_usd, 4),
-      x.unpaid_usd > 0.0001 ? `<span class="warn">${USD(x.unpaid_usd, 4)}</span>`
-        : USD(x.unpaid_usd, 4),
-      N(x.jobs_paid, 0)])) +
-    note('A payout address is validated against the node before it is accepted, and the date ' +
-         'of that check is kept with it.')) +
-
-  card('Totals', kv([
-    ['Tasks', N(t.tasks, 0),
-      N(t.done, 0) + ' done &middot; ' + N(t.failed, 0) + ' failed &middot; ' +
-      N(t.cancelled, 0) + ' cancelled'],
-    ['GPU seconds', N(t.gpu_seconds, 0), N(t.gpu_seconds / 3600, 2) + ' hours'],
-    ['Paid in USD', USD(t.usd, 6)],
-    ['Paid in PCN', N(t.pcn, 6) + ' PCN'],
-    ['Average run', t.avg_run_ms ? N(t.avg_run_ms / 1000, 1) + ' s' : DASH],
-    ['Average wait in queue', t.avg_queue_ms ? N(t.avg_queue_ms / 1000, 1) + ' s' : DASH],
-  ])) +
-
-  card('By task type', tbl(['Type', 'Tasks', 'Done', 'USD', 'Avg run', 'Max run'],
-    (t.by_type || []).map(x => [
-      `<code>${esc(x.type)}</code>`, N(x.n, 0), N(x.done, 0), USD(x.usd, 6),
-      x.avg_run_ms ? N(x.avg_run_ms / 1000, 1) + ' s' : DASH,
-      x.max_run_ms ? N(x.max_run_ms / 1000, 1) + ' s' : DASH]))) +
-
-  card('By calling app', tbl(['App key', 'Tasks', 'Done', 'Failed', 'GPU time', 'USD', 'Last seen'],
-    (d.by_app || []).map(x => [
-      // Masked on purpose: eight characters tell two apps apart and cannot be used.
-      `<code>${esc(String(x.api_key || '').slice(0, 8))}…</code>`,
-      N(x.tasks, 0), N(x.done, 0), N(x.failed, 0),
-      x.gpu_seconds ? N(x.gpu_seconds / 60, 1) + ' min' : DASH,
-      USD(x.usd, 6), `<span class="muted">${agoIso(x.last_seen)}</span>`])) +
-    note('App keys are <b>masked to eight characters</b>. They are live credentials and a ' +
-         'panel is not a place to print one.')) +
-
-  card('Settings', kv([
-    ['Reference GPU', T(s.reference_gpu)],
-    ['Anchor rate', USD(s.anchor_usd_per_day, 2) + ' / day',
-      USD(s.anchor_usd_per_gpu_hour, 4) + ' per GPU hour'],
-    ['Signup bonus', USD(s.signup_bonus_usd, 2)],
-    ['Result retention', N(s.retention_hours, 0) + ' h'],
-    ['Attempts per task', N(s.max_attempts, 0)],
-    ['Queue timeout', N(s.queue_timeout_minutes, 0) + ' min'],
-    ['Apps registered', N(s.apps_registered, 0), N(s.api_keys_configured, 0) + ' API keys configured'],
-    ['Dev key', YN(s.dev_key_active, 'ACTIVE', 'off')],
-    ['Admin login', YN(s.admin_login_configured, 'configured', 'NOT configured')],
-    ['Node', T(s.node_version), 'up ' + dur(s.uptime_s)],
-  ]));
-
-  return { status: 'ok', body };
 }
 
 // -- explorer ops -----------------------------------------------------------

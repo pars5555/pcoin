@@ -520,6 +520,17 @@ function requestsByAddress() {
   return out;
 }
 
+// item -> "#79", or '' when the desk has no request for that deposit. For the
+// Overview and "Needs you", which name wraps the way the owner knows them.
+export function wrapReqNoFn() {
+  const reqs = requestsByAddress();
+  return (i) => {
+    const id = i ? i.key || i.depositKey || null : null;
+    const q = id ? reqs.get(String(id).split(':')[1] || '') : null;
+    return q && q.index ? `#${q.index}` : '';
+  };
+}
+
 function workCard(w) {
   const reqs = requestsByAddress();
   const idOf = (i) => (i ? i.key || i.depositKey || null : null);

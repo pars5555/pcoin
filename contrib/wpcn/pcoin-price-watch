@@ -65,7 +65,8 @@ BANDS = [0.035, 0.030, 0.025, 0.020, 0.0175, 0.015]
 OUTSIDE_BANDS = [3500, 5000, 6500, 8000, 9709]
 
 ASK_MOVE_PCT = 1.0        # report an ask move of at least this much
-KEEPER_USDT_LOW = 100.0   # the float that holds the floor in the pool
+KEEPER_USDT_LOW = 25.0    # near empty. Was 100; owner, 2026-09-29: "doesnt matter keeper
+                          # his below 100" -- the hourly report shows the float anyway
 KEEPER_BNB_LOW = 0.005    # gas; without it the keeper cannot act at all
 ASK_TIMER_MAX_MIN = 100   # hourly timer + 5 min jitter; late past this is news
 

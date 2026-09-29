@@ -53,12 +53,12 @@ export async function collect() {
   const c = creds();
   const bearer = t => (t ? { Authorization: 'Bearer ' + t } : {});
 
-  const [mkt, gate, ops, earner, stats, health, poolApi] = await Promise.all([
+  // pcnearner (the GPU earner) was removed 2026-09-29 -- owner: "we dont have
+  // earner". It is no longer collected, shown, or counted as a service.
+  const [mkt, gate, ops, stats, health, poolApi] = await Promise.all([
     get('https://market.pc.am/api/ops/summary', bearer(c.market?.readToken)),
     get('https://market.pc.am/api/ladder/gate'),
     get(OPS_API, bearer(c.ops?.readToken)),
-    get('https://pcnearner.pc.am/v1/admin/overview',
-        c.pcnearner?.adminKey ? { 'X-Admin-Key': c.pcnearner.adminKey } : {}),
     get('https://wpcnpay.pc.am/stats', bearer(c.wpcnpay?.readToken)),
       get('https://wpcnpay.pc.am/health'),
       // The pool is the ONLY thing that knows how many miners are actually
@@ -139,29 +139,6 @@ export async function collect() {
       if (d.newest_claim_at) s.rows.push(['Newest claim', d.newest_claim_at.replace('T', ' ').slice(0, 19), '']);
     } else {
       s.notes.push('could not read /stats: ' + stats.error);
-    }
-    out.push(s);
-  }
-
-  // ── pcnearner ────────────────────────────────────────────────────────────
-  {
-    const s = { slug: 'pcnearner', name: 'pcnearner.pc.am', host: '178.105.178.27', rows: [], notes: [] };
-    if (earner.ok) {
-      const d = earner.data, t = d.totals || {}, q = d.queue || {};
-      s.status = 'ok';
-      const online = (d.earners || []).filter(e => e.online).length;
-      s.rows.push(['Earners', String((d.earners || []).length),
-        online + ' online · ' + (d.devices || []).length + ' devices']);
-      s.rows.push(['Queue', String(q.queued ?? q.pending ?? Object.values(q)[0] ?? '?'),
-        (d.runnable_now || []).length + ' task types runnable']);
-      s.rows.push(['Tasks done', String(t.done ?? '?'),
-        (t.failed ?? 0) + ' failed · ' + (t.cancelled ?? 0) + ' cancelled']);
-      s.rows.push(['Paid out', t.usd !== undefined ? '$' + num(t.usd) : '?',
-        t.pcn !== undefined ? num(t.pcn, 2) + ' PCN' : '']);
-      s.rows.push(['GPU time', t.gpu_seconds ? num(t.gpu_seconds / 3600, 1) + ' h' : '?', 'lifetime']);
-    } else {
-      s.status = 'unreadable';
-      s.notes.push('could not read /v1/admin/overview: ' + earner.error);
     }
     out.push(s);
   }

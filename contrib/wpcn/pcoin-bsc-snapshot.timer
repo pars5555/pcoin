@@ -1,0 +1,10 @@
+[Unit]
+Description=PCoin BSC snapshot for the admin dashboard, every 5 minutes
+
+[Timer]
+OnCalendar=*:0/5
+AccuracySec=30s
+Unit=pcoin-bsc-snapshot.service
+
+[Install]
+WantedBy=timers.target

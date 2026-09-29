@@ -61,59 +61,68 @@ function chainCard(base, svcs) {
   return { status, html: card({ icon: '&#9939;', title: 'Chain', href: `${base}/services/explorer`, status,
     primary: t(m['Chain height']?.v), plabel: 'block height',
     lines: [['Last block', t(m['Tip age']?.v) + ' ago'], ['Network hashrate', t(m['Network hashrate']?.v)],
-      ['Peers on our seed', t(m['Peers']?.v)], ['Our pool share', t(m['Our pool is this much of the network']?.v)],
+      ['Our pool share', t(m['Our pool is this much of the network']?.v)],
       ['Miners on our pool', t(m['Miners on our pool']?.v)]],
     why: status === 'alert' ? 'no block for over 90 minutes' : status === 'watch' ? 'no block for over 45 minutes' : '' }) };
 }
 
-function priceCard(base, p) {
+// ONE PRICE CARD, since 2026-09-29. There used to be a Price card and a
+// separate PCN index card, which since the index went live (2026-09-25) showed
+// the same number twice. The owner also asked for the Pancake price on it.
+// Every price that matters is here, each labelled by where it comes from.
+function priceCard(base, p, pub, snap) {
   if (!p) {
-    return { status: 'alert', html: card({ icon: '&#128178;', title: 'Price', href: `${base}/pricing`, status: 'alert',
-      primary: '&mdash;', plabel: 'rails credit PCN at', why: 'price.pc.am could not be read' }) };
+    return { status: 'alert', html: card({ icon: '&#128178;', title: 'Prices', href: `${base}/pricing`, status: 'alert',
+      primary: '&mdash;', plabel: 'PCN index', why: 'price.pc.am could not be read' }) };
   }
-  const held = p.pool && p.pool.rateHeldAboveBy;
-  const status = p.stale ? 'alert' : held ? 'watch' : 'ok';
-  return { status, html: card({ icon: '&#128178;', title: 'Price', href: `${base}/pricing`, status,
-    primary: usd(Number(p.creditRateUsd), 6), plabel: 'rails credit PCN at (creditRateUsd)',
-    lines: [['Market sells PCN at', usd(Number(p.sellPriceUsd), 6)], ['wPCN pool, spot', usd(Number(p.pool?.spotUsd), 6)],
-      ['wPCN pool, 6 h median', usd(Number(p.pool?.medianUsd), 6)], ['Floor', usd(Number(p.rateFloorUsd), 4)]],
-    why: p.stale ? 'price.pc.am says its data is stale' : held ? `the rate is held above the pool by ${held}` : '' }) };
+  const ix = p.index || null;
+  // A stale index means /credit-rate answers 503 and every rail holds its
+  // credits, so it is an alert, not a watch.
+  const status = p.stale || (ix && (ix.refused || ix.state === 'unknown' || ix.stale)) ? 'alert'
+    : !ix ? 'unknown' : 'ok';
+  const index = Number(p.creditRateUsd);
+  // Pancake: the live pool read from BSC (the snapshot), falling back to the
+  // pool figure price.pc.am relays. Both are the same pool; the label says which.
+  const snapOk = snap && snap.ok && (Date.now() / 1000 - Number(snap.at)) < 900;
+  const pancake = snapOk ? Number(snap.pool_price) : Number(p.pool?.spotUsd);
+  const vs = pancake > 0 && index > 0 ? (pancake / index - 1) * 100 : null;
+  const book = pub && pub.book ? pub.book : null;
+  const bid = book && book.bids && book.bids[0] ? Number(book.bids[0].priceUsd) : null;
+  const ask = book && book.asks && book.asks[0] ? Number(book.asks[0].priceUsd) : null;
+  return { status, html: card({ icon: '&#128178;', title: 'Prices', href: `${base}/pricing`, status,
+    primary: usd(index, 6), plabel: 'PCN index — what every service credits PCN at',
+    lines: [
+      ['Index state', ix ? `${t(ix.state)}, computed ${ago(ix.ageSeconds)} ago` : '&mdash;'],
+      ['wPCN on PancakeSwap', usd(pancake, 6) + (vs === null ? '' : ` <span class="muted">(${vs >= 0 ? '+' : ''}${fmt(vs, 1)}%)</span>`)],
+      ['market.pc.am sells at', usd(Number(p.sellPriceUsd), 6)],
+      ['Exchange bid / ask', `${usd(bid, 6)} / ${usd(ask, 6)}`],
+      ['Floor', usd(Number(p.rateFloorUsd), 4)]],
+    why: p.stale ? 'price.pc.am says its data is stale'
+      : ix && ix.refused ? 'price.pc.am REFUSED the latest index reading: ' + ix.refused.why
+      : ix && ix.state === 'unknown' ? 'the exchange reports the index as unknown'
+      : ix && ix.stale ? 'the index is stale: /credit-rate answers 503 and the rails hold'
+      : !ix ? 'price.pc.am is not relaying the index' : '' }) };
 }
 
-function indexCard(base, p) {
-  const ix = p && p.index;
-  if (!ix) {
-    return { status: 'unknown', html: card({ icon: '&#128200;', title: 'PCN index (shadow)', href: `${base}/pcn-index`,
-      status: 'unknown', primary: '&mdash;', plabel: 'from real exchange trades', why: 'price.pc.am is not relaying the index' }) };
-  }
-  // In use (price.pc.am useIndex = 1, since 2026-09-25) a stale index means the
-  // rails are holding every credit, so it is an alert, not a watch.
-  const inUse = ix.inUse === true;
-  const status = ix.refused || ix.state === 'unknown' ? 'alert' : ix.stale ? (inUse ? 'alert' : 'watch') : 'ok';
-  const credit = Number(p.creditRateUsd);
-  const gap = ix.usd > 0 && credit > 0 ? (ix.usd / credit - 1) * 100 : null;
-  return { status, html: card({ icon: '&#128200;', title: inUse ? 'PCN index' : 'PCN index (shadow)', href: `${base}/pcn-index`, status,
-    primary: usd(ix.usd, 6), plabel: inUse ? 'from real exchange trades — THE credit rate' : 'from real exchange trades — used by nothing yet',
-    lines: [['State', t(ix.state)], ['vs credit rate', gap === null ? '&mdash;' : (gap >= 0 ? '+' : '') + fmt(gap, 2) + '%'],
-      ['Evidence', ix.window ? `${t(ix.window.trades)} fills, ${t(ix.window.entities)} people, $${t(ix.window.countedUsd)}` : '&mdash;'],
-      ['Computed', ago(ix.ageSeconds) + ' ago']],
-    why: ix.refused ? 'price.pc.am REFUSED the latest reading: ' + ix.refused.why : ix.state === 'unknown' ? 'the exchange reports the index as unknown'
-      : ix.stale && inUse ? 'the index is stale: /credit-rate answers 503 and the rails hold' : '' }) };
-}
-
-function marketCard(base, svcs) {
+function marketCard(base, svcs, sends) {
   const r = rowsOf(svcs, 'market.pc.am');
   if (!r || r.status === 'unreadable') {
-    return { status: 'unknown', html: card({ icon: '&#128722;', title: 'Market', href: `${base}/services/market`,
-      status: 'unknown', primary: '&mdash;', plabel: 'PCN for sale now', why: 'market.pc.am could not be read' }) };
+    return { status: 'unknown', html: card({ icon: '&#128722;', title: 'Market & hot wallet', href: `${base}/services/market`,
+      status: 'unknown', primary: '&mdash;', plabel: 'market-hot wallet', why: 'market.pc.am could not be read' }) };
   }
   const m = r.m;
   const gate = m['Sale gate']?.v;
   const status = gate === 'CLOSED' ? 'alert' : r.status === 'bad' ? 'watch' : 'ok';
-  return { status, html: card({ icon: '&#128722;', title: 'Market', href: `${base}/services/market`, status,
-    primary: t(m['Available to buy']?.v), plabel: 'for sale now on market.pc.am',
-    lines: [['Sale gate', t(gate)], ['Next buyer pays', t(m['Ask price']?.v)], ['Hot wallet', t(m['Hot wallet']?.v)],
-      ['Owed on orders', t(m['Owed on orders']?.v)], ['Orders', t(m['Orders']?.v)]],
+  // Hand sends from market-hot (the old separate "Sends" card, folded in here:
+  // it is the same wallet).
+  const now = Date.now();
+  const day = (sends || []).filter((x) => x && x.result === 'sent' && now - Date.parse(x.at || '') < 86400e3);
+  const sentPcn = day.reduce((a, x) => a + (Number(x.pcn) || 0), 0);
+  return { status, html: card({ icon: '&#128722;', title: 'Market & hot wallet', href: `${base}/services/market`, status,
+    primary: t(m['Hot wallet']?.v), plabel: 'in the market-hot wallet (what market.pc.am can sell)',
+    lines: [['Sale gate', t(gate)], ['Next buyer pays', t(m['Ask price']?.v)],
+      ['Owed on orders', t(m['Owed on orders']?.v)], ['Orders', t(m['Orders']?.v)],
+      ['Your sends, 24 h', day.length ? `${fmt(sentPcn, 2)} PCN in ${day.length}` : 'none']],
     why: gate === 'CLOSED' ? 'the sale gate is closed: nobody can buy' : '' }) };
 }
 
@@ -137,7 +146,9 @@ function exchangeCard(base, ex) {
     why: halted ? 'trading is halted' : inv ? 'an accounting invariant is broken' : q.open ? 'a withdrawal is waiting to be paid' : '' }) };
 }
 
-function wrapCard(base, state, work) {
+// The desk numbers its requests (#79) and the watcher names deposits; the
+// request number is what the owner sees everywhere else, so show it here too.
+function wrapCard(base, state, work, reqNos) {
   if (!state || state.open === null) {
     return { status: 'alert', html: card({ icon: '&#128260;', title: 'Wrap desk', href: `${base}/wrapdesk`, status: 'alert',
       primary: '&mdash;', plabel: 'wPCN left to wrap', why: 'cannot tell whether the desk is open' + (state && state.error ? ': ' + state.error : '') }) };
@@ -150,17 +161,24 @@ function wrapCard(base, state, work) {
   const nWait = items ? items.filter((i) => i.kind === 'waiting').length : null;
   const status = !work || !work.ok ? 'unknown' : nSend ? 'alert' : nHeld ? 'watch' : 'ok';
   const a = work && work.allocation;
+  const nos = (kind) => (items || []).filter((i) => i.kind === kind).map(reqNos).filter(Boolean).join(', ');
+  const cnt = (n, kind) => (n === null ? '&mdash;' : String(n) + (n && nos(kind) ? ` <span class="muted">(${esc(nos(kind))})</span>` : ''));
   return { status, html: card({ icon: '&#128260;', title: 'Wrap desk', href: `${base}/wrapdesk`, status,
-    primary: a ? fmt(a.left, 2) : '&mdash;', plabel: 'wPCN left to wrap' + (a ? ` of ${fmt(a.total, 0)}` : ''),
-    lines: [['Intake', state.open ? 'open' : '<span class="warn">closed</span>'], ['To send now', nSend === null ? '&mdash;' : String(nSend)],
-      ['Withheld', nHeld === null ? '&mdash;' : String(nHeld)], ['Confirming', nWait === null ? '&mdash;' : String(nWait)],
-      ['Warnings', work && work.ok ? String((work.warnings || []).length) : '&mdash;'],
+    primary: nSend === null ? '&mdash;' : String(nSend), plabel: 'wraps ready for you to send',
+    lines: [['Intake', state.open ? 'open' : '<span class="warn">closed</span>'],
+      ['To send now', cnt(nSend, 'send')], ['Withheld', cnt(nHeld, 'withheld')], ['Confirming', cnt(nWait, 'waiting')],
+      ['wPCN left to wrap', a ? `${fmt(a.left, 0)} of ${fmt(a.total, 0)}` : '&mdash;'],
       ['Checked', work && work.ranAt ? ago((Date.now() - Date.parse(work.ranAt)) / 1000) + ' ago' : '&mdash;']],
     why: !work || !work.ok ? 'the wrap-desk watcher could not be run' + (work && work.why ? ': ' + work.why : '')
       : nSend ? `${nSend} wrap(s) ready for you to send` : nHeld ? `${nHeld} wrap(s) withheld` : '' }) };
 }
 
-function keeperCard(base, k) {
+// The keeper's wallet balances come from the BSC snapshot (pcoin-bsc-snapshot,
+// every 5 min). Older than 15 min, or unreadable, is UNKNOWN: an old balance
+// shown as current is exactly what this page must never do.
+const KEEPER_BNB_LOW = 0.005;   // gas; below this it cannot trade at all
+const KEEPER_USDT_LOW = 25;     // owner, 2026-09-29: below $100 is fine; near empty is not
+function keeperCard(base, k, snap) {
   const tun = k && k.tuning && k.tuning.state === 'ok' ? k.tuning.data : null;
   const eff = k && k.eff && k.eff.state === 'ok' ? k.eff.data : null;
   const st = k && k.st && k.st.state === 'ok' ? k.st.data : null;
@@ -168,7 +186,11 @@ function keeperCard(base, k) {
     return { status: 'alert', html: card({ icon: '&#9878;&#65039;', title: 'wPCN keeper', href: `${base}/keeper`, status: 'alert',
       primary: '&mdash;', plabel: 'defends the pool at', why: 'the tuning file is unreadable, so the keeper refuses to trade' }) };
   }
-  const status = eff && eff.error ? 'alert' : 'ok';
+  const snapAge = snap ? Date.now() / 1000 - Number(snap.at) : Infinity;
+  const bal = snap && snap.ok && snapAge < 900 ? snap : null;
+  const lowBnb = bal && Number(bal.keeper_bnb) < KEEPER_BNB_LOW;
+  const lowUsdt = bal && Number(bal.keeper_usdt) < KEEPER_USDT_LOW;
+  const status = eff && eff.error ? 'alert' : lowBnb ? 'alert' : lowUsdt ? 'watch' : !bal ? 'unknown' : 'ok';
   // Floor mode defends buy_floor_usd; otherwise the keeper holds the pool at its
   // target = anchor x (1 - target_discount_pct/100). This card used to show the
   // floor ($0.0000 with floor mode off) and say "parity" even with a discount set
@@ -178,14 +200,35 @@ function keeperCard(base, k) {
   const anchor = t(eff && eff.anchor ? eff.anchor : 'anchor');
   const mode = !eff ? '&mdash;' : floor ? 'floor'
     : disc ? `${anchor} &minus; ${fmt(disc, 1)}%` : `parity with the ${anchor}`;
+  const target = floor ? usd(Number(tun.buy_floor_usd), 4) : usd(Number(eff?.target_price), 6);
   return { status, html: card({ icon: '&#9878;&#65039;', title: 'wPCN keeper', href: `${base}/keeper`, status,
-    primary: floor ? usd(Number(tun.buy_floor_usd), 4) : usd(Number(eff?.target_price), 6),
-    plabel: floor ? 'buys wPCN only below this floor'
-      : `holds the pool within ${fmt(Number(tun.dead_band) * 100, 0) ?? '?'}% of this target`,
-    lines: [['Mode', mode], ['Pool now', usd(Number(eff?.pool_price), 6)],
-      ['Buying', tun.buy ? 'on' : 'off'], ['Selling', tun.sell ? 'on' : 'off'],
+    primary: bal ? '$' + fmt(Number(bal.keeper_usdt), 2) : '&mdash;',
+    plabel: 'USDT in the keeper (what it buys wPCN with)',
+    lines: [['wPCN in the keeper', bal ? fmt(Number(bal.keeper_wpcn), 2) : '&mdash;'],
+      ['BNB for gas', bal ? fmt(Number(bal.keeper_bnb), 4) : '&mdash;'],
+      ['Holds the pool at', `${target} <span class="muted">(${mode}, &plusmn;${fmt(Number(tun.dead_band) * 100, 0) ?? '?'}%)</span>`],
+      ['Pool now', usd(Number(eff?.pool_price), 6)],
+      ['Buying / selling', `${tun.buy ? 'on' : 'off'} / ${tun.sell ? 'on' : 'off'}`],
       ['Spent today', st ? `$${fmt(Number(st.usdt_spent || 0), 2)} of $${fmt(Number(tun.daily_usdt_cap), 0)}` : '&mdash;']],
-    why: eff && eff.error ? String(eff.error).slice(0, 140) : '' }) };
+    why: eff && eff.error ? String(eff.error).slice(0, 140)
+      : lowBnb ? 'the keeper is almost out of BNB for gas: it cannot trade without it'
+      : lowUsdt ? `under $${KEEPER_USDT_LOW} USDT left to defend the pool with`
+      : !bal ? (snap ? `balances not refreshed for ${ago(snapAge)} (pcoin-bsc-snapshot)` : 'balances unreadable (pcoin-bsc-snapshot)') : '' }) };
+}
+
+// The BSC side beyond the keeper: the pool's depth, our wPCN inventory, and how
+// much wPCN sits with people outside our wallets (what could be sold into the
+// pool). Same snapshot; same staleness rule.
+function bscCard(base, snap) {
+  const age = snap ? Date.now() / 1000 - Number(snap.at) : Infinity;
+  const b = snap && snap.ok && age < 900 ? snap : null;
+  const status = b ? 'ok' : 'unknown';
+  return { status, html: card({ icon: '&#129374;', title: 'wPCN on BNB Chain', href: `${base}/keeper`, status,
+    primary: b ? fmt(Number(b.outside), 0) : '&mdash;', plabel: 'wPCN held by people outside our wallets',
+    lines: [['Pancake pool', b ? `${fmt(Number(b.pool_wpcn), 0)} wPCN + $${fmt(Number(b.pool_usdt), 2)}` : '&mdash;'],
+      ['Our wPCN inventory', b ? fmt(Number(b.inventory_wpcn), 0) : '&mdash;'],
+      ['Read', snap ? ago(age) + ' ago' : '&mdash;']],
+    why: b ? '' : snap ? `not refreshed for ${ago(age)}` : 'the BSC snapshot is missing' }) };
 }
 
 function payCard(base, svcs) {
@@ -203,55 +246,36 @@ function payCard(base, svcs) {
     why: status === 'alert' ? 'the verifier is down' : '' }) };
 }
 
-function earnerCard(base, svcs) {
-  const r = rowsOf(svcs, 'pcnearner.pc.am');
-  if (!r || r.status === 'unreadable') {
-    return { status: 'unknown', html: card({ icon: '&#127912;', title: 'GPU earner', href: `${base}/services/pcnearner`,
-      status: 'unknown', primary: '&mdash;', plabel: 'earners', why: 'pcnearner.pc.am could not be read' }) };
-  }
-  const m = r.m;
-  const status = r.status === 'bad' ? 'watch' : 'ok';
-  return { status, html: card({ icon: '&#127912;', title: 'GPU earner', href: `${base}/services/pcnearner`, status,
-    primary: t(m['Earners']?.v), plabel: 'earners connected',
-    lines: [['Queue', t(m['Queue']?.v)], ['Tasks done', t(m['Tasks done']?.v)], ['Paid out', t(m['Paid out']?.v)]] }) };
-}
-
+// Reporting is not enough: a server can report every half hour while one of its
+// timers fails every run. So the card also counts every PCoin timer whose LAST
+// run did not succeed, from what the hosts themselves reported.
 function hostsCard(base, jobs, expected, staleSeconds) {
   const now = Date.now();
   const rows = expected.map(([h]) => {
     const d = jobs && jobs[h];
     const a = d ? (now - Date.parse(d.at || '')) / 1000 : Infinity;
-    return { h, fresh: isFinite(a) && a <= staleSeconds };
+    return { h, d, fresh: isFinite(a) && a <= staleSeconds };
   });
   const fresh = rows.filter((x) => x.fresh).length;
-  const status = fresh === rows.length ? 'ok' : fresh === 0 ? 'alert' : 'watch';
+  const failing = [];
+  let nTimers = 0;
+  for (const r of rows.filter((x) => x.fresh)) {
+    for (const tm of (r.d.timers || [])) {
+      nTimers += 1;
+      if (tm.last && tm.result && tm.result !== 'success') failing.push(`${tm.unit.replace(/\.timer$/, '')} on ${r.h}`);
+    }
+  }
+  const status = fresh === 0 || failing.length ? 'alert' : fresh < rows.length ? 'watch' : 'ok';
   return { status, html: card({ icon: '&#128421;&#65039;', title: 'Servers & jobs', href: `${base}/jobs`, status,
-    primary: `${fresh}/${rows.length}`, plabel: 'servers reporting their scheduled jobs',
-    lines: rows.filter((x) => !x.fresh).slice(0, 4).map((x) => ['Not reporting', esc(x.h)]),
-    why: fresh < rows.length ? `${rows.length - fresh} server(s) have not reported in over an hour` : '' }) };
+    primary: String(failing.length), plabel: `scheduled jobs failing (of ${nTimers} on ${fresh} servers)`,
+    lines: [['Servers reporting', `${fresh}/${rows.length}`],
+      ...failing.slice(0, 4).map((x) => ['Failed', esc(x)]),
+      ...rows.filter((x) => !x.fresh).slice(0, 3).map((x) => ['Not reporting', esc(x.h)])],
+    why: failing.length ? `${failing.length} job(s) failed their last run`
+      : fresh < rows.length ? `${rows.length - fresh} server(s) have not reported in over an hour` : '' }) };
 }
 
-function servicesCard(base, svcs) {
-  const n = (svcs || []).length;
-  const bad = (svcs || []).filter((x) => x.status === 'bad' || x.status === 'unreadable');
-  const status = !n ? 'unknown' : bad.length ? 'alert' : 'ok';
-  return { status, html: card({ icon: '&#129513;', title: 'Services', href: `${base}/services`, status,
-    primary: n ? `${n - bad.length}/${n}` : '&mdash;', plabel: 'services healthy',
-    lines: bad.slice(0, 4).map((x) => [x.name, `<span class="bad">${esc((x.status || '').toUpperCase())}</span>`]) }) };
-}
-
-function sendsCard(base, log) {
-  const now = Date.now();
-  const sent = (log || []).filter((x) => x && x.result === 'sent');
-  const day = sent.filter((x) => now - Date.parse(x.at || '') < 86400e3);
-  const sum = day.reduce((a, x) => a + (Number(x.pcn) || 0), 0);
-  const last = sent[sent.length - 1];
-  return { status: 'ok', html: card({ icon: '&#128228;', title: 'Sends from market-hot', href: `${base}/send`, status: 'ok',
-    primary: fmt(sum, 2) + ' PCN', plabel: 'sent in the last 24 h (cap 2,000)',
-    lines: [['Sends in 24 h', String(day.length)], ['Last send', last ? `${fmt(Number(last.pcn), 2)} PCN, ${ago((now - Date.parse(last.at)) / 1000)} ago` : 'none yet']] }) };
-}
-
-export function overviewPage({ base, svcs, ex, price, wrap, work, keeper, jobs, expected, staleSeconds, sends, needs = [], needsCard }) {
+export function overviewPage({ base, svcs, ex, exPublic, price, snap, wrap, work, reqNos = () => '', keeper, jobs, expected, staleSeconds, sends, needs = [], needsCard }) {
   // Urgent items (action / warn) stay in view; the hand-kept task list is
   // folded away, or its thirty rows bury every card above them.
   const urgent = needs.filter((i) => i.sev === 'action' || i.sev === 'warn');
@@ -263,10 +287,15 @@ export function overviewPage({ base, svcs, ex, price, wrap, work, keeper, jobs, 
     + (tasks.length ? `<details class="card ov-tasks"><summary><h2 style="display:inline">Open tasks (${tasks.length})</h2>`
         + ` <span class="muted" style="font-size:12px">&mdash; show</span></summary><div style="margin-top:12px">`
         + `${needsCard(tasks).replace(/^<div class="card"[^>]*>/, '<div>')}</div></details>` : '');
+  // 2026-09-29, owner: "remove redundant data ... i should open admin and see
+  // everything". Gone: the GPU earner (there is none), the separate PCN index
+  // card (same number as Prices), "Services N/N" (each service has its own card
+  // and its faults are in Needs you), and "Sends" (folded into Market). Added:
+  // keeper balances and the BSC side, from the 5-minute snapshot.
   const cards = [
-    chainCard(base, svcs), priceCard(base, price), indexCard(base, price), marketCard(base, svcs),
-    exchangeCard(base, ex), wrapCard(base, wrap, work), keeperCard(base, keeper), payCard(base, svcs),
-    earnerCard(base, svcs), hostsCard(base, jobs, expected, staleSeconds), servicesCard(base, svcs), sendsCard(base, sends),
+    chainCard(base, svcs), priceCard(base, price, exPublic, snap), keeperCard(base, keeper, snap),
+    wrapCard(base, wrap, work, reqNos), exchangeCard(base, ex), marketCard(base, svcs, sends),
+    bscCard(base, snap), payCard(base, svcs), hostsCard(base, jobs, expected, staleSeconds),
   ];
   const overall = worst(...cards.map((c) => c.status));
   const counts = { alert: 0, watch: 0, unknown: 0, ok: 0 };
@@ -314,8 +343,8 @@ padding:16px 16px 12px;text-decoration:none;color:var(--text);border-top:3px sol
         ${tasks.length ? `<span class="ov-pill ov-p-unknown" style="margin:6px 0 0">${tasks.length} open tasks</span>` : ''}</div></div>
     <div class="ov-sub">Updated ${esc(stamp)}<br>refreshes every minute</div>
   </div>
-  <div class="ov-grid">${cards.map((c) => c.html).join('')}</div>
   ${needsHtml}
+  <div class="ov-grid">${cards.map((c) => c.html).join('')}</div>
 </div>
 <script>
 /* Refresh the cards in place once a minute. If anything fails -- signed out,

@@ -1222,6 +1222,15 @@ def main() -> int:
             due.append((key, text))
 
     if due:
+        # ONE MESSAGE LISTS EVERYTHING OUTSTANDING, NOT ONLY WHAT BECAME DUE.
+        # Each item has its own nag clock, so their clocks drift apart. The
+        # message used to carry only the items whose clock had expired: on
+        # 2026-09-28/29 three wraps (#79, #80, #81) were payable while every
+        # hourly message said "1 customer(s) waiting", because only one clock
+        # had expired each time. Whether to send is still decided by `due`;
+        # what the message says is now the whole list, and every clock resets
+        # together so they stay in step from here on.
+        due = [(k, t) for k, _, t in actions + warns]
         # THE OWNER'S VERSION. Each item is one numbered plain line (tg, above),
         # then who is affected and what to do, then the housekeeping. WHICH items
         # are due, the hourly nag and the size bound are unchanged -- this is

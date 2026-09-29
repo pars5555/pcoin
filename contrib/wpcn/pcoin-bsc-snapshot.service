@@ -1,0 +1,25 @@
+[Unit]
+# Every 5 minutes, the BSC-side figures (keeper USDT/wPCN/BNB, the Pancake
+# pool, the wPCN inventory and outside supply) as a JSON file the admin panel
+# can read -- the panel is Node with no BSC client. Same code path as the
+# hourly report (pcoin-hourly-report --snapshot), so the two cannot disagree.
+# Read-only: it signs nothing and writes only its own file.
+Description=PCoin BSC snapshot for the admin dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/wpcn/.venv/bin/python /usr/local/bin/pcoin-hourly-report --snapshot /var/lib/pcoin-bsc-snapshot/snapshot.json
+TimeoutStartSec=120
+Nice=10
+StateDirectory=pcoin-bsc-snapshot
+StateDirectoryMode=0755
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes

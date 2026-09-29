@@ -32,7 +32,7 @@ import { dirname } from 'node:path';
 
 import { collect, upstreamCreds } from './services.mjs';
 import { exchangeCall } from './exchange.mjs';
-import { wrapdeskState } from './wrapdesk.mjs';
+import { wrapdeskState, wrapdeskWork, wrapReqNoFn } from './wrapdesk.mjs';
 import { needsYou } from './needs-you.mjs';
 
 const NOTIFY = process.env.PCOIN_NOTIFY || '/usr/local/bin/pcoin-notify';
@@ -195,7 +195,12 @@ async function main() {
     catch (e) { exOver = { readable: false, status: 0, json: null, reason: e.message }; }
   }
 
-  const found = needsYou({ svcs, tasks: [], exOver, wrap: wrapdeskState(), reports: [], base: '' });
+  // The wrap watcher's own dry-run, so payable wraps are on this list too (they
+  // were not until 2026-09-29, and this sent "nothing needs you" over three).
+  let work = null, reqNos = () => '';
+  try { work = wrapdeskWork(); } catch (e) { work = { ok: false, why: e.message }; }
+  try { reqNos = wrapReqNoFn(); } catch { /* numbers are a nicety */ }
+  const found = needsYou({ svcs, tasks: [], exOver, wrap: wrapdeskState(), work, reqNos, reports: [], base: '' });
   const st = loadState();
   const now = Math.floor(Date.now() / 1000);
 

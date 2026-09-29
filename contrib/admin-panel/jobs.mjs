@@ -24,7 +24,7 @@ import { esc, card, tbl, note, tiles, DASH, agoIso } from './ui.mjs';
 // The estate. A host here that has not reported is a fault, not an absence.
 export const EXPECTED = [
   ['178.105.3.51',    'explorer, ops, wpcnpay, wrapdesk, keeper, admin'],
-  ['178.105.178.27',  'market, pcnearner, pool, price primary, group-watch'],
+  ['178.105.178.27',  'market, pool, price primary, group-watch'],
   ['35.239.156.16',   'seed, pc.am, announcements'],
   ['152.53.171.190',  'seed, explorer3, miner'],
   ['167.233.113.189', 'seed, third price origin'],

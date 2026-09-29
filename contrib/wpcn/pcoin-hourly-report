@@ -157,7 +157,32 @@ def wraps():
     return pay, confirming
 
 
+def snapshot(path):
+    """--snapshot PATH: write the BSC-side figures as JSON and send nothing.
+
+    The admin panel is Node and holds no BSC client, so without this it cannot
+    show the keeper's USDT/wPCN/BNB or the Pancake pool -- the numbers the owner
+    reads first. This reuses the exact read the hourly message uses, so the two
+    can never disagree. An unreadable BSC side writes ok:false and NO figures:
+    the panel then shows "unknown", never the last good values as if current.
+    Written atomically so the panel never reads half a file."""
+    b = safe(bsc)
+    out = {"at": int(time.time()), "ok": bool(b)}
+    if b:
+        out.update({k: round(v, 8) for k, v in b.items()})
+    tmp = path + ".tmp"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(tmp, "w") as fh:
+        json.dump(out, fh)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, path)
+    print("snapshot %s: %s" % ("written" if b else "BSC UNREADABLE, no figures", path))
+    return 0 if b else 1
+
+
 def main():
+    if "--snapshot" in sys.argv:
+        return snapshot(sys.argv[sys.argv.index("--snapshot") + 1])
     price = safe(lambda: get_json("https://price.pc.am"))
     ladder = safe(lambda: get_json("https://market.pc.am/api/ladder/state"))
     ex = safe(lambda: get_json("https://exchange.pc.am/api/public"))

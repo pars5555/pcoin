@@ -57,8 +57,8 @@ const hours = (s) => (typeof s === 'number' && isFinite(s))
  *  @param wrap    wrapdeskState().
  *  @param reports user-submitted reports, if the panel has them.
  */
-export function needsYou({ svcs = [], tasks = [], exOver = null, wrap = null,
-                           reports = [], answeredIds = new Set(), base = '' } = {}) {
+export function needsYou({ svcs = [], tasks = [], exOver = null, wrap = null, work = undefined,
+                           reqNos = () => '', reports = [], answeredIds = new Set(), base = '' } = {}) {
   const items = [];
   // `extra` carries optional fields for the consumers, e.g. `settle`: how many
   // owner-actions runs in a row must see an item before it is pushed to
@@ -233,6 +233,37 @@ export function needsYou({ svcs = [], tasks = [], exOver = null, wrap = null,
   if (wrap && wrap.open === null) {
     add('warn', 'Wrap desk state is unreadable',
       wrap.error || 'Could not tell whether the desk is open.', `${base}/wrapdesk`);
+  }
+  // PAYABLE WRAPS WERE MISSING FROM THIS LIST UNTIL 2026-09-29. At 08:11 UTC
+  // that day owner-actions sent "nothing needs you now" while three customers
+  // (#79, #80, #81) had waited up to 17 hours for their wPCN. `work` is the wrap
+  // watcher's own dry-run (wrapdeskWork); undefined means the caller did not ask,
+  // and a failed run is an item, never silence.
+  if (work !== undefined) {
+    if (!work || !work.ok) {
+      add('warn', 'Wrap desk watcher could not be run',
+        `${(work && work.why) || 'no result'}. Wraps may be payable and unseen -- this is UNKNOWN, `
+        + 'not an empty queue.', `${base}/wrapdesk`, { settle: 2 });
+    } else {
+      const items = work.items || [];
+      const label = (list) => {
+        const nos = list.map(reqNos).filter(Boolean);
+        return nos.length ? ` (${nos.join(', ')})` : '';
+      };
+      const send = items.filter(i => i.kind === 'send');
+      if (send.length) {
+        const wpcn = send.reduce((a, i) => a + (Number((i.title.match(/send ([\d.]+) wPCN/) || [])[1]) || 0), 0);
+        add('action', `${send.length} wrap${send.length === 1 ? '' : 's'} ready for you to send${label(send)}`,
+          `${n2(wpcn)} wPCN in total. Each customer has paid PCN and passed 100 confirmations; `
+          + 'press Send on the Wrap desk page.', `${base}/wrapdesk`);
+      }
+      const held = items.filter(i => i.kind === 'withheld');
+      if (held.length) {
+        add('action', `${held.length} wrap${held.length === 1 ? '' : 's'} withheld${label(held)}`,
+          'Over a limit, so the watcher will not pay it on its own. Decide each on the Wrap desk page.',
+          `${base}/wrapdesk`);
+      }
+    }
   }
 
   // ── services ─────────────────────────────────────────────────────────────
