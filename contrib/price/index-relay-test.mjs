@@ -52,10 +52,15 @@ check('the clock-skew window: 30 s in the future is tolerated, 31 s is not', () 
   assert.equal(v.ok, false); assert.match(v.why, /in the future/);
 });
 
-check('floor and ceiling are refused outright', () => {
-  assert.match(validateIndexBody(body({ nano: '14999999', usd: '0.014999999' }), { nowS: NOW }).why, /below the \$0.015 floor/);
-  assert.equal(validateIndexBody(body({ nano: '15000000', usd: '0.015000000' }), { nowS: NOW }).ok, true);
-  assert.match(validateIndexBody(body({ nano: '100000001', usd: '0.100000001' }), { nowS: NOW }).why, /above the \$0.1 ceiling/);
+check('no floor and no ceiling by default (2026-09-29); a configured one is still enforced', () => {
+  // The default rules accept a price anywhere: PCN floats.
+  assert.equal(validateIndexBody(body({ nano: '1000000', usd: '0.001000000' }), { nowS: NOW }).ok, true, '$0.001 accepted');
+  assert.equal(validateIndexBody(body({ nano: '500000000', usd: '0.500000000' }), { nowS: NOW }).ok, true, '$0.50 accepted');
+  // Bounds passed explicitly still bite, so the mechanism can be put back.
+  const r = { ...INDEX_RULES, floorUsd: 0.015, ceilingUsd: 0.10 };
+  assert.match(validateIndexBody(body({ nano: '14999999', usd: '0.014999999' }), { nowS: NOW, rules: r }).why, /below the \$0.015 floor/);
+  assert.equal(validateIndexBody(body({ nano: '15000000', usd: '0.015000000' }), { nowS: NOW, rules: r }).ok, true);
+  assert.match(validateIndexBody(body({ nano: '100000001', usd: '0.100000001' }), { nowS: NOW, rules: r }).why, /above the \$0.1 ceiling/);
 });
 
 check('malformed bodies are invalid, never a number', () => {
@@ -147,7 +152,8 @@ check('remember keeps every change, one point per 10 min otherwise, and 25 h at 
   assert.deepEqual(h.map((x) => x.nano), [3], 'points older than 25 h are dropped');
 });
 
-assert.equal(INDEX_RULES.floorUsd, 0.015);
+assert.equal(INDEX_RULES.floorUsd, 0);
+assert.equal(INDEX_RULES.ceilingUsd, 0);
 
 // ── Step 4: the credit rate IS the index ───────────────────────────────────
 console.log('  -- step 4 (useIndex = 1)');
@@ -228,7 +234,10 @@ check('the ladder compatibility block: price = sellPriceUsd, clock and stale fla
 });
 
 check('the index-mode note: what the price is, its caps, floor and ceiling -- and no exit', () => {
-  const note = indexNote({ floorUsd: 0.015, rules: { perTradePct: 2, perDayPct: 5 }, maxAgeS: 600, buybackOpen: false });
+  const note = indexNote({ floorUsd: 0.015, ceilingUsd: 0.10, rules: { perTradePct: 2, perDayPct: 5 }, maxAgeS: 600, buybackOpen: false });
+  // With neither set (the live configuration since 2026-09-29) it says so.
+  const free = indexNote({ floorUsd: 0, rules: { perTradePct: 2, perDayPct: 5 }, maxAgeS: 600 });
+  assert.match(free, /no floor and no ceiling/); assert.doesNotMatch(free, /floor of|ceiling of/);
   for (const re of [/volume-weighted median/, /user-to-user trades on exchange\.pc\.am/, /at most 2% per trade and 5% in 24 hours/,
                     /floor of \$0\.0150/, /ceiling of \$0\.10/, /more than 10 minutes old/, /503/,
                     /ladder block is kept only so older integrations keep working/, /not buying PCN back/]) {

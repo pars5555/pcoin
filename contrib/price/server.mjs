@@ -394,7 +394,9 @@ const DEFAULTS = {
   // crediting PCN at less than we have ever sold it for, on the word of a pool
   // holding about $1,300. It is a published number with history rather than
   // one somebody picked, which is the only kind of floor worth having.
-  poolFloorUsd: 0.015,
+  // 0 since 2026-09-29: no floor (owner: "remove floor and ceiling"). Settable
+  // through POST /admin/state.
+  poolFloorUsd: 0,
   // How far below the LADDER price the rate may be dragged.
   //
   // market.pc.am carries its own interlock: at maxDivergencePct (20) between
@@ -1583,6 +1585,8 @@ createServer(async (req, res) => {
         serviceRate:                { min: 0,  max: 1e6 },
         serviceMaxMovePct:          { min: 0,  max: 100 },
         serviceCeiling:             { min: 0,  max: 1e6 },
+        // The absolute floor on the credit rate. 0 = none (owner, 2026-09-29).
+        poolFloorUsd:               { min: 0,  max: 1e6 },
         serviceRetuneIntervalHours: { min: 0,  max: 8760 },
         serviceRateAt:              { min: 0,  max: 4e12 },
         indexMaxAgeSeconds:         { min: 60, max: 3600 },

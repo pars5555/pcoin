@@ -30,8 +30,14 @@ export const INDEX_RULES = Object.freeze({
   skewS: 30,           // how far in the FUTURE computedAt may be (clock skew)
   stepPct: 2.5,        // per seq step, either direction
   dayPct: 5.5,         // against the extremes this side accepted in 24 h
-  floorUsd: 0.015,     // the published floor, same number as rateFloorUsd
-  ceilingUsd: 0.10,    // the plan's ceiling (decision D8)
+  // NO FLOOR AND NO CEILING since 2026-09-29 (owner: "remove floor and
+  // ceiling"; PCN floats). 0 means "none". They were $0.015 and $0.10, and this
+  // side REJECTED any reading outside them as invalid -- which, once the
+  // exchange stopped clamping, would have turned a real price below $0.015
+  // into a 503 on /credit-rate and stopped every rail. The per-step and
+  // per-day speed limits above stay: they are what now protects the rate.
+  floorUsd: 0,
+  ceilingUsd: 0,
 });
 
 const PRICED = new Set(['held', 'live', 'frozen']);
@@ -101,8 +107,8 @@ export function validateIndexBody(j, { nowS, rules = INDEX_RULES } = {}) {
   }
   const seq = Number(j.seq);
   if (!Number.isSafeInteger(seq) || seq < 0) return { ok: false, kind: 'invalid', why: 'seq is not a non-negative integer' };
-  if (nano < Math.round(rules.floorUsd * NANO)) return { ok: false, kind: 'invalid', why: `$${j.usd} is below the $${rules.floorUsd} floor` };
-  if (nano > Math.round(rules.ceilingUsd * NANO)) return { ok: false, kind: 'invalid', why: `$${j.usd} is above the $${rules.ceilingUsd} ceiling` };
+  if (rules.floorUsd > 0 && nano < Math.round(rules.floorUsd * NANO)) return { ok: false, kind: 'invalid', why: `$${j.usd} is below the $${rules.floorUsd} floor` };
+  if (rules.ceilingUsd > 0 && nano > Math.round(rules.ceilingUsd * NANO)) return { ok: false, kind: 'invalid', why: `$${j.usd} is above the $${rules.ceilingUsd} ceiling` };
   return { ok: true, reading: { ...base, nano, usd: nano / NANO, seq } };
 }
 
@@ -268,8 +274,12 @@ export function indexNote({ floorUsd, ceilingUsd = INDEX_RULES.ceilingUsd, rules
   return 'The PCN price is the PCN index: the volume-weighted median price of real user-to-user trades ' +
     'on exchange.pc.am, a small order book the project runs. Trades with the project\'s own bots, and ' +
     `trades between linked accounts, do not count. It moves only when new qualifying trades arrive, ${caps}, ` +
-    'and when there is too little trading it holds its last value. It never goes below a floor of $' +
-    Number(floorUsd).toFixed(4) + ' or above a ceiling of $' + Number(ceilingUsd).toFixed(2) + '. ' +
+    'and when there is too little trading it holds its last value. ' +
+    (Number(floorUsd) > 0 || Number(ceilingUsd) > 0
+      ? 'It never goes' + (Number(floorUsd) > 0 ? ' below a floor of $' + Number(floorUsd).toFixed(4) : '')
+        + (Number(floorUsd) > 0 && Number(ceilingUsd) > 0 ? ' or' : '')
+        + (Number(ceilingUsd) > 0 ? ' above a ceiling of $' + Number(ceilingUsd).toFixed(2) : '') + '. '
+      : 'It has no floor and no ceiling: only the speed limits above bound it. ') +
     'What PCoin services credit one PCN at (creditRateUsd, also published as serviceRate) is the index ' +
     'itself. sellPriceUsd is what market.pc.am charges for PCN, and it never credits anything. ' +
     `If the index is more than ${mins} minute${mins === 1 ? '' : 's'} old, or the exchange reports it as ` +
