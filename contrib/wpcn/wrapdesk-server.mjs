@@ -130,6 +130,13 @@ confirming on the <a href="/track">track page</a>.</p></div>`;
 // pcoin-wrapdesk-watch's ledger. READ-ONLY here, and its absence is tolerated:
 // this desk must keep taking requests if the watcher has not run yet.
 const WATCH_STATE = process.env.WRAPDESK_WATCH_STATE || '/var/lib/pcoin-wrapdesk/state.json';
+// WHY A DEPOSIT WAS RETURNED, shown to the customer under "Returned N PCN".
+// { "<deposit txid>": "reason text" }, written by the operator. Optional: a
+// missing or unreadable file only means no reason is shown.
+const REFUND_NOTES = process.env.WRAPDESK_REFUND_NOTES || '/var/lib/pcoin-wrapdesk/refund-notes.json';
+function refundNotes() {
+  try { return JSON.parse(readFileSync(REFUND_NOTES, 'utf8')) || {}; } catch { return {}; }
+}
 // ── accounts: a market.pc.am sign-in raises the per-person limit ────────────
 //
 // A BSC address is free and infinite, so a limit keyed on one is a limit in
@@ -362,11 +369,16 @@ function outcomesAt(addr, seenIn) {
     catch { return null; }
   }
   const out = {};
+  let notes = null;
   for (const [k, v] of Object.entries(seen)) {
     if (!v || typeof v !== 'object' || v.not_a_deposit || !k.endsWith(':' + addr)) continue;
     const txid = k.split(':')[1];                  // wrap:<txid>:<address>
     if (v.released) out[txid] = { state: 'paid', tx: v.bsc_txhash || null, amount: Number(v.send_wpcn) || null };
-    else if (v.refunded) out[txid] = { state: 'refunded', tx: v.refund_txid || null, amount: Number(v.refund_pcn) || null };
+    else if (v.refunded) {
+      notes = notes || refundNotes();
+      out[txid] = { state: 'refunded', tx: v.refund_txid || null, amount: Number(v.refund_pcn) || null,
+        note: typeof notes[txid] === 'string' ? notes[txid] : null };
+    }
   }
   return out;
 }
@@ -1035,7 +1047,8 @@ function depositState(i) {
   }
   if (o && o.state === 'refunded') {
     return `<span class="chip warn">Returned ${n2(o.amount || i.pcn)} PCN</span>${o.tx
-      ? ` <a class="hint" href="https://explorer.pc.am/tx/${esc(o.tx)}">explorer ↗</a>` : ''}`;
+      ? ` <a class="hint" href="https://explorer.pc.am/tx/${esc(o.tx)}">explorer ↗</a>` : ''}${o.note
+      ? `<p class="hint" style="margin:.3rem 0 0">${esc(o.note)}</p>` : ''}`;
   }
   if (i.eligiblePcn <= 0) return '<span class="chip warn">Over the limit — will be returned</span>';
   if (i.pending) return '<span class="chip info">Waiting for a block</span>';
@@ -2532,7 +2545,8 @@ sent it, it can take a few minutes to appear.</p>
             ? ` in <a href="https://bscscan.com/tx/${esc(o.tx)}" rel="noopener">${esc(o.tx.slice(0, 18))}…</a>` : ''}.`
           : o && o.state === 'refunded'
           ? `<b style="color:var(--amber)">Returned</b> &mdash; ${n8(o.amount || i.pcn)} PCN sent back${o.tx
-            ? ` in <a href="https://explorer.pc.am/tx/${esc(o.tx)}">${esc(o.tx.slice(0, 18))}…</a>` : ''}. It was not wrapped.`
+            ? ` in <a href="https://explorer.pc.am/tx/${esc(o.tx)}">${esc(o.tx.slice(0, 18))}…</a>` : ''}. It was not wrapped.${o.note
+            ? `<br>${esc(o.note)}` : ''}`
           : i.eligiblePcn <= 0
           ? '<b>Over this address\'s limit &mdash; this deposit is returned, not wrapped.</b>'
           : i.pending
