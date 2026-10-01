@@ -145,7 +145,12 @@ RESERVATION_AGE_OUT_MINUTES=60
 HOUSE_INPUT_TOKEN_CAP=16000
 FREE_TURNS_PER_HOUR=10
 RATELIMIT_REMAINING_FLOOR=30
-REGISTRY_REFRESH_SECONDS=600
+# OonaCode's media model list is read when someone uses the bot (a message or a tap) and the kept
+# one is older than MEDIA_FRESH_SECONDS -- never on a timer (2026-10-01). A slow read never holds a
+# tap up longer than MEDIA_FRESH_WAIT_MS; the kept list is used meanwhile. (REGISTRY_REFRESH_SECONDS
+# is no longer read.)
+MEDIA_FRESH_SECONDS=300
+MEDIA_FRESH_WAIT_MS=4000
 REGISTRY_MAX_AGE_SECONDS=21600
 
 # ---- surface -------------------------------------------------------------

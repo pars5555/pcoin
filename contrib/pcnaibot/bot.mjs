@@ -192,6 +192,28 @@ function currentOffer() {
   return mediaOffer(l.entries);
 }
 
+// Asked when a person uses the bot, never on a timer (owner, 2026-10-01: "it doesnt need at all to
+// ping. when user will tap on models list then it should get the list and show"). It used to read
+// OonaCode's model list every REGISTRY_REFRESH_SECONDS (10 minutes) whether anyone was here or
+// not. Now the list kept in the DB is read again only when a message or a tap arrives and the kept
+// one is older than MEDIA_FRESH_SECONDS; a slow answer never holds the tap up — past
+// MEDIA_FRESH_WAIT_MS the kept list is used and the read finishes behind it.
+const MEDIA_FRESH = cfg.int('MEDIA_FRESH_SECONDS', 300);
+const MEDIA_FRESH_WAIT_MS = cfg.int('MEDIA_FRESH_WAIT_MS', 4000);
+let mediaInFlight = null;
+async function mediaFreshEnough() {
+  const l = kvGetJson(db, 'media:listing');
+  if (l && nowSec() - l.at <= MEDIA_FRESH) return;
+  mediaInFlight ??= refreshMedia().finally(() => { mediaInFlight = null; });
+  let timer;
+  const waited = new Promise((resolve) => { timer = setTimeout(resolve, MEDIA_FRESH_WAIT_MS); });
+  try {
+    await Promise.race([mediaInFlight, waited]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // The chat model's last health check (a tool call it must make), for /stats and the logs.
 let chatHealth = { model: null, ok: null, why: 'not checked yet', at: 0 };
 async function checkChatModel() {
@@ -1598,9 +1620,8 @@ async function main() {
     },
   });
 
-  await refreshMedia();
-  every(() => refreshMedia().catch((e) => log.error('media refresh failed', errFields(e))),
-    cfg.int('REGISTRY_REFRESH_SECONDS', 600) * 1000);
+  // No timer and no read at start: the media list is read when someone uses the bot and the kept
+  // one is stale (`mediaFreshEnough`, 2026-10-01).
 
   // The chat model must call its tool. Checked now and daily; a failure is logged loudly and the
   // chat says "unavailable" -- the bot does NOT exit, because clips being made must still arrive.
@@ -1757,6 +1778,9 @@ async function main() {
 
       // A stop press on a draft from the old streaming answers. Nothing streams now.
       if (up.stopped_message_generation) continue;
+
+      // Someone is using the bot: make sure what is on sale is current (read only when stale).
+      if (up.message || up.callback_query) await mediaFreshEnough();
 
       // Buttons. Answer the callback FIRST in spirit -- an unanswered callback leaves a spinner on
       // the button for a minute -- so anything slow runs in the background.
