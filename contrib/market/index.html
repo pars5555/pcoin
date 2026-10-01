@@ -74,11 +74,30 @@ border:1px solid var(--border,#2a3346);background:transparent;color:inherit}
     </div>
     <label for="email">Email</label>
     <input id="email" type="email" autocomplete="username" placeholder="you@example.com">
-    <label for="password">Password</label>
-    <input id="password" type="password" autocomplete="current-password" placeholder="at least 8 characters">
+    <div id="pwRow">
+      <label for="password">Password</label>
+      <input id="password" type="password" autocomplete="current-password" placeholder="at least 8 characters">
+    </div>
     <!--HCAPTCHA-->
     <button id="authBtn" onclick="doAuth()">Sign in</button>
     <div class="msg" id="authMsg"></div>
+    <p style="margin:.6rem 0 0;font-size:.9em">
+      <a href="#" id="forgotLink" onclick="showTab('forgot');return false">Forgot your password?</a>
+      <a href="#" id="backLink" onclick="showTab('in');return false" hidden>Back to sign in</a>
+    </p>
+  </div>
+
+  <!-- ── choosing a new password, from an emailed /#reset=... link ── -->
+  <div id="resetPanel" class="panel" hidden>
+    <h2 style="margin-top:0">Choose a new password</h2>
+    <p style="color:var(--dim)">For your PCoin account: market.pc.am, the exchange and the wrap desk.
+      Every device signed in to market.pc.am will be signed out.</p>
+    <label for="newPw">New password</label>
+    <input id="newPw" type="password" autocomplete="new-password" placeholder="at least 8 characters">
+    <label for="newPw2">Same password again</label>
+    <input id="newPw2" type="password" autocomplete="new-password">
+    <button id="resetBtn" onclick="doReset()">Set new password</button>
+    <div class="msg" id="resetMsg"></div>
   </div>
 
   <!-- ── signed in ── -->
@@ -193,6 +212,16 @@ border:1px solid var(--border,#2a3346);background:transparent;color:inherit}
 })();</script>
 <script>
 let mode = 'in';
+// An emailed reset link lands here as /#reset=<token>. Read it once and wipe
+// it from the address bar, so it is not left in the history or on screen.
+let RESET_TOKEN = null;
+{
+  const m = /^#reset=([A-Za-z0-9_-]{43})$/.exec(location.hash);
+  if (m) {
+    RESET_TOKEN = m[1];
+    history.replaceState(null, '', location.pathname + location.search);
+  }
+}
 // Server-owned limits, fetched at load. The starting values cover the instant
 // before that returns, and a failed fetch; every one is overwritten from
 // /api/ladder/state. They are RENDERED BY THE SERVER from the live settings
@@ -234,8 +263,13 @@ function showTab(m) {
   mode = m;
   $('t-in').setAttribute('aria-selected', m === 'in');
   $('t-up').setAttribute('aria-selected', m === 'up');
-  $('authBtn').textContent = m === 'in' ? 'Sign in' : 'Create account';
+  $('authBtn').textContent = m === 'in' ? 'Sign in' : m === 'up' ? 'Create account' : 'Email me a reset link';
   $('password').autocomplete = m === 'in' ? 'current-password' : 'new-password';
+  // 'forgot' is a third state of the same form: same email box, same captcha,
+  // no password.
+  $('pwRow').hidden = m === 'forgot';
+  $('forgotLink').hidden = m !== 'in';
+  $('backLink').hidden = m !== 'forgot';
   $('authMsg').className = 'msg';
 }
 
@@ -256,6 +290,23 @@ async function api(path, opts) {
 
 async function doAuth() {
   const btn = $('authBtn'); btn.disabled = true;
+  if (mode === 'forgot') {
+    try {
+      const r = await api('/api/password/forgot', {
+        method: 'POST',
+        body: JSON.stringify({
+          email: $('email').value,
+          'h-captcha-response': (window.hcaptcha ? hcaptcha.getResponse() : ''),
+        }),
+      });
+      show($('authMsg'), 'ok', r.message);
+    } catch (e) {
+      show($('authMsg'), 'err', e.message);
+    }
+    if (window.hcaptcha) try { hcaptcha.reset(); } catch (_) { /* widget not rendered */ }
+    btn.disabled = false;
+    return;
+  }
   try {
     await api(mode === 'in' ? '/api/login' : '/api/register', {
       method: 'POST',
@@ -301,7 +352,31 @@ function ensureCaptcha() {
   document.head.appendChild(s);
 }
 
+async function doReset() {
+  const a = $('newPw').value, b = $('newPw2').value;
+  if (a.length < 8) return show($('resetMsg'), 'err', 'The password must be at least 8 characters.');
+  if (a !== b) return show($('resetMsg'), 'err', 'The two passwords are not the same.');
+  const btn = $('resetBtn'); btn.disabled = true;
+  try {
+    await api('/api/password/reset', { method: 'POST',
+      body: JSON.stringify({ token: RESET_TOKEN, password: a }) });
+    RESET_TOKEN = null;
+    $('resetPanel').hidden = true;
+    await refresh();
+    return;
+  } catch (e) {
+    show($('resetMsg'), 'err', e.message);
+  }
+  btn.disabled = false;
+}
+
 async function refresh() {
+  if (RESET_TOKEN) {
+    $('resetPanel').hidden = false;
+    $('authPanel').hidden = true;
+    $('app').hidden = true;
+    return;
+  }
   try {
     const me = await api('/api/me');
     // Already signed in here: carry straight on to the app that asked.

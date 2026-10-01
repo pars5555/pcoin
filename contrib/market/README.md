@@ -481,6 +481,7 @@ Everything read-only is public. Nothing here needs a credential to consume.
 | `GET /api/ladder/calc?pcn=` | the calculator: rungs consumed, total cost, average price, price before and after |
 | `GET /api/ladder/gate` | whether selling is open, and why not |
 | `POST /api/register` `/api/login` `/api/logout` `GET /api/me` | accounts |
+| `POST /api/password/forgot` `/api/password/reset` | password reset by emailed link (see 6a) |
 | `POST /api/buy` | reserve rungs, create the order and the invoice |
 | `POST /api/sell` | request a buyback payout |
 | `POST /ipn` | NOWPayments callback. **HMAC-SHA512 verified before anything is touched** |
@@ -493,6 +494,30 @@ uses; each is a full HMAC under the secret, so trying several weakens nothing. A
 re-serialisation is only ever a guess at the sender's bytes: `JSON.stringify`
 renders `10.0` as `10`, and a wrong guess rejects a genuine payment as a bad
 signature — silently, looking exactly like an attack.
+
+## 6a. Password reset
+
+One reset covers market.pc.am, the exchange and the wrap desk: the other two have
+no passwords and sign in through here. The reasoning is in the header of
+`password-reset.mjs`; tests are `node password-reset-test.mjs` (pure, no DB).
+
+* "Forgot your password?" on the sign-in form mails a link to
+  `https://market.pc.am/#reset=<token>`. 30 minutes, works once, and spending it
+  voids every other open link. Only the token's SHA-256 is stored.
+* The request answers the same for an unknown email, and is capped at 3 mails an
+  hour per account and 10 requests an hour per connection, behind the captcha.
+* A reset writes `users.sessions_valid_after`, which signs out every market
+  session minted before it. NULL (never reset) keeps every session good. Open
+  EXCHANGE sessions are not ended; the exchange's own 2FA guards withdrawals.
+* The ops chat hears of every completed reset; the account gets a "your
+  password was changed" mail.
+
+**Off until both halves exist**, and the startup log says which is missing:
+
+1. `mysql pcoin_market < password-reset.sql` as root (done 2026-10-01).
+2. A `"mail"` block in `config.json` (`url`, `from`, `name`, `netrc`) and the SMTP
+   login in the netrc file, mode 0400, owned by `pcoin-market`. Mail goes out
+   through `curl`; the password is never on its command line. See `mailer.mjs`.
 
 ## 6b. The admin panel
 

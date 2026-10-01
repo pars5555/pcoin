@@ -319,6 +319,8 @@ setInterval(() => S.reload(), 30_000).unref?.();
 // ── delivery ───────────────────────────────────────────────────────────────
 import { makeNodeRpc, makeDelivery, makeBacking } from './delivery.mjs';
 import { makeNotifier, readNotifyConfig } from './notify.mjs';
+import { makeMailer } from './mailer.mjs';
+import { makePasswordReset } from './password-reset.mjs';
 import { clientIp } from './clientip.mjs';
 import { geoFor, geoLine, ensureSchema as ensureGeoSchema } from './geoip.mjs';
 import { makeIpn, readRawBody, REQUIRED_COLUMNS } from './ipn.mjs';
@@ -693,6 +695,10 @@ const VALID_EMAIL = /^[^@\s|]+@[^@\s|]+\.[^@\s|]+$/;
 
 const SCRYPT = { N: 1 << 15, r: 8, p: 1, maxmem: 96 * 1024 * 1024 };
 const hashPw = (pw, salt) => scryptSync(pw, salt, 64, SCRYPT).toString('hex');
+// How long a sign-in lasts. A session token carries only its expiry, so its
+// issue time is expiry minus this -- which is what a password reset compares
+// against to sign out every session older than the new password.
+const SESSION_MS = 7 * 864e5;
 function sign(p) { return `${p}.${createHmac('sha256', cfg.sessionSecret).update(p).digest('hex')}`; }
 function verifyTok(t) {
   if (!t) return null;
@@ -716,8 +722,18 @@ function verifyTok(t) {
   if (!VALID_EMAIL.test(email)) return null;
   const expMs = Number(exp);
   if (!isFinite(expMs) || Date.now() >= expMs) return null;
-  return email;
+  return { email, expMs };
 }
+
+// ── password reset (password-reset.mjs) ────────────────────────────────────
+// Off until BOTH the migration is applied and config.json has a "mail" block;
+// until then the form says so instead of pretending a link was sent.
+const mailer = makeMailer(cfg.mail);
+const PR = makePasswordReset({
+  pool, hashPw, validEmail: VALID_EMAIL, mailer, sessionMs: SESSION_MS,
+  publicUrl: cfg.publicUrl || 'https://market.pc.am',
+  notify: (...a) => notify(...a),
+});
 
 // ── helpers ────────────────────────────────────────────────────────────────
 const today = () => new Date().toISOString().slice(0, 10);
@@ -1026,9 +1042,14 @@ createServer(async (req, res) => {
   }
 
   const cookie = (req.headers.cookie || '').split(/;\s*/).find(c => c.startsWith('mkt='));
-  const email = verifyTok(cookie ? cookie.slice(4) : '');
 
   try {
+    // Signed AND newer than the account's last password reset. Inside the try:
+    // the second check reads the database, and a failed read must answer 500,
+    // not escape the handler.
+    const tok = verifyTok(cookie ? cookie.slice(4) : '');
+    const email = tok && await PR.sessionStillValid(tok.email, tok.expMs) ? tok.email : null;
+
     // ---- IPN. No session, signature only. ----
     // Everything about a payment callback is in ipn.mjs: it verifies the
     // signature over the raw bytes before touching anything, decides what the
@@ -1515,7 +1536,7 @@ createServer(async (req, res) => {
         if (e.code === 'ER_DUP_ENTRY') return json(res, 409, { error: 'account already exists' });
         throw e;
       }
-      const tok = sign(`${em}|${Date.now() + 7 * 864e5}`);
+      const tok = sign(`${em}|${Date.now() + SESSION_MS}`);
       res.writeHead(200, { 'Content-Type': 'application/json',
         'Set-Cookie': `mkt=${tok}; Path=/; Max-Age=${7 * 86400}; HttpOnly; Secure; SameSite=Lax` });
       return res.end(JSON.stringify({ ok: true, email: em }));
@@ -1538,10 +1559,33 @@ createServer(async (req, res) => {
       // bookkeeping write must never be able to stop someone signing in.
       q(`UPDATE users SET last_ip = ?, last_login = NOW() WHERE email = ?`,
         [clientIp(req), em]).catch(e => console.warn('[login] last_ip:', e.message));
-      const tok = sign(`${em}|${Date.now() + 7 * 864e5}`);
+      const tok = sign(`${em}|${Date.now() + SESSION_MS}`);
       res.writeHead(200, { 'Content-Type': 'application/json',
         'Set-Cookie': `mkt=${tok}; Path=/; Max-Age=${7 * 86400}; HttpOnly; Secure; SameSite=Lax` });
       return res.end(JSON.stringify({ ok: true, email: em }));
+    }
+    // ---- password reset (password-reset.mjs has the reasoning) ----
+    // Asking for a link sits behind the same captcha as sign-in: it sends mail
+    // to an address the caller names, and nothing else should be able to.
+    if (p === '/api/password/forgot' && req.method === 'POST') {
+      const f = jsonBodyOr400(await body(req), res);
+      if (f === null) return;
+      if (!PR.enabled()) return json(res, 503, { error: 'password reset by email is not available yet. Ask in the PCoin group and the team will help.' });
+      if (!(await captchaGate(req, res, f))) return;
+      const r = await PR.request(f.email, clientIp(req));
+      return json(res, r.status, r.body);
+    }
+    if (p === '/api/password/reset' && req.method === 'POST') {
+      const f = jsonBodyOr400(await body(req), res);
+      if (f === null) return;
+      const r = await PR.reset(f.token, f.password, clientIp(req));
+      if (r.status !== 200) return json(res, r.status, r.body);
+      // Signed straight in with a session minted AFTER the reset, so it
+      // survives the sessions_valid_after cut that just ended the old ones.
+      const tok = sign(`${r.email}|${Date.now() + SESSION_MS}`);
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store',
+        'Set-Cookie': `mkt=${tok}; Path=/; Max-Age=${7 * 86400}; HttpOnly; Secure; SameSite=Lax` });
+      return res.end(JSON.stringify({ ok: true, email: r.email }));
     }
     if (p === '/api/logout') {
       res.writeHead(200, { 'Content-Type': 'application/json',
@@ -1960,6 +2004,12 @@ createServer(async (req, res) => {
   else console.warn('[market] WARNING: hCaptcha is OFF -- hcaptchaSitekey and ' +
                     'hcaptchaSecret are not both set in config.json. Signup does not ' +
                     'verify email either, so an account currently costs a made-up string.');
+  // Same for password reset: say whether it is on, and if not, which half is missing.
+  PR.init().then(ready => {
+    if (ready && mailer) console.log(`  password reset ON, mail via ${cfg.mail.url} from ${mailer.from}`);
+    else console.warn('[market] password reset OFF: ' + [ready ? null : 'password-reset.sql not applied',
+      mailer ? null : 'no "mail" block in config.json'].filter(Boolean).join(', '));
+  });
 });
 
 // Nothing should ever reach these. If something does, the process is in an
