@@ -75,8 +75,9 @@ const cfg = JSON.parse(readFileSync(CFG, 'utf8'));
 // login gets the same check because credential stuffing is the other cheap
 // automated attack on this form.
 //
-// Signup does NOT verify the email address, so without this an account costs a
-// made-up string. That is the gap this closes.
+// Until 2026-10-02 signup did NOT verify the email address, so without this an
+// account cost a made-up string. New accounts now confirm their email first
+// (email-verify.mjs); the captcha still prices the attempt.
 //
 // Unset -> skipped, and the startup banner says so LOUDLY. A form that shows a
 // captcha nobody checks is worse than no captcha, so the widget is injected
@@ -321,6 +322,7 @@ import { makeNodeRpc, makeDelivery, makeBacking } from './delivery.mjs';
 import { makeNotifier, readNotifyConfig } from './notify.mjs';
 import { makeMailer } from './mailer.mjs';
 import { makePasswordReset } from './password-reset.mjs';
+import { makeEmailVerify } from './email-verify.mjs';
 import { clientIp } from './clientip.mjs';
 import { geoFor, geoLine, ensureSchema as ensureGeoSchema } from './geoip.mjs';
 import { makeIpn, readRawBody, REQUIRED_COLUMNS } from './ipn.mjs';
@@ -734,6 +736,19 @@ const PR = makePasswordReset({
   publicUrl: cfg.publicUrl || 'https://market.pc.am',
   notify: (...a) => notify(...a),
 });
+// ── email confirmation (email-verify.mjs) ──────────────────────────────────
+// Same two halves as reset: email-verify.sql applied, and a mailer.
+const EV = makeEmailVerify({
+  pool, validEmail: VALID_EMAIL, mailer,
+  publicUrl: cfg.publicUrl || 'https://market.pc.am',
+  notify: (...a) => notify(...a),
+});
+// The sign-in tokens handed to the wrap desk and the exchange carry the
+// "email confirmed" flag in a v2 shape. A SWITCH, flipped only after both of
+// them accept v2: the wrap desk's old parser would read `v2|email|1` as the
+// email itself.
+const SSO_V2 = cfg.ssoV2 === true;
+const sessionCookie = (em) => `mkt=${sign(`${em}|${Date.now() + SESSION_MS}`)}; Path=/; Max-Age=${7 * 86400}; HttpOnly; Secure; SameSite=Lax`;
 
 // ── helpers ────────────────────────────────────────────────────────────────
 const today = () => new Date().toISOString().slice(0, 10);
@@ -1486,7 +1501,9 @@ createServer(async (req, res) => {
         res.writeHead(302, { Location: '/?next=' + encodeURIComponent(back) });
         return res.end();
       }
-      const payload = `${email}|${Date.now() + 120_000}`;
+      const payload = SSO_V2
+        ? `v2|${email}|${(await EV.isVerified(email)) ? 1 : 0}|${Date.now() + 120_000}`
+        : `${email}|${Date.now() + 120_000}`;
       const tok = `${payload}.${createHmac('sha256', cfg.ssoSecret).update(payload).digest('hex')}`;
       const sep = back.includes('?') ? '&' : '?';
       res.writeHead(302, { Location: back + sep + 'sso=' + encodeURIComponent(tok) });
@@ -1512,7 +1529,9 @@ createServer(async (req, res) => {
         res.writeHead(302, { Location: '/?next=' + encodeURIComponent('/sso/exchange?return=' + encodeURIComponent(back)) });
         return res.end();
       }
-      const payload = `${email}|exchange|${Date.now() + 120_000}`;
+      const payload = SSO_V2
+        ? `v2|${email}|exchange|${(await EV.isVerified(email)) ? 1 : 0}|${Date.now() + 120_000}`
+        : `${email}|exchange|${Date.now() + 120_000}`;
       const tok = `${payload}.${createHmac('sha256', cfg.ssoExchangeSecret).update(payload).digest('hex')}`;
       res.writeHead(302, { Location: back + '?sso=' + encodeURIComponent(tok) });
       return res.end();
@@ -1526,19 +1545,40 @@ createServer(async (req, res) => {
       if (!VALID_EMAIL.test(em)) return json(res, 400, { error: 'invalid email' });
       if (String(f.password || '').length < 8) return json(res, 400, { error: 'password must be at least 8 characters' });
       const salt = randomBytes(16).toString('hex');
+      // New accounts confirm their email before signing in (email-verify.mjs),
+      // but only while confirmation can actually be mailed -- otherwise the
+      // account could never be used.
+      await EV.ensure();
+      const mustVerify = EV.enabled();
       try {
         // The PRIMARY KEY decides, not a read-then-write check that two
         // simultaneous signups could both pass.
-        await q(`INSERT INTO users (email, salt, hash, signup_ip, last_ip, last_login)
-                 VALUES (?,?,?,?,?,NOW())`,
-                [em, salt, hashPw(f.password, salt), clientIp(req), clientIp(req)]);
+        if (mustVerify) {
+          await q(`INSERT INTO users (email, salt, hash, signup_ip, last_ip, last_login, verify_required)
+                   VALUES (?,?,?,?,?,NOW(),1)`,
+                  [em, salt, hashPw(f.password, salt), clientIp(req), clientIp(req)]);
+        } else {
+          await q(`INSERT INTO users (email, salt, hash, signup_ip, last_ip, last_login)
+                   VALUES (?,?,?,?,?,NOW())`,
+                  [em, salt, hashPw(f.password, salt), clientIp(req), clientIp(req)]);
+        }
       } catch (e) {
         if (e.code === 'ER_DUP_ENTRY') return json(res, 409, { error: 'account already exists' });
         throw e;
       }
-      const tok = sign(`${em}|${Date.now() + SESSION_MS}`);
-      res.writeHead(200, { 'Content-Type': 'application/json',
-        'Set-Cookie': `mkt=${tok}; Path=/; Max-Age=${7 * 86400}; HttpOnly; Secure; SameSite=Lax` });
+      if (mustVerify) {
+        // No session yet: the account opens when the emailed link is clicked.
+        // The account exists whatever happens to the mail, so a send that was
+        // refused (rate limit) or failed must not read as "sent".
+        let sent = false;
+        try { sent = (await EV.send(em, clientIp(req))).status === 200; }
+        catch (e) { console.warn('[register] confirmation mail:', e.message); }
+        return json(res, 200, { ok: true, email: em, verify: 'sent',
+          message: sent
+            ? `Almost done: we sent a confirmation link to ${em}. Open it to finish creating your account (check spam too).`
+            : `Your account is created, but the confirmation email could not be sent just now. In a few minutes press "Send the confirmation link again" below.` });
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Set-Cookie': sessionCookie(em) });
       return res.end(JSON.stringify({ ok: true, email: em }));
     }
     if (p === '/api/login' && req.method === 'POST') {
@@ -1555,6 +1595,12 @@ createServer(async (req, res) => {
       const h = Buffer.from(hashPw(f.password || '', acc.salt), 'hex');
       const w = Buffer.from(acc.hash, 'hex');
       if (h.length !== w.length || !timingSafeEqual(h, w)) return bad();
+      // Only after the password matched, so this tells a stranger nothing.
+      if (await EV.mustConfirmToSignIn(em)) {
+        return json(res, 403, { error: 'email_unverified', email: em,
+          message: 'Please confirm your email first: open the link we sent when you signed up. '
+            + 'No email? Press "Send the link again".' });
+      }
       // Where this customer comes back from. Best-effort and unawaited: a
       // bookkeeping write must never be able to stop someone signing in.
       q(`UPDATE users SET last_ip = ?, last_login = NOW() WHERE email = ?`,
@@ -1580,12 +1626,37 @@ createServer(async (req, res) => {
       if (f === null) return;
       const r = await PR.reset(f.token, f.password, clientIp(req));
       if (r.status !== 200) return json(res, r.status, r.body);
+      // The link reached this inbox, so the address is proven: count it as
+      // confirmed (email-verify.mjs). Best effort -- the reset already happened.
+      await EV.markVerified(r.email).catch(e => console.warn('[reset] markVerified:', e.message));
       // Signed straight in with a session minted AFTER the reset, so it
       // survives the sessions_valid_after cut that just ended the old ones.
       const tok = sign(`${r.email}|${Date.now() + SESSION_MS}`);
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store',
         'Set-Cookie': `mkt=${tok}; Path=/; Max-Age=${7 * 86400}; HttpOnly; Secure; SameSite=Lax` });
       return res.end(JSON.stringify({ ok: true, email: r.email }));
+    }
+    // ---- email confirmation (email-verify.mjs has the reasoning) ----
+    if (p === '/api/email/verify' && req.method === 'POST') {
+      const f = jsonBodyOr400(await body(req), res);
+      if (f === null) return;
+      const r = await EV.confirm(f.token, clientIp(req));
+      if (r.status !== 200) return json(res, r.status, r.body);
+      // Clicking the link opens the account: sign them straight in.
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store',
+        'Set-Cookie': sessionCookie(r.email) });
+      return res.end(JSON.stringify({ ok: true, email: r.email }));
+    }
+    // Signed in: to the session's own address, no captcha (it is rate-limited).
+    // Signed out (a new account that cannot sign in yet): behind the captcha,
+    // to the address given, with the same answer whether or not it exists.
+    if (p === '/api/email/resend' && req.method === 'POST') {
+      const f = jsonBodyOr400(await body(req), res);
+      if (f === null) return;
+      if (!EV.enabled()) return json(res, 503, { error: 'email confirmation is not available yet' });
+      if (!email && !(await captchaGate(req, res, f))) return;
+      const r = await EV.send(email || f.email, clientIp(req));
+      return json(res, r.status, r.body);
     }
     if (p === '/api/logout') {
       res.writeHead(200, { 'Content-Type': 'application/json',
@@ -1602,6 +1673,8 @@ createServer(async (req, res) => {
       const boughtPcn = await accountBoughtPcn(email);
       return json(res, 200, {
         email,
+        emailVerified: await EV.isVerified(email),
+        emailConfirmOn: EV.enabled(),
         buybackOpen: S.get('buybackOpen'),
         accountCapPcn: S.get('accountCapPcn'),
         accountCapDays: S.get('accountCapDays'),
@@ -1881,6 +1954,12 @@ createServer(async (req, res) => {
           buybackOpen: false });
       }
       if (!email) return json(res, 401, { error: 'sign in first' });
+      // Money going out goes only to accounts whose email is confirmed
+      // (owner, 2026-10-02), once confirmation can actually be mailed.
+      if (EV.enabled() && !(await EV.isVerified(email))) {
+        return json(res, 403, { error: 'email_unverified',
+          message: 'Please confirm your email first (press "Send confirmation email" above).' });
+      }
       const f = jsonBodyOr400(await body(req), res);
       if (f === null) return;
       const pcn = Number(f.pcn);
@@ -2008,6 +2087,11 @@ createServer(async (req, res) => {
   PR.init().then(ready => {
     if (ready && mailer) console.log(`  password reset ON, mail via ${cfg.mail.url} from ${mailer.from}`);
     else console.warn('[market] password reset OFF: ' + [ready ? null : 'password-reset.sql not applied',
+      mailer ? null : 'no "mail" block in config.json'].filter(Boolean).join(', '));
+  });
+  EV.init().then(ready => {
+    if (ready && mailer) console.log(`  email confirmation ON (new accounts confirm before sign-in); sign-in tokens ${SSO_V2 ? 'v2, carry the confirmed flag' : 'LEGACY, no confirmed flag (cfg.ssoV2 off)'}`);
+    else console.warn('[market] email confirmation OFF: ' + [ready ? null : 'email-verify.sql not applied',
       mailer ? null : 'no "mail" block in config.json'].filter(Boolean).join(', '));
   });
 });

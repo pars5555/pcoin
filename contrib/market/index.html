@@ -84,6 +84,7 @@ border:1px solid var(--border,#2a3346);background:transparent;color:inherit}
     <p style="margin:.6rem 0 0;font-size:.9em">
       <a href="#" id="forgotLink" onclick="showTab('forgot');return false">Forgot your password?</a>
       <a href="#" id="backLink" onclick="showTab('in');return false" hidden>Back to sign in</a>
+      <a href="#" id="resendLink" onclick="resendVerify(false);return false" hidden>Send the confirmation link again</a>
     </p>
   </div>
 
@@ -102,6 +103,14 @@ border:1px solid var(--border,#2a3346);background:transparent;color:inherit}
 
   <!-- ── signed in ── -->
   <div id="app" hidden>
+    <!-- Shown while this account's email is not confirmed (email-verify.mjs). -->
+    <div id="evBanner" class="panel" hidden style="border-color:var(--amber, #d29922)">
+      <b>Please confirm your email.</b>
+      <span style="color:var(--dim)">You need a confirmed email before you can withdraw on the
+        exchange or wrap PCN on the wrap desk. We will email you a link; open it and you are done.</span>
+      <button id="evBtn" onclick="resendVerify(true)" style="margin-top:.6rem">Send confirmation email</button>
+      <div class="msg" id="evMsg"></div>
+    </div>
     <div class="panel">
       <h2>Buy PCN</h2>
       <label for="usd">Amount in USD</label>
@@ -222,6 +231,15 @@ let RESET_TOKEN = null;
     history.replaceState(null, '', location.pathname + location.search);
   }
 }
+// The same for an emailed confirmation link, /#verify=<token>.
+let VERIFY_TOKEN = null;
+{
+  const m = /^#verify=([A-Za-z0-9_-]{43})$/.exec(location.hash);
+  if (m) {
+    VERIFY_TOKEN = m[1];
+    history.replaceState(null, '', location.pathname + location.search);
+  }
+}
 // Server-owned limits, fetched at load. The starting values cover the instant
 // before that returns, and a failed fetch; every one is overwritten from
 // /api/ladder/state. They are RENDERED BY THE SERVER from the live settings
@@ -270,6 +288,7 @@ function showTab(m) {
   $('pwRow').hidden = m === 'forgot';
   $('forgotLink').hidden = m !== 'in';
   $('backLink').hidden = m !== 'forgot';
+  $('resendLink').hidden = true;
   $('authMsg').className = 'msg';
 }
 
@@ -307,8 +326,9 @@ async function doAuth() {
     btn.disabled = false;
     return;
   }
+  $('resendLink').hidden = true;
   try {
-    await api(mode === 'in' ? '/api/login' : '/api/register', {
+    const r = await api(mode === 'in' ? '/api/login' : '/api/register', {
       method: 'POST',
       body: JSON.stringify({
         email: $('email').value,
@@ -316,12 +336,42 @@ async function doAuth() {
         'h-captcha-response': (window.hcaptcha ? hcaptcha.getResponse() : ''),
       }),
     });
+    // A new account opens when its emailed link is clicked; there is no
+    // session yet, so say so and stay on the form.
+    if (r.verify === 'sent') {
+      show($('authMsg'), 'ok', r.message);
+      $('resendLink').hidden = false;
+      if (window.hcaptcha) try { hcaptcha.reset(); } catch (_) { /* widget not rendered */ }
+      btn.disabled = false;
+      return;
+    }
     await refresh();
     if (SSO_APP) { location.href = SSO_APP.go; return; }
   } catch (e) {
-    show($('authMsg'), 'err', e.message);
+    const unverified = e.data && e.data.error === 'email_unverified';
+    show($('authMsg'), 'err', unverified ? e.data.message : e.message);
+    $('resendLink').hidden = !unverified;
     if (window.hcaptcha) try { hcaptcha.reset(); } catch (_) { /* widget not rendered */ }
   }
+  btn.disabled = false;
+}
+
+// Mail a confirmation link. Signed in: to this account, from the banner.
+// Signed out: to the address in the form, behind the captcha.
+async function resendVerify(signedIn) {
+  const out = signedIn ? $('evMsg') : $('authMsg');
+  const btn = signedIn ? $('evBtn') : $('authBtn');
+  btn.disabled = true;
+  try {
+    const r = await api('/api/email/resend', { method: 'POST', body: JSON.stringify(signedIn ? {} : {
+      email: $('email').value,
+      'h-captcha-response': (window.hcaptcha ? hcaptcha.getResponse() : ''),
+    }) });
+    show(out, 'ok', r.message);
+  } catch (e) {
+    show(out, 'err', e.message);
+  }
+  if (!signedIn && window.hcaptcha) try { hcaptcha.reset(); } catch (_) { /* widget not rendered */ }
   btn.disabled = false;
 }
 
@@ -377,8 +427,21 @@ async function refresh() {
     $('app').hidden = true;
     return;
   }
+  // A confirmation link: spend it once, which also signs the account in.
+  let verifyNote = '';
+  if (VERIFY_TOKEN) {
+    const tok = VERIFY_TOKEN; VERIFY_TOKEN = null;
+    try {
+      await api('/api/email/verify', { method: 'POST', body: JSON.stringify({ token: tok }) });
+      verifyNote = 'ok';
+    } catch (e) {
+      verifyNote = e.message;
+    }
+  }
   try {
     const me = await api('/api/me');
+    $('evBanner').hidden = !(me.emailConfirmOn && !me.emailVerified);
+    if (verifyNote === 'ok') { $('evBanner').hidden = false; show($('evMsg'), 'ok', 'Your email is confirmed. Thank you!'); $('evBtn').hidden = true; }
     // Already signed in here: carry straight on to the app that asked.
     if (SSO_APP) { location.href = SSO_APP.go; return; }
     $('authPanel').hidden = true;
@@ -388,6 +451,7 @@ async function refresh() {
     renderOrders(me.orders || []);
   } catch {
     ensureCaptcha();
+    if (verifyNote && verifyNote !== 'ok') show($('authMsg'), 'err', verifyNote);
     $('authPanel').hidden = false;
     $('app').hidden = true;
     $('signout').hidden = true;

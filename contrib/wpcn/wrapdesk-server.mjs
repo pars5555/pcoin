@@ -169,6 +169,11 @@ const SSO_ON = Boolean(SSO_SECRET);
 // desk cannot issue would close the desk to everybody, so this refuses to
 // come on without it and says so at startup.
 const REQUIRE_ACCOUNT = Boolean(process.env.WRAP_REQUIRE_ACCOUNT) && SSO_ON;
+// REQUIRE A CONFIRMED EMAIL on that account (owner, 2026-10-02: everyone must
+// confirm their email; existing accounts before their next wrap). The flag
+// comes from market.pc.am in the v2 sign-in token. A switch, because it must
+// only come on once market.pc.am mints v2 -- before that nobody could pass it.
+const REQUIRE_VERIFIED = Boolean(process.env.WRAP_REQUIRE_VERIFIED_EMAIL) && REQUIRE_ACCOUNT;
 const SSO_START = process.env.WRAP_SSO_START || 'https://market.pc.am/sso/wrapdesk';
 // Per ACCOUNT, per rolling 30 days, in PCN.
 const ACCOUNT_MONTHLY_PCN = Number(process.env.WRAP_ACCOUNT_MONTHLY_PCN || 1000);
@@ -187,11 +192,19 @@ const COOKIE_KEY = SSO_ON
   ? createHmac('sha256', SSO_SECRET).update('wrapdesk-cookie-v1').digest('hex')
   : '';
 
-// Both tokens are `${email}|${expiry}` signed with HMAC-SHA256, and both are
-// split from the RIGHT. market.pc.am records why: an address containing the
-// delimiter, split from the left, mints a token that is genuinely signed and
-// reads back as somebody else's account.
-function verifySigned(tok, key) {
+// Tokens are signed with HMAC-SHA256 in one of two shapes:
+//   legacy  `${email}|${expiry}`             split from the RIGHT
+//   v2      `v2|${email}|${ev}|${expiry}`    ev = 1 when market.pc.am has
+//                                            confirmed the email (2026-10-02)
+// market.pc.am records why legacy is split from the right: an address
+// containing the delimiter, split from the left, mints a token that is
+// genuinely signed and reads back as somebody else's account. v2 is only
+// accepted with exactly four fields and a '|'-free email, so the same trick
+// cannot shift a field. A legacy token is never "confirmed": ev is 0.
+//
+// ORDER MATTERS ON ROLLOUT: this desk must accept v2 BEFORE market.pc.am
+// starts minting it, or the legacy parse would read `v2|email|1` as the email.
+function parseSigned(tok, key) {
   if (!tok || !key) return null;
   const i = tok.lastIndexOf('.');
   if (i < 0) return null;
@@ -200,17 +213,35 @@ function verifySigned(tok, key) {
   const got = tok.slice(i + 1);
   if (got.length !== want.length) return null;
   if (!timingSafeEqual(Buffer.from(got), Buffer.from(want))) return null;
+  if (payload.startsWith('v2|')) {
+    const f = payload.split('|');
+    if (f.length !== 4 || !f[1] || (f[2] !== '0' && f[2] !== '1')) return null;
+    const exp = Number(f[3]);
+    if (!Number.isFinite(exp) || Date.now() > exp) return null;
+    return { email: f[1], ev: f[2] === '1' };
+  }
   const cut = payload.lastIndexOf('|');
   if (cut < 0) return null;
   const email = payload.slice(0, cut);
   const exp = Number(payload.slice(cut + 1));
   if (!Number.isFinite(exp) || Date.now() > exp) return null;
-  return email || null;
+  return email ? { email, ev: false } : null;
+}
+function verifySigned(tok, key) {
+  const r = parseSigned(tok, key);
+  return r ? r.email : null;
 }
 
-function signSession(email) {
-  const payload = `${email}|${Date.now() + 7 * 864e5}`;
-  return `${payload}.${createHmac('sha256', COOKIE_KEY).update(payload).digest('hex')}`;
+// v2 cookies are signed under their OWN derived key. Code from before v2 cannot
+// verify them, so rolling this file back signs people out instead of reading
+// `v2|email|1` as an account name. Cookies from before v2 still verify under
+// COOKIE_KEY (see sessionOf) until they expire.
+const COOKIE_KEY_V2 = SSO_ON
+  ? createHmac('sha256', SSO_SECRET).update('wrapdesk-cookie-v2').digest('hex')
+  : '';
+function signSession(email, ev = false) {
+  const payload = `v2|${email}|${ev ? 1 : 0}|${Date.now() + 7 * 864e5}`;
+  return `${payload}.${createHmac('sha256', COOKIE_KEY_V2).update(payload).digest('hex')}`;
 }
 
 // ── who may be shown an EXISTING deposit address ────────────────────
@@ -287,10 +318,24 @@ function holdsClaim(req, key) {
          === `claim:${key}`;
 }
 
-function accountOf(req) {
+function sessionOf(req) {
   if (!SSO_ON) return null;
   const c = (req.headers.cookie || '').split(/;\s*/).find((x) => x.startsWith('wd='));
-  return c ? verifySigned(decodeURIComponent(c.slice(3)), COOKIE_KEY) : null;
+  if (!c) return null;
+  const t = decodeURIComponent(c.slice(3));
+  return parseSigned(t, COOKIE_KEY_V2) || parseSigned(t, COOKIE_KEY);
+}
+function accountOf(req) {
+  const s = sessionOf(req);
+  return s ? s.email : null;
+}
+// Has market.pc.am confirmed this account's email? Read from the desk's own
+// cookie, which copied it from the sign-in token. A session from before
+// 2026-10-02 carries no flag and counts as NOT confirmed; signing in again
+// refreshes it.
+function accountVerified(req) {
+  const s = sessionOf(req);
+  return Boolean(s && s.ev);
 }
 
 // ACCOUNTS AND CONNECTIONS THAT MAY NOT OPEN WRAPS (owner, 2026-09-23: "prevent
@@ -698,6 +743,7 @@ const n2 = (x) => Number(x).toFixed(2);
 // overlapping requests could overwrite between their awaits.
 const viewer = new AsyncLocalStorage();
 const viewerAcct = () => { const v = viewer.getStore(); return v ? v.acct : null; };
+const viewerEv = () => { const v = viewer.getStore(); return Boolean(v && v.ev); };
 const viewerIp = () => { const v = viewer.getStore(); return v ? v.ip : null; };
 const clientIp = (req) => (req.headers['x-forwarded-for'] || '').split(',')[0].trim()
   || req.socket.remoteAddress || '?';
@@ -1201,6 +1247,9 @@ ${data.list.length ? data.list.map(wrapItem).join('') : '<p class="hint" style="
 <h1>Wrap PCN into wPCN</h1>
 <p class="lead">Send PCN, receive wPCN on BNB Smart Chain. Want PCN back? Use the <a href="/redeem">Redeem</a> tab.</p>
 ${msg}
+${REQUIRE_VERIFIED && acctView && !msg && !viewerEv() ? `<p class="notice warn"><b>Confirm your email to wrap.</b>
+Open <a href="https://market.pc.am">market.pc.am</a>, press <b>Send confirmation email</b>
+and click the link, then <a href="${SIGNIN}">sign in here again</a>.</p>` : ''}
 ${focusReq ? sendCard(focusReq) : ''}
 ${acctView ? `<div class="stats">
  <div class="stat"><div class="k">Left today</div><div class="v">${n2(leftToday)}</div><div class="s">PCN, of ${ACCOUNT_DAILY_PCN} a day</div></div>
@@ -1994,7 +2043,7 @@ const body = (req) => new Promise((res, rej) => {
   req.on('error', rej);
 });
 
-createServer((req, res) => viewer.run({ acct: accountOf(req), ip: clientIp(req) }, async () => {
+createServer((req, res) => viewer.run({ acct: accountOf(req), ev: accountVerified(req), ip: clientIp(req) }, async () => {
   const url = new URL(req.url, 'http://x');
   const ip = clientIp(req);
   const send = (code, html) => {
@@ -2034,7 +2083,8 @@ createServer((req, res) => viewer.run({ acct: accountOf(req), ip: clientIp(req) 
     // ---- sign in / out via market.pc.am ----
     if (p === '/sso') {
       if (!SSO_ON) return send(503, await home('<p class="err">Sign-in is not configured on this desk.</p>'));
-      const who = verifySigned(url.searchParams.get('sso') || '', SSO_SECRET);
+      const tok = parseSigned(url.searchParams.get('sso') || '', SSO_SECRET);
+      const who = tok ? tok.email : null;
       if (!who) {
         // Expired is the common case (the token lives 120 seconds) and is
         // deliberately indistinguishable from forged here. Say what to do, not
@@ -2052,7 +2102,7 @@ createServer((req, res) => viewer.run({ acct: accountOf(req), ip: clientIp(req) 
       const dest = NEXT_OK.includes(nxt) ? nxt : '/';
       res.writeHead(302, {
         Location: dest,
-        'Set-Cookie': `wd=${encodeURIComponent(signSession(who))}; Path=/; Max-Age=${7 * 86400}; HttpOnly; Secure; SameSite=Lax`,
+        'Set-Cookie': `wd=${encodeURIComponent(signSession(who, tok.ev))}; Path=/; Max-Age=${7 * 86400}; HttpOnly; Secure; SameSite=Lax`,
       });
       return res.end();
     }
@@ -2187,6 +2237,15 @@ createServer((req, res) => viewer.run({ acct: accountOf(req), ip: clientIp(req) 
             Signing in gives you <b>${ACCOUNT_MONTHLY_PCN} PCN a month</b> instead of
             ${PER_PERSON} PCN, and lets you see every wrap you have ever made
             on <a href="/my">your wraps</a>.</p>`));
+        }
+        // Confirmed email, before the caps for the same reason as above.
+        if (REQUIRE_VERIFIED && acct && !accountVerified(req)) {
+          return send(403, await home(`<p class="err"><b>Please confirm your email first.</b>
+            Every account now confirms its email address before wrapping. Open
+            <a href="https://market.pc.am">market.pc.am</a>, press <b>Send confirmation
+            email</b>, and click the link in that email. Then
+            <a href="${SSO_START}?return=https%3A%2F%2Fwrapdesk.pc.am%2Fsso">sign in here
+            again</a> and wrap. Nothing you have already sent is affected.</p>`));
         }
         if (acct) {
           const usedW = accountUsedWpcn(load(), acct);

@@ -21,10 +21,12 @@
 //   * The ops chat hears about every completed reset and the account gets a
 //     "your password was changed" mail, so a reset nobody asked for is seen.
 //
-// What it does NOT prove: sign-up never verified the email, so a link proves
-// control of the address the account was opened with, nothing more. That is
-// the usual bargain. An account opened on a mistyped address still needs a
-// person to sort out.
+// What it does NOT prove: accounts opened before 2026-10-02 never confirmed
+// their email, so for them a link proves control of the address the account
+// was opened with, nothing more. That is the usual bargain. An account opened
+// on a mistyped address still needs a person to sort out. Since 2026-10-02
+// new accounts confirm first (email-verify.mjs), and a completed reset counts
+// as a confirmation for older ones -- the server marks it after a reset.
 //
 // The exchange keeps its own sessions after the SSO hand-off, and its own 2FA.
 // A market reset does not end an exchange session that is already open; the
@@ -38,7 +40,7 @@ const HOUR_MS = 3_600_000;
 export const PER_EMAIL_PER_HOUR = 3;   // links mailed to one account
 export const PER_IP_PER_HOUR = 10;     // link requests from one connection
 export const RESETS_PER_IP_PER_HOUR = 20;
-const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/; // 32 bytes, base64url, no padding
+export const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/; // 32 bytes, base64url, no padding
 
 export const hashToken = t => createHash('sha256').update(String(t)).digest('hex');
 export function newToken() {
@@ -46,12 +48,12 @@ export function newToken() {
   return { token, hash: hashToken(token) };
 }
 
-const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+export const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
 // A sliding one-hour counter per key, in memory. Losing it on a restart only
 // resets the counters; the per-email cap is read from the database instead,
 // because that is the one an attacker would most like to reset.
-function makeLimiter(max, windowMs, now) {
+export function makeLimiter(max, windowMs, now) {
   const hits = new Map();
   return key => {
     const t = now();
