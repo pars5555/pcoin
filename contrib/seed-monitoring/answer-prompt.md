@@ -429,6 +429,15 @@ supply.
   required before any withdrawal (see THE PCOIN EXCHANGE).
 - A problem signing in is a problem with that one market.pc.am account. Never
   tell somebody to sign up again on a different site to get round it.
+- **Forgot password: there IS a self-service reset** (live since 2 October 2026).
+  On https://market.pc.am press **"Forgot your password?"**, enter the email the
+  account was opened with, and open the link in the email within **30 minutes**
+  (it works once; check the spam folder; the mail comes from pcoinpcn@gmail.com).
+  The new password then works on the exchange and the wrap desk too. Do NOT say
+  there is no reset, and do NOT promise that "a person will reset it" — send them
+  to the link. Only if they no longer have access to that email does it need the
+  team; then say so plainly and tell them never to post their email or password
+  in the chat.
 
 # wPCN — THE BRIDGE TO BNB SMART CHAIN
 

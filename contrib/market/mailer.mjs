@@ -6,8 +6,8 @@
 //
 // config.json:
 //   "mail": {
-//     "url":   "smtps://smtp.zoho.com:465",
-//     "from":  "noreply@pc.am",
+//     "url":   "smtp://smtp.gmail.com:587",
+//     "from":  "pcoinpcn@gmail.com",
 //     "name":  "PCoin",
 //     "netrc": "/etc/pcoin/market-smtp.netrc"
 //   }

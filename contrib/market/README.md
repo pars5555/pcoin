@@ -518,6 +518,14 @@ no passwords and sign in through here. The reasoning is in the header of
 2. A `"mail"` block in `config.json` (`url`, `from`, `name`, `netrc`) and the SMTP
    login in the netrc file, mode 0400, owned by `pcoin-market`. Mail goes out
    through `curl`; the password is never on its command line. See `mailer.mjs`.
+   **Done 2026-10-02 — reset is ON.** The sender is the Gmail account
+   `pcoinpcn@gmail.com` (owner's choice) with a Google *app password* named
+   "market.pc.am" in `/etc/pcoin/market-smtp.netrc`; revoke it at
+   myaccount.google.com/apppasswords to cut mail off. The URL is
+   **`smtp://smtp.gmail.com:587`**, not `smtps://…:465`: Hetzner blocks outbound
+   465 (and 25) from this host, so 465 times out after 30 s. 587 is STARTTLS and
+   `mailer.mjs` passes `--ssl-reqd`, so it still refuses to send in clear.
+   Gmail allows roughly 500 messages a day from one account.
 
 ## 6b. The admin panel
 
