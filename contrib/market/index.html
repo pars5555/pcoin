@@ -121,9 +121,9 @@ border:1px solid var(--border,#2a3346);background:transparent;color:inherit}
   <div id="app" hidden>
     <!-- Shown while this account's email is not confirmed (email-verify.mjs). -->
     <div id="evBanner" class="panel" hidden style="border-color:var(--amber, #d29922)">
-      <b>Please confirm your email.</b>
+      <span id="evAsk"><b>Please confirm your email.</b>
       <span style="color:var(--dim)">You need a confirmed email before you can withdraw on the
-        exchange or wrap PCN on the wrap desk. We will email you a link; open it and you are done.</span>
+        exchange or wrap PCN on the wrap desk. We will email you a link; open it and you are done.</span></span>
       <button id="evBtn" onclick="resendVerify(true)" style="margin-top:.6rem">Send confirmation email</button>
       <div class="msg" id="evMsg"></div>
     </div>
@@ -488,7 +488,13 @@ async function refresh() {
   try {
     const me = await api('/api/me');
     $('evBanner').hidden = !(me.emailConfirmOn && !me.emailVerified);
-    if (verifyNote === 'ok') { $('evBanner').hidden = false; show($('evMsg'), 'ok', 'Your email is confirmed. Thank you!'); $('evBtn').hidden = true; }
+    $('evAsk').hidden = false; $('evBtn').hidden = false;
+    // Just came from the emailed link: say so, and nothing else -- the
+    // "please confirm" text above would contradict it.
+    if (verifyNote === 'ok' && me.emailVerified) {
+      $('evBanner').hidden = false; $('evAsk').hidden = true; $('evBtn').hidden = true;
+      show($('evMsg'), 'ok', 'Your email is confirmed and your account is active. Welcome!');
+    }
     // Already signed in here: carry straight on to the app that asked.
     if (SSO_APP) { location.href = SSO_APP.go; return; }
     $('authPanel').hidden = true;
