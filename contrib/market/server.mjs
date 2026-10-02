@@ -749,6 +749,32 @@ const EV = makeEmailVerify({
 // email itself.
 const SSO_V2 = cfg.ssoV2 === true;
 const sessionCookie = (em) => `mkt=${sign(`${em}|${Date.now() + SESSION_MS}`)}; Path=/; Max-Age=${7 * 86400}; HttpOnly; Secure; SameSite=Lax`;
+// "This browser signed up as <email> and is waiting for the confirmation
+// email" -- set after a signup, or after a correct password on an account that
+// is not confirmed yet. It is NOT a session: it grants nothing but showing the
+// "check your email" page and resending to THAT address without a second
+// captcha (the per-account and per-connection mail limits still apply). Its
+// own HMAC domain, so it can never be read as an `mkt` session or vice versa.
+const PENDING_MS = 24 * 3600_000;
+const pendMac = (p) => createHmac('sha256', cfg.sessionSecret).update('mkp:' + p).digest('hex');
+const pendingCookie = (em) => {
+  const p = `${em}|${Date.now() + PENDING_MS}`;
+  return `mkp=${encodeURIComponent(`${p}.${pendMac(p)}`)}; Path=/; Max-Age=${PENDING_MS / 1000}; HttpOnly; Secure; SameSite=Lax`;
+};
+const clearPending = 'mkp=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax';
+function pendingOf(req) {
+  const c = (req.headers.cookie || '').split(/;\s*/).find(x => x.startsWith('mkp='));
+  if (!c) return null;
+  const t = decodeURIComponent(c.slice(4));
+  const i = t.lastIndexOf('.');
+  if (i < 0) return null;
+  const p = t.slice(0, i), got = t.slice(i + 1), want = pendMac(p);
+  if (got.length !== want.length || !timingSafeEqual(Buffer.from(got), Buffer.from(want))) return null;
+  const cut = p.lastIndexOf('|');
+  const em = p.slice(0, cut), exp = Number(p.slice(cut + 1));
+  if (cut < 1 || !VALID_EMAIL.test(em) || !(exp > Date.now())) return null;
+  return em;
+}
 
 // ── helpers ────────────────────────────────────────────────────────────────
 const today = () => new Date().toISOString().slice(0, 10);
@@ -1573,7 +1599,8 @@ createServer(async (req, res) => {
         let sent = false;
         try { sent = (await EV.send(em, clientIp(req))).status === 200; }
         catch (e) { console.warn('[register] confirmation mail:', e.message); }
-        return json(res, 200, { ok: true, email: em, verify: 'sent',
+        res.setHeader('Set-Cookie', pendingCookie(em));
+        return json(res, 200, { ok: true, email: em, verify: 'sent', mailed: sent,
           message: sent
             ? `Almost done: we sent a confirmation link to ${em}. Open it to finish creating your account (check spam too).`
             : `Your account is created, but the confirmation email could not be sent just now. In a few minutes press "Send the confirmation link again" below.` });
@@ -1597,6 +1624,7 @@ createServer(async (req, res) => {
       if (h.length !== w.length || !timingSafeEqual(h, w)) return bad();
       // Only after the password matched, so this tells a stranger nothing.
       if (await EV.mustConfirmToSignIn(em)) {
+        res.setHeader('Set-Cookie', pendingCookie(em));
         return json(res, 403, { error: 'email_unverified', email: em,
           message: 'Please confirm your email first: open the link we sent when you signed up. '
             + 'No email? Press "Send the link again".' });
@@ -1644,7 +1672,7 @@ createServer(async (req, res) => {
       if (r.status !== 200) return json(res, r.status, r.body);
       // Clicking the link opens the account: sign them straight in.
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store',
-        'Set-Cookie': sessionCookie(r.email) });
+        'Set-Cookie': [sessionCookie(r.email), clearPending] });
       return res.end(JSON.stringify({ ok: true, email: r.email }));
     }
     // Signed in: to the session's own address, no captcha (it is rate-limited).
@@ -1654,9 +1682,22 @@ createServer(async (req, res) => {
       const f = jsonBodyOr400(await body(req), res);
       if (f === null) return;
       if (!EV.enabled()) return json(res, 503, { error: 'email confirmation is not available yet' });
-      if (!email && !(await captchaGate(req, res, f))) return;
-      const r = await EV.send(email || f.email, clientIp(req));
+      // Signed in -> that account. Waiting on the "check your email" page ->
+      // the address it signed up with, no second captcha. Otherwise the
+      // captcha, to whatever address is typed.
+      const pending = email ? null : pendingOf(req);
+      if (!email && !pending && !(await captchaGate(req, res, f))) return;
+      const r = await EV.send(email || pending || f.email, clientIp(req));
       return json(res, r.status, r.body);
+    }
+    // Is this browser waiting for a confirmation email? Lets the page show the
+    // "check your email" screen again after a reload.
+    if (p === '/api/email/pending') {
+      if (req.method === 'POST') {   // "use a different account"
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Set-Cookie': clearPending });
+        return res.end('{"ok":true}');
+      }
+      return json(res, 200, { email: email ? null : pendingOf(req) });
     }
     if (p === '/api/logout') {
       res.writeHead(200, { 'Content-Type': 'application/json',

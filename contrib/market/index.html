@@ -88,6 +88,22 @@ border:1px solid var(--border,#2a3346);background:transparent;color:inherit}
     </p>
   </div>
 
+  <!-- ── after signing up: its own page, not the sign-in form again ── -->
+  <div id="checkPanel" class="panel" hidden>
+    <h2 style="margin-top:0">Check your email</h2>
+    <p>We sent a confirmation link to <b id="checkEmail" class="mono"></b>.</p>
+    <p>Open that email and click the link to activate your account. The link works once,
+      for 24 hours. Then you are signed in and can buy, wrap and trade.</p>
+    <p style="color:var(--dim)">Nothing there after a few minutes? Look in your spam or
+      promotions folder for an email from <span class="mono">pcoinpcn@gmail.com</span>,
+      or send it again.</p>
+    <button id="checkResendBtn" onclick="resendPending()">Send the email again</button>
+    <div class="msg" id="checkMsg"></div>
+    <p style="margin:.8rem 0 0;font-size:.9em">
+      <a href="#" onclick="leavePending();return false">Wrong address, or already confirmed? Sign in with a different account</a>
+    </p>
+  </div>
+
   <!-- ── choosing a new password, from an emailed /#reset=... link ── -->
   <div id="resetPanel" class="panel" hidden>
     <h2 style="margin-top:0">Choose a new password</h2>
@@ -339,21 +355,52 @@ async function doAuth() {
     // A new account opens when its emailed link is clicked; there is no
     // session yet, so say so and stay on the form.
     if (r.verify === 'sent') {
-      show($('authMsg'), 'ok', r.message);
-      $('resendLink').hidden = false;
       if (window.hcaptcha) try { hcaptcha.reset(); } catch (_) { /* widget not rendered */ }
       btn.disabled = false;
+      showPending(r.email, r.mailed === false ? r.message : '');
       return;
     }
     await refresh();
     if (SSO_APP) { location.href = SSO_APP.go; return; }
   } catch (e) {
-    const unverified = e.data && e.data.error === 'email_unverified';
-    show($('authMsg'), 'err', unverified ? e.data.message : e.message);
-    $('resendLink').hidden = !unverified;
     if (window.hcaptcha) try { hcaptcha.reset(); } catch (_) { /* widget not rendered */ }
+    btn.disabled = false;
+    // The right password on an account that is not confirmed yet: the same
+    // "check your email" page as right after signing up.
+    if (e.data && e.data.error === 'email_unverified') {
+      showPending(e.data.email, 'This account is not activated yet. Open the link in the email we sent you, or send it again below.');
+      return;
+    }
+    show($('authMsg'), 'err', e.message);
   }
   btn.disabled = false;
+}
+
+// The "check your email" page. Shown instead of the sign-in form.
+function showPending(email, note) {
+  $('authPanel').hidden = true;
+  $('app').hidden = true;
+  $('checkPanel').hidden = false;
+  $('checkEmail').textContent = email || '';
+  if (note) show($('checkMsg'), 'err', note); else $('checkMsg').className = 'msg';
+  $('checkPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+async function resendPending() {
+  const btn = $('checkResendBtn'); btn.disabled = true;
+  try {
+    const r = await api('/api/email/resend', { method: 'POST', body: '{}' });
+    show($('checkMsg'), 'ok', r.message);
+  } catch (e) {
+    show($('checkMsg'), 'err', e.message);
+  }
+  // A short pause before it can be pressed again; the server limits it anyway.
+  setTimeout(() => { btn.disabled = false; }, 20000);
+}
+async function leavePending() {
+  try { await api('/api/email/pending', { method: 'POST', body: '{}' }); } catch (_) { /* best effort */ }
+  $('checkPanel').hidden = true;
+  showTab('in');
+  await refresh();
 }
 
 // Mail a confirmation link. Signed in: to this account, from the banner.
@@ -445,11 +492,21 @@ async function refresh() {
     // Already signed in here: carry straight on to the app that asked.
     if (SSO_APP) { location.href = SSO_APP.go; return; }
     $('authPanel').hidden = true;
+    $('checkPanel').hidden = true;
     $('app').hidden = false;
     $('who').textContent = me.email;
     $('signout').hidden = false;
     renderOrders(me.orders || []);
   } catch {
+    // Signed up in this browser and still waiting for the email? Show that
+    // page again rather than the sign-in form.
+    if (!verifyNote) {
+      try {
+        const pend = await api('/api/email/pending');
+        if (pend.email) { showPending(pend.email, ''); $('signout').hidden = true; $('who').textContent = ''; return; }
+      } catch (_) { /* fall through to the form */ }
+    }
+    $('checkPanel').hidden = true;
     ensureCaptcha();
     if (verifyNote && verifyNote !== 'ok') show($('authMsg'), 'err', verifyNote);
     $('authPanel').hidden = false;
