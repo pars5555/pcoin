@@ -46,7 +46,7 @@ PRIORITY = {
     "": "1.0",
     "mining": "0.9", "wallet": "0.9", "download": "0.9", "buy": "0.8",
     "faq": "0.8", "docs": "0.8", "pay": "0.7", "exchanges": "0.7",
-    "bounty": "0.7", "news": "0.7", "app": "0.6", "pcnearner": "0.6",
+    "bounty": "0.7", "news": "0.7", "app": "0.6",
     "roadmap": "0.6", "whitepaper": "0.6", "listing": "0.5",
 }
 DEFAULT_PRIORITY = "0.6"

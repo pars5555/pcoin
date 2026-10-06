@@ -1,7 +1,7 @@
 # contrib/ops — the operational layer for the payments host
 
 Everything here runs on `178.105.178.27`, the box that serves market.pc.am,
-price.pc.am, pool.pc.am, pcnearner.pc.am and explorer2.pc.am, and that holds the
+price.pc.am, pool.pc.am and explorer2.pc.am, and that holds the
 market's hot wallet.
 
 It is in git for one reason: **until 2026-08-17 none of it was, and a rebuild of

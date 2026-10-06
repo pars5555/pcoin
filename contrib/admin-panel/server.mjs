@@ -1,7 +1,7 @@
 // The unified PCoin admin.
 //
-// WHAT THIS IS FOR. PCoin's own operational surface is spread across four panels
-// on two hosts — market.pc.am/admin, explorer.pc.am/admin, pcnearner.pc.am/admin
+// WHAT THIS IS FOR. PCoin's own operational surface is spread across panels
+// on two hosts — market.pc.am/admin, explorer.pc.am/admin
 // and wpcnpay.pc.am/admin — plus control that has no panel at all: the price
 // oracle (an admin token, no page), the wrap desk (CLI only), the keeper (systemd
 // environment), and the Telegram bot. This gathers the SEEING of all of it into
@@ -250,7 +250,6 @@ const NAV = [
                      ['transfer', '\u{1F4B8} Move PCN']]],
   ['Network',       [['miners', '\u26CF\uFE0F Miners & pools'],
                      ['services/explorer', '\u26D3\uFE0F Chain & explorer'],
-                     ['services/pcnearner', '\u{1F3A8} GPU earner'],
                      ['services', '\u{1F9E9} All services'],
                      ['releases', '\u{1F4E6} Releases & scans']]],
   ['Operations',    [['jobs', '\u{1F553} Scheduled jobs'],

@@ -556,7 +556,7 @@ export function vaultPage() {
     <p style="margin:10px 0"><code>3dmodels</code> · <code>aicontrol</code> ·
     <code>checker</code> · <code>exchange</code> · <code>market-hot</code> ·
     <code>market</code> · <code>oonak3d</code> · <code>pcnaibot</code> ·
-    <code>pcnearner</code> · <code>portrait2video</code> · <code>webai</code> ·
+    <code>portrait2video</code> · <code>webai</code> ·
     <code>webbuilderbot</code> · <code>wpcn-reserve</code></p>
     <p class="muted"><b>Two of them will not sweep normally, and each refusal is deliberate:</b></p>
     <ul class="muted" style="margin:8px 0 0 20px;line-height:1.75">
