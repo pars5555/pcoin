@@ -144,7 +144,6 @@ supply.
   starting value — see HOW THE PCN PRICE IS SET).
 - **https://wrapdesk.pc.am** — wrap PCN into wPCN (a market.pc.am sign-in is
   required) and redeem wPCN back into PCN. See wPCN below.
-- **https://pcnearner.pc.am** — earn PCN by running GPU jobs.
 - **https://pool.pc.am** and **https://pool2.pc.am** — the project's two mining
   pools (stratum `pool.pc.am:3333` and `pool2.pc.am:3333`). Those pages show
   each pool's totals only. **There is no per-miner lookup on either** — never
