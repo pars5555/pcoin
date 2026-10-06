@@ -208,6 +208,7 @@ export default {
   'chat.unpriced': 'That cannot be priced right now — please try again in a little while.',
   'chat.invalid': 'I could not set that up — could you describe it once more?',
   'chat.ask': 'Tell me what picture or video you would like.',
+  'chat.nocard': "I could not show the card just now. Please send your request once more and I will show it with its price and the button.",
   'gate.busy': 'The assistant is busy right now — please try again in a minute.',
   'gate.resting': 'The assistant is resting for today. Top up with <b>{topup}</b> to keep going now, or come back tomorrow.',
   'gate.hourly': 'That is {n} messages this hour — please give it a few minutes.',

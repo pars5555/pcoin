@@ -986,7 +986,11 @@ async function runChat(chatId, updateId, userContent) {
       cardNote = '(The card could not be priced, so none was shown.)';
     }
   } else {
-    await sendAgentText(chatId, r.text, r.failed === 'invalid' ? t(L, 'chat.invalid') : t(L, 'chat.ask'), L);
+    // claimedCard: the model told the user to press a button on a card it never created (seen
+    // live 2026-10-06, three times in one chat). Sending that text would repeat the lie, so the
+    // user gets an honest line instead and can simply resend.
+    await sendAgentText(chatId, r.claimedCard ? null : r.text,
+      r.claimedCard ? t(L, 'chat.nocard') : r.failed === 'invalid' ? t(L, 'chat.invalid') : t(L, 'chat.ask'), L);
   }
   appendHistory(db, chatId, [
     { role: 'user', content: userContent },

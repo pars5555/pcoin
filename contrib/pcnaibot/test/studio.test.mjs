@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 
 import {
   chatTurn, validateProposal, normalizeHistory, loadHistory, appendHistory, noteFor, chatGate,
-  systemPrompt, priceLines, testChatModel, PROPOSE_TOOL, dominantScript, DEFAULT_CHAT_PROMPT, SAFETY_RULES,
+  systemPrompt, priceLines, testChatModel, PROPOSE_TOOL, dominantScript, DEFAULT_CHAT_PROMPT, SAFETY_RULES, CLAIMS_A_CARD,
 } from '../lib/studio.mjs';
 import { settingsProblems, DEFAULT_SETTINGS, getSettings, saveSettings } from '../lib/settings.mjs';
 import { mediaOffer } from '../lib/media.mjs';
@@ -59,6 +59,37 @@ test('a clear request becomes a checked spec; the model\'s text comes with it; t
   assert.match(body.system, /a picture costs \$0\.27/);
 });
 
+test('a reply that claims a card exists, without calling the tool, is asked again', async () => {
+  const db = freshDb();
+  const lie = textAnswer('The card is above. Press the button and it will be made.');
+  const real = toolAnswer({ kind: 'image', prompt: 'Change the letter, keep everything else', summary: 'The letter changed', shape: 'square', sources: [] });
+  const oona = fakeOona([lie, real]);
+  const r = await chatTurn(turnDeps(db, oona), { chatId: 7, userContent: 'change the letter' });
+  assert.equal(oona.calls.length, 2, 'the model is asked a second time');
+  assert.match(oona.calls[1].messages.at(-1).content, /did not call the .propose. tool/);
+  assert.equal(r.spec.summary, 'The letter changed', 'the second answer makes the real card');
+  assert.equal(r.claimedCard, undefined);
+});
+
+test('a model that keeps claiming a card is flagged, so the user is not told to press a missing button', async () => {
+  const db = freshDb();
+  const lie = textAnswer('The card is above. Press the button.');
+  const oona = fakeOona([lie, lie]);
+  const r = await chatTurn(turnDeps(db, oona), { chatId: 7, userContent: 'change the letter' });
+  assert.equal(r.spec, null);
+  assert.equal(r.claimedCard, true);
+  assert.equal(oona.calls.length, 2, 'asked once more, not forever');
+});
+
+test('an ordinary question is never treated as a claim that a card exists', async () => {
+  const db = freshDb();
+  const oona = fakeOona([textAnswer('Picture or video?')]);
+  const r = await chatTurn(turnDeps(db, oona), { chatId: 7, userContent: 'a fox' });
+  assert.equal(oona.calls.length, 1);
+  assert.equal(r.claimedCard, undefined);
+  assert.equal(CLAIMS_A_CARD.test('Picture or video?'), false);
+  assert.equal(CLAIMS_A_CARD.test('press the button on the card'), true);
+});
 test('a talk-only answer is just text, and a half-written tool call is no card', async () => {
   const db = freshDb();
   const r = await chatTurn(turnDeps(db, fakeOona([textAnswer('Picture or video?')])), { chatId: 7, userContent: 'a fox' });

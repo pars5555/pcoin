@@ -328,6 +328,16 @@ export function chatGate(db, chatId, { perHour, dailyBudget, balanceMicro, rateR
 
 const RECORD_LINE = /^\s*\((Card P\d+|Picture #\d+|Video #\d+|The (picture|video) being made|The user )[^\n]*\)\s*$/gm;
 
+// The model claimed a card exists, without calling `propose`. Seen live 2026-10-06: a user sent a
+// photo and asked to change one letter in it; mimo-v2.5 wrote "(the card has been shown, waiting
+// for your checkmark)" as its own text, the user pressed the checkmark three times, and no card
+// was ever created. The button only exists on the card, so that user had nothing to press.
+export const CLAIMS_A_CARD = /[✅✔☑]|\bcard\b|\bpress\b|\btap\b|քարտ|սեղմ|կոճակ|карточк|нажми|кнопк|کارت|دکمه|بزن|اضغط|زر|البطاقة|appuie|bouton|carte|drück|taste|karte|pulsa|botón|tarjeta/iu;
+
+// What we send back to force the real tool call. Not shown to the user.
+const MAKE_THE_CARD = "You described a card, but you did not call the `propose` tool, so NO card was shown and the user has no button to press. "
+  + "Do not describe a card. Call `propose` now for exactly what the user asked, or, if something important is still unclear, ask that one question and do not mention a card.";
+
 function readReply(resp) {
   const blocks = Array.isArray(resp?.content) ? resp.content : [];
   const text = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n').replace(RECORD_LINE, '').trim();
@@ -370,7 +380,19 @@ export async function chatTurn(deps, { chatId, userContent }) {
   const r = readReply(resp);
   // Cut off mid-answer: a half-written tool call is not a proposal.
   if (r.stop === 'max_tokens') return { text: '', spec: null, failed: 'max_tokens' };
-  if (!r.tool) return { text: r.text, spec: null, failed: null };
+  // No tool call, but the text tells the user to press a button that was never sent. One more
+  // request, demanding the tool call. If it still will not, the caller is told (claimedCard) so
+  // it can say so honestly instead of forwarding the model's fiction.
+  if (!r.tool && CLAIMS_A_CARD.test(r.text)) {
+    const again = await oona.messages({ ...body, messages: [...messages, { role: "user", content: MAKE_THE_CARD }] });
+    const r2 = readReply(again);
+    if (r2.stop === "max_tokens") return { text: "", spec: null, failed: "max_tokens" };
+    if (!r2.tool) return { text: r2.text || r.text, spec: null, failed: null, claimedCard: CLAIMS_A_CARD.test(r2.text || r.text) };
+    const v2 = validateProposal(db, chatId, r2.tool.input, { offer, settings });
+    if (v2.spec) return { text: r2.text || r.text, spec: v2.spec, failed: null };
+    return { text: r2.text || r.text, spec: null, failed: "invalid", error: v2.error ?? null, claimedCard: true };
+  }
+    if (!r.tool) return { text: r.text, spec: null, failed: null };
 
   const v = validateProposal(db, chatId, r.tool.input, { offer, settings });
   const wrongLanguage = v.spec ? (languageProblem(latest, v.spec.summary) ?? languageProblem(latest, r.text)) : null;

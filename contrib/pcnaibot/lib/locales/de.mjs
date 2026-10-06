@@ -208,6 +208,7 @@ export default {
   'chat.unpriced': 'Dafür kann ich gerade keinen Preis ermitteln — bitte versuch es in Kürze noch einmal.',
   'chat.invalid': 'Das konnte ich nicht einrichten — kannst du es noch einmal beschreiben?',
   'chat.ask': 'Sag mir, welches Bild oder Video du möchtest.',
+  'chat.nocard': "Die Karte konnte ich gerade nicht anzeigen. Senden Sie Ihre Anfrage noch einmal, dann zeige ich sie mit Preis und Schaltfläche.",
   'gate.busy': 'Der Assistent ist gerade ausgelastet — bitte versuch es in einer Minute noch einmal.',
   'gate.resting': 'Der Assistent macht für heute Pause. Lade über <b>{topup}</b> auf, um jetzt weiterzumachen, oder komm morgen wieder.',
   'gate.hourly': 'Das sind {n} Nachrichten in dieser Stunde — bitte warte ein paar Minuten.',

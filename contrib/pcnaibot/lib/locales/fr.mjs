@@ -209,6 +209,7 @@ export default {
   'chat.unpriced': 'Impossible d’établir un prix pour cela pour le moment — réessayez un peu plus tard.',
   'chat.invalid': 'Je n’ai pas pu préparer cela — pouvez-vous le décrire encore une fois ?',
   'chat.ask': 'Dites-moi quelle image ou quelle vidéo vous aimeriez.',
+  'chat.nocard': "Je n'ai pas pu afficher la carte. Renvoyez votre demande une fois, et je l'afficherai avec son prix et le bouton.",
   'gate.busy': 'L’assistant est occupé pour le moment — réessayez dans une minute.',
   'gate.resting': 'L’assistant se repose pour aujourd’hui. Rechargez avec <b>{topup}</b> pour continuer dès maintenant, ou revenez demain.',
   'gate.hourly': 'Cela fait {n} messages cette heure-ci — merci de patienter quelques minutes.',
