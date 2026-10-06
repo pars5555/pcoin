@@ -1102,9 +1102,17 @@ def main() -> int:
                       + ("\n*** THE ALLOCATION IS EXHAUSTED. Do not wrap more "
                          "without deciding deliberately to raise it. ***"
                          if min(left, committed_left) <= 0 else "")))
-        tg["allocation"] = ("The wrap allocation is used up: %.2f of %.0f wPCN already promised "
-                            "to customers. New wraps cannot be paid until you decide to raise it."
-                            % (used_total + pending_total, TOTAL_ALLOC))
+        # Do NOT page the operator about the allocation while the desk is
+        # CLOSED (2026-10-06, owner). The nag says "decide whether to raise
+        # it" -- he decided: the desk is shut, so there is nothing to do and
+        # the dedup window just re-sent the same 🔴 every ~6 h (14:53 -> 21:17
+        # on the day it was closed). The tasks line above still records the
+        # exhausted allocation in the journal for audit, and this page comes
+        # back on its own the moment the desk reopens (CLOSED_AT_HEIGHT = 0).
+        if not (CLOSED_AT_HEIGHT > 0):
+            tg["allocation"] = ("The wrap allocation is used up: %.2f of %.0f wPCN already promised "
+                                "to customers. New wraps cannot be paid until you decide to raise it."
+                                % (used_total + pending_total, TOTAL_ALLOC))
 
     # ---- PUBLISH the allocation figure so the DESK can refuse on it -------
     #
