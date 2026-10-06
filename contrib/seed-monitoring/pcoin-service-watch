@@ -70,7 +70,6 @@ SERVICES = [
     ("wrapdesk",       "https://wrapdesk.pc.am/proof",          {"has": "Proof of backing"}),
     ("docs",           "https://docs.pc.am/",                   {}),
     ("pool",           "https://pool.pc.am/",                   {}),
-    ("pcnearner",      "https://pcnearner.pc.am/",              {}),
     ("webai",          "https://webai.pc.am/",                  {}),
     ("checker",        "https://checker.pc.am/",                {}),
     # THE THREE RAILS ON ai-bots (116.203.221.42), ADDED 2026-09-20 AFTER THE
