@@ -1094,8 +1094,17 @@ def main() -> int:
             gap += ("\n  Plus %.2f wPCN against deposits still UNCONFIRMED, which"
                     " leaves %.2f once they land. They are already owed -- the"
                     " customer has paid." % (pending_total, committed_left))
+        # While the desk is CLOSED an exhausted allocation is a DECIDED state,
+        # not an action item: on 2026-10-06 the owner closed the desk INSTEAD
+        # of raising the allocation, and this task then re-paged the settled
+        # decision every nag window. Gating the tg text alone (f162785) only
+        # changed the wording -- `due` is built from action/warn TASKS, and
+        # mid=5054 proved the page still goes out. So demote the task itself
+        # to info while CLOSED_AT_HEIGHT is set: the journal keeps the line
+        # for audit, and paging returns on reopen if it is still exhausted.
+        _exhausted = (left <= 0 or gate_left <= 0 or committed_left <= 0)
         tasks.append(("allocation",
-                      "action" if (left <= 0 or gate_left <= 0 or committed_left <= 0)
+                      "action" if (_exhausted and not (CLOSED_AT_HEIGHT > 0))
                       else "info",
                       f"Allocation: {used_total:.2f} of {TOTAL_ALLOC:.0f} wPCN used, "
                       f"{left:.2f} left." + gap
