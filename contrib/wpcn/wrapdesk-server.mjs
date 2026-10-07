@@ -124,8 +124,10 @@ function intakeClosed() {
 // Shown in place of the request form while the desk is closed.
 const CLOSED_FORM_NOTE = `<div class="card"><p class="muted" style="margin:0">
 The request form is hidden while the desk is closed, so there is nothing to fill
-in. <b>Nothing you have already sent is affected</b> &mdash; follow anything still
-confirming on the <a href="/track">track page</a>.</p></div>`;
+in. <b style="color:#e5484d">Do NOT send PCN to any deposit address you were
+given before the closure &mdash; it will not be wrapped, and getting it back is a
+slow manual refund.</b> <b>Nothing you have already sent is affected</b> &mdash;
+follow anything still confirming on the <a href="/track">track page</a>.</p></div>`;
 
 // pcoin-wrapdesk-watch's ledger. READ-ONLY here, and its absence is tolerated:
 // this desk must keep taking requests if the watcher has not run yet.
@@ -1168,7 +1170,7 @@ ${msg}
  <div class="choice">
   <span class="chip ${closed ? 'bad' : 'ok'}">${closed ? 'Paused' : 'Open'}</span>
   <h3>PCN &rarr; wPCN</h3>
-  <p>${closed ? 'New wrap requests are paused right now. Anything already sent is still paid or returned.'
+  <p>${closed ? 'New wrap requests are paused right now. <b>Do not send PCN to any old deposit address &mdash; it will not be wrapped while the desk is closed, and recovery is a slow manual refund.</b> Anything already sent is still paid or returned.'
     : `Sign in, send PCN to your own deposit address, and receive wPCN in your wallet on BNB Smart Chain.`}</p>
   ${closed ? '' : `<a class="btn" href="${SIGNIN}">Sign in to wrap</a>
   <span class="hint" style="margin-top:.5rem">Same account as market.pc.am and the exchange. No account? Create one there.</span>`}
@@ -2188,7 +2190,9 @@ createServer((req, res) => viewer.run({ acct: accountOf(req), ev: accountVerifie
       // reach the allocation, the account cap or the state file at all.
       if (intakeClosed() !== null) {
         return send(503, await home(`<p class="err"><b>Wrapping is closed &mdash; but <a href="/redeem">redeeming wPCN &rarr; PCN still works</a>.</b>
-          New wrap requests are not being accepted. Nothing you are already owed
+          New wrap requests are not being accepted. <b>Do NOT send PCN to any old
+          deposit address while the desk is closed &mdash; it will not be wrapped,
+          and getting it back is a slow manual refund.</b> Nothing you are already owed
           is affected &mdash; every wrap that reached 100 confirmations has been
           paid and anything still confirming will be.<br><br>
           You can still buy and sell on PancakeSwap (wPCN/USDT), and buy PCN
