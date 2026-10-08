@@ -181,7 +181,7 @@ test('the admin\'s instructions replace the built-in ones -- and the live contex
   assert.doesNotMatch(s, /HOW IT WORKS/);
   assert.match(s, /==== CONTEXT/);
   assert.match(s, /PRICES: a picture costs \$0\.27\./);
-  assert.match(s, /THE USER'S LATEST MESSAGE: "a dog"/);
+  assert.match(s, /THE USER'S LATEST MESSAGE, answer this one: "a dog"/);
   const req = buildRequest({ db, settings: { ...DEFAULT_SETTINGS, chatPrompt: 'Be brief.' }, offer: OFFER, marginE6: MARGIN_E6, balanceMicro: 0n }, { chatId: 7, userContent: 'hello' });
   assert.match(req.body.system, /^Be brief\./);
   const dflt = buildRequest({ db, settings: DEFAULT_SETTINGS, offer: OFFER, marginE6: MARGIN_E6, balanceMicro: 0n }, { chatId: 7, userContent: 'hello' });

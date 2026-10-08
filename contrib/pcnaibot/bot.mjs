@@ -50,7 +50,7 @@ import { turnQueue } from './lib/turns.mjs';
 import { claimMessage, startTurn, finishTurn, recoverTurns } from './lib/inbox.mjs';
 import { gracefulStop, installShutdown, DRAIN_TIMEOUT_MS } from './lib/shutdown.mjs';
 import { botHeartbeat } from './lib/heartbeat.mjs';
-import { t, langOf, LANGS, LANG_CODES, detectLang, isLang, everyLabel, whenLabel } from './lib/i18n.mjs';
+import { t, langOf, LANGS, LANG_CODES, detectLang, detectLangFromText, isLang, everyLabel, whenLabel } from './lib/i18n.mjs';
 import { openAccount, parseInvite, inviteLink, inviteStats, payInviteReward, giftsToday, usdToMicro as dollarsToMicro } from './lib/rewards.mjs';
 
 const cfg = loadConfig();
@@ -957,7 +957,13 @@ async function runChat(chatId, updateId, userContent) {
   let r;
   const started = Date.now();
   try {
-    r = await chatTurn({ db, oona, settings: s, offer, marginE6: m, balanceMicro: BigInt(u.balance_micro_usd), botFacts: botFacts(s) }, { chatId, userContent });
+    const spoken = detectLangFromText(userContent);
+    if (spoken && spoken !== L) {
+      db.prepare('UPDATE users SET lang = ? WHERE chat_id = ?').run(spoken, chatId);
+      log.info('language learned from a message', { chat: chatTag(chatId), lang: spoken });
+    }
+    const langNow = spoken || L;
+    r = await chatTurn({ db, oona, settings: s, offer, marginE6: m, balanceMicro: BigInt(u.balance_micro_usd), botFacts: botFacts(s), lang: langNow, langName: LANGS[langNow].name }, { chatId, userContent });
   } catch (e) {
     log.warn('chat turn failed', { chat: chatTag(chatId), model: s.chatModel, ...errFields(e) });
     await tg.sendMessage(chatId, t(L, 'chat.unavailable'));
@@ -1374,7 +1380,8 @@ function studioGet() {
 function studioPreview({ chatId, text }) {
   const u = db.prepare('SELECT * FROM users WHERE chat_id = ?').get(chatId);
   if (!u) return { error: `no user ${chatId}` };
-  const { body } = buildRequest({ db, settings: settings(), offer: currentOffer(), marginE6: marginE6(), balanceMicro: BigInt(u.balance_micro_usd), botFacts: botFacts(settings()) },
+  const langNow = langOfUser(u);
+  const { body } = buildRequest({ db, settings: settings(), offer: currentOffer(), marginE6: marginE6(), balanceMicro: BigInt(u.balance_micro_usd), botFacts: botFacts(settings()), lang: langNow, langName: LANGS[langNow].name },
     { chatId, userContent: String(text || 'make me a picture of a cat') });
   return { model: body.model, system: body.system, messages: body.messages };
 }

@@ -145,7 +145,8 @@ export const DEFAULT_CHAT_PROMPT = [
   + '"ABOUT THIS BOT" below; if the answer is not there, say so and point to /help. If the user asks for anything else '
   + '(general chat, facts, code, other services), say briefly and kindly that you only make pictures and videos, and offer to make one.',
   '',
-  "LANGUAGE: always reply in the language of the user's latest message. The card `summary` is in that same language. The generator `prompt` is always in English.",
+  "LANGUAGE: always reply in the user's chosen language, given under LANGUAGE at the end of these instructions. The card `summary` is in that same language. The generator `prompt` is always in English. "
+  + 'A message that is only a word or two (a yes, a number, an emoji) does not change the language.',
   '',
   'HOW IT WORKS',
   '- Understand what the user wants. Ask at most one or two short questions, and only when something important is unclear '
@@ -192,7 +193,7 @@ export const SAFETY_RULES = [
   + 'that the bot cannot make it, and offer something close that is fine.',
 ].join('\n');
 
-export function systemPrompt({ instructions = DEFAULT_CHAT_PROMPT, items = [], openCard = null, prices = [], balanceMicro = 0n, pictureInputs = 1, latest = '', botFacts = [], now = nowSec() }) {
+export function systemPrompt({ instructions = DEFAULT_CHAT_PROMPT, items = [], openCard = null, prices = [], balanceMicro = 0n, pictureInputs = 1, latest = '', botFacts = [], langName = '', now = nowSec() }) {
   return [
     String(instructions || DEFAULT_CHAT_PROMPT).trim(),
     '',
@@ -211,9 +212,12 @@ export function systemPrompt({ instructions = DEFAULT_CHAT_PROMPT, items = [], o
     openCard
       ? `OPEN CARD P${openCard.id}: ${openCard.kind === 'video' ? 'video' : 'picture'}, ${openCard.shape} — "${openCard.summary}" — ${moneyLabel(openCard.price_micro)}. It is waiting for the user's ✅.`
       : 'No card is open.',
-    // LAST, where it weighs most: the language of THIS message. Seen live 2026-09-26: after one
-    // Armenian request, mimo-v2.5 wrote the next English request's card summary in Armenian.
-    ...(latest ? ['', `THE USER'S LATEST MESSAGE: "${latest.slice(0, 300)}". Reply, and write the card summary, in the language of THAT message — even if earlier messages used another language.`] : []),
+    // LAST, where it weighs most. The chosen language, not the latest message: a "yes" or a "?"
+    // carries no language, and following the message switched a user out of the language they picked
+    // (2026-10-08). The message is still quoted, so the model answers THAT.
+    '',
+    `LANGUAGE: reply, and write the card summary, in ${langName || 'English'} — whatever language the user's message is in.`,
+    ...(latest ? [`THE USER'S LATEST MESSAGE, answer this one: "${latest.slice(0, 300)}".`] : []),
   ].join('\n');
 }
 
@@ -296,11 +300,16 @@ export function dominantScript(text) {
   const [name, n] = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
   return n / total >= 0.6 ? name : null;
 }
-export function languageProblem(latest, summary) {
-  const want = dominantScript(latest);
+const SCRIPT_OF = { hy: 'Armenian', ru: 'Cyrillic', fa: 'Arabic', ar: 'Arabic', en: 'Latin', fr: 'Latin', de: 'Latin', es: 'Latin' };
+
+// The reply or the card summary is in a different script than the user's chosen language. A short
+// message ("yes", "?", a number) has no script of its own, so the chosen language decides; the
+// message only decides when nothing was chosen. Returns the reason, or null.
+export function languageProblem(latest, summary, lang) {
+  const want = (lang && SCRIPT_OF[lang]) || dominantScript(latest);
   const got = dominantScript(summary);
   return want && got && want !== got
-    ? `the summary is written in ${got} script, but the user's latest message is in ${want} script. Write the summary, and your reply, in the language of the user's latest message.`
+    ? `the summary is written in ${got} script, but this user chose a language written in ${want} script. Write the summary, and your reply, in that language.`
     : null;
 }
 
@@ -356,6 +365,7 @@ export function buildRequest(deps, { chatId, userContent }) {
   const pic = offer[settings.pictureModel];
   // The user's own words, without the bot's notes ("(The user is replying to #12.)").
   const latest = userContent.split('\n').filter((l) => !/^\(The user /.test(l)).join(' ').trim();
+  const lang = deps.lang ?? null;
   const system = systemPrompt({
     instructions: settings.chatPrompt || DEFAULT_CHAT_PROMPT,
     items: recentItems(db, chatId),
@@ -365,15 +375,16 @@ export function buildRequest(deps, { chatId, userContent }) {
     pictureInputs: pic ? Math.max(1, maxInputs(pic)) : 1,
     latest,
     botFacts: deps.botFacts ?? [],
+    langName: deps.langName ?? '',
   });
   const max = settings.historyMax ?? HISTORY_MAX;
   const messages = normalizeHistory([...loadHistory(db, chatId, max), { role: 'user', content: userContent }], max);
-  return { latest, body: { model: settings.chatModel, max_tokens: 2048, system, tools: [PROPOSE_TOOL], messages } };
+  return { latest, lang, body: { model: settings.chatModel, max_tokens: 2048, system, tools: [PROPOSE_TOOL], messages } };
 }
 
 export async function chatTurn(deps, { chatId, userContent }) {
   const { db, oona, settings, offer } = deps;
-  const { latest, body } = buildRequest(deps, { chatId, userContent });
+  const { latest, lang, body } = buildRequest(deps, { chatId, userContent });
   const messages = body.messages;
 
   const resp = await oona.messages(body);
@@ -395,7 +406,7 @@ export async function chatTurn(deps, { chatId, userContent }) {
     if (!r.tool) return { text: r.text, spec: null, failed: null };
 
   const v = validateProposal(db, chatId, r.tool.input, { offer, settings });
-  const wrongLanguage = v.spec ? (languageProblem(latest, v.spec.summary) ?? languageProblem(latest, r.text)) : null;
+  const wrongLanguage = v.spec ? (languageProblem(latest, v.spec.summary, lang) ?? languageProblem(latest, r.text, lang)) : null;
   if (v.spec && !wrongLanguage) return { text: r.text, spec: v.spec, failed: null };
 
   // ONE retry, told why. The model's own blocks go back untouched (thinking included).

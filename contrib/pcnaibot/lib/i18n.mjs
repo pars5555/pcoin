@@ -40,6 +40,23 @@ export const DICTS = Object.freeze({ en, ru, hy, fa, ar, fr, de, es });
 
 export const isLang = (code) => typeof code === 'string' && Object.hasOwn(LANGS, code);
 
+// The language a MESSAGE is written in, or null when it does not say. Only the four scripts the
+// bot can tell apart for certain; English, French, German and Spanish share the Latin script, and
+// guessing between them from a short message is how a user gets switched by accident. A "yes", a
+// number or an emoji returns null, so the stored choice stands.
+const TEXT_SCRIPT = [['hy', /[Ա-֏]/], ['ru', /[Ѐ-ӿ]/], ['fa', /[؀-ۿ]/]];
+export function detectLangFromText(text) {
+  const counts = {};
+  for (const ch of String(text ?? '')) {
+    for (const [code, re] of TEXT_SCRIPT) if (re.test(ch)) { counts[code] = (counts[code] ?? 0) + 1; break; }
+  }
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  if (total < 3) return null;
+  const [code, n] = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+  return n / total >= 0.6 ? code : null;
+}
+
+
 // Telegram's language_code ('ru', 'pt-br', 'hy') -> one of ours, or English.
 export function detectLang(languageCode) {
   const c = String(languageCode ?? '').toLowerCase().split(/[-_]/)[0];

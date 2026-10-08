@@ -54,8 +54,8 @@ test('a clear request becomes a checked spec; the model\'s text comes with it; t
   assert.equal(body.model, 'mimo-v2.5');
   assert.deepEqual(body.tools, [PROPOSE_TOOL]);
   assert.equal(body.messages.at(-1).content, 'лиса в снегу, широкая');
-  assert.match(body.system, /reply in the language of the user's latest message/);
-  assert.match(body.system, /THE USER'S LATEST MESSAGE: "лиса в снегу, широкая"\. Reply, and write the card summary, in the language of THAT message/);
+  assert.match(body.system, /reply, and write the card summary, in English/);
+  assert.match(body.system, /THE USER'S LATEST MESSAGE, answer this one: "лиса в снегу, широкая"/);
   assert.match(body.system, /a picture costs \$0\.27/);
 });
 
@@ -129,7 +129,7 @@ test('a card summary in another script than the user\'s message goes back once -
   const oona = fakeOona([armenian, english]);
   const r = await chatTurn(turnDeps(db, oona), { chatId: 7, userContent: '(The user sent a photo: #4.)\nput this watch on a dark wooden desk' });
   assert.equal(r.spec.summary, 'The watch on a dark wooden desk by a cup of coffee');
-  assert.match(oona.calls[1].messages.at(-1).content[0].content, /Armenian script, but the user's latest message is in Latin script/);
+  assert.match(oona.calls[1].messages.at(-1).content[0].content, /Armenian script, but this user chose a language written in Latin script/);
   // Wrong again: the card is still made -- a language slip is not worth losing the request over.
   const again = await chatTurn(turnDeps(db, fakeOona([armenian, armenian])), { chatId: 7, userContent: 'put this watch on a dark wooden desk' });
   assert.equal(again.spec.summary, 'Ձեռքի ժամացույցը մուգ փայտե սեղանին');
@@ -223,6 +223,16 @@ test('the free chat has limits: per hour per user, and a daily budget only for p
   assert.match(chatGate(db, 8, { perHour: 99, dailyBudget: 999, balanceMicro: 5, rateRemaining: 2, rlFloor: 30 }).refuse, /busy/);
 });
 
+test('the reply follows the chosen language, not the latest message', async () => {
+  const db = freshDb();
+  const armenian = toolAnswer({ kind: 'image', prompt: 'A red fox in snow', summary: 'Կարմիր աղվես ձյան մեջ', shape: 'square' }, 'Ահա քարտը');
+  const english = toolAnswer({ kind: 'image', prompt: 'A red fox in snow', summary: 'A red fox sitting in the snow', shape: 'square' }, 'Here is the card');
+  const oona = fakeOona([english, armenian]);
+  const r = await chatTurn({ ...turnDeps(db, oona), lang: 'hy', langName: 'Հայերեն' }, { chatId: 7, userContent: 'yes' });
+  assert.match(oona.calls[0].system, /reply, and write the card summary, in Հայերեն/);
+  assert.match(oona.calls[1].messages.at(-1).content[0].content, /Latin script, but this user chose a language written in Armenian script/);
+  assert.equal(r.spec.summary, 'Կարմիր աղվես ձյան մեջ', 'the second answer, in the chosen language, is the card');
+});
 test('the system prompt lists the user\'s items, the open card and the live prices', () => {
   const db = freshDb();
   const photo = addItem(db, { kind: 'upload', summary: null });

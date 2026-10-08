@@ -12,7 +12,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { t, detectLang, LANG_CODES, DICTS, everyLabel, whenLabel } from '../lib/i18n.mjs';
+import { t, detectLang, detectLangFromText, LANG_CODES, DICTS, everyLabel, whenLabel } from '../lib/i18n.mjs';
 import { compareLocale } from './locale-check.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -71,4 +71,13 @@ test('dates are UTC with Latin digits in every language', () => {
     assert.match(s, /\d/, code);
     assert.doesNotMatch(s, /[٠-٩۰-۹]/, `${code}: ${s}`);
   }
+});
+
+test('a message says its language only when the script is unmistakable', () => {
+  assert.equal(detectLangFromText('Դ տառը փոխիր Ղ-ով'), 'hy');
+  assert.equal(detectLangFromText('сделай картинку лисы'), 'ru');
+  assert.equal(detectLangFromText('یک تصویر از روباه بساز'), 'fa');
+  assert.equal(detectLangFromText('yes'), null, 'too short to tell');
+  assert.equal(detectLangFromText('make it a red fox please'), null, 'Latin script is shared by four languages');
+  assert.equal(detectLangFromText(''), null);
 });

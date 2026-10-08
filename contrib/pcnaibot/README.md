@@ -179,6 +179,8 @@ crosses a line gets a kind refusal and no card. The provider's own filter is the
 
 **A card the model only describes is not a card (2026-10-06).** A user sent a photo, asked to change one letter, and was told three times to press the button on the card above. No card existed: mimo-v2.5 had written "(the card has been shown, waiting for your button)" as its own text instead of calling `propose`, and the button only exists on the card `sendCard` sends. `chatTurn` now detects a reply that claims a card (`CLAIMS_A_CARD`) without a tool call and asks once more, demanding the call. If the model still will not, the user gets `chat.nocard` ("send it once more") instead of the model's text, which would have repeated the lie.
 
+**The reply follows the language the user chose (2026-10-08).** The agent was told to answer in the language of the latest message, so a "yes" or a "?" — which have no language — switched the reply away from the language the user had picked. The prompt now ends with the chosen language's name and says a short message does not change it, and a card summary in another script is sent back once. A message whose script is unmistakable (Armenian, Cyrillic, Arabic) updates the stored choice, so the bot's own screens follow too; Latin text never does, because English, French, German and Spanish cannot be told apart from a sentence.
+
 ## Two processes, deliberately
 
 | unit | what |
@@ -291,7 +293,7 @@ the owner from a monitoring-setup step.
 ## Testing
 
 ```sh
-node --test test/          # 231 tests, no network
+node --test test/          # 233 tests, no network
 sh test/heartbeat-check.test.sh   # the host alert script's Stars books rules (needs python3)
 ```
 
