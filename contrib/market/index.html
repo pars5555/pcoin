@@ -499,16 +499,26 @@ async function refresh() {
     // NOT for a flow that must re-prompt for email+password (the exchange).
     // Showing the form every time is the whole point (owner, 2026-10-10); auto-
     // continuing here is what dropped people straight on the 2FA step.
-    if (SSO_APP && !SSO_APP.forceLogin) { location.href = SSO_APP.go; return; }
-    if (!(SSO_APP && SSO_APP.forceLogin)) {
-      $('authPanel').hidden = true;
+    if (SSO_APP && SSO_APP.forceLogin) {
+      // Draw exactly what a signed-out visitor sees. authPanel is `hidden` in
+      // the markup and only the signed-out path un-hides it, and ensureCaptcha()
+      // is what loads the widget the server demands on /api/login -- skipping
+      // either leaves a blank page (the first version of this did, 2026-10-10).
       $('checkPanel').hidden = true;
-      $('app').hidden = false;
-      $('who').textContent = me.email;
-      $('signout').hidden = false;
-      renderOrders(me.orders || []);
+      ensureCaptcha();
+      $('authPanel').hidden = false;
+      $('app').hidden = true;
+      $('signout').hidden = true;
+      $('who').textContent = '';
+      return;
     }
-    // exchange + forceLogin: leave the sign-in form (authPanel) showing.
+    if (SSO_APP) { location.href = SSO_APP.go; return; }
+    $('authPanel').hidden = true;
+    $('checkPanel').hidden = true;
+    $('app').hidden = false;
+    $('who').textContent = me.email;
+    $('signout').hidden = false;
+    renderOrders(me.orders || []);
   } catch {
     // Signed up in this browser and still waiting for the email? Show that
     // page again rather than the sign-in form.
