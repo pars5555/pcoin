@@ -762,6 +762,36 @@ const pendingCookie = (em) => {
   return `mkp=${encodeURIComponent(`${p}.${pendMac(p)}`)}; Path=/; Max-Age=${PENDING_MS / 1000}; HttpOnly; Secure; SameSite=Lax`;
 };
 const clearPending = 'mkp=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax';
+// "This browser just typed a password" -- a one-time, short-lived proof that a
+// real credential sign-in happened moments ago. The EXCHANGE requires it before
+// it hands off an SSO session, so every exchange sign-in re-prompts for
+// email+password instead of silently resuming whatever market session is live
+// and dropping the person straight on the 2FA step (owner, 2026-10-10: "always
+// force email+password on every exchange sign-in"). Set only by the two
+// password paths (/api/login, /api/password/reset) -- never by an emailed
+// link -- consumed on first use, expires in 2 minutes. Its own HMAC domain
+// ('mfr:'), so it can never be read as an `mkt` session or an `mkp` pending
+// marker. It gates the hand-off only; it is not authentication on its own.
+const FRESH_MS = 120_000;
+const freshMac = (p) => createHmac('sha256', cfg.sessionSecret).update('mfr:' + p).digest('hex');
+const freshCookie = (em) => {
+  const p = `${em}|${Date.now() + FRESH_MS}`;
+  return `mkt_fresh=${encodeURIComponent(`${p}.${freshMac(p)}`)}; Path=/; Max-Age=${FRESH_MS / 1000}; HttpOnly; Secure; SameSite=Lax`;
+};
+const clearFresh = 'mkt_fresh=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax';
+function freshOf(req) {
+  const c = (req.headers.cookie || '').split(/;\s*/).find(x => x.startsWith('mkt_fresh='));
+  if (!c) return null;
+  const t = decodeURIComponent(c.slice('mkt_fresh='.length));
+  const i = t.lastIndexOf('.');
+  if (i < 0) return null;
+  const p = t.slice(0, i), got = t.slice(i + 1), want = freshMac(p);
+  if (got.length !== want.length || !timingSafeEqual(Buffer.from(got), Buffer.from(want))) return null;
+  const cut = p.lastIndexOf('|');
+  const em = p.slice(0, cut), exp = Number(p.slice(cut + 1));
+  if (cut < 1 || !VALID_EMAIL.test(em) || !(exp > Date.now())) return null;
+  return em;
+}
 function pendingOf(req) {
   const c = (req.headers.cookie || '').split(/;\s*/).find(x => x.startsWith('mkp='));
   if (!c) return null;
@@ -1551,7 +1581,15 @@ createServer(async (req, res) => {
       if (back !== 'https://exchange.pc.am/sso') {
         return json(res, 400, { error: 'return url is not an allowed destination' });
       }
-      if (!email) {
+      // ALWAYS re-prompt for email+password on an exchange sign-in (owner,
+      // 2026-10-10). A live market session is NOT enough -- the hand-off only
+      // happens on a FRESH password sign-in (mkt_fresh, set within the last two
+      // minutes by /api/login or /api/password/reset). This is what stops the
+      // exchange from silently resuming whoever was signed in and dropping them
+      // straight on the 2FA step. Without it -- and on every earlier visit -- the
+      // form is shown instead.
+      const fresh = freshOf(req);
+      if (!email || !fresh || fresh !== email) {
         res.writeHead(302, { Location: '/?next=' + encodeURIComponent('/sso/exchange?return=' + encodeURIComponent(back)) });
         return res.end();
       }
@@ -1559,7 +1597,10 @@ createServer(async (req, res) => {
         ? `v2|${email}|exchange|${(await EV.isVerified(email)) ? 1 : 0}|${Date.now() + 120_000}`
         : `${email}|exchange|${Date.now() + 120_000}`;
       const tok = `${payload}.${createHmac('sha256', cfg.ssoExchangeSecret).update(payload).digest('hex')}`;
-      res.writeHead(302, { Location: back + '?sso=' + encodeURIComponent(tok) });
+      // One-time: consume the fresh marker so the NEXT exchange sign-in prompts
+      // again rather than re-using this one.
+      res.writeHead(302, { Location: back + '?sso=' + encodeURIComponent(tok),
+        'Set-Cookie': clearFresh });
       return res.end();
     }
 
@@ -1635,7 +1676,7 @@ createServer(async (req, res) => {
         [clientIp(req), em]).catch(e => console.warn('[login] last_ip:', e.message));
       const tok = sign(`${em}|${Date.now() + SESSION_MS}`);
       res.writeHead(200, { 'Content-Type': 'application/json',
-        'Set-Cookie': `mkt=${tok}; Path=/; Max-Age=${7 * 86400}; HttpOnly; Secure; SameSite=Lax` });
+        'Set-Cookie': [`mkt=${tok}; Path=/; Max-Age=${7 * 86400}; HttpOnly; Secure; SameSite=Lax`, freshCookie(em)] });
       return res.end(JSON.stringify({ ok: true, email: em }));
     }
     // ---- password reset (password-reset.mjs has the reasoning) ----
@@ -1661,7 +1702,7 @@ createServer(async (req, res) => {
       // survives the sessions_valid_after cut that just ended the old ones.
       const tok = sign(`${r.email}|${Date.now() + SESSION_MS}`);
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store',
-        'Set-Cookie': `mkt=${tok}; Path=/; Max-Age=${7 * 86400}; HttpOnly; Secure; SameSite=Lax` });
+        'Set-Cookie': [`mkt=${tok}; Path=/; Max-Age=${7 * 86400}; HttpOnly; Secure; SameSite=Lax`, freshCookie(r.email)] });
       return res.end(JSON.stringify({ ok: true, email: r.email }));
     }
     // ---- email confirmation (email-verify.mjs has the reasoning) ----
