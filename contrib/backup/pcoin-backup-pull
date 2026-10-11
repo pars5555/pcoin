@@ -1,0 +1,92 @@
+#!/bin/bash
+# Nightly PULL backup (exchange DB, admin data, wrapdesk, price state) of the state that cannot be rebuilt from the chain.
+# Runs on 152.53.171.190 (largest disk, already holds the fleet key), so no
+# production host gets a new key or a new outbound path.
+# The market DB and pool are backed up by their own existing encrypted jobs on this host.
+#
+#   pcoin-backup-pull run     take every backup, verify each, prune, alert on failure
+#   pcoin-backup-pull check   alert if any target's newest good backup is too old
+#
+# A backup is only counted if it was VERIFIED after it arrived here:
+#   sqlite -> PRAGMA integrity_check == ok and the accounts table is not empty
+#   tar -> gzip -t and tar -t both pass
+# "The command returned" proves nothing (CLAUDE.md 7.6, 7.12).
+set -u
+umask 077
+DEST=/var/backups/pcoin
+KEY=/root/.ssh/pcam-panel
+SSH="ssh -o BatchMode=yes -o ConnectTimeout=15 -i $KEY"
+KEEP=30
+MAX_AGE_H=27
+NOTIFY=/usr/local/bin/pcoin-notify
+STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+EXCH=152.53.36.236
+H351=178.105.3.51
+H178=178.105.178.27
+mkdir -p "$DEST"
+FAILED=""
+
+alert() { [ -x "$NOTIFY" ] && "$NOTIFY" "PCoin backup problem" "$1" || true; }
+
+keep_newest() { # dir
+    ls -1t "$1" 2>/dev/null | tail -n +$((KEEP + 1)) | while read -r f; do rm -f "$1/$f"; done
+}
+
+finish() { # name file verified(0/1)
+    local name="$1" f="$2" ok="$3"
+    if [ "$ok" = 0 ]; then
+        echo "OK   $name $(du -h "$f" | cut -f1) $f"
+        keep_newest "$DEST/$name"
+    else
+        echo "FAIL $name (verification failed, file removed)"
+        rm -f "$f"
+        FAILED="$FAILED $name"
+    fi
+}
+
+backup_exchange() {
+    local d="$DEST/exchange"; mkdir -p "$d"; local f="$d/exchange-$STAMP.sqlite.gz" t="$d/.work-$STAMP.sqlite"
+    # VACUUM INTO gives a consistent copy of a live WAL database; a plain file copy would not.
+    $SSH root@$EXCH 'docker exec -i pcoin-exchange node --input-type=module -' <<'JS' >/dev/null 2>"$d/.err" || { FAILED="$FAILED exchange(dump)"; cat "$d/.err"; return; }
+import { openDb } from 'file:///app/lib/db.mjs';
+import { unlinkSync, existsSync } from 'node:fs';
+const p = '/data/.backup-work.sqlite';
+if (existsSync(p)) unlinkSync(p);
+openDb('/data/exchange.sqlite').exec(`VACUUM INTO '${p}'`);
+JS
+    $SSH root@$EXCH 'gzip -c /var/lib/pcoin-exchange/data/.backup-work.sqlite; rm -f /var/lib/pcoin-exchange/data/.backup-work.sqlite' > "$f" 2>>"$d/.err"
+    gzip -dc "$f" > "$t" 2>/dev/null
+    local ic n; ic=$(sqlite3 "$t" 'PRAGMA integrity_check' 2>&1); n=$(sqlite3 "$t" 'SELECT COUNT(*) FROM accounts' 2>&1)
+    rm -f "$t"
+    [ "$ic" = ok ] && [ "${n:-0}" -gt 0 ] 2>/dev/null; finish exchange "$f" $?
+}
+
+backup_tar() { # name host "tar args" ; stdout of remote tar, gzip'd
+    local name="$1" host="$2" args="$3"; local d="$DEST/$name"; mkdir -p "$d"; local f="$d/$name-$STAMP.tar.gz"
+    $SSH root@$host "tar czf - $args 2>/dev/null" > "$f" 2>/dev/null
+    gzip -t "$f" 2>/dev/null && [ "$(tar tzf "$f" 2>/dev/null | wc -l)" -gt 0 ]; finish "$name" "$f" $?
+}
+
+case "${1:-}" in
+run)
+    backup_exchange
+    backup_tar admin-data "$H351" "-C /opt/pcoin-admin --exclude='*.bak*' data credential.json allowed-ips.json"
+    backup_tar wrapdesk "$H351" "-C /var/lib wrapdesk"
+    backup_tar price-state "$H178" "-C /opt/pcoin-price state.json"
+    date -u +%s > "$DEST/.last-run"
+    if [ -n "$FAILED" ]; then alert "Nightly backup FAILED for:$FAILED. The previous good copies are still in $DEST on 152.53.171.190."; exit 1; fi
+    echo "all backups verified"
+    ;;
+check)
+    now=$(date +%s); bad=""
+    for name in exchange admin-data wrapdesk price-state; do
+        newest=$(ls -1t "$DEST/$name" 2>/dev/null | grep -v '^\.' | head -1)
+        if [ -z "$newest" ]; then bad="$bad $name(none)"; continue; fi
+        age=$(( (now - $(stat -c %Y "$DEST/$name/$newest")) / 3600 ))
+        [ "$age" -gt "$MAX_AGE_H" ] && bad="$bad $name(${age}h)"
+    done
+    if [ -n "$bad" ]; then alert "Backup is STALE (newest good copy older than ${MAX_AGE_H}h):$bad"; echo "STALE:$bad"; exit 1; fi
+    echo "backups fresh"
+    ;;
+*) echo "usage: $0 run|check"; exit 2 ;;
+esac
