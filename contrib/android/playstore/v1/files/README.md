@@ -1,7 +1,7 @@
 # Signing material is deliberately NOT in this folder
 
 The other Play projects on this machine (`crowd-counting`, `guess-the-word`,
-`JajTur`) keep `*.jks` and `KEYSTORE-CREDENTIALS.txt` in `playstore/v1/files/`.
+`a sibling app`) keep `*.jks` and `KEYSTORE-CREDENTIALS.txt` in `playstore/v1/files/`.
 Those repositories are private. **This one is public** —
 github.com/pars5555/pcoin — and no key, token, password or seed phrase may be in
 the tree. `.gitignore` blocks `*.keystore` and `*.aab` as a
