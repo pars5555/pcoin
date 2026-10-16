@@ -280,7 +280,6 @@ run before believing any report — including one from the project itself.
 | `checker.pc.am` | yes |
 | `webbuilderbot` | yes |
 | `3dmodels.pc.am` | yes |
-| `3dmodel.oonak.ai` | yes |
 | `aicontrol.pc.am` | token installed, `enabled` still false |
 | `webai.pc.am` | token installed, `enabled` still false |
 

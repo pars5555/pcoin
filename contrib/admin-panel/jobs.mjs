@@ -33,7 +33,6 @@ export const EXPECTED = [
   // absent from this list, which meant they did not render as NOT REPORTING --
   // they did not render at all, and the page looked complete without them.
   // That is the precise failure this list exists to prevent, and it had it.
-  ['202.61.252.202', '3dmodel.oonak.ai rail + its own deposit watcher'],
   ['167.233.206.186', 'portrait2video rail, its own pcoind, and dev workers'],
 ];
 

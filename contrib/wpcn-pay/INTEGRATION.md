@@ -5,7 +5,7 @@ self-contained: a developer who has never seen PCoin should be able to work from
 it without asking anyone a question.
 
 Applies to **checker.pc.am, webbuilderbot, aicontrol.pc.am, webai.pc.am,
-3dmodels.pc.am, 3dmodel.oonak.ai** and any service added later. Every one
+3dmodels.pc.am** and any service added later. Every one
 implements the **same pattern** — same states, same ledger key, same refusal
 rules — so that a bug found in one is a bug findable in all of them, and a
 customer gets the same behaviour wherever they pay.

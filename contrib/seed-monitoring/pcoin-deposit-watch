@@ -189,7 +189,7 @@ $4"
 # each one declares the rails it is RESPONSIBLE for and the union is what
 # covers the estate. That union is written down in this directory's README --
 # a per-host list nobody adds up is how a rail ends up owned by nobody.
-RAILS_EXPECTED="${RAILS_EXPECTED:-checker webbuilderbot aicontrol 3dmodels.pc.am 3dmodel.oonak.ai portrait2video webai pcnaibot}"
+RAILS_EXPECTED="${RAILS_EXPECTED:-checker webbuilderbot aicontrol 3dmodels.pc.am portrait2video webai pcnaibot}"
 RAILS_SEEN=""
 seen_rail() { RAILS_SEEN="$RAILS_SEEN $1"; }
 
@@ -596,122 +596,6 @@ tech: PCN deposit STUCK: 3dmodels.pc.am (held). $m3detail"
                 fi
             fi
         fi
-    fi
-fi
-
-# ------------------------------------------------------- 3dmodel.oonak.ai ----
-# THE FIFTH RAIL, AND THE ONE NOTHING WATCHED.
-#
-# It went dark for nearly two hours on 2026-08-21 with nobody noticing, and the
-# reason is structural rather than an oversight in the checks below: this script
-# only ever ran on the two hosts that do NOT host it. 3dmodel.oonak.ai lives on
-# its own box (it migrated there on 2026-08-21, which is the same day it went
-# quiet), so every check in this file was blind to it by construction. The fix
-# is therefore two things -- this section, and installing the script on that
-# host at all.
-#
-# It is FILE-BASED, not SQL. There is no database to query, so both checks read
-# the filesystem:
-#   * the pulse is the rail log's mtime -- cron appends one line per tick, the
-#     same shape as the 3dmodels check above, and it needs nothing from the app;
-#   * the money is in deposits.json, a dict keyed "txid:address" (the correct
-#     key -- vout is always 0 for these, so keying on it silently drops a second
-#     deposit to the same address).
-OON_LOG=${OON_LOG:-/var/log/3dmodel-pcn.log}
-OON_DIR=${OON_DIR:-/var/www/3dmodel/data/pcn}
-if [ -d "$OON_DIR" ]; then
-    seen_rail 3dmodel.oonak.ai
-    if [ -r "$OON_LOG" ]; then
-        mtime=$(stat -c %Y "$OON_LOG" 2>/dev/null)
-        age=""; [ -n "$mtime" ] && age=$((now - mtime))
-        check_heartbeat "3dmodel.oonak.ai" "$age" \
-            "Cron: /etc/cron.d/3dmodel-pcn runs app/api/pcn-watch.php --once every minute as www-data."
-    else
-        check_heartbeat "3dmodel.oonak.ai" "" "Log $OON_LOG is unreadable."
-    fi
-
-    # Same holding check as 3dmodels: this rail logs in the identical format and
-    # had none, so it refused every deposit from 2026-08-30 onward in silence.
-    check_holding "3dmodel.oonak.ai" "$OON_LOG"
-
-    # HELD MONEY, read straight out of deposits.json.
-    #
-    # Same rule as every other rail: a read that did not happen is NOT a clean
-    # result. If the file is missing, unparseable, or python is absent, that is
-    # an alert saying the deposits are unmonitored -- never a silent pass. The
-    # 3dmodels incident was precisely a rail that looked healthy while settling
-    # nothing, and the only thing that shows it is the age of an unsettled row.
-    oon_dep="$OON_DIR/deposits.json"
-    if ! command -v python3 >/dev/null 2>&1; then
-        alert "PCN monitor BROKEN: 3dmodel.oonak.ai" \
-              "python3 is not installed on this host, so deposits.json cannot be read. Assume 3dmodel.oonak.ai deposits are UNMONITORED until this is fixed."
-    elif [ ! -r "$oon_dep" ]; then
-        alert "PCN monitor BROKEN: 3dmodel.oonak.ai" \
-              "$oon_dep is missing or unreadable. Assume 3dmodel.oonak.ai deposits are UNMONITORED until this is fixed."
-    else
-        oon_out=$(STUCK_HOURS="$STUCK_HOURS" python3 - "$oon_dep" <<'PYEOF' 2>/dev/null
-import json, os, sys, time
-path = sys.argv[1]
-cutoff = time.time() - float(os.environ.get("STUCK_HOURS", "6")) * 3600
-try:
-    with open(path, encoding="utf-8") as fh:
-        deps = json.load(fh)
-except Exception as exc:                      # unparseable == unknown, not clean
-    print("ERR %s" % str(exc)[:120])
-    raise SystemExit(0)
-if not isinstance(deps, dict):
-    print("ERR deposits.json is %s, expected an object" % type(deps).__name__)
-    raise SystemExit(0)
-stuck = []
-reorged = []
-for key, d in deps.items():
-    if not isinstance(d, dict):
-        continue
-    # Reorg flag is set on CREDITED rows, so scan for it before the
-    # seen/confirming filter or it can never be seen.
-    if d.get("reorg_flagged_at"):
-        reorged.append(str(d.get("txid", key))[:12])
-    if d.get("status") not in ("seen", "confirming"):
-        continue
-    # `created` is a unix timestamp. A row with no timestamp cannot be aged, so
-    # it counts as stuck rather than being quietly skipped.
-    ts = d.get("created")
-    try:
-        ts = float(ts)
-    except (TypeError, ValueError):
-        ts = 0.0
-    if ts < cutoff:
-        stuck.append("%s %.2fPCN %s" % (str(d.get("txid", key))[:12],
-                                        (d.get("amount_sat") or 0) / 1e8,
-                                        d.get("status")))
-print("OK %d %d %s" % (len(stuck), len(reorged),
-                       "; ".join(stuck[:5]) or "-"))
-PYEOF
-)
-        case "${oon_out:-}" in
-            OK*)
-                oon_n=$(printf '%s' "$oon_out" | awk '{print $2}')
-                oon_r=$(printf '%s' "$oon_out" | awk '{print $3}')
-                oon_detail=$(printf '%s' "$oon_out" | cut -d' ' -f4-)
-                if [ "${oon_n:-0}" -gt 0 ]; then
-                    alert "🔴 3dmodel.oonak.ai: $oon_n PCN payment(s) stuck for over ${STUCK_HOURS} h" \
-                          "$oon_n deposit(s) were seen more than ${STUCK_HOURS} hours ago and are still not credited -- somebody paid 3dmodel.oonak.ai and has not received their credit.
-Customers affected: yes.
-What to do: open 3dmodel.oonak.ai's admin and look at these deposits; its payment-checker log says why it holds them.
-—
-tech: PCN deposit STUCK: 3dmodel.oonak.ai (held). $oon_detail"
-                fi
-                # Symmetry with every other rail, all of which get a reorg
-                # check. The rail FLAGS and never reverses -- a human decides.
-                if [ "${oon_r:-0}" -gt 0 ]; then
-                    alert "PCN reorg on credited deposit: 3dmodel.oonak.ai"                           "$oon_r credited deposit(s) flagged as reorged. Credit was NOT reversed automatically -- a human decides. Review before the balance is spent."
-                fi
-                ;;
-            *)
-                alert "PCN monitor BROKEN: 3dmodel.oonak.ai" \
-                      "Could not read held deposits from $oon_dep (${oon_out:-no output}). Assume 3dmodel.oonak.ai deposits are UNMONITORED until this is fixed."
-                ;;
-        esac
     fi
 fi
 

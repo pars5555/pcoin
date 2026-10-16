@@ -42,9 +42,9 @@ the failure is silent in exactly the way this table exists to prevent.
 | `webbuilderbot` | 89.58.3.44 (moved from 116.203.221.42 on 2026-09-26) | same host | MySQL `settings.last_poll_at` |
 | `aicontrol` | 116.203.221.42 | same host | MySQL `pcoin_watcher_heartbeat` |
 | `3dmodels.pc.am` | 116.203.221.42 | same host | log mtime + docker db |
-| `3dmodel.oonak.ai` | its own host | same host | log mtime + `deposits.json` |
 | `webai` | the webai host (GCE `rba`) | same host | MySQL `pcoin_watcher_heartbeat` |
 | `pcnaibot` | 178.105.3.51 | same host | SQLite -- the only SQLite rail, so it needed its own reader |
+| `portrait2video` | its own host (167.233.206.186), SQLite | **178.105.3.51**, over HTTP (`P2V_MONITOR_URL` + `P2V_MONITOR_TOKEN` in `/etc/pcoin-deposit-watch.conf`, `RAILS_EXPECTED="pcnaibot portrait2video"`) | read-only status endpoint `/pcn/monitor/{token}`. Re-assigned 2026-10-12 after the owner brought the bot back (private, not advertised); proven to fire with a wrong token |
 
 ### Not a deposit rail, but on this list for the same reason
 
