@@ -195,7 +195,7 @@ namespace PCoinTray
             AttachConsole(-1);
             var log = new List<string>();
             bool ok;
-            try { ok = SeedSelfTest.Run(log); }
+            try { ok = SeedSelfTest.Run(log); ok &= Updates.SelfTest(log); }
             catch (Exception ex) { log.Add("EXCEPTION: " + ex); ok = false; }
             var text = string.Join(Environment.NewLine, log.ToArray());
             Console.WriteLine();

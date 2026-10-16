@@ -215,6 +215,55 @@ namespace PCoinTray
             return best;
         }
 
+        //! Offline, pure checks of ParseLatest and Compare against samples in the
+        //! published SHA256SUMS.txt shape (provenance comment ABOVE the checksum,
+        //! release-note prose in between). Called from --selftest, because a
+        //! broken update check once shipped through sixteen tags unnoticed.
+        public static bool SelfTest(System.Collections.Generic.List<string> log)
+        {
+            bool ok = true;
+            string h1 = new string('a', 64), h2 = new string('b', 64), h3 = new string('c', 64);
+            string real =
+                "# PCoin release checksums\r\n#\r\n" +
+                "# v1.4.34 - Linux node + miner. Requires glibc >= 2.38.\r\n" +
+                "# from release v1.4.34\r\n" + h1 + "  pcoin-linux-amd64-miner.deb\r\n" +
+                "#\r\n# v1.4.19 - Windows miner. Older prose that must NOT be read.\r\n" +
+                "# from release v1.4.37\r\n" + h2 + "  pcoin-win64-miner.zip\r\n" +
+                "# from release v1.4.30\r\n" + h3 + "  pcoin-android-miner.apk\r\n";
+            string why;
+            ok &= Expect(log, "update check reads the miner version", "1.4.37", ParseLatest(real, out why));
+
+            // Highest wins: a leftover transition alias must not cause a downgrade.
+            string alias = real + "# from release v1.4.9\n" + h2 + "  pcoin-win64-miner.zip\n";
+            ok &= Expect(log, "update check compares numerically", "1.4.37", ParseLatest(alias, out why));
+
+            // A miner entry with no provenance must not inherit another asset's tag.
+            string bare = "# from release v1.4.34\n" + h1 + "  pcoin-linux-amd64-miner.deb\n" +
+                          h2 + "  pcoin-win64-miner.zip\n";
+            ok &= Expect(log, "update check does not borrow another asset's tag", "(null)",
+                         ParseLatest(bare, out why) ?? "(null)");
+            ok &= Expect(log, "update check says why it is unknown", "True", (why.Length > 0).ToString());
+
+            ok &= Expect(log, "update check: asset absent is unknown", "(null)",
+                         ParseLatest("# from release v1.4.34\n" + h1 + "  other.zip\n", out why) ?? "(null)");
+            ok &= Expect(log, "update check: empty body is unknown", "(null)",
+                         ParseLatest("", out why) ?? "(null)");
+            ok &= Expect(log, "update check: inline version form", "2.0.1",
+                         ParseLatest(h2 + "  pcoin-win64-miner.zip  # v2.0.1\n", out why) ?? "(null)");
+
+            ok &= Expect(log, "version compare 1.4.9 < 1.4.10", "-1", Compare("1.4.9", "1.4.10").ToString());
+            ok &= Expect(log, "version compare 1.4 == 1.4.0", "0", Compare("1.4", "1.4.0").ToString());
+            return ok;
+        }
+
+        static bool Expect(System.Collections.Generic.List<string> log, string what, string expect, string got)
+        {
+            bool ok = string.Equals(expect, got, StringComparison.Ordinal);
+            log.Add((ok ? "ok   " : "FAIL ") + what);
+            if (!ok) { log.Add("       expected: " + expect); log.Add("       got:      " + got); }
+            return ok;
+        }
+
         //! Numeric, component by component -- NOT string comparison, which puts
         //! "1.4.9" above "1.4.10" and would have told every user of the newest
         //! build to downgrade. Missing components count as zero, so 1.4 == 1.4.0.
