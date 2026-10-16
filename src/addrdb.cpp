@@ -214,8 +214,26 @@ util::Result<std::unique_ptr<AddrMan>> LoadAddrman(const NetGroupManager& netgro
         LogPrintf("Creating new peers.dat because the file version was not compatible (%s). Original backed up to peers.dat.bak\n", fs::quoted(fs::PathToString(path_addr)));
         DumpPeerAddresses(args, *addrman);
     } catch (const std::exception& e) {
-        return util::Error{strprintf(_("Invalid or corrupt peers.dat (%s). If you believe this is a bug, please report it to %s. As a workaround, you can move the file (%s) out of the way (rename, move, or delete) to have a new one created on the next start."),
-                                     e.what(), CLIENT_BUGREPORT, fs::quoted(fs::PathToString(path_addr)))};
+        // A corrupt peer cache is an inconvenience, not a reason to refuse to
+        // run. This file is only the address book; nothing in it is consensus,
+        // no key or chain state lives in it, and a node that exits here stops
+        // validating - and, when it is a miner, stops earning - with nothing to
+        // say so. DESKTOP-VHQ1C8A lost two days exactly this way (2026-10-08):
+        // peers.dat failed its checksum, bitcoind exited at every start, and
+        // only a human reading the log would have known to move the file.
+        //
+        // So do what the version-mismatch branch above already does for a file
+        // it does not like: move it aside, start with an empty address manager,
+        // and keep the original text in the log so the cause is not lost.
+        const fs::path corrupt_path{(fs::path)path_addr + ".corrupt"};
+        if (!RenameOver(path_addr, corrupt_path)) {
+            return util::Error{strprintf(_("Invalid or corrupt peers.dat (%s), and it could not be moved out of the way (%s). Please move or delete it and try again."),
+                                         e.what(), fs::quoted(fs::PathToString(path_addr)))};
+        }
+        addrman = std::make_unique<AddrMan>(netgroupman, deterministic, /*consistency_check_ratio=*/check_addrman);
+        LogPrintf("Invalid or corrupt peers.dat (%s). Moved to %s and started with an empty address book.\n",
+                  e.what(), fs::quoted(fs::PathToString(corrupt_path)));
+        DumpPeerAddresses(args, *addrman);
     }
     return addrman;
 }
