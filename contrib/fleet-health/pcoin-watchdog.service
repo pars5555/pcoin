@@ -1,0 +1,6 @@
+[Unit]
+Description=PCoin miner watchdog - repair a stopped node or a stopped miner
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/pcoin-watchdog
