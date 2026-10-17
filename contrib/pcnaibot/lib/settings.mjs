@@ -3,8 +3,8 @@
 // in admin"). Stored in the bot's own kv table and changed only through the loopback admin API. A
 // missing or partial row falls back to the defaults below, so a fresh install needs no admin step.
 //
-//   Chat agent        chatModel, chatPrompt ('' = the built-in instructions), chatPerHour,
-//                     chatDailyBudget, chatMaxChars, historyMax
+//   Chat agent        chatModel, chatModelFallback ('' = none), chatPrompt ('' = the built-in
+//                     instructions), chatPerHour, chatDailyBudget, chatMaxChars, historyMax
 //   Pictures & video  pictureModel, videoModel, videoSeconds, videoResolution, videoEditModel,
 //                     margin (our price = OonaCode's x margin), cardTtlHours
 //   Payments          starsEnabled, starsPackages [{usd, stars}], paySupportText
@@ -22,6 +22,11 @@ export const DEFAULT_PAY_SUPPORT = 'Problems with a payment? Send a message here
 
 export const DEFAULT_SETTINGS = Object.freeze({
   chatModel: 'mimo-v2.5',
+  // Answered by this model instead when the gateway says the primary turn DID NOT RUN
+  // (PERMANENT / BACKOFF / NOT_BILLED). Never on UNKNOWN -- that bucket means the turn may
+  // have run, and a second generation would pay for two turns on one user message.
+  // '' = no fallback: a failed primary fails the turn, exactly as before this existed.
+  chatModelFallback: '',
   chatPrompt: '',
   chatPerHour: 120,
   chatDailyBudget: 5000,
@@ -67,6 +72,7 @@ const int = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi;
 export function settingsProblems(s, { offer, chatChoices }) {
   const bad = [];
   if (!chatChoices.includes(s.chatModel)) bad.push(`chat model ${s.chatModel} is not one of ${chatChoices.join(', ')}`);
+  if (s.chatModelFallback !== '' && !chatChoices.includes(s.chatModelFallback)) bad.push(`fallback chat model ${s.chatModelFallback} is not one of ${chatChoices.join(', ')}`);
   if (typeof s.chatPrompt !== 'string' || s.chatPrompt.length > 20000) bad.push('the chat instructions must be text under 20,000 characters (empty = the built-in ones)');
   if (!int(s.chatPerHour, 1, 10000)) bad.push('chat messages per hour must be a whole number from 1 to 10,000');
   if (!int(s.chatDailyBudget, 0, 1000000)) bad.push('the daily free chat budget must be a whole number from 0 to 1,000,000');
@@ -124,7 +130,7 @@ export function saveSettings(db, s) {
 // a field left out keeps its value.
 export function mergeSettingsInput(cur, input) {
   const next = { ...cur };
-  const str = ['chatModel', 'chatPrompt', 'pictureModel', 'videoModel', 'videoResolution', 'videoEditModel', 'paySupportText'];
+  const str = ['chatModel', 'chatModelFallback', 'chatPrompt', 'pictureModel', 'videoModel', 'videoResolution', 'videoEditModel', 'paySupportText'];
   const num = ['chatPerHour', 'chatDailyBudget', 'chatMaxChars', 'historyMax', 'videoSeconds', 'margin', 'cardTtlHours',
     'giftUsd', 'giftDailyCapUsd', 'inviteRewardUsd', 'inviteMinTopupUsd'];
   for (const k of str) if (typeof input[k] === 'string') next[k] = input[k];

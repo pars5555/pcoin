@@ -18,6 +18,7 @@ import { takeFreeTurn } from './billing.mjs';
 import { SHAPES, maxInputs, videoDurations, priceFor, usdToMicro, moneyLabel, balanceLabel } from './media.mjs';
 import { item } from './jobs.mjs';
 import { t } from './i18n.mjs';
+import { log } from './log.mjs';
 
 export const HISTORY_MAX = 24;
 export const MESSAGE_MAX_CHARS = 2000;
@@ -382,12 +383,31 @@ export function buildRequest(deps, { chatId, userContent }) {
   return { latest, lang, body: { model: settings.chatModel, max_tokens: 2048, system, tools: [PROPOSE_TOOL], messages } };
 }
 
-export async function chatTurn(deps, { chatId, userContent }) {
+// One chat turn. `used.model` starts as the configured primary and is updated if the fallback
+// answers, so the caller can report (and log) the model that actually served the turn.
+async function chatTurnOnce(deps, { chatId, userContent }, used) {
   const { db, oona, settings, offer } = deps;
-  const { latest, lang, body } = buildRequest(deps, { chatId, userContent });
-  const messages = body.messages;
+  const { latest, lang, body: built } = buildRequest(deps, { chatId, userContent });
+  const messages = built.messages;
+  let body = built;
 
-  const resp = await oona.messages(body);
+  let resp;
+  try {
+    resp = await oona.messages(body);
+  } catch (e) {
+    // ONE fallback model, and only when the gateway says the turn DID NOT RUN (the
+    // PERMANENT / BACKOFF / NOT_BILLED buckets of lib/oonacode.mjs). UNKNOWN means it MAY
+    // have run -- generating again would pay for two turns on one user message, which is
+    // exactly what the client's no-retries contract exists to prevent. Anything without a
+    // bucket (a bug, not a gateway verdict) is treated as UNKNOWN: rethrown, never retried.
+    const fb = settings.chatModelFallback;
+    const didNotRun = e && e.bucket && e.bucket !== 'unknown';
+    if (!fb || fb === settings.chatModel || !didNotRun) throw e;
+    log.warn('chat model failed; falling back', { from: settings.chatModel, to: fb, why: String(e?.message ?? e).slice(0, 160) });
+    used.model = fb;
+    body = { ...body, model: fb };
+    resp = await oona.messages(body);
+  }
   const r = readReply(resp);
   // Cut off mid-answer: a half-written tool call is not a proposal.
   if (r.stop === 'max_tokens') return { text: '', spec: null, failed: 'max_tokens' };
@@ -423,6 +443,14 @@ export async function chatTurn(deps, { chatId, userContent }) {
   if (!r2.tool) return { text: r2.text || r.text, spec: null, failed: null };
   const v2 = validateProposal(db, chatId, r2.tool.input, { offer, settings });
   return { text: r2.text || r.text, spec: v2.spec ?? null, failed: v2.spec ? null : 'invalid', error: v2.error ?? null };
+}
+
+// The chat turn callers use: the result carries `model`, the model that actually answered
+// (the fallback, when the primary's turn did not run and one is configured).
+export async function chatTurn(deps, ctx) {
+  const used = { model: deps.settings.chatModel };
+  const r = await chatTurnOnce(deps, ctx, used);
+  return Object.assign(r, { model: used.model });
 }
 
 // Does a chat model call the tool at all? Asked on startup, daily, and before the admin may pick a

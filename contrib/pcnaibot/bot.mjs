@@ -216,24 +216,43 @@ async function mediaFreshEnough() {
 
 // The chat model's last health check (a tool call it must make), for /stats and the logs.
 let chatHealth = { model: null, ok: null, why: 'not checked yet', at: 0 };
+function scheduleChatRecheck() {
+  // Re-check soon rather than tomorrow. Seen 2026-09-27 12:49: a restart landed in a minute-long
+  // provider maintenance window ("503 overloaded_error"), and /stats would have said FAILING for
+  // the next 24 hours while chats worked. One pending retry at a time.
+  if (!chatRecheck) {
+    chatRecheck = setTimeout(() => {
+      chatRecheck = null;
+      checkChatModel().catch((e) => log.error('chat model check failed', errFields(e)));
+    }, 10 * 60 * 1000);
+    chatRecheck.unref?.();
+  }
+}
 async function checkChatModel() {
-  const model = settings().chatModel;
+  const s = settings();
+  const model = s.chatModel;
   const r = await testChatModel(oona, model);
-  chatHealth = { model, ok: r.ok, why: r.why ?? null, at: nowSec() };
-  if (r.ok) log.info('chat model answers with a tool call', { model });
-  else {
-    log.error('CHAT MODEL CHECK FAILED -- the studio cannot propose anything', { model, why: r.why ?? null });
-    // Re-check soon rather than tomorrow. Seen 2026-09-27 12:49: a restart landed in a minute-long
-    // provider maintenance window ("503 overloaded_error"), and /stats would have said FAILING for
-    // the next 24 hours while chats worked. One pending retry at a time.
-    if (!chatRecheck) {
-      chatRecheck = setTimeout(() => {
-        chatRecheck = null;
-        checkChatModel().catch((e) => log.error('chat model check failed', errFields(e)));
-      }, 10 * 60 * 1000);
-      chatRecheck.unref?.();
+  if (r.ok) {
+    chatHealth = { model, ok: true, why: null, at: nowSec() };
+    log.info('chat model answers with a tool call', { model });
+    return;
+  }
+  // The primary is down. If a fallback is configured and answers, the studio can still propose
+  // cards -- report that honestly (ok, with the reason) instead of claiming FAILING while chats
+  // work, and keep re-checking so the primary's return (or the fallback's failure) is seen.
+  const fb = s.chatModelFallback;
+  if (fb && fb !== model) {
+    const rf = await testChatModel(oona, fb);
+    if (rf.ok) {
+      chatHealth = { model, ok: true, why: `primary failed (${r.why ?? '?'}); fallback ${fb} answers`, at: nowSec() };
+      log.warn('chat model failing; the configured fallback answers', { model, fallback: fb, why: r.why ?? null });
+      scheduleChatRecheck();
+      return;
     }
   }
+  chatHealth = { model, ok: false, why: r.why ?? null, at: nowSec() };
+  log.error('CHAT MODEL CHECK FAILED -- the studio cannot propose anything', { model, why: r.why ?? null });
+  scheduleChatRecheck();
 }
 let chatRecheck = null;
 
@@ -969,7 +988,7 @@ async function runChat(chatId, updateId, userContent) {
     await tg.sendMessage(chatId, t(L, 'chat.unavailable'));
     return;
   }
-  log.info('chat turn', { chat: chatTag(chatId), model: s.chatModel, ms: Date.now() - started, card: !!r.spec, failed: r.failed ?? null });
+  log.info('chat turn', { chat: chatTag(chatId), model: r.model ?? s.chatModel, ms: Date.now() - started, card: !!r.spec, failed: r.failed ?? null });
 
   if (r.failed === 'max_tokens') {
     await tg.sendMessage(chatId, t(L, 'chat.lost_thread'));
@@ -1295,7 +1314,7 @@ function statsText() {
     `wPCN: ${WPCN_ENABLED ? 'enabled' : 'off'}`,
     '',
     '<b>Studio</b>',
-    `chat: ${escapeHtml(s.chatModel)} — ${chatHealth.ok === true ? 'OK' : chatHealth.ok === false ? `FAILING (${escapeHtml(chatHealth.why ?? '')})` : `unchecked (${escapeHtml(chatHealth.why ?? '')})`}`,
+    `chat: ${escapeHtml(s.chatModel)}${s.chatModelFallback ? ` → ${escapeHtml(s.chatModelFallback)}` : ''} — ${chatHealth.ok === true ? 'OK' : chatHealth.ok === false ? `FAILING (${escapeHtml(chatHealth.why ?? '')})` : `unchecked (${escapeHtml(chatHealth.why ?? '')})`}`,
     `picture: ${escapeHtml(s.pictureModel)} ${offer[s.pictureModel] ? 'on sale' : 'NOT ON SALE'}`,
     `video: ${escapeHtml(s.videoModel)} ${s.videoSeconds} s ${escapeHtml(s.videoResolution)} ${offer[s.videoModel] ? 'on sale' : 'NOT ON SALE'}`,
     `running: ${running.length ? running.map((r) => `${r.kind}=${r.n}`).join(' ') : 'nothing'} · open cards: ${openCards}`,
@@ -1340,6 +1359,12 @@ async function saveStudioSettings(input) {
   if (next.chatModel !== cur.chatModel) {
     const t = await testChatModel(oona, next.chatModel);
     if (t.ok !== true) return { ok: false, problems: [`${next.chatModel} did not propose anything when tested (${t.why ?? 'no tool call'}); kept ${cur.chatModel}`] };
+  }
+  // The fallback must be able to propose too -- a fallback that cannot would turn a clean
+  // outage into a second, slower one. Tested live on change, exactly like the primary.
+  if (next.chatModelFallback && next.chatModelFallback !== cur.chatModelFallback) {
+    const t = await testChatModel(oona, next.chatModelFallback);
+    if (t.ok !== true) return { ok: false, problems: [`${next.chatModelFallback} (fallback) did not propose anything when tested (${t.why ?? 'no tool call'}); kept ${cur.chatModelFallback || 'no fallback'}`] };
   }
   const saved = saveSettings(db, next);
   // What changed, by name (the instructions can be long: their length, not their text).

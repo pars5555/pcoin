@@ -3,7 +3,7 @@
 // chat agent prompt and every configuration ... similar to webcrafter ... everything in admin").
 //
 //   /pcnaibot           Overview & users   — totals, credit a balance, a user's history
-//   /pcnaibot/chat      Chat agent         — model (tested live), instructions, limits, preview
+//   /pcnaibot/chat      Chat agent         — model + fallback (both tested live), instructions, limits, preview
 //   /pcnaibot/studio    Pictures & video   — models, video length/resolution, margin, cards, jobs
 //   /pcnaibot/payments  Payments & Stars   — Stars packages, Telegram's books, refunds, support text
 //   /pcnaibot/gifts     Gifts & invites    — the welcome gift, the invite reward, every invite
@@ -291,6 +291,7 @@ async function chatPage({ base, creds, query }) {
         <input type="hidden" name="form" value="chat">
         <p><label>Chat model (free for users) <select name="chatModel">${(c.chat || []).map((m) => opt(m, s.chatModel, m)).join('')}</select></label>
           ${healthLine(h, s.chatModel)}</p>
+        <p><label>If the chat model fails, fall back to <select name="chatModelFallback"><option value=""${s.chatModelFallback ? '' : ' selected'}>(no fallback)</option>${(c.chat || []).map((m) => opt(m, s.chatModelFallback, m)).join('')}</select></label></p>
         <p><label>Messages per user per hour <input name="chatPerHour" type="number" min="1" max="10000" value="${esc(s.chatPerHour)}" style="width:6em"></label>
           <label>Free chat messages per day, whole bot <input name="chatDailyBudget" type="number" min="0" max="1000000" value="${esc(s.chatDailyBudget)}" style="width:8em"></label></p>
         <p><label>Longest message (characters) <input name="chatMaxChars" type="number" min="100" max="10000" value="${esc(s.chatMaxChars)}" style="width:7em"></label>
@@ -302,12 +303,14 @@ async function chatPage({ base, creds, query }) {
         <select name="model">${(c.chat || []).map((m) => opt(m, s.chatModel, m)).join('')}</select>
         <button type="submit">Test a model</button>
       </form>`
-    + note('The chat is free to users. After the daily budget, only users with a balance can chat. A new chat model is tested live when you save it '
-      + 'and kept only if it proposes a card. "Test a model" asks it once without changing anything.'))
+    + note('The chat is free to users. After the daily budget, only users with a balance can chat. A new chat model — or fallback — is tested live when '
+      + 'you save it and kept only if it proposes a card. The fallback answers only when the gateway says the primary turn did not run (never when it '
+      + 'may have run, so one message is never generated twice). "Test a model" asks it once without changing anything.'))
     + card('Instructions (system prompt)', `
       <form method="POST" action="${base}/pcnaibot/chat" autocomplete="off">
         <input type="hidden" name="form" value="chat">
         <input type="hidden" name="chatModel" value="${esc(s.chatModel)}">
+        <input type="hidden" name="chatModelFallback" value="${esc(s.chatModelFallback)}">
         <input type="hidden" name="chatPerHour" value="${esc(s.chatPerHour)}"><input type="hidden" name="chatDailyBudget" value="${esc(s.chatDailyBudget)}">
         <input type="hidden" name="chatMaxChars" value="${esc(s.chatMaxChars)}"><input type="hidden" name="historyMax" value="${esc(s.historyMax)}">
         <textarea name="chatPrompt" rows="26" style="width:100%;font-family:monospace;font-size:12px">${esc(prompt)}</textarea>

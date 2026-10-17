@@ -13,6 +13,7 @@ import {
   systemPrompt, priceLines, testChatModel, PROPOSE_TOOL, dominantScript, DEFAULT_CHAT_PROMPT, SAFETY_RULES, CLAIMS_A_CARD,
 } from '../lib/studio.mjs';
 import { settingsProblems, DEFAULT_SETTINGS, getSettings, saveSettings } from '../lib/settings.mjs';
+import { UpstreamError, Bucket } from '../lib/oonacode.mjs';
 import { mediaOffer } from '../lib/media.mjs';
 import { MARGIN_E6, OFFER, LISTING, SETTINGS, freshDb, addItem } from './fixtures.mjs';
 
@@ -93,7 +94,7 @@ test('an ordinary question is never treated as a claim that a card exists', asyn
 test('a talk-only answer is just text, and a half-written tool call is no card', async () => {
   const db = freshDb();
   const r = await chatTurn(turnDeps(db, fakeOona([textAnswer('Picture or video?')])), { chatId: 7, userContent: 'a fox' });
-  assert.deepEqual(r, { text: 'Picture or video?', spec: null, failed: null });
+  assert.deepEqual(r, { text: 'Picture or video?', spec: null, failed: null, model: 'mimo-v2.5' });
   const cut = { ...toolAnswer({ kind: 'image', prompt: 'A fox', summary: 'A fox', shape: 'square' }), stop_reason: 'max_tokens' };
   const r2 = await chatTurn(turnDeps(db, fakeOona([cut])), { chatId: 7, userContent: 'a fox' });
   assert.equal(r2.spec, null);
@@ -305,3 +306,64 @@ test('a video from several photos is explained, never silently turned into a pic
   assert.match(r.error, /Do NOT switch to a picture/);
 });
 
+
+test('the chat turn falls back to another model ONLY when the turn did not run', async () => {
+  const fox = { kind: 'image', prompt: 'A red fox sitting in fresh snow, photorealistic', summary: 'A red fox in the snow', shape: 'wide' };
+
+  // BACKOFF = did not run: the configured fallback answers the same message.
+  {
+    const db = freshDb();
+    const deps = turnDeps(db, fakeOona([new UpstreamError(Bucket.BACKOFF, 'overloaded'), toolAnswer(fox)]));
+    deps.settings = { ...SETTINGS, chatModelFallback: 'deepseek-v4.1-flash' };
+    const r = await chatTurn(deps, { chatId: 7, userContent: 'a fox' });
+    assert.equal(r.failed, null);
+    assert.equal(r.model, 'deepseek-v4.1-flash', 'the result reports the model that actually answered');
+    assert.equal(deps.oona.calls.length, 2);
+    assert.equal(deps.oona.calls[0].model, 'mimo-v2.5');
+    assert.equal(deps.oona.calls[1].model, 'deepseek-v4.1-flash');
+  }
+
+  // UNKNOWN = it MAY have run: never generate a second turn, fallback or not.
+  {
+    const db = freshDb();
+    const deps = turnDeps(db, fakeOona([new UpstreamError(Bucket.UNKNOWN, 'idle timeout'), toolAnswer(fox)]));
+    deps.settings = { ...SETTINGS, chatModelFallback: 'deepseek-v4.1-flash' };
+    await assert.rejects(() => chatTurn(deps, { chatId: 7, userContent: 'a fox' }));
+    assert.equal(deps.oona.calls.length, 1, 'no second generation after UNKNOWN');
+  }
+
+  // An error with no bucket (a bug, not a gateway verdict) is treated like UNKNOWN.
+  {
+    const db = freshDb();
+    const deps = turnDeps(db, fakeOona([new TypeError('cannot read x'), toolAnswer(fox)]));
+    deps.settings = { ...SETTINGS, chatModelFallback: 'deepseek-v4.1-flash' };
+    await assert.rejects(() => chatTurn(deps, { chatId: 7, userContent: 'a fox' }));
+    assert.equal(deps.oona.calls.length, 1);
+  }
+
+  // No fallback configured: the turn fails exactly as before.
+  {
+    const db = freshDb();
+    const deps = turnDeps(db, fakeOona([new UpstreamError(Bucket.BACKOFF, 'overloaded')]));
+    await assert.rejects(() => chatTurn(deps, { chatId: 7, userContent: 'a fox' }));
+    assert.equal(deps.oona.calls.length, 1);
+  }
+
+  // A healthy primary reports itself; no fallback is touched.
+  {
+    const db = freshDb();
+    const deps = turnDeps(db, fakeOona([toolAnswer(fox)]));
+    deps.settings = { ...SETTINGS, chatModelFallback: 'deepseek-v4.1-flash' };
+    const r = await chatTurn(deps, { chatId: 7, userContent: 'a fox' });
+    assert.equal(r.model, 'mimo-v2.5');
+    assert.equal(deps.oona.calls.length, 1);
+  }
+});
+
+test('the fallback model is validated like any other choice', () => {
+  const bad = settingsProblems({ ...DEFAULT_SETTINGS, chatModelFallback: 'gpt-9' }, { offer: OFFER, chatChoices: ['mimo-v2.5', 'deepseek-v4.1-flash'] });
+  assert.equal(bad.length, 1, bad.join(' | '));
+  assert.match(bad[0], /fallback chat model gpt-9/);
+  assert.deepEqual(settingsProblems({ ...DEFAULT_SETTINGS, chatModelFallback: 'deepseek-v4.1-flash' }, { offer: OFFER, chatChoices: ['mimo-v2.5', 'deepseek-v4.1-flash'] }), []);
+  assert.deepEqual(settingsProblems(DEFAULT_SETTINGS, { offer: OFFER, chatChoices: ['mimo-v2.5'] }), [], 'empty fallback (the default) is never a problem');
+});
