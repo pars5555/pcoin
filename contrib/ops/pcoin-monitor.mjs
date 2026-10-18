@@ -161,7 +161,10 @@ if (info) {
     for (const b of state.blocks) {
       let cur = null;
       try { cur = cliRaw('getblockhash', String(b.height)); } catch { continue; }
-      if (cur !== b.hash) depth = Math.max(depth, h - b.height + 1);
+      if (cur !== b.hash) {
+        depth = Math.max(depth, h - b.height + 1);
+        b.hash = cur;
+      }
     }
     if (depth >= REORG_ALERT_DEPTH) {
       alert('reorg', `reorg ${depth} blocks deep — deposits credited at 6 confirmations may be affected; check pcn_deposits across all four services`);
@@ -208,13 +211,16 @@ if (info) {
 try {
   const site = await fetchText('https://pc.am/dl/SHA256SUMS.txt');
 
-  // `<hash>  <name>    # <tag>`. The trailing tag is CAPTURED, not stripped:
-  // it is the whole point. Trailing prose after the tag is tolerated so a
-  // human note on a line can never make it silently unparseable.
+  // `<hash>  <name>    # <tag>` or `# from release <tag>` comment above the checksum.
+  // The tag is CAPTURED: it is the whole point. Trailing prose after the tag is tolerated
+  // so a human note on a line can never make it silently unparseable.
   const rows = [];
+  let currentTag = null;
   for (const line of site.split('\n')) {
+    const t = line.match(/^#\s*from release\s+(\S+)/i);
+    if (t) { currentTag = t[1]; continue; }
     const g = line.trim().match(/^([0-9a-f]{64})\s+\*?(\S+?)(?:\s+#\s*(\S+).*)?\s*$/i);
-    if (g) rows.push({ hash: g[1].toLowerCase(), file: base(g[2]), tag: g[3] || null });
+    if (g) rows.push({ hash: g[1].toLowerCase(), file: base(g[2]), tag: g[3] || currentTag || null });
   }
   if (!rows.length) throw new Error('no checksum lines parsed from pc.am');
 
