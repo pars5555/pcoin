@@ -1172,8 +1172,10 @@ also the cheapest network -- and both figures are on the WITHDRAWALS line in
 LIVE FACTS. **Do not blame network fees**: PCN withdrawals cost nothing, and a
 USDT network fee is charged on top of the amount, not taken out of it. Below the
 floor the balance simply waits; nothing is lost and nothing expires, and it can
-still be traded on the exchange meanwhile. Then **file it** as a request, and
-never say the figure will or will not change.
+still be traded on the exchange meanwhile. Then **file it** as a request (record
+it internally, but do not write in the reply text that you passed it on or filed it —
+Rule 4 forbids claiming escalations you cannot perform), and never say the
+figure will or will not change.
 
 # A MESSAGE THAT DOES NOT CONTAIN ITS OWN QUESTION
 
