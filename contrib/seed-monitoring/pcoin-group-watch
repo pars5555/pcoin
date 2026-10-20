@@ -89,6 +89,21 @@ TRIGGERS = re.compile(
 
 DRY = "--dry-run" in sys.argv
 
+# An UNKNOWN argument used to be ignored, which meant `pcoin-group-watch --help`
+# started the live poller. getUpdates is exclusive, so that run stole updates
+# from the timer's run and Telegram answered the timer 409 -- seen 2026-10-20
+# 11:09 UTC, twice, from a hand-run `--help`. Refuse anything not understood.
+_KNOWN_ARGS = ("--dry-run", "--status")
+_unknown_args = [a for a in sys.argv[1:] if a not in _KNOWN_ARGS]
+if _unknown_args:
+    sys.stderr.write(
+        "usage: pcoin-group-watch [--dry-run] [--status]\n"
+        "  unknown argument(s): %s\n"
+        "  This is the estate's only getUpdates consumer; running it by hand\n"
+        "  steals updates from the timer and makes the timer fail with 409.\n"
+        "  Refusing to run.\n" % " ".join(_unknown_args))
+    sys.exit(2)
+
 
 def conf():
     out = {}
