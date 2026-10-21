@@ -244,6 +244,81 @@ def spool(row):
         os.replace(tmp, SPOOL)
 
 
+DISCORD_COMMUNITY_TEXT = (
+    "🌐 **Welcome to PCoin (PCN)!**\n\n"
+    "Here is where you can connect, chat, and join our official communities:\n\n"
+    "📢 **Telegram Channel (Announcements):** https://t.me/PCoinPCN\n"
+    "💬 **Telegram Group (Chat & Support):** https://t.me/PCoinPCNChat\n"
+    "🎮 **Discord Server:** https://discord.gg/dGmdwJkb9f\n"
+    "🌐 **Official Website:** https://pc.am\n\n"
+    "🛒 **Market (Buy PCN):** https://market.pc.am\n"
+    "📈 **Exchange (PCN/USD):** https://exchange.pc.am"
+)
+
+LINK_CMD_RE = re.compile(
+    r"^[!/](links?|community|join|discord|channel|group|tg|telegram|help|start|buy)\b",
+    re.I
+)
+
+
+def dc_post_message(token, channel_id, content, reply_to=None):
+    """Post a message directly to Discord."""
+    payload = {
+        "content": content,
+        "allowed_mentions": {"replied_user": True}
+    }
+    if reply_to:
+        payload["message_reference"] = {
+            "message_id": str(reply_to),
+            "fail_if_not_exists": False
+        }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(API + "/channels/%s/messages" % channel_id,
+                                 data=data,
+                                 headers={
+                                     "Authorization": "Bot " + token,
+                                     "Content-Type": "application/json",
+                                     "User-Agent": "DiscordBot (https://pc.am, 1.0) pcoin-discord-watch"
+                                 })
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.loads(r.read().decode("utf-8", "replace"))
+
+
+def answer_community_discord(token, channel_id, m, st, app_id=None, is_dm=False):
+    """If m asks for links/community, DMs the bot, or mentions the bot, reply directly."""
+    text = (m.get("content") or "").strip()
+    is_cmd = bool(LINK_CMD_RE.match(text))
+    mentions_bot = False
+    if app_id:
+        if ("<@%s>" % app_id) in text or ("<@!%s>" % app_id) in text:
+            mentions_bot = True
+    for ment in m.get("mentions") or []:
+        if app_id and str(ment.get("id")) == str(app_id):
+            mentions_bot = True
+
+    if not is_dm and not is_cmd and not mentions_bot:
+        return False
+
+    now = time.time()
+    last = st.setdefault("community_last", {})
+    cooldown = 10 if is_dm else 20
+    last_time = float(last.get(str(channel_id), 0))
+    if now - last_time < cooldown:
+        return True    # Already answered recently: consumed
+
+    if DRY:
+        print("  [dry-run] would answer community links in Discord channel %s for message %s"
+              % (channel_id, m.get("id")))
+        return True
+
+    try:
+        dc_post_message(token, channel_id, DISCORD_COMMUNITY_TEXT, reply_to=m.get("id"))
+        last[str(channel_id)] = now
+    except Exception as e:
+        print("  Discord community reply failed (%s)" % type(e).__name__, file=sys.stderr)
+    return True
+
+
 # ── moderation: the same rule as @PCoinPCNChat ───────────────────────────────
 # OWNER, 2026-09-15: remove adverts and outside links, report each removal to
 # the private ops channel -- "same ad and link filter on Discord". This is the
@@ -624,10 +699,25 @@ def main():
     dc = read_conf(DISCORD_CONF)
     token = dc.get("DISCORD_BOT_TOKEN", "")
     guild = dc.get("DISCORD_GUILD_ID", "")
+    app_id = dc.get("DISCORD_APP_ID", "")
     configured = [c for c in (dc.get("DISCORD_CHAT_CHANNEL_ID", ""),
                               dc.get("DISCORD_TEST_CHANNEL_ID", "")) if c.isdigit()]
     st = load_state()
     channels = discover_channels(token, guild, configured) if (token and guild) else configured
+
+    dm_channels = set()
+    if token:
+        try:
+            dms = dc_get_soft(token, "/users/@me/channels")
+            if isinstance(dms, list):
+                for d in dms:
+                    cid = str(d.get("id") or "")
+                    if cid:
+                        dm_channels.add(cid)
+                        if cid not in channels:
+                            channels.append(cid)
+        except Exception:
+            pass
 
     if "--status" in sys.argv:
         print("  token       : %s" % ("set" if token else "MISSING"))
@@ -650,6 +740,7 @@ def main():
 
     blank_bodies = 0
     for ch in channels:
+        is_dm = (ch in dm_channels)
         cursor = st["cursors"].get(ch)
         if not cursor:
             # First run for this channel: start from NOW, answer nothing old.
@@ -670,6 +761,12 @@ def main():
             # are consumed and never answered. A bot answering a bot is a loop.
             if a.get("bot") or m.get("webhook_id") or m.get("type") not in (0, 19):
                 delivered = m["id"]
+                continue
+
+            # Community links responder: DMs, bot mentions, and !links / /links commands
+            if answer_community_discord(token, ch, m, st, app_id=app_id, is_dm=is_dm):
+                delivered = m["id"]
+                st["seen"] += 1
                 continue
             # ---- moderation, BEFORE spool and relay ----------------------------
             reason, do_delete = moderation_reason(
