@@ -214,6 +214,18 @@ try {
   // `<hash>  <name>    # <tag>` or `# from release <tag>` comment above the checksum.
   // The tag is CAPTURED: it is the whole point. Trailing prose after the tag is tolerated
   // so a human note on a line can never make it silently unparseable.
+  //
+  // A tag heads a BLOCK, not the file. `currentTag` is cleared by any other comment,
+  // so a checksum can only inherit from the `# from release` line directly above its
+  // own block. Without that, `currentTag` was sticky for the whole file: the first
+  // untagged checksum appearing after some prose was attributed to whatever release
+  // the LAST header named, which is a different component's release more often than
+  // not -- and a hash comparison against the wrong release is how this check ends up
+  // saying "treat pc.am as compromised" about a perfectly honest file. That is
+  // CLAUDE.md 7.1: "which release does this line belong to" was never answered, so
+  // it must not be resolved into an answer. Measured 2026-10-24 against the live
+  // file, all six checksums inherit and all six sit directly under their own header,
+  // so this changes nothing today -- it removes the path that would misfire later.
   const rows = [];
   let currentTag = null;
   for (const line of site.split('\n')) {
@@ -221,6 +233,7 @@ try {
     if (t) { currentTag = t[1]; continue; }
     const g = line.trim().match(/^([0-9a-f]{64})\s+\*?(\S+?)(?:\s+#\s*(\S+).*)?\s*$/i);
     if (g) rows.push({ hash: g[1].toLowerCase(), file: base(g[2]), tag: g[3] || currentTag || null });
+    else if (line.trim().startsWith('#')) currentTag = null;
   }
   if (!rows.length) throw new Error('no checksum lines parsed from pc.am');
 
