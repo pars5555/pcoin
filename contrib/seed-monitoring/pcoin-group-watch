@@ -233,7 +233,13 @@ def answer_community(token, msg, st):
     last = st.setdefault("community_last", {})
     last_time = float(last.get(str(chat_id), 0))
     if now - last_time < cooldown:
-        return True                      # answered moments ago: consume, stay quiet
+        # Already answered recently: stay quiet, but let the message fall through
+        # to spool/relay instead of vanishing. Returning True here CONSUMED it, so
+        # a question that arrived inside the 30 s group / 10 s private window was
+        # never relayed, never spooled and never reached the answer bot -- the
+        # sender got nothing at all. `pcoin-discord-watch` had this same bug and
+        # fixed it the same way (its :306); this copy did not follow.
+        return False
 
     send_text = BUY_TEXT if is_buy else COMMUNITY_TEXT
     send_buttons = BUY_BUTTONS if is_buy else COMMUNITY_BUTTONS
@@ -252,11 +258,6 @@ def answer_community(token, msg, st):
     except Exception as e:               # a lost answer is not worth holding the offset for
         print("  community/links reply failed (%s)" % type(e).__name__, file=sys.stderr)
     return True
-
-
-def answer_buy(token, msg, st):
-    """Compatibility alias for answer_community."""
-    return answer_community(token, msg, st)
 
 
 def api(token, method, params=None, timeout=40):
