@@ -32,6 +32,34 @@ SEEN_DIR=/var/lib/pcoin-monitor/sent
 REPEAT_HOURS="${REPEAT_HOURS:-6}"
 TGLOG=/usr/local/bin/pcoin-telegram-log
 
+# A USAGE QUERY IS NOT A MESSAGE. This script takes the subject as $1 and has
+# no option parsing at all, so `pcoin-notify --help` was a perfectly valid
+# alert whose subject read "--help" -- and it really posted it. A caller that
+# only meant "can I notify?" was pinging the ops channel instead, every 15
+# minutes on two hosts (pool-reconcile-watch.sh does exactly that probe at its
+# :30, to confirm sudo can run this). The dedupe swallowed most of them, so the
+# few that got through were the only visible trace of a check nobody wrote.
+#
+# Print usage and exit 0: 0 is what the probe tests for, so the capability
+# check still works -- it just no longer has a side effect.
+case "${1:-}" in
+    -h|--help|help)
+        cat <<'USAGE'
+usage: pcoin-notify SUBJECT BODY
+
+Send one operational alert to the private ops channel.
+  SUBJECT   one line, what broke
+  BODY      what to do about it
+
+Config: /etc/pcoin/alert.conf (0600 root) with TELEGRAM_TOKEN and ALERT_CHAT.
+If that file is missing this exits 0 without sending. Identical text is sent
+at most once every 6 hours (REPEAT_HOURS overrides). Alerts are private ops
+traffic and must never reach a public channel.
+USAGE
+        exit 0
+        ;;
+esac
+
 SUBJECT="${1:-PCoin alert}"
 BODY="${2:-}"
 
