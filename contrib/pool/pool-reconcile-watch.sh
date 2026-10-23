@@ -112,15 +112,43 @@ fi
 # --- an orphaned block, or a reorg alarm the ledger deliberately did not act on
 ORPH=$(printf '%s\n' "$OUT" | grep -E "ORPHANED|\*\*\* ALARM \*\*\*" | head -5)
 if [ -n "$ORPH" ]; then
-    KEY="orphan:$(printf '%s' "$ORPH" | md5sum | cut -c1-12)"
-    if ! seen "$KEY"; then
-        mark "$KEY"
-        say "orphan/alarm -- alerting"
+    # Key on WHICH block, not on the words describing it. The alarm text carries
+    # a live number -- `left the chain at ${confs} confirmations` is rebuilt from
+    # the current tip on every tick (store.mjs:777) -- so hashing the body minted
+    # a fresh key every time the chain found a block. Measured 2026-10-24: 431
+    # keys, 431 alerts, 0 duplicates in seven days, about ONE historical orphan
+    # whose ledger had already been correctly left alone. That is exactly the
+    # count-based key the mismatch branch above warns about; there it was fixed
+    # and here it was not.
+    #
+    # The identity is two lines above the alarm in payouts.mjs's block listing --
+    # height, then the block hash -- so take the hashes from the context rather
+    # than from the body. A genuinely new orphan has a new hash and alerts at
+    # once, which is the property the key exists for.
+    IDS=$(printf '%s\n' "$OUT" | grep -B2 -E "ORPHANED|\*\*\* ALARM \*\*\*" \
+            | grep -oE '[0-9a-f]{64}' | sort -u | tr '\n' ',')
+    # No identity readable means we cannot tell one orphan from another, and
+    # then there is no safe key: the body alone is NOT one, because the alarm
+    # text for two different blocks can be byte-identical. Collapsing them
+    # silently swallows a real orphan, which is the one failure that must not
+    # happen here -- so an unreadable identity dedupes NOTHING and alerts every
+    # tick. Noisy, and never missing. A check that cannot fire is
+    # indistinguishable from one that passes.
+    KEY=""
+    [ -n "$IDS" ] && KEY="orphan:${IDS}"
+    if [ -z "$KEY" ] || ! seen "$KEY"; then
+        [ -n "$KEY" ] && mark "$KEY"
+        say "orphan/alarm -- alerting (${KEY:-no identity; not deduping})"
         notify "PCoin pool: a block left the chain.
 Its payouts are void -- the work was real, the coins never were. Miners in that
 block's window are paid by later blocks instead; nothing is owed to them.
 
 $ORPH"
+    else
+        # Suppress the ALERT on repeat, never the log line -- the same rule as
+        # the mismatch branch. Without this the only trace of an unchanged
+        # orphan was silence, which reads as the check not having run.
+        say "orphan/alarm -- unchanged (${KEY}); not re-alerting"
     fi
 fi
 
