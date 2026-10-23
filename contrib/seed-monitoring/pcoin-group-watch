@@ -235,8 +235,8 @@ def answer_community(token, msg, st):
     if now - last_time < cooldown:
         return True                      # answered moments ago: consume, stay quiet
 
-    send_text = BUY_TEXT if (is_buy and not is_private) else COMMUNITY_TEXT
-    send_buttons = BUY_BUTTONS if (is_buy and not is_private) else COMMUNITY_BUTTONS
+    send_text = BUY_TEXT if is_buy else COMMUNITY_TEXT
+    send_buttons = BUY_BUTTONS if is_buy else COMMUNITY_BUTTONS
 
     if DRY:
         print("  [dry-run] would answer community/links in %s (%s)" % (chat_id, chat_type))
@@ -931,13 +931,14 @@ def main():
 
         msg = u.get("message") or u.get("edited_message") or {}
         chat = (msg.get("chat") or {}).get("id")
+        chat_type = (msg.get("chat") or {}).get("type")
 
-        # Community links: in private chat to ANY message from a user so they know
-        # where to connect and join (channel, group, discord, website); in group
-        # chat to /links, /join, /discord, /buy, etc. -- before the group filter
-        # below, which would otherwise consume a private message unanswered. An
-        # EDITED message is never a fresh command.
-        if u.get("message") and answer_community(token, msg, st):
+        # Private chat: the community links responder runs here, before the
+        # group filter below, which would otherwise consume a private message
+        # unanswered. An EDITED message is never a fresh command. Group
+        # messages are handled AFTER moderation so a scam link cannot hide
+        # behind a command prefix like "/help https://evil".
+        if u.get("message") and chat_type == "private" and answer_community(token, msg, st):
             delivered_through = uid
             continue
 
@@ -983,6 +984,12 @@ def main():
                         # unanswered.
                         print("  removal report failed at update %d -- offset held" % uid, file=sys.stderr)
                         break
+
+        # Group community links: /links, /join, /discord, /buy, etc. AFTER
+        # moderation above, so a scam link cannot hide behind a command prefix.
+        if u.get("message") and answer_community(token, msg, st):
+            delivered_through = uid
+            continue
 
         note_member(st, uid_from, int(msg.get("date") or time.time()))
         text = describe(msg)

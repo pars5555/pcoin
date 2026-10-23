@@ -304,7 +304,10 @@ def answer_community_discord(token, channel_id, m, st, app_id=None, is_dm=False)
     cooldown = 10 if is_dm else 20
     last_time = float(last.get(str(channel_id), 0))
     if now - last_time < cooldown:
-        return True    # Already answered recently: consumed
+        return False   # Already answered recently: stay quiet, but let the
+                       # message fall through to spool/relay instead of
+                       # vanishing (a question that mentions the bot during
+                       # the cooldown used to be dead-lettered).
 
     if DRY:
         print("  [dry-run] would answer community links in Discord channel %s for message %s"
@@ -763,12 +766,7 @@ def main():
                 delivered = m["id"]
                 continue
 
-            # Community links responder: DMs, bot mentions, and !links / /links commands
-            if answer_community_discord(token, ch, m, st, app_id=app_id, is_dm=is_dm):
-                delivered = m["id"]
-                st["seen"] += 1
-                continue
-            # ---- moderation, BEFORE spool and relay ----------------------------
+            # ---- moderation, BEFORE community replies, spool and relay --------
             reason, do_delete = moderation_reason(
                 m, guild, regular=is_regular(st, a.get("id"), int(snowflake_time(m["id"]))))
             if reason and guild:
@@ -784,6 +782,12 @@ def main():
                         delivered = m["id"]
                         continue
                     # Reported but kept: fall through and treat it as a normal message.
+            # Community links responder: DMs, bot mentions, and !links / /links commands.
+            # After moderation, so a scam link cannot hide behind a command prefix.
+            if answer_community_discord(token, ch, m, st, app_id=app_id, is_dm=is_dm):
+                delivered = m["id"]
+                st["seen"] += 1
+                continue
             note_member(st, a.get("id"), int(snowflake_time(m["id"])))
             text = m.get("content") or ""
             if not text and not m.get("attachments") and not m.get("sticker_items"):
