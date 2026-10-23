@@ -606,7 +606,17 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(k, v)
         self.end_headers()
         if body and payload:
-            self.wfile.write(payload)
+            try:
+                self.wfile.write(payload)
+            except (BrokenPipeError, ConnectionResetError):
+                # The client hung up before the response finished -- a browser
+                # navigating away, a crawler timing out, a health probe that got
+                # its answer and closed. Not a fault and not actionable. Left
+                # uncaught, socketserver prints a twelve-frame traceback to the
+                # journal for every one of them, which is noise that trains people
+                # to stop reading the log. The request is still access-logged
+                # below, so it is not being hidden -- only the stack is.
+                pass
         if self.access_log:
             # The path, never the query string. `/api/addresses?list=pc1q...`
             # is a gap-limit scan of one wallet, and logging it verbatim writes
