@@ -1,0 +1,178 @@
+#!/bin/bash
+# Pull backups from the PCoin estate onto this box's 2 TB of disk.
+#
+# STANDING RULE THIS OBEYS: a backup is not a backup until it has been loaded.
+# Every pull here is opened, integrity-checked and row-counted against the
+# source before it is allowed to replace the "latest" symlink. A file of
+# plausible size proves nothing -- that is exactly how a torn WAL-mode SQLite
+# copy presents.
+#
+# WHAT IS DELIBERATELY NOT BACKED UP: wallets, seed phrases, descriptors, xprvs
+# and rpcauth secrets. Copying key material to a second machine doubles the
+# number of places it can leak from, and the treasury phrase is already held
+# off-line. This vault holds LEDGERS, not KEYS.
+set -uo pipefail
+
+VAULT=/var/backups/pcoin
+CONF=/etc/pcoin-vault.conf
+KEY=/root/.ssh/id_vault
+SSHO="-i $KEY -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new"
+MARKET=root@178.105.178.27
+
+# shellcheck disable=SC1090
+[ -r "$CONF" ] && . "$CONF"
+TG_TOKEN=${TG_TOKEN:-}; TG_CHAT=${TG_CHAT:-}; ENC_PASS=${ENC_PASS:-}
+
+log()  { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
+fails=()
+alert() { fails+=("$*"); log "FAIL $*"; }
+
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+
+# ---------------------------------------------------------------- pool.sqlite
+pull_pool() {
+  local dir="$VAULT/pool" tmp out
+  mkdir -p "$dir"
+  out="$dir/pool-$stamp.sqlite"
+  tmp="$out.part"
+
+  if ! ssh $SSHO "$MARKET" pool > "$tmp" 2>"$tmp.err"; then
+    alert "pool: ssh/VACUUM failed -- $(head -c 200 "$tmp.err" 2>/dev/null)"
+    rm -f "$tmp" "$tmp.err"; return 1
+  fi
+  rm -f "$tmp.err"
+
+  # size sanity: this database's VACUUM dump was ~84 MB when this was written and
+  # is ~1 GB now (the gzipped form is ~162 MB). The threshold below is a floor
+  # against a truncated stream, not an estimate of the real size -- anything tiny
+  # is a broken transfer, not a small backup.
+  local sz; sz=$(stat -c %s "$tmp")
+  if [ "$sz" -lt 1000000 ]; then
+    alert "pool: snapshot only $sz bytes -- refusing it"; rm -f "$tmp"; return 1
+  fi
+
+  # OPEN IT. This is the step that separates a backup from a file.
+  local ic; ic=$(sqlite3 -readonly "$tmp" "PRAGMA integrity_check;" 2>&1 | head -1)
+  if [ "$ic" != "ok" ]; then
+    alert "pool: integrity_check said '$ic' -- refusing it"; rm -f "$tmp"; return 1
+  fi
+
+  # And compare it to the source, so a consistent-but-EMPTY copy is caught too.
+  local mine theirs
+  mine=$(sqlite3 -readonly "$tmp" "select 'shares='||(select count(*) from shares)||' blocks='||(select count(*) from blocks)||' payouts='||(select count(*) from payouts);" 2>/dev/null)
+  theirs=$(ssh $SSHO "$MARKET" poolsum 2>/dev/null)
+  if [ -z "$theirs" ]; then
+    # An unreadable source count resolves NOTHING. Keep the backup -- it passed
+    # integrity_check -- but do not claim it was reconciled.
+    log "pool: source row counts unreadable; kept unreconciled ($mine)"
+  elif [ "$mine" != "$theirs" ]; then
+    # Rows can legitimately be added between the two calls, so only a SHRINK is
+    # an error. Growth means the pool took shares while we copied.
+    local m t; m=${mine#shares=}; m=${m%% *}; t=${theirs#shares=}; t=${t%% *}
+    if [ "$m" -lt "$t" ] && [ $((t - m)) -gt 5000 ]; then
+      alert "pool: backup far behind source (backup $mine / source $theirs)"
+      rm -f "$tmp"; return 1
+    fi
+    log "pool: counts differ slightly, expected on a live pool (backup $mine / source $theirs)"
+  fi
+
+  # Compress, and ONLY then publish. The old shape was
+  #     gzip -9 < "$tmp" > "$out.gz" && rm -f "$tmp"
+  #     ln -sfn ... ; log "pool: ok ... verified"
+  # which on a gzip failure left the 1 GB uncompressed dump on disk for ever
+  # (`rotate` only ever matches `pool-*.sqlite.gz`, so nothing would have
+  # collected it) AND still pointed `latest.sqlite.gz` at the truncated output
+  # and printed "ok ... verified" -- a failed backup announced as a verified
+  # one. CLAUDE.md 7.2: the failure must not resolve into "ok".
+  if ! gzip -9 < "$tmp" > "$out.gz"; then
+    alert "pool: gzip failed -- refusing the compressed copy"
+    rm -f "$tmp" "$out.gz"; return 1
+  fi
+  rm -f "$tmp"
+  ln -sfn "$(basename "$out.gz")" "$dir/latest.sqlite.gz"
+  log "pool: ok $(du -h "$out.gz" | cut -f1) verified [$mine]"
+}
+
+# ------------------------------------------------------------------ market db
+pull_market() {
+  local dir="$VAULT/market" out tmp
+  mkdir -p "$dir"
+  out="$dir/market-$stamp.sql.gz"
+  tmp="$out.part"
+
+  if ! ssh $SSHO "$MARKET" marketdb 2>"$tmp.err" | gzip -9 > "$tmp"; then
+    alert "market: mysqldump failed -- $(head -c 200 "$tmp.err" 2>/dev/null)"
+    rm -f "$tmp" "$tmp.err"; return 1
+  fi
+  rm -f "$tmp.err"
+
+  # A dump that does not end in the completion marker was truncated mid-stream.
+  if ! zcat "$tmp" | tail -5 | grep -q "Dump completed"; then
+    alert "market: dump has no completion marker -- truncated, refusing it"
+    rm -f "$tmp"; return 1
+  fi
+  local tables; tables=$(zcat "$tmp" | grep -c "^CREATE TABLE")
+  if [ "$tables" -lt 3 ]; then
+    alert "market: only $tables tables in the dump -- refusing it"; rm -f "$tmp"; return 1
+  fi
+
+  # This one holds customer emails and order history, so it does not sit in the
+  # clear on a shared box. Passphrase lives in /etc/pcoin-vault.conf (0600) and
+  # in D:\pc.am\PCOIN-SECRETS.md -- without it this file is unrecoverable, which
+  # is the point and also the risk.
+  if [ -n "$ENC_PASS" ]; then
+    if openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass pass:"$ENC_PASS" -in "$tmp" -out "$out.enc"; then
+      # prove it round-trips before throwing the plaintext away
+      if openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass pass:"$ENC_PASS" -in "$out.enc" 2>/dev/null | zcat 2>/dev/null | tail -3 | grep -q "Dump completed"; then
+        rm -f "$tmp"
+        log "market: ok $(du -h "$out.enc" | cut -f1) encrypted, decrypt verified, $tables tables"
+        ln -sfn "$(basename "$out.enc")" "$dir/latest.sql.gz.enc"
+        return 0
+      fi
+      alert "market: encrypted copy did NOT decrypt back -- keeping plaintext instead"
+      rm -f "$out.enc"
+    else
+      alert "market: encryption failed -- keeping plaintext"
+    fi
+  else
+    log "market: ENC_PASS unset, storing unencrypted"
+  fi
+  mv "$tmp" "$out"
+  ln -sfn "$(basename "$out")" "$dir/latest.sql.gz"
+  log "market: ok $(du -h "$out" | cut -f1) UNENCRYPTED, $tables tables"
+}
+
+# ------------------------------------------------------------------ retention
+rotate() {
+  # Keep 48 hourly pool snapshots (2 days), then one per day for 30 days.
+  find "$VAULT/pool" -name 'pool-*.sqlite.gz' -type f -printf '%T@ %p\n' 2>/dev/null \
+    | sort -rn | awk 'NR>48{print $2}' | while read -r f; do
+        d=$(basename "$f" | cut -c6-13)
+        # keep the first snapshot of each day, drop the rest
+        keep=$(find "$VAULT/pool" -name "pool-$d*.sqlite.gz" -type f | sort | head -1)
+        [ "$f" = "$keep" ] || rm -f "$f"
+      done
+  find "$VAULT/pool"   -name 'pool-*.sqlite.gz' -mtime +30 -delete 2>/dev/null
+  find "$VAULT/market" -name 'market-*'         -mtime +90 -delete 2>/dev/null
+  # Partial downloads and their stderr are not backups. Nothing above can ever
+  # match them -- the patterns are `pool-*.sqlite.gz` and `market-*` -- so a run
+  # killed mid-flight left its multi-GB `.part` here for ever. An hour old is
+  # safe: a live run's files are younger than that.
+  find "$VAULT" \( -name '*.part' -o -name '*.err' \) -mmin +60 -delete 2>/dev/null
+}
+
+pull_pool
+[ "$(date -u +%H)" = "03" ] || [ "${1:-}" = "--all" ] && pull_market
+rotate
+
+used=$(du -sh "$VAULT" 2>/dev/null | cut -f1)
+free=$(df -h "$VAULT" | awk 'NR==2{print $4}')
+log "vault $used used, $free free, $(find "$VAULT" -type f | wc -l) files"
+
+if [ ${#fails[@]} -gt 0 ] && [ -n "$TG_TOKEN" ] && [ -n "$TG_CHAT" ]; then
+  msg="🗄️ PCoin vault (seed4) FAILED:%0A$(printf '%s%%0A' "${fails[@]}")"
+  curl -s --max-time 15 -o /dev/null \
+    "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+    --data-urlencode "chat_id=$TG_CHAT" --data-urlencode "text=$(printf '%b' "${msg//%0A/$'\n'}")" || true
+fi
+[ ${#fails[@]} -eq 0 ]

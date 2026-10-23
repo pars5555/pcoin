@@ -73,6 +73,17 @@ contrib/ops/pcoin-caddy-watchdog  text eol=lf
 contrib/ops/pcoin-cf-firewall     text eol=lf
 contrib/ops/*.conf                text eol=lf
 
+# contrib/backup had no rule at all -- the same omission as the seed-monitoring
+# four and the wpcn three, and this time it was not merely latent. Deploying
+# contrib/backup/pcoin-backup-pull from a Windows worktree produced
+# `syntax error near unexpected token $'{\r''` on the backup host, caught only
+# because a `bash -n` gate ran before any live file was replaced. The directory
+# is root-owned backup machinery on the vault host, so a backup that cannot
+# start is a backup that does not exist; pin the whole directory rather than
+# the two names in it, so the next addition inherits the rule instead of
+# repeating the discovery.
+contrib/backup/*                  text eol=lf
+
 # The Move PCN page's crypto bundle is pinned by SHA-256 in
 # contrib/admin-panel/transfer.mjs and loaded with Subresource Integrity, so it
 # has to arrive byte-for-byte identical on every platform -- the same reasoning
