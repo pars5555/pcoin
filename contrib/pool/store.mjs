@@ -774,7 +774,30 @@ export class Store {
         const [sent] = (await this.db.run(
           `SELECT COUNT(*) FROM payouts WHERE block_hash=${lit(hash)} AND sent_txid IS NOT NULL;`)).rows;
         if (Number(sent) > 0) {
-          const msg = `left the chain at ${confs} confirmations AFTER ${sent} payout(s) were sent`;
+          // `confs` is how far past this block's HEIGHT the chain has moved. It
+          // is NOT how deep this block ever was, and the message below used to
+          // say the second while meaning the first.
+          //
+          // Measured 2026-10-23 on height 12789: it read "left the chain at 809
+          // confirmations" -- which is what a chain-splitting DEEP REORG sounds
+          // like -- for a block that lost the race at ONE confirmation to a
+          // rival mined 23 seconds earlier. `getblock` on the dead hash reports
+          // confirmations: -1, and the height is now held by a different hash.
+          // An operator cannot tell a routine stale block from a reorg out of
+          // that sentence, and the two call for opposite responses: do nothing,
+          // or stop everything. Say which one it is.
+          //
+          // The stored text is read back by payouts.mjs's block listing, so a
+          // wrong sentence here is not cosmetic -- it is the operator's report.
+          // It stays free of apostrophes so `lit()` has nothing to escape, and
+          // it carries NO live counter: this row is rewritten every maturity
+          // poll, so an interpolated depth changed the text every block and
+          // minted a fresh alert key each time (804, then 806, then 807 for one
+          // orphan). The depth is already in the listing; a message states a
+          // fact, it does not tick.
+          const msg = `height ${Number(h)} was replaced at its height by a rival block`
+            + ` after ${sent} payout(s) were recorded against its coinbase`
+            + ` -- that coinbase is not on the chain, ledger left alone, decide by hand`;
           await this.db.run(`UPDATE blocks SET alarm=${lit(msg)} WHERE hash=${lit(hash)};`);
           out.alarms.push({ hash, height: Number(h), message: msg });
           continue;

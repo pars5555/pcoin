@@ -601,7 +601,14 @@ section('orphans -- twice seen before believed, and never a silent reversal');
   await store.evaluateBlocks(1002, async () => 'aaaa'.repeat(16));
   const [ss, alarm] = (await store.sql("SELECT state, IFNULL(alarm,'') FROM blocks WHERE height=900;"))[0].split('|');
   ok(ss === 'mature', 'a block whose payouts were SENT is not silently reversed');
-  ok(alarm.includes('AFTER'), 'it raises an alarm instead', alarm || '(no alarm)');
+  // The alarm must hand the decision to a human, not merely exist. This
+  // branch's whole job is to withhold the automatic reversal and put the call
+  // in front of an operator, so asserting only that `alarm` is non-empty would
+  // pass on any text at all -- including the old wording, which reported the
+  // depth as `tip - height + 1` and read as a deep reorg for a block that lost
+  // a race at one confirmation. What it says matters as much as that it fired.
+  ok(alarm.length > 0, 'it raises an alarm instead', alarm || '(no alarm)');
+  ok(alarm.includes('decide by hand'), 'and the alarm hands the decision to a human', alarm || '(no alarm)');
 
   // A chain that comes back clears the strike rather than staying half-orphaned.
   const solver2 = await addShare('pc1qcarol', 'j5', '00000003', 400);

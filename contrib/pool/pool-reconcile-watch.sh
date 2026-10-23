@@ -139,9 +139,21 @@ if [ -n "$ORPH" ]; then
     if [ -z "$KEY" ] || ! seen "$KEY"; then
         [ -n "$KEY" ] && mark "$KEY"
         say "orphan/alarm -- alerting (${KEY:-no identity; not deduping})"
-        notify "PCoin pool: a block left the chain.
-Its payouts are void -- the work was real, the coins never were. Miners in that
-block's window are paid by later blocks instead; nothing is owed to them.
+        # The body used to assert "Its payouts are void ... nothing is owed to
+        # them" and then quote a line that says "ledger unchanged, decide by
+        # hand". Both halves cannot be true, and the second is what the code
+        # actually did: store.mjs raises the alarm and leaves the rows alone
+        # whenever a payout carries a sent_txid, precisely so a human decides.
+        # Telling the operator it is already settled removes the decision it
+        # exists to ask for -- so state the facts and the ask, not a verdict.
+        notify "PCoin pool: a block stopped counting.
+A block the pool had recorded payouts against was replaced at its height by a
+rival block, so its coinbase never existed and nobody received those coins.
+Miners in that block's window are counted again by later blocks (PPLNS), so
+nothing is lost by them.
+
+WHAT THIS NEEDS: the ledger was deliberately NOT changed -- its rows still say
+these payouts were paid. Decide by hand whether to mark them void.
 
 $ORPH"
     else
