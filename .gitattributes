@@ -26,18 +26,20 @@ contrib/android/app/src/test/resources/qr_vectors.txt -text
 contrib/linux-deb/pcoin-setup             text eol=lf
 contrib/linux-deb/pcoin-mine              text eol=lf
 contrib/linux-deb/pcoin-miner-supervisor  text eol=lf
-contrib/seed-monitoring/pcoin-seed-watch         text eol=lf
-contrib/seed-monitoring/pcoin-fork-watch         text eol=lf
-contrib/seed-monitoring/pcoin-notify             text eol=lf
-contrib/seed-monitoring/pcoin-announce           text eol=lf
-contrib/seed-monitoring/pcoin-telegram-log       text eol=lf
-# These four were added to the directory after the rule above and each missed
-# it -- the same gap, growing one script at a time. Closed together rather than
-# left for the next addition to rediscover.
-contrib/seed-monitoring/pcoin-bootstrap-watch     text eol=lf
-contrib/seed-monitoring/pcoin-fork-day            text eol=lf
-contrib/seed-monitoring/pcoin-concentration-watch text eol=lf
-contrib/seed-monitoring/pcoin-chain-heartbeat     text eol=lf
+# contrib/seed-monitoring is the root-owned monitoring that every host runs,
+# and this list used to name its scripts one at a time -- nine of them, across
+# two passes, each added only after the gap was rediscovered. Audited
+# 2026-10-24: 38 files in the directory carry a shebang and run on Linux, and
+# 29 of those still had NO rule at all -- including pcoin-facts,
+# pcoin-group-watch, pcoin-deposit-watch, pcoin-approve and pcoin-unit-failed,
+# which are the live services rather than the stragglers. A Windows checkout
+# rewrites those to CRLF and the kernel then refuses to exec them, reporting
+# `bad interpreter: /bin/bash^M`: an error that names the interpreter and not
+# the stray return, so it surfaces at a restart and not at a deploy. Nothing in
+# the directory is binary (checked before this), so pin the whole of it and let
+# the next addition inherit the rule instead of rediscovering this a tenth
+# time. Same decision, and the same reasoning, as contrib/backup below.
+contrib/seed-monitoring/*             text eol=lf
 # contrib/wpcn's two extensionless scripts had NO rule at all -- an omission,
 # not a decision. Both carry a shebang and run on a Linux box, and git was
 # reporting "LF will be replaced by CRLF the next time Git touches it" on the

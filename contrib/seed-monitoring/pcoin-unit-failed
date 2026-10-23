@@ -40,6 +40,27 @@ fi
 
 RESULT=$(systemctl show "$UNIT" -p Result --value 2>/dev/null || echo unknown)
 CODE=$(systemctl show "$UNIT" -p ExecMainStatus --value 2>/dev/null || echo '?')
+# systemctl show describes the unit AS IT IS NOW, not as it was when it broke.
+# OnFailure starts this handler while the unit is already being torn down or
+# restarted, so those two properties can already belong to the next invocation.
+# Measured on pcoin-group-watch at 2026-10-23 21:39 UTC: systemd logged
+# `Main process exited, code=killed, status=15/TERM` and `Failed with result
+# 'signal'`, while this read Result=success / ExecMainStatus=0 and the alert
+# told the owner "it failed (success, exit 0)" -- the one pairing that says
+# nothing went wrong, inside a message whose whole subject is that something
+# did. CLAUDE.md 7.2: a failure must not resolve into an answer shaped like OK.
+#
+# systemd's own journal lines are the record of THIS failure, so prefer them.
+# Where nothing can be read the answer is `unknown`, never `success`: a failure
+# alert that reports a clean exit is worse than one that admits it does not know.
+_j=$(journalctl -u "$UNIT" --no-pager -n 40 -o cat 2>/dev/null)
+_jres=$(printf '%s\n' "$_j" | grep -oE "Failed with result '[a-z-]+'" | tail -n 1 | sed "s/^.*'\(.*\)'.*$/\1/")
+_jstat=$(printf '%s\n' "$_j" | grep -oE 'status=[0-9]+' | tail -n 1 | cut -d= -f2)
+[ -n "$_jres" ] && RESULT="$_jres"
+[ -n "$_jstat" ] && CODE="$_jstat"
+case "$RESULT" in
+    ''|success|not-run) RESULT=unknown ;;
+esac
 # The last thing it said is the whole value of this alert. "pcoin-deposit-watch
 # failed" is a notification; its stderr is a diagnosis.
 # KEEP THE DIAGNOSIS, DROP THE BOILERPLATE.
