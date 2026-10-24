@@ -88,13 +88,57 @@ if [ -n "$GUARD" ] && [ "$GUARD" -gt 0 ] 2>/dev/null; then
     fi
 fi
 
+# THE GUARD MUST NOT BE UNBOUNDED, and until 2026-10-24 it was.
+#
+# It is meant to protect a block still in flight, and such a block is YOUNG: it
+# matures at 100 confirmations, so the shares it might want are at most a day
+# old. A block that never resolves is a different thing entirely, and one is
+# enough to make this whole script a no-op: evaluateBlocks refuses to retire a
+# block whose coinbase was replaced after payouts were recorded against it (it
+# leaves state='pending' with an alarm and says "decide by hand"), so its
+# found_at is the MIN forever and the cutoff is pinned at that age for the life
+# of the block -- however long that is.
+#
+# Measured on 2026-10-24: height 12789 (found 2026-10-18) held the cutoff at
+# its own age, this script printed "nothing older than 24h -- nothing to do"
+# every hour, and 3,424,425 of 4,004,930 rows -- 85% -- sat outside the window
+# while the table grew ~24.5k rows/h. At ~8.7M (about eight days on) every
+# write exceeds RUN_TIMEOUT_MS and share recording stops, which is the
+# 2026-09-21 outage all over again. The guard, which exists to protect one
+# block's payout, was on its way to costing every miner every share.
+#
+# So the guard may spend at most GUARD_SLACK_HOURS past the retention window --
+# one extra day, the same spirit as the hour of margin above. A stuck block then
+# costs a day of extra rows instead of an unbounded table. Its payout question
+# is answered from the `payouts` ledger, which this script never touches.
+GUARD_SLACK_HOURS=${GUARD_SLACK_HOURS:-24}
+NOW_MS=$(q "SELECT strftime('%s','now')*1000;")
+# An unreadable clock must not silently disable the bound: bash evaluates an
+# empty variable as 0, FLOOR goes negative, the comparison never fires and the
+# guard is unbounded again -- while every line of the log looks normal. Same
+# doctrine as the row count above: unreadable resolves nothing, delete nothing.
+if [ -z "$NOW_MS" ] || ! [ "$NOW_MS" -gt 0 ] 2>/dev/null; then
+    say "prune: cannot read the clock -- refusing to delete"
+    exit 0
+fi
+FLOOR=$(( NOW_MS - (RETAIN_HOURS + GUARD_SLACK_HOURS) * 3600 * 1000 ))
+if [ "$CUTOFF" -lt "$FLOOR" ] 2>/dev/null; then
+    say "prune: an in-flight block wanted a cutoff $(( (NOW_MS - CUTOFF) / 3600000 ))h back; bounded to $(( RETAIN_HOURS + GUARD_SLACK_HOURS ))h total (that block is stuck, not maturing)"
+    CUTOFF=$FLOOR
+fi
+
+# Report the window actually in force, not the nominal one. Saying "older than
+# 24h" while the guard had quietly pushed retention to 148h is what made the
+# stall above invisible for six days: every line read like a healthy prune.
+WINDOW_H=$(q "SELECT ROUND((${NOW_MS} - ${CUTOFF})/3600000.0,1);")
+
 DOOMED=$(q "SELECT COUNT(*) FROM shares WHERE at < ${CUTOFF};")
 if [ -z "$DOOMED" ] || [ "$DOOMED" -eq 0 ] 2>/dev/null; then
-    say "prune: nothing older than ${RETAIN_HOURS}h (rows=${BEFORE_ROWS}) -- nothing to do"
+    say "prune: nothing older than ${WINDOW_H}h in force (nominal ${RETAIN_HOURS}h, rows=${BEFORE_ROWS}) -- nothing to do"
     exit 0
 fi
 
-say "prune: ${DOOMED} of ${BEFORE_ROWS} shares are older than ${RETAIN_HOURS}h; deleting in batches of ${BATCH}"
+say "prune: ${DOOMED} of ${BEFORE_ROWS} shares are older than ${WINDOW_H}h in force (nominal ${RETAIN_HOURS}h); deleting in batches of ${BATCH}"
 
 # Batched so each write lock is short. The pool records roughly eleven shares a
 # second and must not be blocked; a single DELETE of millions of rows would hold
