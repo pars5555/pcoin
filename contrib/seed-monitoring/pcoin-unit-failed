@@ -61,6 +61,40 @@ _jstat=$(printf '%s\n' "$_j" | grep -oE 'status=[0-9]+' | tail -n 1 | cut -d= -f
 case "$RESULT" in
     ''|success|not-run) RESULT=unknown ;;
 esac
+
+# A MONITOR KILLED BY THE HOST'S OWN PACKAGE UPGRADE IS NOT A MONITOR FAILURE.
+#
+# `apt-daily-upgrade` upgrades systemd itself and then re-executes PID 1. While
+# PID 1 re-executes it tears down what is running: measured 2026-10-24 06:11:02
+# UTC "Reexecution requested from client PID ... (unit apt-daily-upgrade.service)"
+# followed at 06:11:03 by "Reexecuting.", then fail2ban, mariadb, pcoin-explorer,
+# journald, rsyslog and sshd all stopping together, and pcoin-group-watch -- which
+# had started 8s earlier and was mid-pass -- exiting "code=killed, status=15/TERM".
+# systemd then reports `Failed with result 'signal'`, OnFailure fires, and the
+# owner is told the group helper "did not run properly" when in fact the host
+# rebooted its own init. The unit's next run succeeded 25s later and, because a
+# failed read advances nothing, not one message was lost.
+#
+# The same signature fired 2026-10-22 06:07:27 UTC (same second as "Stopping
+# mariadb" and "Stopped fail2ban"). Both land in the daily upgrade window around
+# 06:07-06:11 UTC, so this is a recurring false alarm and daily false alarms are
+# how a real one gets ignored (CLAUDE.md 7.5).
+#
+# GATED TIGHTLY, AND IT ERRORS TOWARD ALERTING. It is skipped only when BOTH hold:
+# the unit was killed by SIGTERM, AND a systemd re-exec is logged in the last two
+# minutes. A SIGTERM with no re-exec still alerts -- 2026-10-23 21:39 UTC is such
+# a case and is deliberately NOT suppressed here, because its cause is still
+# unexplained and an unexplained kill is exactly what this script exists to
+# report. Anything other than signal/TERM still alerts unconditionally.
+if [ "$SELFTEST" = 0 ] && [ "$RESULT" = signal ] && [ "$CODE" = 15 ]; then
+    if journalctl --no-pager --since '-2 min' -o cat 2>/dev/null \
+        | grep -qE 'Reexecuting\.|Reexecution requested from client'; then
+        logger -t pcoin-unit-failed \
+            "no alert for $UNIT: SIGTERM came from a systemd re-exec (host package upgrade), not a fault in the unit"
+        exit 0
+    fi
+fi
+
 # The last thing it said is the whole value of this alert. "pcoin-deposit-watch
 # failed" is a notification; its stderr is a diagnosis.
 # KEEP THE DIAGNOSIS, DROP THE BOILERPLATE.
