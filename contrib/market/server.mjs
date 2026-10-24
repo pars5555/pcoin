@@ -1170,6 +1170,25 @@ createServer(async (req, res) => {
       }
       const overCap = tooMuchPcn(rungs, w.pcn);
       if (overCap) return json(res, 400, { error: overCap });
+      // The ladder says what we have to sell; this says what we can actually
+      // hand over. They are different questions and both have to be yes -- the
+      // order path asks both (see the identical check below), but this one
+      // asked only the first until 2026-10-24, so a $250 order was QUOTED
+      // 11,9xx PCN against 10,615 sellable and refused at the payment step.
+      // /api/ladder/state publishes sellableNowPcn for exactly this reason;
+      // the quote is the endpoint a buyer reads before paying, so it must be
+      // held to the same number. null = unknown = do not quote, never unlimited.
+      const backing = await B.headroomPcn();
+      if (backing.pcn === null) {
+        return json(res, 503, { error:
+          'we cannot currently confirm the coin supply backing this sale, so no quote can be ' +
+          'given right now. Try again shortly.' });
+      }
+      if (w.pcn > backing.pcn) {
+        return json(res, 409, { error:
+          `that is more PCN than we can deliver right now — ${backing.pcn.toFixed(2)} PCN is ` +
+          `available against undelivered orders. Try a smaller amount.` });
+      }
       // A quote is still honest when sales are shut -- it says what the ladder
       // holds. But it must carry the gate, so the page can grey the button out
       // and explain, rather than let someone fill in an address and a payment

@@ -771,9 +771,14 @@ function quote() {
       $('buyBtn').textContent = q.saleOpen ? 'Continue to payment' : 'Sales paused';
     } catch (e) {
       $('quoteBox').textContent = e.message;
-      // 503 = the market cannot price right now (in index mode: no index it can
-      // vouch for). A button a previous quote enabled must not stay live.
-      if (e.status === 503) { $('buyBtn').disabled = true; $('buyBtn').textContent = 'Sales paused'; }
+      // ANY refusal means this quote is not one you can pay against -- 503 (the
+      // market cannot price, or cannot confirm the coins behind the sale) and
+      // 409/400 (more PCN than we can deliver, over the maximum, over the coin
+      // cap) alike. This used to grey the button only on 503, so a 409 left a
+      // previous quote's button live and the customer discovered the refusal at
+      // the payment step instead of here.
+      $('buyBtn').disabled = true;
+      $('buyBtn').textContent = e.status === 503 ? 'Sales paused' : 'Cannot quote';
     }
   }, 250);
 }
