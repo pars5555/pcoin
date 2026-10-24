@@ -29,9 +29,10 @@ def fake_api(token, method, params=None, files=None, timeout=None, **kw):
     return {"ok": True, "result": {"message_id": 1000 + len(SENT)}}
 
 
+OPS = []
 ap.api = fake_api
 ap.conf = lambda: {"TELEGRAM_TOKEN": "test"}
-ap.notify_ops = lambda *a, **k: None
+ap.notify_ops = lambda *a, **k: OPS.append((a, k))
 FAILS = []
 
 
@@ -86,6 +87,48 @@ ap.save(d)
 SENT.clear()
 ap.cmd_tick(None)
 check(len([p for m, p in SENT if "STILL WAITING" in p.get("text", "")]) == 1, "reminded again after HOLD_REMIND_SECONDS")
+
+# --- a private service named in a public message is REFUSED, not published.
+#
+# This is the leak from 2026-10-22: a review session submitted "If you were
+# referring to checker.pc.am, the issue has been resolved..." straight through
+# `submit`, and the gate published it into @PCoinPCNChat. answer-prompt.md:554
+# already forbade the name and the bot obeyed -- but the prompt governs the model
+# that reads it, and nothing on the submit path looked at the words at all.
+#
+# Every check here is asserted against KNOWN-BAD input first. A guard that is
+# never shown to fire is indistinguishable from a guard that is not there (§7.12).
+check(ap.forbidden_name_in("see checker.pc.am please") == "checker.pc.am",
+      "forbidden_name_in finds the private address in ordinary prose")
+check(ap.forbidden_name_in("CHECKER.PC.AM is back") == "checker.pc.am",
+      "forbidden_name_in is case-insensitive")
+check(ap.forbidden_name_in("the checker retried and then succeeded") is None,
+      "the ordinary word 'checker' does NOT trip it -- whole-name match only")
+check(ap.forbidden_name_in("all clear, nothing to report") is None,
+      "clean text is not flagged")
+check(ap.forbidden_name_in(None) is None, "forbidden_name_in tolerates a null text")
+
+before = len(ap.load()["items"])
+OPS.clear()
+SENT.clear()
+refused = None
+try:
+    submit("Update: if you were referring to checker.pc.am, the issue has been "
+           "resolved and the service is back online now!", "k-leak")
+except SystemExit as e:
+    refused = str(e)
+check(refused is not None and "REFUSED" in refused and "checker.pc.am" in refused,
+      "a submission naming the private service exits with a refusal (%s)" % (refused or "NOT RAISED"))
+check(len(ap.load()["items"]) == before, "the refused message is never queued")
+check(not any("checker.pc.am" in p.get("text", "") for m, p in SENT),
+      "nothing naming it is sent to the owner or anywhere else")
+check(any(a and "private service named in a public message" in a[0] for a, k in OPS),
+      "the ops channel is told a submission was refused")
+
+OPS.clear()
+submit("Withdrawals are cleared and the balance is correct again.", "k-ok-after")
+check(len(ap.load()["items"]) == before + 1, "an ordinary message after the refusal still queues")
+check(not OPS, "an ordinary message raises no ops alert")
 
 print()
 print("%d FAILED" % len(FAILS) if FAILS else "ALL PASSED")

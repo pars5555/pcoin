@@ -775,6 +775,48 @@ def publish_item(i, send_tg, send_dc):
 
 
 # ── commands ───────────────────────────────────────────────────────────────
+# Services that must never be NAMED in anything this tool publishes. The owner's
+# rule, as written in CLAUDE.md §8c and in answer-prompt.md: "never list anywhere
+# please, it is private app". These names are not secrets in the way a key is --
+# but saying one out loud in public is what tells strangers the service exists,
+# and that is the thing the owner asked to prevent.
+#
+# Why the check lives HERE and not only in the answer bot's prompt. The prompt
+# forbids these names and the bot obeyed it. What got through on 2026-10-22 was
+# a REVIEW reply submitted straight through `submit` -- `src: claude-review` --
+# which published "If you were referring to checker.pc.am, the issue has been
+# resolved..." into @PCoinPCNChat. The prompt governs the model that reads it.
+# Nothing on this path looked at the words at all: cmd_submit checked the
+# destination allow-list, the lengths and the photo, and then published. Every
+# public message in the estate goes through here -- group, channel, Discord and
+# announcements -- so this is the one place a check actually covers all of them.
+#
+# It REFUSES rather than warns. §7.12: "a check that only prints is not a check.
+# Make it refuse." A warning that still publishes is exactly the failure mode it
+# would be added to prevent. If the owner ever wants one of these named on
+# purpose, the list below is the whole mechanism -- edit it deliberately.
+FORBIDDEN_PUBLIC_NAMES = (
+    "checker.pc.am",
+    "3dmodels.pc.am",
+    "3dmodel.oonak.ai",
+    "portrait2video",
+)
+
+
+def forbidden_name_in(text):
+    """The private service named in `text`, or None if there is none.
+
+    Case-insensitive, and matches the whole name rather than a bare word: the
+    ordinary English word "checker" must not trip this, only the address that
+    states the service exists.
+    """
+    low = (text or "").lower()
+    for name in FORBIDDEN_PUBLIC_NAMES:
+        if name in low:
+            return name
+    return None
+
+
 def cmd_submit(a):
     if dest_of(a.dest) is None:
         sys.exit("unknown destination %r. Allowed: %s, or dc:<channel id> for a reply "
@@ -790,6 +832,22 @@ def cmd_submit(a):
         sys.exit("text is %d characters; the limit here is %d." % (len(text), MAX_TEXT))
     if not text.strip():
         sys.exit("refusing to queue an empty message.")
+    # See FORBIDDEN_PUBLIC_NAMES above: this is the last place a private service
+    # can be stopped from being named in public, and it stops it outright. Placed
+    # after the length checks so the message it prints is about the leak and not
+    # about formatting, and before the queue is touched so nothing is written.
+    bad = forbidden_name_in(text)
+    if bad:
+        notify_ops("private service named in a public message",
+                   "a submission from %s named %s and was REFUSED. Nothing was "
+                   "published or queued. Re-word it; if this name really must go "
+                   "out, that is the owner's call and FORBIDDEN_PUBLIC_NAMES in "
+                   "pcoin-approve is the list to change."
+                   % (a.source or "unknown", bad))
+        sys.exit("REFUSED: this message names %s, which is a PRIVATE service and must "
+                 "never appear in public. Re-word it. (FORBIDDEN_PUBLIC_NAMES in "
+                 "pcoin-approve is the list; it holds the owner's rule, not a "
+                 "technical limit.)" % bad)
     if not dest_of(a.dest).get("chat") and len(text) > DISCORD_MAX_CONTENT:
         sys.exit("text is %d characters; a Discord-only reply is capped at %d."
                  % (len(text), DISCORD_MAX_CONTENT))
