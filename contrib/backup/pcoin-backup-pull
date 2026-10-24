@@ -79,7 +79,12 @@ finish() {
 
 backup_exchange() {
     local d="$DEST/exchange"; mkdir -p "$d"; sweep_tmp "$d"
-    local f="$d/exchange-$STAMP.sqlite.gz" part="$f.part" t="$d/.work-$STAMP.sqlite"
+    # With `set -u`, declarations expand their whole RHS before `local` assigns
+    # any name. Keep dependent paths separate: `local f=… part="$f.part"`
+    # expands an unset f and aborts the backup before its first remote read.
+    local f="$d/exchange-$STAMP.sqlite.gz"
+    local part="$f.part"
+    local t="$d/.work-$STAMP.sqlite"
     : > "$d/.err"
     # VACUUM INTO gives a consistent copy of a live WAL database; a plain file copy would not.
     # The path comes from the app's own config, not from this script: a hardcoded
@@ -111,7 +116,9 @@ JS
 
 backup_tar() { # name host "tar args" ; stdout of remote tar, gzip'd
     local name="$1" host="$2" args="$3"; local d="$DEST/$name"; mkdir -p "$d"; sweep_tmp "$d"
-    local f="$d/$name-$STAMP.tar.gz" part="$f.part"
+    # See backup_exchange: a dependent `local` assignment is unsafe under -u.
+    local f="$d/$name-$STAMP.tar.gz"
+    local part="$f.part"
     $SSH root@$host "tar czf - $args 2>/dev/null" > "$part" 2>/dev/null
     local ok=1
     gzip -t "$part" 2>/dev/null && [ "$(tar tzf "$part" 2>/dev/null | wc -l)" -gt 0 ] && ok=0
