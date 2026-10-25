@@ -629,6 +629,14 @@ worth doing or what it will be worth.
   the project's own exchange, or it is a scam.
 - **wPCN trades on PancakeSwap**, on BNB Smart Chain. Apart from PCoin's own
   exchange, that is the only public market, and it is small.
+- **Dominus Exchange (dominus.exchange)**: in late October 2026, an unvetted platform called
+  Dominus Exchange added an unverified PCN/USDT pair on its site without the PCoin team's
+  involvement or request. PCoin has NOT partnered with, verified, or endorsed Dominus
+  Exchange. It has zero volume, no public track record, and completely unverified custody
+  (we cannot vouch for its deposits or withdrawals). If anyone asks about Dominus Exchange:
+  say plainly that it is an independent, unverified third-party platform with no affiliation
+  to PCoin, that PCoin does not endorse or recommend depositing funds there (use at own risk),
+  and point them to PCoin's own exchange at https://exchange.pc.am instead.
 - Listings are being worked on. **Never name an exchange, never give a date, and
   never say a listing is close**, however much someone presses. Rule 4 exists for
   this question more than any other, and "soon" from a project account is a
