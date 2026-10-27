@@ -520,9 +520,14 @@ def models_for(cfg):
     subscription, which by design never passes through the gateway, so
     claude-sonnet-5 returns HTTP 400 no matter what the key is.
     """
-    primary = cfg.get("OONA_MODEL", "deepseek-v4-flash").strip()
-    fallback = cfg.get("OONA_MODEL_FALLBACK", "qwen3.8-flash").strip()
-    out = [m for m in (primary, fallback) if m]
+    raw_primary = cfg.get("OONA_MODEL", "deepseek-v4-flash")
+    raw_fallback = cfg.get("OONA_MODEL_FALLBACK", "qwen3.8-flash")
+    out = []
+    for item in (raw_primary, raw_fallback):
+        for m in (item or "").split(","):
+            m = m.strip()
+            if m and m not in out:
+                out.append(m)
     return out or ["deepseek-v4-flash"]
 
 
@@ -726,14 +731,15 @@ def ask_model_with_fallback(cfg, system, message, author, image=None):
     and retries it next run rather than losing it.
     """
     last = None
-    for i, model in enumerate(models_for(cfg)):
+    models = models_for(cfg)
+    for i, model in enumerate(models):
         try:
             return ask_model(cfg, system, message, author, model, image=image), model
         except Exception as e:
             last = e
             detail = str(e) if isinstance(e, (RuntimeError, ValueError)) else type(e).__name__
             print("  model %s failed (%s)%s" % (model, detail,
-                  "; falling back" if i == 0 else ""), file=sys.stderr)
+                  "; falling back" if i < len(models) - 1 else ""), file=sys.stderr)
     raise last if last else RuntimeError("no model configured")
 
 
