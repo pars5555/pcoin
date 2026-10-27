@@ -529,7 +529,7 @@ def block(c):
     # bot told a miner "I don't know aioncore" about the one pool pc.am lists.
     out.append(
         "AN INDEPENDENT POOL, AIONCORE, is run by somebody outside the project: "
-        "stratum pcoin.aioncore.pro:3333 (the same server as 198.244.169.49:3333), "
+        "stratum pcoin.aioncore.pro:3333, "
         "stats at https://pcoin.aioncore.pro/, RandomX, no registration. It is listed on "
         "the pc.am home page and was paid the 500 PCN independent-pool bounty on "
         "24 September 2026. We do not run it and cannot vouch for its payouts. If a "
@@ -652,24 +652,7 @@ def block(c):
                    % (n(st.get("bestBidUsd"), 6), n(st.get("bestAskUsd"), 6),
                       n(st.get("lastPriceUsd"), 6), n(st.get("volumePcn"), 0),
                       st.get("trades24h")))
-        # What the house bots quote from: the PCN index, or price.pc.am before
-        # the switch. Named by the exchange itself (referenceSource).
-        ref_name = "the PCN index" if x.get("referenceSource") == "index" else "the price.pc.am rate"
-        sl = hb.get("slots") if isinstance(hb.get("slots"), dict) else None
-        rounds = ""
-        if sl:
-            try:
-                nxt = "%d min" % (int(sl.get("nextInSeconds")) // 60)
-            except Exception:
-                nxt = "unknown"
-            rounds = (" in %s rounds of $%s ($%s left in this round; the next round opens in %s)"
-                      % (sl.get("perDay"), n(sl.get("slotUsd"), 2), n(sl.get("leftThisSlotUsd"), 2), nxt))
-        spent = ""
-        if hb.get("spentOut"):
-            spent = ", spent out for this round" if hb.get("spentFor") == "slot" else ", spent out for today"
-        out.append("HOUSE BID BOT: %s, buys at %s%% below %s, budget $%s a day%s, $%s left today%s."
-                   % ("on" if hb.get("enabled") else "off", n(hb.get("discountPercent")), ref_name,
-                      n(hb.get("dailyBudgetUsd"), 2), rounds, n(hb.get("leftTodayUsd"), 2), spent))
+        # House bot budget details omitted to avoid revealing internal operational figures to users.
         if ref.get("enabled"):
             out.append("REFERRAL: %s PCN, paid once the person you introduced deposits at least "
                        "$%s and buys, held %s days."
