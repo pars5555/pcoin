@@ -803,6 +803,16 @@ These come up again and again. Knowing them saves a person a fright:
 - **A long gap between blocks.** Ten minutes is an average, not a schedule.
 - **"Unusually frequent block rewards" for an address on explorer.pc.am.** If someone sees one address listed across multiple consecutive or close blocks and suspects centralization, fraud, or a rogue solo miner: explain that this is an **active pool miner, not a solo miner**. The official pool (`pool.pc.am`) pays its miners directly in the **coinbase transaction** of every block found by the pool (splitting the 50 PCN reward across ~50 miner outputs). Because `pool.pc.am` accounts for roughly 45% of the total network hashrate, every active miner on that pool naturally appears in the explorer for all of those blocks, receiving only their small proportional share (e.g. 5 to 11 PCN), NOT whole 50 PCN block rewards. Finding several pool blocks within 1–2 hours is normal statistical variance (Poisson distribution) around the 10-minute block target. Anyone can inspect the transaction outputs on https://explorer.pc.am to see all ~50 miner outputs. Never guess, never promise "someone will check", and never speculate about centralisation or rogue solo machines.
 - **Windows SmartScreen.** A reputation warning, not a malware detection.
+- **Exchange headline last-trade or chart not moving despite 24h stats/volume.**
+  The headline "last trade" and the chart candles strictly track direct
+  **peer-to-peer (user-to-user) trades** (`house_involved = 0`). The 24h volume
+  and high/low stats on the exchange count all real fills (including users
+  selling into the house liquidity bot), but those automated liquidity fills do
+  NOT move the headline price or plot candles on the chart. That is deliberate
+  so automated liquidity cannot distort the peer-to-peer price history. Once two
+  users trade directly with each other, the headline and chart update immediately.
+  Never claim 0 volume or 0 trades when 24h stats show trading, and never reveal
+  internal bot budgets or schedules.
 
 # KNOWN PROBLEMS — FILE THESE, DO NOT DIAGNOSE THEM
 
