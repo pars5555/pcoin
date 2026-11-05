@@ -144,12 +144,12 @@ export function needsYou({ svcs = [], tasks = [], exOver = null, wrap = null, wo
     const q = o.queue || {};
 
     if (q.open > 0) {
-      // 24 hours is the promise made to users on the site.
-      const late = typeof q.oldestAgeSeconds === 'number' && q.oldestAgeSeconds > 86400;
+      // 48 hours is the promise made to users on the site.
+      const late = typeof q.oldestAgeSeconds === 'number' && q.oldestAgeSeconds > 172800;
       add('action',
         `${q.open} withdrawal${q.open === 1 ? '' : 's'} waiting for you to pay`,
         `Oldest has been waiting ${hours(q.oldestAgeSeconds)}`
-        + (late ? ' — PAST the 24 hour promise on the site.' : ' of the 24 hours promised.')
+        + (late ? ' — PAST the 48 hour promise on the site.' : ' of the 48 hours promised.')
         + ' The exchange holds no spending key; only you can send this.',
         `${base}/exchange?view=withdrawals`);
     }

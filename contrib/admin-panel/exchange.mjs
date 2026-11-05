@@ -130,7 +130,7 @@ export function exchangeSection({ base, creds, actor, sendLogPath = null,
     const o = r.json;
     const l = o.liability;
     const q = o.queue;
-    const late = q.oldestAgeSeconds !== null && q.oldestAgeSeconds >= 18 * 3600;
+    const late = q.oldestAgeSeconds !== null && q.oldestAgeSeconds >= 36 * 3600;
     const rec = o.lastReconcile;
     const bots = o.lastBots;
     return `
@@ -149,7 +149,7 @@ export function exchangeSection({ base, creds, actor, sendLogPath = null,
           ? form('setting', hidden('key', 'exchange_open') + hidden('type', 'bool') + hidden('value', 'false'), 'Close to the public')
           : `<p class="muted">Opening is a public-surface change: create the exchange.pc.am DNS record, drop "tls internal" from its Caddy site, and publish the pc.am page and an owner-approved announcement with it.</p>
              ${form('setting', hidden('key', 'exchange_open') + hidden('type', 'bool') + hidden('value', 'true'), 'OPEN to the public', true)}`}</div>
-      <div class="card"><h2>Withdrawals</h2><p${late ? ' class="bad"' : ''}><b>${q.open}</b> open, oldest ${esc(age(q.oldestAgeSeconds))}${late ? ' — the site promises 24 hours' : ''}.
+      <div class="card"><h2>Withdrawals</h2><p${late ? ' class="bad"' : ''}><b>${q.open}</b> open, oldest ${esc(age(q.oldestAgeSeconds))}${late ? ' — the site promises 48 hours' : ''}.
         <a href="${self}?view=withdrawals">Open the queue</a></p></div>
       <div class="card"><h2>What you owe</h2><table>
         <tr><td style="width:40%">USD owed to users</td><td><b>${esc(l.usdOwedToUsers)}</b></td></tr>
