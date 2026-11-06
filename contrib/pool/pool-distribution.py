@@ -52,6 +52,17 @@ KNOWN = {
         "ChatLab pool", "address posted by the operator in github.com/pars5555/pcoin/issues/6"),
     "pc1qclkpmsdklwehq54fztw5qw8ssnuwmee3szaz2e": (
         "AionCore pool", "address posted by the operator in github.com/pars5555/pcoin/issues/5"),
+    # Named on the strength of a payment and on-chain behaviour rather than a public post by
+    # the operator, and the source says so: the project paid this address the independent-pool
+    # bounty (500 PCN, block 10241, tx 6cc641b29fa10277fdc572e09cd7bca3af1ac18a14f80e84d54b4af93e1573af,
+    # 2026-09-30); the address mined solo until 2026-09-18 14:58 and became a pool fee output
+    # from 15:10 the same day, the day this pool says it opened; and 19 of the 20 blocks
+    # listed on pool.rabidmining.com are on it.
+    "pc1q85lry2j8n5yphq44mk86vc6u3rwygwlnc5ryc7": (
+        "Rabid Mining pool",
+        "address the project paid the independent-pool bounty to on 2026-09-30 (block 10241, tx 6cc641b2...); "
+        "it turned from solo mining into a pool fee output on 2026-09-18, the day the pool opened, and "
+        "matches the blocks listed on pool.rabidmining.com"),
 }
 
 # How a pool's fee output is recognised: a round percentage of the coinbase

@@ -71,9 +71,17 @@ ending 2026‑11‑06 the two classifiers agreed on every block.
 ## Where a name comes from
 
 A name is attached to a fee address only when the pool's operator published that
-address themselves; the source is written next to it in the `KNOWN` table and in
-`meta.json`. Operators who want to be named can open an issue with their fee
-address; anyone can add or correct entries with `--labels file.json`.
+address themselves **or gave it to the project** (for the independent-pool bounty).
+The source is written next to every name, in the `KNOWN` table and in `meta.json`,
+and it says which of the two it is. Two pools were named from a public post by their
+operator (ChatLab, AionCore). One, Rabid Mining, is named on the strength of a payment:
+the project paid that address the independent-pool bounty on 2026-09-30, the address
+turned from solo mining into a pool fee output on the day the pool opened, and it
+matches the blocks the pool lists on its own site. Anyone can check each of those on
+the chain; if the operator posts the address publicly the source will say so instead.
+
+Operators who want to be named, or think a row is wrong, can open an issue with their
+fee address; anyone can add or correct entries with `--labels file.json`.
 
 ## Other limits
 

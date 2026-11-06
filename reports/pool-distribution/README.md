@@ -28,6 +28,22 @@ byte for byte; `meta.json` differs only in the time it was generated. The first
 report was regenerated from a node on a second run and matched exactly.
 
 A share here is a share of **blocks**, not of hashrate, and a fee address is not
-an identity: a pool is named only where its operator published its address, and
-everything else is shown by its address, unnamed. If you operate a pool and want
-it named, or think a row is wrong, open an issue with your fee address.
+an identity: a pool is named only where its operator published its address or gave
+it to the project, the source of every name is in `meta.json`, and everything else
+is shown by its address, unnamed. If you operate a pool and want it named, or think
+a row is wrong, reply on [issue #7](https://github.com/pars5555/pcoin/issues/7)
+with your fee address.
+
+## Revisions
+
+* **2026-11-06, revised the same day.** The address `pc1q85lry2…c5ryc7` is now named
+  *Rabid Mining pool*; the first version of this report showed it unnamed. Only the
+  label on its 1,105 rows changed. Every hash, time, address and count is identical,
+  and the earlier version is in this repository's history. The name rests on a
+  payment, not on a public post by the operator, and `meta.json` and
+  [`POOL-DISTRIBUTION.md`](../../contrib/pool/POOL-DISTRIBUTION.md) say exactly why:
+  the project paid that address the independent-pool bounty on 2026-09-30 (block
+  10241), the address turned from solo mining into a pool fee output on the day the
+  pool opened, and it matches the blocks the pool lists on its own site. A community
+  member pointed out the payment. If the operator would rather it were stated
+  differently, say so on issue #7.
