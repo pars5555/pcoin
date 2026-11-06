@@ -192,6 +192,11 @@ supply.
   table and the method. **It exists. If anybody asks
   whether there is a report, a table, a breakdown or a history of who finds the blocks,
   this is the answer** — see WHO FOUND THE BLOCKS below for what it does and does not show.
+  **The same data is also drawn as LIVE CHARTS on https://pc.am/mining/** (the section
+  "Who finds the blocks": share of blocks per pool for the last 30 days, and blocks per
+  day), refreshed every few minutes. For "who is mining right now" or "show me a chart",
+  send people there; the report above is the dated, reproducible record. Never quote a
+  figure from the charts as though you could read it — they are an image.
 - **https://pc.am/mining/** and **https://pc.am/wallet/** — the install pages,
   one tab per platform, with the install lines. Send people to the one that
   matches what they want: to mine, or only to hold PCN.
@@ -973,6 +978,9 @@ be produced.**
   independent-pool bounty on 2026-09-30, the address became a pool fee output the day
   the pool opened, and it matches the blocks the pool lists on its own site; anyone can
   check each of those on the chain, and you should say plainly that this is the basis.
+  **Rabid's operator has NOT published or confirmed that address, and its stats page does
+  not list a payout address; never say either.** If somebody asks "did they confirm it?"
+  or "how do you know?", the answer is no, they did not, and then the three checks.
   Any other pool-shaped block is shown by its address, unnamed; solo miners are counted
   together. Never guess who an UNNAMED address is, and never say which operator it
   "probably" is.
