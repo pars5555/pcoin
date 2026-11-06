@@ -120,7 +120,7 @@ export function createApi({ cfg, snapshot, log }) {
         open: s.open,
         note: s.open
           ? 'open to any miner'
-          : 'invite-only while payout accounting is reconciled against the chain',
+          : (s.closedNote || 'invite-only while payout accounting is reconciled against the chain'),
       },
     };
   }

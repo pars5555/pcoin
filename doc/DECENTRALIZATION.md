@@ -42,6 +42,12 @@ blocks, in the same days that one independent pool's blocks fell from about 40 a
 moved between about 55% and two thirds of the network during 6 November. The 30-day figure
 above lags behind both.
 
+**How much of that is the project's own machines?** About 4% of the network, measured on
+2026-11-06: eleven PCs, nine of them on pool2.pc.am and two mining solo to the treasury. The
+rest of the hashrate on our pools belongs to outside miners who chose them. What the project
+controls there is the block template every one of those miners works on, which is why the
+share matters even though the machines are not ours.
+
 ## What has been done
 
 - **2026-09-10** — the Windows and Linux installers mine **solo** by default, so new hashrate

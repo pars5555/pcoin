@@ -1,0 +1,12 @@
+[Unit]
+Description=PCoin: are our own pools near half of the blocks over 30 days? (doc/DECENTRALIZATION.md)
+After=pcoin-pool-live.service
+
+[Service]
+Type=oneshot
+# Reads pcoin-pool-live's distribution.json, the same figure the pc.am/mining charts
+# show, so this only runs on the host that draws them.
+ExecStart=/usr/local/bin/pcoin-majority-line-watch
+StateDirectory=pcoin-majority-line
+Nice=10
+IOSchedulingClass=idle

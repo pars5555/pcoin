@@ -1,0 +1,13 @@
+[Unit]
+Description=Check the 50% line hourly
+
+[Timer]
+# Hourly is plenty: the 30-day figure moves by well under a point a day, and the
+# commitment it guards runs in days, not minutes.
+OnBootSec=15min
+OnUnitActiveSec=1h
+RandomizedDelaySec=2min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

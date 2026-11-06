@@ -1,0 +1,251 @@
+#!/usr/bin/env python3
+"""Close one of OUR pools to NEW miners, or reopen it. A dry run unless told otherwise.
+
+WHY THIS EXISTS. doc/DECENTRALIZATION.md (2026-11-06) commits the project to a public
+decision within seven days if its own pools find half of the blocks over 30 days, and
+closing them to new miners is the measure on the table. A measure on the table is only
+real if whoever is on hand can carry it out in minutes and get it right, so it is a
+tested command and not a paragraph.
+
+WHAT "CLOSED" MEANS. The pool already has the switch: `allowlist` in pool.config.json.
+EMPTY MEANS OPEN. A non-empty list admits only those logins, and a login is the payout
+address. Closing means listing every address that mined HERE in the last --days days,
+so nobody already mining is affected, while a new address is refused with
+`closedMessage`, which says why and where to go instead.
+
+THE TRAP IT GUARDS AGAINST. An empty list OPENS the pool. A query that returned nothing
+(wrong db path, a window with no shares) would turn "close" into "open" and report
+success. So it refuses a list shorter than --min-addresses, and refuses one that does
+not cover essentially all of the last day's work.
+
+ONE RESTART. The pool reads its config only at start, so any change restarts pcoin-pool.
+Miners drop for a few seconds and reconnect; the other pool is their failover.
+`closedMessage` needs pool code from 2026-11-06 or later, and --code-from DIR installs
+pool.mjs and api.mjs from DIR within the same restart. Everything replaced is backed up
+first. If the pool does not come back healthy, all of it is put back and restarted.
+
+Usage, as root on a pool host (run it on BOTH, pool.pc.am and pool2.pc.am):
+  pcoin-pool-close-new                                   dry run: what closing would do
+  pcoin-pool-close-new --apply [--code-from contrib/pool/]
+  pcoin-pool-close-new --reopen                          back to open (allowlist [])
+"""
+import argparse
+import datetime
+import json
+import os
+import re
+import shutil
+import sqlite3
+import subprocess
+import sys
+import time
+import urllib.request
+
+BECH32 = re.compile(r"^pc1[ac-hj-np-z02-9]{11,87}$")
+DEFAULT_MESSAGE = (
+    "This pool is closed to NEW miners while the project's own pools hold too much of the "
+    "network. Please mine solo (the installer default) or use an independent pool listed on "
+    "https://pc.am - why: https://github.com/pars5555/pcoin/blob/main/doc/DECENTRALIZATION.md")
+
+
+def now_ms():
+    return int(time.time() * 1000)
+
+
+def stamp():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def miners(db, since_ms):
+    c = sqlite3.connect("file:%s?mode=ro" % db, uri=True, timeout=30)
+    c.execute("pragma query_only=1")
+    try:
+        return dict(c.execute(
+            "select miner, sum(weight) from shares where at >= ? group by miner", (since_ms,)))
+    finally:
+        c.close()
+
+
+def api_get(cfg, path):
+    host = cfg.get("apiBind") or "127.0.0.1"
+    if host in ("0.0.0.0", "::"):
+        host = "127.0.0.1"
+    with urllib.request.urlopen("http://%s:%s%s" % (host, cfg.get("apiPort"), path), timeout=10) as r:
+        return json.loads(r.read().decode())
+
+
+def connected(cfg):
+    try:
+        return api_get(cfg, "/api/pools")["pools"][0]["poolStats"]["connectedMiners"]
+    except Exception:
+        return None
+
+
+def write_json(path, data):
+    st = os.stat(path)
+    tmp = path + ".tmp-close"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+    os.chown(tmp, st.st_uid, st.st_gid)
+    os.chmod(tmp, st.st_mode & 0o7777)
+    os.replace(tmp, path)
+
+
+def install(src, dst):
+    st = os.stat(dst)
+    tmp = dst + ".tmp-close"
+    shutil.copyfile(src, tmp)
+    os.chown(tmp, st.st_uid, st.st_gid)
+    os.chmod(tmp, st.st_mode & 0o7777)
+    os.replace(tmp, dst)
+
+
+def healthy(cfg, service, since, expect):
+    """The unit is active, the stratum port listens, the API answers, and the pool's own
+    startup line says the allowlist is what we wrote. Waits up to 60 s."""
+    deadline = time.time() + 60
+    why = "not checked"
+    while time.time() < deadline:
+        time.sleep(3)
+        if subprocess.run(["systemctl", "is-active", "--quiet", service]).returncode != 0:
+            why = "%s is not active" % service
+            continue
+        ss = subprocess.run(["ss", "-ltnH", "sport = :%s" % cfg["port"]], capture_output=True, text=True).stdout
+        if not ss.strip():
+            why = "nothing listens on port %s" % cfg["port"]
+            continue
+        try:
+            api_get(cfg, "/health")
+        except Exception as e:
+            why = "the API does not answer (%s)" % type(e).__name__
+            continue
+        log = subprocess.run(["journalctl", "-u", service, "--since", since, "--no-pager", "-o", "cat"],
+                             capture_output=True, text=True).stdout
+        if expect not in log:
+            why = "the pool has not logged %r since the restart" % expect
+            continue
+        return True, "active, port %s listening, API answering, log says %r" % (cfg["port"], expect)
+    return False, why
+
+
+def restart_and_check(cfg, service, expect):
+    since = time.strftime("%Y-%m-%d %H:%M:%S")
+    subprocess.run(["systemctl", "restart", service], check=False)
+    return healthy(cfg, service, since, expect)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--config", default="/opt/pcoin-pool/pool.config.json")
+    ap.add_argument("--service", default="pcoin-pool")
+    ap.add_argument("--days", type=int, default=30, help="list addresses that mined in this many days")
+    ap.add_argument("--min-addresses", type=int, default=3)
+    ap.add_argument("--message", default=DEFAULT_MESSAGE)
+    ap.add_argument("--code-from", help="install pool.mjs and api.mjs from this directory in the same restart")
+    ap.add_argument("--accept-old-message", action="store_true",
+                    help="close even though the running code will say 'this pool is not open yet'")
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--apply", action="store_true")
+    g.add_argument("--reopen", action="store_true")
+    a = ap.parse_args()
+
+    if (a.apply or a.reopen) and os.geteuid() != 0:
+        sys.exit("must run as root (it restarts %s)" % a.service)
+    cfg = json.load(open(a.config, encoding="utf-8"))
+    pool_dir = os.path.dirname(os.path.abspath(a.config))
+    now_list = cfg.get("allowlist") or []
+    print("pool: %s on port %s  (config %s)" % (a.service, cfg.get("port"), a.config))
+    print("now:  %s" % ("CLOSED to new miners, %d addresses listed" % len(now_list) if now_list else "OPEN to any miner"))
+    print("connected miners now: %s" % connected(cfg))
+
+    if a.reopen:
+        if not now_list:
+            print("already open; nothing to do"); return 0
+        ts = stamp(); bak = a.config + ".bak-reopen-" + ts
+        shutil.copy2(a.config, bak)
+        cfg["allowlist"] = []
+        cfg["_allowlist"] = "OPEN. Empty array = anyone may mine. Reopened %s by pcoin-pool-close-new --reopen." % ts
+        write_json(a.config, cfg)
+        ok, why = restart_and_check(cfg, a.service, "OPEN -- anyone may mine")
+        if not ok:
+            shutil.copy2(bak, a.config); restart_and_check(cfg, a.service, "allowlist:")
+            sys.exit("REOPEN FAILED (%s); config restored from %s and the pool restarted" % (why, bak))
+        print("REOPENED: %s. Backup: %s" % (why, bak))
+        return 0
+
+    # Who is mining here, and does the list cover them?
+    t = now_ms()
+    window = miners(cfg["db"], t - a.days * 86400 * 1000)
+    day = miners(cfg["db"], t - 86400 * 1000)
+    good = sorted(m for m in window if BECH32.match(m))
+    bad = [m for m in window if not BECH32.match(m)]
+    day_total = sum(day.values()) or 0
+    covered = sum(w for m, w in day.items() if m in set(good))
+    coverage = 100.0 * covered / day_total if day_total else 0.0
+    supports = "closedMessage" in open(os.path.join(pool_dir, "pool.mjs"), encoding="utf-8").read()
+    print("window: addresses that mined in the last %d days: %d (%d not a valid address, left out)"
+          % (a.days, len(good), len(bad)))
+    print("cover:  they did %.2f%% of the last 24 hours' work (%d addresses active today)" % (coverage, len(day)))
+    print("code:   running pool.mjs %s closedMessage" % ("supports" if supports else "PREDATES"))
+    print("message a new miner would see:\n  %s" % a.message)
+
+    problems = []
+    if len(good) < a.min_addresses:
+        problems.append("only %d addresses; an empty or tiny list would OPEN or break the pool" % len(good))
+    if day_total and coverage < 99.9:
+        problems.append("the list covers only %.2f%% of today's work" % coverage)
+    if not supports and not a.code_from and not a.accept_old_message:
+        problems.append("the running code would show 'this pool is not open yet'; pass "
+                        "--code-from <repo>/contrib/pool to install the current code in the same restart")
+    if a.code_from:
+        for f in ("pool.mjs", "api.mjs"):
+            src = os.path.join(a.code_from, f)
+            if not os.path.isfile(src):
+                problems.append("%s is missing" % src)
+            elif subprocess.run(["node", "--check", src]).returncode != 0:
+                problems.append("%s does not pass node --check" % src)
+        src = os.path.join(a.code_from, "pool.mjs")
+        if os.path.isfile(src) and "closedMessage" not in open(src, encoding="utf-8").read():
+            problems.append("%s predates closedMessage too" % src)
+
+    if not a.apply:
+        print("\nDRY RUN. --apply would: back up the config%s, list %d addresses, set closedMessage, "
+              "restart %s once, check it came back, and roll everything back if it did not."
+              % (" and pool.mjs/api.mjs" if a.code_from else "", len(good), a.service))
+        for p in problems:
+            print("  WOULD REFUSE: " + p)
+        return 0
+    if problems:
+        sys.exit("REFUSED:\n  " + "\n  ".join(problems))
+
+    ts = stamp()
+    backups = {a.config: a.config + ".bak-close-" + ts}
+    if a.code_from:
+        for f in ("pool.mjs", "api.mjs"):
+            p = os.path.join(pool_dir, f); backups[p] = p + ".bak-close-" + ts
+    for src, dst in backups.items():
+        shutil.copy2(src, dst)
+    cfg["allowlist"] = good
+    cfg["closedMessage"] = a.message
+    cfg["_allowlist"] = ("CLOSED to new miners since %s by pcoin-pool-close-new: the %d addresses that mined "
+                         "here in the %d days before. Reopen with pcoin-pool-close-new --reopen." % (ts, len(good), a.days))
+    write_json(a.config, cfg)
+    if a.code_from:
+        for f in ("pool.mjs", "api.mjs"):
+            install(os.path.join(a.code_from, f), os.path.join(pool_dir, f))
+    ok, why = restart_and_check(cfg, a.service, "allowlist: %d address(es)" % len(good))
+    if not ok:
+        for src, dst in backups.items():
+            shutil.copy2(dst, src)
+        ok2, why2 = restart_and_check(cfg, a.service, "allowlist:")
+        sys.exit("CLOSE FAILED (%s). Everything restored from the .bak-close-%s files and the pool "
+                 "restarted: %s" % (why, ts, why2 if ok2 else "STILL UNHEALTHY - " + why2))
+    time.sleep(30)
+    print("CLOSED: %s. %s miners connected 30 s later. Backups: %s"
+          % (why, connected(cfg), ", ".join(backups.values())))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

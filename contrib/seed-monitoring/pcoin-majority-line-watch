@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""Tell the owner when the project's own pools approach or reach half of the blocks.
+
+WHY THIS EXISTS. doc/DECENTRALIZATION.md (published 2026-11-06) makes one commitment:
+if the project's two pools find 50% or more of the blocks over a 30-day window, the
+project publishes a decision in @PCoinPCN within seven days. A commitment with no
+trigger is how a promised follow-up gets forgotten (see pcoin-pool-report), so this
+is the trigger.
+
+IT READS THE PAGE'S OWN NUMBER: pcoin-pool-live's distribution.json, the file the
+charts on pc.am/mining are drawn from, so the alert, the chart and the report cannot
+disagree. It is not pcoin-concentration-watch. That one watches a 300-block window for
+a party that could rewrite history NOW. This one watches the slower 30-day figure the
+public policy is written against.
+
+LEVELS. ok below 48%, near from 48%, LINE from 50%. Going back down needs a full point
+less (47% to leave near, 49% to leave LINE), so a figure sitting on a threshold does not
+flap. Every level change alerts. While at LINE a reminder goes out every --remind-hours
+naming the day the decision is due. The FIRST time LINE is reached is remembered, so
+the seven days do not restart each time the figure wobbles.
+
+It does not act. Closing the pools is a decision for a person; the alert says how
+(contrib/pool/pcoin-pool-close-new). A stale or unreadable file is reported once and
+judged again when it is fresh: the live-charts check in pcoin-service-watch is what
+alarms on a dead chart job. Exits 0 even when it alerts, like every monitor here.
+
+Usage: pcoin-majority-line-watch [--file F] [--state F] [--near 48] [--line 50]
+                                 [--remind-hours 24] [--dry-run]
+"""
+import argparse
+import datetime
+import json
+import os
+import subprocess
+import sys
+
+NOTIFY = "/usr/local/bin/pcoin-notify"
+PAGE = "https://github.com/pars5555/pcoin/blob/main/doc/DECENTRALIZATION.md"
+UTC = datetime.timezone.utc
+
+
+def notify(subject, body, dry):
+    if dry or not os.path.isfile(NOTIFY):
+        print("--- would alert ---\n%s\n%s" % (subject, body))
+        return
+    try:
+        subprocess.run([NOTIFY, subject, body], timeout=60)
+    except Exception as e:
+        print("notify failed: %s" % e, file=sys.stderr)
+
+
+def load(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+
+def save(path, st):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(st, fh, indent=1)
+    os.replace(tmp, path)
+
+
+def level_for(share, prev, near, line):
+    """Hysteresis: enter at the threshold, leave a full point below it."""
+    if share >= line or (prev == "LINE" and share >= line - 1):
+        return "LINE"
+    if share >= near or (prev in ("near", "LINE") and share >= near - 1):
+        return "near"
+    return "ok"
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--file", default="/var/lib/pcoin-pool-live/distribution.json")
+    ap.add_argument("--state", default="/var/lib/pcoin-majority-line/state.json")
+    ap.add_argument("--near", type=float, default=48.0)
+    ap.add_argument("--line", type=float, default=50.0)
+    ap.add_argument("--remind-hours", type=float, default=24.0)
+    ap.add_argument("--max-age-minutes", type=float, default=60.0)
+    ap.add_argument("--dry-run", action="store_true")
+    a = ap.parse_args()
+    now = datetime.datetime.now(UTC)
+    st = load(a.state)
+
+    try:
+        d = load(a.file)
+        gen = datetime.datetime.fromisoformat(d["generated_utc"].replace("Z", "+00:00"))
+        age = (now - gen).total_seconds() / 60
+        p = next(x for x in d["parties"] if x["id"] == "project")
+        share, lo, hi, blocks, days = float(p["share"]), p["ci_low"], p["ci_high"], d["blocks"], d["window_days"]
+    except Exception as e:
+        print("cannot read %s (%s); not judging" % (a.file, type(e).__name__))
+        return 0
+    if age > a.max_age_minutes:
+        print("%s is %d minutes old; not judging a stale figure" % (a.file, age))
+        return 0
+
+    recent = []
+    for r in d.get("daily", [])[-3:]:
+        tot = sum(v for k, v in r.items() if k != "date")
+        if tot:
+            recent.append("%s %.0f%%" % (r["date"][5:], 100.0 * r.get("project", 0) / tot))
+    fig = "%.1f%% of the blocks over %d days (95%%: %.1f-%.1f, %d blocks)" % (share, days, lo, hi, blocks)
+    prev = st.get("level", "ok")
+    lvl = level_for(share, prev, a.near, a.line)
+    print("project pools: %s | level %s (was %s) | last days: %s" % (fig, lvl, prev, ", ".join(recent)))
+
+    if lvl == "LINE" and not st.get("line_since"):
+        st["line_since"] = now.isoformat()
+    if lvl != "LINE" and prev != "LINE":
+        st.pop("line_since", None)
+    due = None
+    if st.get("line_since"):
+        due = (datetime.datetime.fromisoformat(st["line_since"]) + datetime.timedelta(days=7)).strftime("%Y-%m-%d")
+
+    lever = ("The prepared measure, on each pool host as root: `pcoin-pool-close-new --code-from "
+             "/opt/pcoin-pool/next` (a dry run), then add --apply. It lists everyone already mining, "
+             "so only NEW miners are refused, and it rolls back on its own if the pool does not come back.")
+    subject = body = None
+    if lvl != prev:
+        if lvl == "LINE":
+            subject = "PCoin: our pools reached the 50%% line - %.1f%% of blocks over %d days" % (share, days)
+            body = ("%s. Last days: %s.\n\nThe standing page (%s) commits the project to a public decision in "
+                    "@PCoinPCN within seven days, with reasons, whichever way it goes: due by %s.\n\n%s"
+                    % (fig, ", ".join(recent), PAGE, due, lever))
+        elif lvl == "near":
+            subject = ("PCoin: our pools at %.1f%% of blocks over %d days - approaching the 50%% line" % (share, days)
+                       if prev == "ok" else
+                       "PCoin: our pools back under the 50%% line - %.1f%% of blocks over %d days" % (share, days))
+            body = ("%s. Last days: %s.\n\nAt 50%% the standing page (%s) commits the project to a public decision "
+                    "within seven days.%s\n\n%s" % (fig, ", ".join(recent), PAGE,
+                    (" The decision first fell due on %s." % due) if prev == "LINE" and due else "", lever))
+        else:
+            subject = "PCoin: our pools down to %.1f%% of blocks over %d days" % (share, days)
+            body = "%s. Below %.0f%% again; nothing is due." % (fig, a.near)
+        if lvl == "ok":
+            st.pop("line_since", None)
+    elif lvl == "LINE":
+        last = st.get("last_sent")
+        if not last or (now - datetime.datetime.fromisoformat(last)).total_seconds() >= a.remind_hours * 3600:
+            subject = "PCoin reminder: our pools still at %.1f%% of blocks over %d days - decision due by %s" % (share, days, due)
+            body = "%s. Last days: %s. Above the line since %s.\n\n%s" % (fig, ", ".join(recent), st["line_since"][:16], lever)
+
+    if subject:
+        notify(subject, body, a.dry_run)
+        st["last_sent"] = now.isoformat()
+    st["level"] = lvl
+    st["last_share"] = share
+    if not a.dry_run:
+        save(a.state, st)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

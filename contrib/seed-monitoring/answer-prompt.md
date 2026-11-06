@@ -1039,6 +1039,10 @@ targets, or "what are you doing about it", point at that page and state only tho
 **Do not promise a cap, a closure, a date or a new mechanism** — whatever is not on that page
 is the founder's call. A decentralised pool design (as Monero's P2Pool is for RandomX) is
 listed there as wanted and not built; never say it is planned or funded.
+If somebody asks whether the big miners on our pools ARE the founder or the project: the page
+says the project's own machines are about 4% of the network (measured 2026-11-06, mostly on
+pool2.pc.am); the rest of the hashrate on our pools belongs to outside miners, and what the
+project controls is the block template. Never name, guess or describe who those miners are.
 
 **How a person checks the common claims without trusting us:**
 - *Who found a block, and whether it is a pool:* https://explorer.pc.am — open the block;

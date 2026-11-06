@@ -703,6 +703,7 @@ async function apiSnapshot() {
     nodeReadAt: n.readAt ?? null,
     nodeReadable: n.readable ?? false,
     open: CFG.allowlist.length === 0,
+    closedNote: CFG.closedMessage || null,
   };
 }
 
@@ -769,10 +770,13 @@ const server = net.createServer((sock) => {
         const login = String(msg.params?.login || '').trim();
         // FLEET-ONLY IS ENFORCED, NOT INTENDED. A stranger who finds the port
         // gets told plainly rather than silently accruing a balance nobody
-        // planned to pay.
+        // planned to pay. The same switch closes the pool to NEW miners when
+        // our share of the network is too high (doc/DECENTRALIZATION.md,
+        // contrib/pool/pcoin-pool-close-new): then `closedMessage` says why and
+        // where to go instead, because "not open yet" would be a lie.
         if (CFG.allowlist.length && !CFG.allowlist.includes(login)) {
           log(`rejected login from ${sock.remoteAddress}: ${login.slice(0, 24)}… not on the allowlist`);
-          send(sock, { id: msg.id, error: { code: -1, message: 'this pool is not open yet' } });
+          send(sock, { id: msg.id, error: { code: -1, message: CFG.closedMessage || 'this pool is not open yet' } });
           sock.end();
           return;
         }
