@@ -1,0 +1,16 @@
+[Unit]
+Description=PCoin: redraw the "who finds the blocks" charts for the pc.am mining page
+After=network-online.target pcoind.service
+OnFailure=pcoin-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pcoin-pool-live --out-dir /var/lib/pcoin-pool-live --datadir /var/lib/pcoin
+Nice=10
+# Reads the node over RPC and writes only under /var/lib/pcoin-pool-live. 0755 so the web
+# server's user can read the images it serves.
+StateDirectory=pcoin-pool-live
+StateDirectoryMode=0755
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectHome=yes

@@ -1,0 +1,12 @@
+[Unit]
+Description=Redraw the PCoin pool-distribution charts every ten minutes
+
+[Timer]
+# Blocks arrive about every ten minutes, so a chart older than that is already behind. The
+# run takes about ten seconds and reads only the node.
+OnBootSec=3min
+OnUnitActiveSec=10min
+RandomizedDelaySec=45
+
+[Install]
+WantedBy=timers.target
