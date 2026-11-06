@@ -967,8 +967,14 @@ be produced.**
   pool's hashrate; those exist only in a pool operator's own records. Say that plainly.
 - **How a block is attributed:** a pool's coinbase pays its fee address (a round
   percentage of the block); a pool is NAMED only where its operator published that
-  address; any other pool-shaped block is shown by its address, unnamed; solo miners are
-  counted together. Never guess who an unnamed address is, and never say which operator it
+  address or gave it to the project, and the report's `meta.json` says which for each
+  name. ChatLab and AionCore are named from their operators' own public posts. **Rabid
+  Mining is named on the strength of a payment**: the project paid that address the
+  independent-pool bounty on 2026-09-30, the address became a pool fee output the day
+  the pool opened, and it matches the blocks the pool lists on its own site; anyone can
+  check each of those on the chain, and you should say plainly that this is the basis.
+  Any other pool-shaped block is shown by its address, unnamed; solo miners are counted
+  together. Never guess who an UNNAMED address is, and never say which operator it
   "probably" is.
 - Do not restate its percentages as live facts. Point at the file; if you quote a figure,
   give the window it covers. For the current split use the POOL lines in LIVE FACTS. It is
