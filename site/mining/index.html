@@ -67,6 +67,9 @@
   .shot img{max-width:100%;height:auto;border-radius:12px;border:1px solid var(--line);
     box-shadow:0 18px 50px rgba(0,0,0,.5)}
   .shot figcaption{color:var(--dim);font-size:.85rem;margin-top:10px}
+  .chart{margin:18px 0}
+  .chart img{display:block;width:100%;height:auto;border-radius:16px;background:var(--panel)}
+  .chart figcaption{color:var(--dim);font-size:.85rem;margin-top:8px}
   .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin:16px 0}
   .stat{background:var(--panel);border:1px solid var(--line-soft);border-radius:12px;padding:14px 16px}
   .stat b{display:block;font-size:1.3rem;color:var(--teal);font-weight:800}
@@ -298,6 +301,35 @@ sudo systemctl restart pcoind      # or: systemctl --user restart pcoind</code><
     </ul>
     <p class="muted">Both take a 2% fee. There is also at least one pool run by somebody else,
     which is healthier for the chain than everyone using ours.</p>
+
+    <h2>Who finds the blocks</h2>
+    <p class="muted">Anyone can mine, and nobody should have to take our word for how spread out the
+    mining is. These charts are drawn from the chain itself and refresh every few minutes.</p>
+
+    <figure class="chart">
+      <picture>
+        <source media="(max-width: 560px)" srcset="https://pool.pc.am/live/distribution-bars-narrow.svg" width="360" height="598">
+        <img src="https://pool.pc.am/live/distribution-bars.svg" width="640" height="534" loading="lazy" decoding="async"
+             alt="Bar chart of the share of blocks found by each party over the last 30 days. The same numbers are in the data file and in the monthly reports linked below.">
+      </picture>
+      <figcaption>Share of blocks, last 30 days. Whiskers are the 95% interval.</figcaption>
+    </figure>
+    <figure class="chart">
+      <picture>
+        <source media="(max-width: 560px)" srcset="https://pool.pc.am/live/distribution-daily-narrow.svg" width="360" height="426">
+        <img src="https://pool.pc.am/live/distribution-daily.svg" width="640" height="372" loading="lazy" decoding="async"
+             alt="Stacked column chart of the blocks found each day over the last 30 days, split by party.">
+      </picture>
+      <figcaption>Blocks found per UTC day.</figcaption>
+    </figure>
+
+    <div class="note">This is a share of <strong>blocks</strong>, not of hashrate, and an address is not
+    an identity. The charts are a moving view; the record is the dated, reproducible
+    <a href="https://github.com/pars5555/pcoin/tree/main/reports/pool-distribution">monthly reports</a>,
+    with <a href="https://github.com/pars5555/pcoin/blob/main/contrib/pool/POOL-DISTRIBUTION.md">the method</a>
+    and every block as a CSV. The numbers behind the charts are in
+    <a href="https://pool.pc.am/live/distribution.json">distribution.json</a>. Run your own node and
+    you can check every figure.</div>
 
     <h2>Where the coins go</h2>
     <p class="muted">You give the miner a payout address and rewards are paid straight to it. The

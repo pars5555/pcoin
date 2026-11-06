@@ -102,6 +102,11 @@ SERVICES = [
     # it -- the page renders and does nothing, which no status check can see.
     ("pc.am/pay",      "https://pc.am/pay/",      {"csp_hash": True}),
     ("pc.am/app",      "https://pc.am/app/",      {"csp_hash": True}),
+    # THE CHARTS ON pc.am/mining. The data behind them carries the time it was drawn and the
+    # job redraws every ten minutes, so "older than 45" means it has stopped. See the
+    # fresh_minutes branch below: a stale chart still answers 200.
+    ("live-charts",    "https://pool.pc.am/live/distribution.json",
+                                                {"key": "generated_utc", "fresh_minutes": 45}),
     # CERTIFICATE EXPIRY, WARNED EARLY. tls://host[:port] reads the certificate a
     # visitor is actually handed and fails once it has tls_warn_days or fewer left.
     #
@@ -199,6 +204,19 @@ def probe(url, want):
         v = dig(d, want["key"])
         if v is None:
             return False, "answered 200 but %s is missing or null" % want["key"]
+        if "fresh_minutes" in want:
+            # The value is a TIMESTAMP and it must be recent. A chart on a public page quietly
+            # promises that it is current; if the job that draws it dies, the page goes on
+            # serving a perfectly healthy 200 with old numbers, and nothing else would notice.
+            try:
+                when = datetime.datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+            except ValueError:
+                return False, "%s=%r is not a date I can read" % (want["key"], str(v)[:24])
+            age = (datetime.datetime.now(datetime.timezone.utc) - when).total_seconds() / 60.0
+            if age > want["fresh_minutes"]:
+                return False, ("STALE: %s is %d minutes old (limit %d) -- the job that draws it "
+                               "has stopped" % (want["key"], age, want["fresh_minutes"]))
+            return True, "drawn %d minutes ago" % age
         return True, "%s=%s" % (want["key"], str(v)[:24])
     if want.get("csp_hash"):
         # pc.am's CSP pins each inline <script> BY HASH instead of allowing
