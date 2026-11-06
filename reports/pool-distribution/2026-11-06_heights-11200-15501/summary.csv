@@ -1,0 +1,8 @@
+party,kind,fee_address,blocks,share_percent,ci95_low_percent,ci95_high_percent,attribution
+pool.pc.am + pool2.pc.am,pool,pc1qlvw6kx8wkcz8f6p0d6kswv69fjt33ll079f64e,2018,46.91,45.42,48.40,the project's pools; the fee address is the public treasury in contrib/pool/pool.config.json
+"unlabelled pool, fee address pc1q85lry2...c5ryc7",pool_unlabelled,pc1q85lry2j8n5yphq44mk86vc6u3rwygwlnc5ryc7,1105,25.69,24.40,27.01,fee output = round percentage of the coinbase; nobody has published this address
+ChatLab pool,pool,pc1qdjd0peg79ln37y67k0uz7nfvsypndzx5s26qqa,488,11.34,10.43,12.33,address posted by the operator in github.com/pars5555/pcoin/issues/6
+solo miners (34 distinct addresses),solo,,482,11.20,10.30,12.18,"coinbase pays 1-2 addresses, no fee output"
+AionCore pool,pool,pc1qclkpmsdklwehq54fztw5qw8ssnuwmee3szaz2e,139,3.23,2.74,3.80,address posted by the operator in github.com/pars5555/pcoin/issues/5
+"project miners (solo, paid straight to the treasury address)",solo,,64,1.49,1.17,1.90,the coinbase pays only the treasury address: a project machine mining solo
+"unlabelled pool, fee address pc1qrrw85z...tx9zmz",pool_unlabelled,pc1qrrw85znlscp75642jucv59nkz743ux83tx9zmz,6,0.14,0.06,0.30,fee output = round percentage of the coinbase; nobody has published this address

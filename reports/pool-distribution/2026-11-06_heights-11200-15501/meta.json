@@ -1,0 +1,31 @@
+{
+  "tool": "contrib/pool/pool-distribution.py",
+  "tool_version": "1",
+  "generated_utc": "2026-11-06T07:07:02Z",
+  "window": "explicit heights",
+  "from_height": 11200,
+  "to_height": 15501,
+  "blocks_in_window": 4302,
+  "blocks_attributed": 4302,
+  "blocks_unreadable": 0,
+  "from_time_utc": "2026-10-07T06:45:15Z",
+  "to_time_utc": "2026-11-06T06:36:23Z",
+  "window_note": "block timestamps are not monotonic, so the first and last few blocks of a time-based window can differ by a handful from another node's run",
+  "node_tip_height": 15504,
+  "node_tip_hash": "513ff17d4423007094d05b01308eae7c5f69393650cfb8287e4367b3c0cdae75",
+  "labels_used": {
+    "pc1qlvw6kx8wkcz8f6p0d6kswv69fjt33ll079f64e": {
+      "name": "pool.pc.am + pool2.pc.am",
+      "source": "the project's pools; the fee address is the public treasury in contrib/pool/pool.config.json"
+    },
+    "pc1qdjd0peg79ln37y67k0uz7nfvsypndzx5s26qqa": {
+      "name": "ChatLab pool",
+      "source": "address posted by the operator in github.com/pars5555/pcoin/issues/6"
+    },
+    "pc1qclkpmsdklwehq54fztw5qw8ssnuwmee3szaz2e": {
+      "name": "AionCore pool",
+      "source": "address posted by the operator in github.com/pars5555/pcoin/issues/5"
+    }
+  },
+  "method": "see POOL-DISTRIBUTION.md"
+}

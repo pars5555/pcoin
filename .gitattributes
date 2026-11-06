@@ -115,3 +115,8 @@ contrib/guix/**                 text=auto eol=lf
 # The site's pages are hashed byte-for-byte for the CSP (contrib/deploy/csp-hashes.py),
 # so a CRLF checkout of /app or /pay would compute a hash the server never sends.
 site/**/*.html                  text eol=lf
+
+# Published pool-distribution reports are data that people verify by recomputing
+# them and comparing bytes, so git must never rewrite their line endings
+# (csv.writer emits CRLF; core.autocrlf=true would turn that into LF on commit).
+reports/pool-distribution/**    -text
