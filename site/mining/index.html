@@ -292,15 +292,20 @@ sudo systemctl restart pcoind      # or: systemctl --user restart pcoind</code><
 
     <h2>Solo or pool</h2>
     <p class="muted"><strong>Solo</strong> means you build your own blocks and keep the entire
-    50&nbsp;PCN reward when you find one — but finding one is rare and irregular.
+    50&nbsp;PCN reward when you find one — but finding one is irregular, and how often depends on
+    your hashrate against the whole network's.
     <strong>Pool</strong> means your work is combined with everyone else's and you are paid a
     steady share of whatever the pool finds. Two pools are run by the project:</p>
     <ul>
       <li><code>pool.pc.am:3333</code></li>
       <li><code>pool2.pc.am:3333</code></li>
     </ul>
-    <p class="muted">Both take a 2% fee. There is also at least one pool run by somebody else,
-    which is healthier for the chain than everyone using ours.</p>
+    <p class="muted">Both take a 2% fee. <strong>If you are new, please start solo</strong> — it is
+    the default in the Windows and Linux installers, with no fee and no operator. Our two pools
+    together hold a large share of the network, and a pool above half of the network is a risk for
+    everyone. Pools run by other people are listed on the <a href="/">home page</a>, which is
+    healthier for the chain than everyone using ours. What we measure and what we do about it is
+    on the <a href="https://github.com/pars5555/pcoin/blob/main/doc/DECENTRALIZATION.md">decentralization page</a>.</p>
 
     <h2>Who finds the blocks</h2>
     <p class="muted">Anyone can mine, and nobody should have to take our word for how spread out the

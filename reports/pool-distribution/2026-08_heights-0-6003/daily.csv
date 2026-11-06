@@ -1,0 +1,63 @@
+date_utc,party,blocks
+2026-08-01,solo miners,3
+2026-08-02,solo miners,2019
+2026-08-03,solo miners,76
+2026-08-04,solo miners,95
+2026-08-05,"project miners (solo, paid straight to the treasury address)",1
+2026-08-05,solo miners,80
+2026-08-06,solo miners,63
+2026-08-07,solo miners,76
+2026-08-08,solo miners,132
+2026-08-09,"project miners (solo, paid straight to the treasury address)",1
+2026-08-09,solo miners,167
+2026-08-10,solo miners,199
+2026-08-11,solo miners,185
+2026-08-12,"pool-shaped, no recognisable fee output",9
+2026-08-12,solo miners,80
+2026-08-13,"pool-shaped, no recognisable fee output",9
+2026-08-13,pool.pc.am + pool2.pc.am,1
+2026-08-13,solo miners,186
+2026-08-14,"pool-shaped, no recognisable fee output",2
+2026-08-14,pool.pc.am + pool2.pc.am,2
+2026-08-14,solo miners,124
+2026-08-15,"pool-shaped, no recognisable fee output",72
+2026-08-15,pool.pc.am + pool2.pc.am,59
+2026-08-15,solo miners,18
+2026-08-16,"pool-shaped, no recognisable fee output",65
+2026-08-16,pool.pc.am + pool2.pc.am,59
+2026-08-16,solo miners,12
+2026-08-17,"pool-shaped, no recognisable fee output",44
+2026-08-17,pool.pc.am + pool2.pc.am,74
+2026-08-17,solo miners,69
+2026-08-18,"pool-shaped, no recognisable fee output",6
+2026-08-18,pool.pc.am + pool2.pc.am,58
+2026-08-18,solo miners,97
+2026-08-19,pool.pc.am + pool2.pc.am,46
+2026-08-19,solo miners,99
+2026-08-20,pool.pc.am + pool2.pc.am,51
+2026-08-20,solo miners,96
+2026-08-21,pool.pc.am + pool2.pc.am,36
+2026-08-21,solo miners,98
+2026-08-22,pool.pc.am + pool2.pc.am,33
+2026-08-22,solo miners,107
+2026-08-23,pool.pc.am + pool2.pc.am,41
+2026-08-23,solo miners,97
+2026-08-24,pool.pc.am + pool2.pc.am,44
+2026-08-24,solo miners,96
+2026-08-25,pool.pc.am + pool2.pc.am,53
+2026-08-25,solo miners,93
+2026-08-26,pool.pc.am + pool2.pc.am,130
+2026-08-26,solo miners,22
+2026-08-27,pool.pc.am + pool2.pc.am,132
+2026-08-27,"project miners (solo, paid straight to the treasury address)",1
+2026-08-27,solo miners,17
+2026-08-28,pool.pc.am + pool2.pc.am,108
+2026-08-28,"project miners (solo, paid straight to the treasury address)",1
+2026-08-28,solo miners,23
+2026-08-29,pool.pc.am + pool2.pc.am,126
+2026-08-29,solo miners,27
+2026-08-30,pool.pc.am + pool2.pc.am,94
+2026-08-30,"project miners (solo, paid straight to the treasury address)",1
+2026-08-30,solo miners,42
+2026-08-31,pool.pc.am + pool2.pc.am,108
+2026-08-31,solo miners,39

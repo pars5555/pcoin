@@ -9,12 +9,19 @@ cannot tell you is in [`contrib/pool/POOL-DISTRIBUTION.md`](../../contrib/pool/P
 
 | folder | blocks | window (UTC) |
 |---|---|---|
+| [`2026-08_heights-0-6003`](2026-08_heights-0-6003) | 6,004 | 2026-08-01 16:10 – 2026-08-31 23:53 (August 2026, from the first block; the project's pool opened on 13 August) |
+| [`2026-09_heights-6004-10298`](2026-09_heights-6004-10298) | 4,295 | 2026-09-01 00:02 – 2026-09-30 23:53 (calendar month September 2026) |
 | [`2026-10_heights-10299-14747`](2026-10_heights-10299-14747) | 4,449 | 2026-10-01 00:07 – 2026-10-31 23:57 (calendar month October 2026) |
 | [`2026-11-06_heights-11200-15501`](2026-11-06_heights-11200-15501) | 4,302 | 2026-10-07 06:45 – 2026-11-06 06:36 (the 30 days before 2026-11-06) |
 
-The two windows overlap (7–31 October is in both). Monthly reports are for finished
-calendar months and are generated automatically on the 1st; the 30-day one was a
-one-off for a community request.
+August, September and October are consecutive and do not overlap; the 30-day window
+overlaps October (7–31 October is in both). Monthly reports are for finished calendar
+months and are generated automatically on the 1st; August and September were generated
+on 2026-11-06 to give the history, with the same tool and the same two-pass check. The
+30-day one was a one-off for a community request.
+
+The project's own pools' share of blocks, month by month: see
+[`doc/DECENTRALIZATION.md`](../../doc/DECENTRALIZATION.md).
 
 Each folder holds `blocks.csv` (one row per block and why it was attributed that
 way), `summary.csv` (blocks, share and 95% interval per party), `daily.csv` and

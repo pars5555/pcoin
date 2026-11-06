@@ -1,0 +1,123 @@
+date_utc,party,blocks
+2026-09-01,pool.pc.am + pool2.pc.am,97
+2026-09-01,solo miners,40
+2026-09-02,pool.pc.am + pool2.pc.am,106
+2026-09-02,solo miners,43
+2026-09-03,pool.pc.am + pool2.pc.am,111
+2026-09-03,solo miners,35
+2026-09-04,pool.pc.am + pool2.pc.am,96
+2026-09-04,solo miners,35
+2026-09-05,pool.pc.am + pool2.pc.am,85
+2026-09-05,"project miners (solo, paid straight to the treasury address)",2
+2026-09-05,solo miners,45
+2026-09-06,pool.pc.am + pool2.pc.am,97
+2026-09-06,"project miners (solo, paid straight to the treasury address)",2
+2026-09-06,solo miners,50
+2026-09-07,pool.pc.am + pool2.pc.am,93
+2026-09-07,"project miners (solo, paid straight to the treasury address)",2
+2026-09-07,solo miners,43
+2026-09-08,pool.pc.am + pool2.pc.am,97
+2026-09-08,"project miners (solo, paid straight to the treasury address)",2
+2026-09-08,solo miners,45
+2026-09-09,pool.pc.am + pool2.pc.am,110
+2026-09-09,"project miners (solo, paid straight to the treasury address)",2
+2026-09-09,solo miners,28
+2026-09-10,pool.pc.am + pool2.pc.am,105
+2026-09-10,solo miners,48
+2026-09-11,pool.pc.am + pool2.pc.am,94
+2026-09-11,solo miners,51
+2026-09-12,pool.pc.am + pool2.pc.am,93
+2026-09-12,solo miners,42
+2026-09-13,pool.pc.am + pool2.pc.am,108
+2026-09-13,solo miners,50
+2026-09-14,AionCore pool,2
+2026-09-14,pool.pc.am + pool2.pc.am,106
+2026-09-14,"project miners (solo, paid straight to the treasury address)",1
+2026-09-14,solo miners,27
+2026-09-15,AionCore pool,1
+2026-09-15,pool.pc.am + pool2.pc.am,110
+2026-09-15,"project miners (solo, paid straight to the treasury address)",1
+2026-09-15,solo miners,40
+2026-09-16,pool.pc.am + pool2.pc.am,98
+2026-09-16,solo miners,46
+2026-09-17,pool.pc.am + pool2.pc.am,109
+2026-09-17,"project miners (solo, paid straight to the treasury address)",1
+2026-09-17,solo miners,39
+2026-09-18,AionCore pool,3
+2026-09-18,Rabid Mining pool,20
+2026-09-18,pool.pc.am + pool2.pc.am,74
+2026-09-18,solo miners,42
+2026-09-19,AionCore pool,2
+2026-09-19,pool.pc.am + pool2.pc.am,100
+2026-09-19,"project miners (solo, paid straight to the treasury address)",2
+2026-09-19,solo miners,41
+2026-09-20,Rabid Mining pool,2
+2026-09-20,pool.pc.am + pool2.pc.am,99
+2026-09-20,solo miners,44
+2026-09-20,"unlabelled pool, fee address pc1qrrw85z...tx9zmz",2
+2026-09-21,AionCore pool,4
+2026-09-21,Rabid Mining pool,1
+2026-09-21,pool.pc.am + pool2.pc.am,71
+2026-09-21,"project miners (solo, paid straight to the treasury address)",1
+2026-09-21,solo miners,38
+2026-09-21,"unlabelled pool, fee address pc1qrrw85z...tx9zmz",5
+2026-09-22,AionCore pool,4
+2026-09-22,pool.pc.am + pool2.pc.am,82
+2026-09-22,"project miners (solo, paid straight to the treasury address)",1
+2026-09-22,solo miners,75
+2026-09-22,"unlabelled pool, fee address pc1qrrw85z...tx9zmz",1
+2026-09-23,AionCore pool,2
+2026-09-23,Rabid Mining pool,1
+2026-09-23,pool.pc.am + pool2.pc.am,81
+2026-09-23,"project miners (solo, paid straight to the treasury address)",3
+2026-09-23,solo miners,50
+2026-09-23,"unlabelled pool, fee address pc1q4qf2jt...rtjjfg",2
+2026-09-23,"unlabelled pool, fee address pc1qrrw85z...tx9zmz",2
+2026-09-24,AionCore pool,1
+2026-09-24,ChatLab pool,2
+2026-09-24,Rabid Mining pool,2
+2026-09-24,"pool-shaped, no recognisable fee output",1
+2026-09-24,pool.pc.am + pool2.pc.am,79
+2026-09-24,"project miners (solo, paid straight to the treasury address)",1
+2026-09-24,solo miners,34
+2026-09-24,"unlabelled pool, fee address pc1q4qf2jt...rtjjfg",14
+2026-09-24,"unlabelled pool, fee address pc1qnm7gyz...qtp5ct",7
+2026-09-24,"unlabelled pool, fee address pc1qrrw85z...tx9zmz",3
+2026-09-25,AionCore pool,4
+2026-09-25,ChatLab pool,15
+2026-09-25,Rabid Mining pool,3
+2026-09-25,pool.pc.am + pool2.pc.am,87
+2026-09-25,"project miners (solo, paid straight to the treasury address)",4
+2026-09-25,solo miners,18
+2026-09-25,"unlabelled pool, fee address pc1qnm7gyz...qtp5ct",1
+2026-09-25,"unlabelled pool, fee address pc1qrrw85z...tx9zmz",2
+2026-09-26,AionCore pool,6
+2026-09-26,ChatLab pool,21
+2026-09-26,Rabid Mining pool,4
+2026-09-26,pool.pc.am + pool2.pc.am,98
+2026-09-26,"project miners (solo, paid straight to the treasury address)",2
+2026-09-26,solo miners,20
+2026-09-26,"unlabelled pool, fee address pc1qrrw85z...tx9zmz",1
+2026-09-27,AionCore pool,1
+2026-09-27,ChatLab pool,17
+2026-09-27,Rabid Mining pool,16
+2026-09-27,pool.pc.am + pool2.pc.am,90
+2026-09-27,solo miners,23
+2026-09-27,"unlabelled pool, fee address pc1qrrw85z...tx9zmz",1
+2026-09-28,ChatLab pool,17
+2026-09-28,Rabid Mining pool,19
+2026-09-28,pool.pc.am + pool2.pc.am,74
+2026-09-28,"project miners (solo, paid straight to the treasury address)",2
+2026-09-28,solo miners,24
+2026-09-28,"unlabelled pool, fee address pc1qrrw85z...tx9zmz",3
+2026-09-29,AionCore pool,2
+2026-09-29,ChatLab pool,10
+2026-09-29,Rabid Mining pool,15
+2026-09-29,pool.pc.am + pool2.pc.am,77
+2026-09-29,"project miners (solo, paid straight to the treasury address)",2
+2026-09-29,solo miners,36
+2026-09-30,ChatLab pool,19
+2026-09-30,Rabid Mining pool,20
+2026-09-30,pool.pc.am + pool2.pc.am,75
+2026-09-30,"project miners (solo, paid straight to the treasury address)",2
+2026-09-30,solo miners,27
