@@ -120,3 +120,12 @@ site/**/*.html                  text eol=lf
 # them and comparing bytes, so git must never rewrite their line endings
 # (csv.writer emits CRLF; core.autocrlf=true would turn that into LF on commit).
 reports/pool-distribution/**    -text
+
+# Anything under contrib/pool that is executed or loaded on Linux. A Windows checkout
+# with core.autocrlf=true turned pool-distribution.py's shebang into
+# "#!/usr/bin/env python3^M", and the first monthly-report run on 2026-11-06 died with
+# "env: 'python3\r': No such file or directory". The extensionless scripts here were
+# already pinned; this covers the rest.
+contrib/pool/*.py               text eol=lf
+contrib/pool/*.service          text eol=lf
+contrib/pool/*.timer            text eol=lf

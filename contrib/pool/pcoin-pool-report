@@ -1,0 +1,66 @@
+#!/bin/bash
+# Generate LAST calendar month's pool-distribution report and tell the owner it is
+# ready. It does NOT publish. Publishing is a public act under the project's name,
+# so it stays a person's step: this makes sure the step is never forgotten.
+#
+# The report is a standing public promise ("updated monthly", 2026-11-06). A promise
+# with no trigger is how the 16-27 September answers promised a follow-up nobody
+# ever posted; the timer is the trigger and the notification is the nudge.
+#
+#   pcoin-pool-report            last calendar month (UTC)
+#   pcoin-pool-report 2026-10    a named month
+#
+# Writes /var/lib/pcoin-pool-report/<month>_heights-<from>-<to>/ with the four files of
+# contrib/pool/pool-distribution.py, then pings the private ops channel. To publish:
+# copy that folder to reports/pool-distribution/ in the repo, add a row to the table in
+# reports/pool-distribution/README.md, commit, push, and announce it in the group.
+#
+# The month is generated twice on purpose. The first pass finds the heights the month
+# spans; the second regenerates by EXPLICIT heights, which is what the published README
+# tells readers to run, so the files a reader reproduces are the files that were
+# published, byte for byte.
+set -euo pipefail
+
+GEN="${POOL_REPORT_GEN:-/usr/local/bin/pcoin-pool-distribution}"
+DATADIR="${POOL_REPORT_DATADIR:-/var/lib/pcoin}"
+OUT="${POOL_REPORT_OUT:-/var/lib/pcoin-pool-report}"
+NOTIFY="${PCOIN_NOTIFY:-/usr/local/bin/pcoin-notify}"
+
+month="${1:-$(date -u -d "$(date -u +%Y-%m-01) -1 month" +%Y-%m)}"
+[[ "$month" =~ ^20[0-9]{2}-(0[1-9]|1[0-2])$ ]] || { echo "bad month '$month' (want YYYY-MM)" >&2; exit 2; }
+
+# Already done for this month: say nothing, so a re-run (or Persistent=true catching up
+# after downtime) never nags twice.
+existing=$(ls -d "$OUT/${month}_heights-"* 2>/dev/null | head -1 || true)
+if [ -n "$existing" ]; then echo "already generated: $existing"; exit 0; fi
+
+mkdir -p "$OUT"
+tmp=$(mktemp -d "$OUT/.work.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+
+"$GEN" --month "$month" --datadir "$DATADIR" --out-dir "$tmp/pass1" >/dev/null
+from=$(sed -n 's/.*"from_height": *\([0-9]*\).*/\1/p' "$tmp/pass1/meta.json")
+to=$(sed -n 's/.*"to_height": *\([0-9]*\).*/\1/p' "$tmp/pass1/meta.json")
+[ -n "$from" ] && [ -n "$to" ] || { echo "could not read the window from meta.json" >&2; exit 1; }
+
+# A month the chain has not finished is not a monthly report. Refuse rather than publish
+# a partial one under a month's name.
+if grep -q "month not finished" "$tmp/pass1/meta.json"; then
+  echo "month $month is not finished on this node's chain yet" >&2; exit 1
+fi
+
+final="$OUT/${month}_heights-${from}-${to}"
+"$GEN" --from-height "$from" --to-height "$to" --datadir "$DATADIR" --out-dir "$tmp/final" >/dev/null
+for f in blocks.csv summary.csv daily.csv; do
+  cmp -s "$tmp/pass1/$f" "$tmp/final/$f" || { echo "the two passes disagree on $f - the chain moved under us, run again" >&2; exit 1; }
+done
+mv "$tmp/final" "$final"
+
+# Parsed as CSV, not cut on commas: a label such as "unlabelled pool, fee address ..."
+# carries a comma of its own and would shift every column after it.
+top=$(python3 -c 'import csv,sys; r=list(csv.reader(open(sys.argv[1], newline="")))[1]; print("%s - %s blocks, %s%%" % (r[0], r[3], r[4]))' "$final/summary.csv")
+"$NOTIFY" "PCoin: monthly pool report for $month is ready" \
+"Blocks $from to $to, generated and checked (two passes identical). NOT published.
+Largest party: $top.
+To publish: copy $final to reports/pool-distribution/ in the repo, add a row to its README, commit, push, announce in the group. The group has been told it is monthly." || true
+echo "ready: $final"

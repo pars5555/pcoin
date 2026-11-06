@@ -1,0 +1,14 @@
+[Unit]
+Description=PCoin: generate last month's pool-distribution report (does not publish)
+After=network-online.target pcoind.service
+OnFailure=pcoin-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pcoin-pool-report
+Nice=10
+# Writes only under /var/lib/pcoin-pool-report, and only reads the node over RPC.
+StateDirectory=pcoin-pool-report
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectHome=yes
