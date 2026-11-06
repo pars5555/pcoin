@@ -270,9 +270,10 @@ Stated plainly, because assuming otherwise wastes days:
   request.
 * **ZMQ is compiled out.** `getzmqnotifications` returns "Method not found".
   Poll, or rebuild with `-DWITH_ZMQ=ON`.
-* **The P2P user agent is `/Satoshi:29.4.0/`** and `CLIENT_VERSION` is 29.4.0,
-  even on v1.x releases. You cannot identify a PCoin node, or tell PCoin
-  releases apart, by user agent.
+* **The P2P user agent is `/PCoin:29.4.0/`** on nodes built since 2026-09-08;
+  older builds still announce `/Satoshi:29.4.0/`, so a `/Satoshi:` peer is not
+  necessarily a Bitcoin node. `CLIENT_VERSION` is 29.4.0 even on v1.x releases,
+  so you cannot tell PCoin releases apart by user agent.
 * **`getdeploymentinfo` does not mention LWMA.** Its softfork list is unchanged
   from upstream. LWMA is a plain height check, not a deployment; the only way to
   see its state is the height.

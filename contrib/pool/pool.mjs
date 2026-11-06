@@ -761,6 +761,9 @@ const server = net.createServer((sock) => {
       if (!line) continue;
       let msg;
       try { msg = JSON.parse(line); } catch { send(sock, { id: null, error: { code: -1, message: 'bad json' } }); continue; }
+      // `null` parses fine and then `msg.method` throws inside this async listener,
+      // which nothing catches -- one line of "null" would take the pool down.
+      if (msg === null || typeof msg !== 'object') { send(sock, { id: null, error: { code: -1, message: 'bad json' } }); continue; }
 
       if (msg.method === 'login') {
         const login = String(msg.params?.login || '').trim();

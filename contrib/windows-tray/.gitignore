@@ -2,6 +2,11 @@
 *.exe
 pcoin-tray.cfg
 pcoin-selftest.txt
+# Runtime state the app writes next to itself: forwarding address and txids,
+# the address book, and the wallet app's own config. Per machine, never source.
+pcoin-forward.json
+pcoin-addressbook.json
+pcoin-wallet.cfg
 
 # The recovery phrase and its plain-text sidecar. These belong to whoever runs
 # the app on that machine and must never be committed anywhere.

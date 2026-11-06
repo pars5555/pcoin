@@ -392,7 +392,11 @@ function projectFor(req) {
   const auth = req.headers.authorization || '';
   const m = auth.match(/^Bearer\s+(.+)$/i);
   if (!m) return null;
-  return CLIENTS[m[1].trim()] || null;
+  // OWN keys only. CLIENTS is a plain object, so a bare CLIENTS[token] also
+  // answers "constructor", "__proto__", "toString" ... with something truthy, and
+  // `Authorization: Bearer constructor` would have passed as a project.
+  const token = m[1].trim();
+  return Object.prototype.hasOwnProperty.call(CLIENTS, token) ? (CLIENTS[token] || null) : null;
 }
 
 createServer(async (req, res) => {

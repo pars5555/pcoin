@@ -333,7 +333,7 @@ export function exchangeSection({ base, creds, actor, sendLogPath = null,
           <tr><td>To address</td><td style="font-size:16px">${payable(w) ? mono(w.address) : mono(maskAddr(w.address))}</td></tr>
           <tr><td>${payable(w) ? 'Scan to pay' : 'Payment'}</td><td>${payQr(w)}</td></tr>
           <tr><td>Fee charged to the user</td><td>${esc(w.fee)}</td></tr>
-          <tr><td>Waiting</td><td${w.ageSeconds >= 18 * 3600 && payable(w) ? ' class="bad"' : ''}>${esc(age(w.ageSeconds))}${payable(w) ? ' (promised within 24 h)' : ''}</td></tr>
+          <tr><td>Waiting</td><td${w.ageSeconds >= 36 * 3600 && payable(w) ? ' class="bad"' : ''}>${esc(age(w.ageSeconds))}${payable(w) ? ' (promised within 48 h)' : ''}</td></tr>
           <tr><td>Requested from</td><td>${geoCell(w)}</td></tr>
           <tr><td>Balance came from</td><td>${w.sources.pcnDepositsCredited} PCN deposit(s), ${w.sources.usdDepositsCredited} USD deposit(s), ${w.sources.trades} trade(s)</td></tr>
           ${w.txid ? `<tr><td>Txid</td><td>${mono(w.txid)}</td></tr>` : ''}

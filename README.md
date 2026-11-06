@@ -31,7 +31,7 @@ Money creation for ordinary people. If you own a phone or a laptop, you can mine
 | Addresses | legacy start with `P` (base58 prefix 55); bech32 `pc1...` |
 | Genesis | block ID `a95d51f0cbf25cad10c35961c6189356525d079835f02e83e2395f382fbe264a`, time `1785600628`, nBits `0x1f0fffff` (~4096 hashes/block at launch) |
 | Config / data | `pcoin.conf` in `~/.pcoin` (Linux) or `%LOCALAPPDATA%\PCoin` (Windows) |
-| Seed nodes | `seed.pc.am` (DNS seed, several addresses) plus compiled-in fixed seeds in `src/chainparamsseeds.h` |
+| Seed nodes | `seed.pc.am` (static DNS seed, several addresses) and `dnsseed.pc.am` (crawler-backed DNS seed), plus compiled-in fixed seeds in `src/chainparamsseeds.h` |
 
 PCoin is **not** a token and does not run on any other chain. It has its own genesis
 block, network magic, ports, and address formats — a PCoin node can never connect to

@@ -123,7 +123,7 @@ at and above that height.
 
 | File | Change |
 |---|---|
-| `src/kernel/chainparams.cpp` | The core of the fork, for all five chains (main/testnet/testnet4/signet/regtest): new `pszTimestamp`; new genesis parameters (`nTime=1785600628`, per-network `nNonce`/`nBits` as in the tables above) and updated genesis-hash/merkle-root asserts; new `pchMessageStart` magic bytes (signet magic remains derived from the challenge); new `nDefaultPort` per network; `powLimit` set to `000fff...` (regtest keeps `7fffff...`); base58 prefixes (55/56/183 main, 117/118/245 testnets); bech32 HRPs `pc`/`tpc`/`pcrt`; **DNS seeds (`vSeeds`): mainnet carries a single entry, `seed.pc.am` (the project's initial seed) — all other networks cleared**; **fixed seeds (`vFixedSeeds`): mainnet loads PCoin's own three entries from `chainparamsseeds.h`; testnet/testnet4/signet/regtest cleared**; **checkpoints cleared**; `nMinimumChainWork` and `defaultAssumeValid` zeroed; `chainTxData` zeroed; buried softfork deployments (BIP34, BIP65, BIP66, CSV, SegWit) set active from height 1 (regtest keeps upstream defaults, incl. SegWit from height 0; Taproot active from genesis on every chain via the usual `ALWAYS_ACTIVE` mechanism). |
+| `src/kernel/chainparams.cpp` | The core of the fork, for all five chains (main/testnet/testnet4/signet/regtest): new `pszTimestamp`; new genesis parameters (`nTime=1785600628`, per-network `nNonce`/`nBits` as in the tables above) and updated genesis-hash/merkle-root asserts; new `pchMessageStart` magic bytes (signet magic remains derived from the challenge); new `nDefaultPort` per network; `powLimit` set to `000fff...` (regtest keeps `7fffff...`); base58 prefixes (55/56/183 main, 117/118/245 testnets); bech32 HRPs `pc`/`tpc`/`pcrt`; **DNS seeds (`vSeeds`): mainnet carries two entries, `seed.pc.am` (the project's initial static seed) and `dnsseed.pc.am` (the crawler-backed seed, `contrib/dnsseed`) — all other networks cleared**; **fixed seeds (`vFixedSeeds`): mainnet loads PCoin's own three entries from `chainparamsseeds.h`; testnet/testnet4/signet/regtest cleared**; **checkpoints cleared**; `nMinimumChainWork` and `defaultAssumeValid` zeroed; `chainTxData` zeroed; buried softfork deployments (BIP34, BIP65, BIP66, CSV, SegWit) set active from height 1 (regtest keeps upstream defaults, incl. SegWit from height 0; Taproot active from genesis on every chain via the usual `ALWAYS_ACTIVE` mechanism). |
 | `src/chainparamsbase.cpp` | Default RPC ports: 9443 / 19443 / 29443 / 39443 / 49443 (P2P−1; P2P+1 stays free for the default Tor onion listener). |
 | `src/chainparamsseeds.h` | Rewritten: Bitcoin's ~2031 mainnet seeds replaced by PCoin's own BIP155-encoded fixed seeds (35.239.156.16, 178.105.3.51, 152.53.171.190 and its IPv6, all :9444; a fourth was removed when that box was destroyed on 2026-08-22). The file **is** `#include`d by `kernel/chainparams.cpp` and mainnet loads it into `vFixedSeeds` as a fallback for when DNS seeding yields nothing; only the test networks and regtest call `vFixedSeeds.clear()`. Regenerate from `contrib/seeds/nodes_main.txt` via `contrib/seeds/generate-seeds.py`. |
 | `src/randomx/` **(PoW)** | Vendored RandomX v1.2.x (tevador/RandomX) — the PoW hash library, built as part of the tree. |
@@ -627,19 +627,24 @@ correctly returns a later address than index 0.
     `bitcoin-qt.exe`, `bitcoin-wallet.exe` (rename = CMake target churn, left
     for later).
   * Qt GUI still shows Bitcoin icons/artwork/splash (only unit labels changed).
-  * No real DNS seeder (crawler) — mainnet bootstraps off the static DNS seed
-    `seed.pc.am` plus three compiled-in fixed seeds in `src/chainparamsseeds.h`
-    that are used when DNS seeding yields nothing; testnets still need manual
-    `-addnode`/`-connect` (§4).
+  * The DNS seeding is still ours — mainnet bootstraps off the static DNS seed
+    `seed.pc.am`, the crawler-backed `dnsseed.pc.am` (`contrib/dnsseed`; it
+    answers with nodes it has handshaked, but only our own two name servers
+    serve the zone), plus three compiled-in fixed seeds in
+    `src/chainparamsseeds.h` that are used when DNS seeding yields nothing;
+    testnets still need manual `-addnode`/`-connect` (§4).
   * No checkpoints, no `assumevalid`/minimum-chainwork
     anchors (they're zeroed — fine for a young chain, revisit once there's
     history worth anchoring).
-  * Releases are cut manually (there is no CI). The one packaging script is
+  * Releases are cut manually. CI (`.github/workflows/ci.yml`) runs invariant
+    checks, a build and `pow_tests`, but it does not build or publish releases,
+    and the Node/Python service tests under `contrib/` are not in it. The one packaging script is
     `contrib/linux-deb/build-deb.sh`; Windows ships a plain zip, and the Inno
     Setup installer was dropped in 2026-08 (it added a Defender false positive
     and a second thing to keep in step, for no benefit the zip did not already
     give). Still missing: code signing and reproducible-build attestations.
 * **Where this stands (2026-09):** multiple seeds behind `seed.pc.am`, three
   explorers, a public pool, a market and five services accepting PCN all exist.
-  Still open: a crawling DNS seeder, community-run seeds, re-branding the
+  Still open: community-run seeds (the crawler seed exists, but only our
+  servers answer for it), re-branding the
   binaries and GUI, code signing and reproducible builds.
