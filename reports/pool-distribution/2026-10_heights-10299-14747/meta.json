@@ -1,0 +1,35 @@
+{
+  "tool": "contrib/pool/pool-distribution.py",
+  "tool_version": "1",
+  "generated_utc": "2026-11-06T09:00:36Z",
+  "window": "explicit heights",
+  "from_height": 10299,
+  "to_height": 14747,
+  "blocks_in_window": 4449,
+  "blocks_attributed": 4449,
+  "blocks_unreadable": 0,
+  "from_time_utc": "2026-10-01T00:07:48Z",
+  "to_time_utc": "2026-10-31T23:57:34Z",
+  "window_note": "block timestamps are not monotonic, so the first and last few blocks of a time-based window can differ by a handful from another node's run",
+  "node_tip_height": 15514,
+  "node_tip_hash": "d33175011f0742fe6da8e605fd2211503b9ae152a1064450fde7edcf55b48d64",
+  "labels_used": {
+    "pc1qlvw6kx8wkcz8f6p0d6kswv69fjt33ll079f64e": {
+      "name": "pool.pc.am + pool2.pc.am",
+      "source": "the project's pools; the fee address is the public treasury in contrib/pool/pool.config.json"
+    },
+    "pc1qdjd0peg79ln37y67k0uz7nfvsypndzx5s26qqa": {
+      "name": "ChatLab pool",
+      "source": "address posted by the operator in github.com/pars5555/pcoin/issues/6"
+    },
+    "pc1qclkpmsdklwehq54fztw5qw8ssnuwmee3szaz2e": {
+      "name": "AionCore pool",
+      "source": "address posted by the operator in github.com/pars5555/pcoin/issues/5"
+    },
+    "pc1q85lry2j8n5yphq44mk86vc6u3rwygwlnc5ryc7": {
+      "name": "Rabid Mining pool",
+      "source": "address the project paid the independent-pool bounty to on 2026-09-30 (block 10241, tx 6cc641b2...); it turned from solo mining into a pool fee output on 2026-09-18, the day the pool opened, and matches the blocks listed on pool.rabidmining.com"
+    }
+  },
+  "method": "see POOL-DISTRIBUTION.md"
+}

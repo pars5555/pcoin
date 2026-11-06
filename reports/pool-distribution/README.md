@@ -9,7 +9,12 @@ cannot tell you is in [`contrib/pool/POOL-DISTRIBUTION.md`](../../contrib/pool/P
 
 | folder | blocks | window (UTC) |
 |---|---|---|
+| [`2026-10_heights-10299-14747`](2026-10_heights-10299-14747) | 4,449 | 2026-10-01 00:07 – 2026-10-31 23:57 (calendar month October 2026) |
 | [`2026-11-06_heights-11200-15501`](2026-11-06_heights-11200-15501) | 4,302 | 2026-10-07 06:45 – 2026-11-06 06:36 (the 30 days before 2026-11-06) |
+
+The two windows overlap (7–31 October is in both). Monthly reports are for finished
+calendar months and are generated automatically on the 1st; the 30-day one was a
+one-off for a community request.
 
 Each folder holds `blocks.csv` (one row per block and why it was attributed that
 way), `summary.csv` (blocks, share and 95% interval per party), `daily.csv` and
@@ -23,9 +28,10 @@ You need a PCoin node you run and Python 3:
 python3 contrib/pool/pool-distribution.py --from-height 11200 --to-height 15501 --out-dir mine/
 ```
 
-`blocks.csv`, `summary.csv` and `daily.csv` should match the published files
-byte for byte; `meta.json` differs only in the time it was generated. The first
-report was regenerated from a node on a second run and matched exactly.
+Use the `from_height` and `to_height` in each folder's `meta.json`. `blocks.csv`,
+`summary.csv` and `daily.csv` should match the published files byte for byte;
+`meta.json` differs only in the time it was generated. Each published report was
+regenerated from a node a second time and matched exactly.
 
 A share here is a share of **blocks**, not of hashrate, and a fee address is not
 an identity: a pool is named only where its operator published its address or gave

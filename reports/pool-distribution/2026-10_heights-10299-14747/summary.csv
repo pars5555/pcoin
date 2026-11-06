@@ -1,0 +1,8 @@
+party,kind,fee_address,blocks,share_percent,ci95_low_percent,ci95_high_percent,attribution
+pool.pc.am + pool2.pc.am,pool,pc1qlvw6kx8wkcz8f6p0d6kswv69fjt33ll079f64e,2132,47.92,46.46,49.39,the project's pools; the fee address is the public treasury in contrib/pool/pool.config.json
+Rabid Mining pool,pool,pc1q85lry2j8n5yphq44mk86vc6u3rwygwlnc5ryc7,1048,23.56,22.33,24.83,"address the project paid the independent-pool bounty to on 2026-09-30 (block 10241, tx 6cc641b2...); it turned from solo mining into a pool fee output on 2026-09-18, the day the pool opened, and matches the blocks listed on pool.rabidmining.com"
+solo miners (37 distinct addresses),solo,,540,12.14,11.21,13.13,"coinbase pays 1-2 addresses, no fee output"
+ChatLab pool,pool,pc1qdjd0peg79ln37y67k0uz7nfvsypndzx5s26qqa,461,10.36,9.50,11.29,address posted by the operator in github.com/pars5555/pcoin/issues/6
+AionCore pool,pool,pc1qclkpmsdklwehq54fztw5qw8ssnuwmee3szaz2e,202,4.54,3.97,5.19,address posted by the operator in github.com/pars5555/pcoin/issues/5
+"project miners (solo, paid straight to the treasury address)",solo,,58,1.30,1.01,1.68,the coinbase pays only the treasury address: a project machine mining solo
+"unlabelled pool, fee address pc1qrrw85z...tx9zmz",pool_unlabelled,pc1qrrw85znlscp75642jucv59nkz743ux83tx9zmz,8,0.18,0.09,0.35,fee output = round percentage of the coinbase; nobody has published this address
