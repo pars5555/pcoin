@@ -69,6 +69,20 @@ edit away from being neither. Before
 2026-08-29 only `checker` was actually being checked, on the one host that ran
 the script; the rest lived on machines it could not read and vanished silently.
 
+**Retired: `3dmodel.oonak.ai`.** The app was removed on 2026-10-12 (the domain
+now redirects to oonak.ai) and the rail left this table and the script on
+2026-10-16. Its host's install was missed: that host's
+`/etc/pcoin-deposit-watch.conf` still named it as the only rail, so the timer
+went on reporting it as unchecked every five minutes until the timer, unit,
+conf, script and state were uninstalled there on 2026-11-16 (backup kept on the
+host). The host stays in service for other things and keeps `pcoin-disk-watch`
+and `pcoin-jobs-report`. Retiring a rail is therefore three edits: this table,
+the script, and the watching host. If it was that host's only rail, uninstall
+the watcher there -- do not just empty the list, because an empty
+`RAILS_EXPECTED` falls back to the full estate list and reports every other rail
+as unmonitored. The rail's sealed seed stays in the vault so coins it took stay
+recoverable (`contrib/vault/which-rail.mjs` still names its phrase).
+
 `webai` runs alone on its own host, which already carried `pcoin-notify` and the
 fork and seed watchers but not this one -- so its deposits were watched by
 nobody until the script and a narrowed `/etc/pcoin-deposit-watch.conf`

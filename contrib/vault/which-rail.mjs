@@ -35,7 +35,9 @@ const RAILS = {
   // so their origin addresses do not belong in a public tree.
   '84147040': 'webbuilderbot',
   '48769b4c': '3dmodels.pc.am         (container on the webbuilderbot host)',
-  'b7d3c3e7': '3dmodel.oonak.ai',
+  // Retired 2026-10-12: no live service, but its seed is kept so any coins it
+  // took stay recoverable -- so identifying its phrase is still a useful answer.
+  'b7d3c3e7': '3dmodel.oonak.ai       (RETIRED 2026-10-12 -- recovery only)',
   '90762186': 'aicontrol.pc.am        (webbuilderbot host)',
   '61d91155': 'checker.pc.am          (seed 4)',
   // The custody wallet in 12.1. It backs no live rail, but identifying it is
