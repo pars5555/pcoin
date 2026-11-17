@@ -42,6 +42,7 @@
 //      enough", never "nothing has ever gone wrong".
 
 import { createServer } from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, renameSync, openSync, closeSync, fsyncSync } from 'node:fs';
 import { join } from 'node:path';
 // The credit-rate rule, pure so it can be tested (rate.mjs, rate-test.mjs).
@@ -247,9 +248,17 @@ async function usdRate() {
 // ---------------------------------------------------------------------------
 // Verify one transaction hash.
 // ---------------------------------------------------------------------------
-async function verify(txhash, project, userRef) {
+async function verify(txhash, project, userRef, expectedPayer = null) {
   if (!/^0x[0-9a-fA-F]{64}$/.test(txhash)) {
     return { ok: false, state: 'bad_request', message: 'txhash must be 0x + 64 hex characters' };
+  }
+  if (expectedPayer !== null && expectedPayer !== undefined && expectedPayer !== '') {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(String(expectedPayer))) {
+      return { ok: false, state: 'bad_request', message: 'expected_payer must be 0x + 40 hex characters' };
+    }
+    expectedPayer = String(expectedPayer).toLowerCase();
+  } else {
+    expectedPayer = null;
   }
   txhash = txhash.toLowerCase();
 
@@ -271,14 +280,26 @@ async function verify(txhash, project, userRef) {
   const confs   = head - blockNo + 1;
 
   // Find every wPCN Transfer in this receipt that paid us. Several is legal.
-  const transfers = (receipt.logs || []).filter(l =>
+  const allToUs = (receipt.logs || []).filter(l =>
     String(l.address).toLowerCase() === TOKEN &&
     String(l.topics && l.topics[0]).toLowerCase() === TRANSFER_TOPIC &&
     addrFromTopic(l.topics[2]) === PAY_TO);
 
-  if (!transfers.length) {
+  if (!allToUs.length) {
     return { ok: false, state: 'no_payment',
              message: 'that transaction contains no wPCN transfer to the payment address' };
+  }
+
+  // Optional anti-front-running binding: when a project knows which BSC wallet
+  // the customer registered (`expected_payer`), refuse to claim a transfer from
+  // any other sender -- leaving the real payer's transfer unclaimed for them.
+  const transfers = expectedPayer
+    ? allToUs.filter(l => addrFromTopic(l.topics[1]) === expectedPayer)
+    : allToUs;
+
+  if (!transfers.length) {
+    return { ok: false, state: 'wrong_payer',
+             message: 'that transfer did not come from expected_payer; nothing was claimed' };
   }
 
   if (confs < MIN_CONF) {
@@ -388,15 +409,25 @@ const readBody = req => new Promise((res, rej) => {
   req.on('error', rej);
 });
 
+function safeEq(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const ba = Buffer.from(a, 'utf8');
+  const bb = Buffer.from(b, 'utf8');
+  return ba.length === bb.length && timingSafeEqual(ba, bb);
+}
+
 function projectFor(req) {
   const auth = req.headers.authorization || '';
   const m = auth.match(/^Bearer\s+(.+)$/i);
   if (!m) return null;
-  // OWN keys only. CLIENTS is a plain object, so a bare CLIENTS[token] also
-  // answers "constructor", "__proto__", "toString" ... with something truthy, and
-  // `Authorization: Bearer constructor` would have passed as a project.
+  // OWN keys only, compared in constant time. CLIENTS is a plain object, so a
+  // bare CLIENTS[token] also answers "constructor", "__proto__", "toString" ...
   const token = m[1].trim();
-  return Object.prototype.hasOwnProperty.call(CLIENTS, token) ? (CLIENTS[token] || null) : null;
+  let matched = null;
+  for (const k of Object.keys(CLIENTS)) {
+    if (safeEq(token, k)) matched = CLIENTS[k] || null;
+  }
+  return matched;
 }
 
 createServer(async (req, res) => {
@@ -424,7 +455,7 @@ createServer(async (req, res) => {
     if (url.pathname === '/stats' && req.method === 'GET') {
       const want = cfg.readToken;
       const m = (req.headers.authorization || '').match(/^Bearer\s+(.+)$/i);
-      if (!want || !m || m[1] !== want) {
+      if (!want || !m || !safeEq(m[1].trim(), want)) {
         return send(401, { ok: false, error: 'stats requires the read-only token' });
       }
       const today = new Date().toISOString().slice(0, 10);
@@ -473,12 +504,12 @@ createServer(async (req, res) => {
       try { body = JSON.parse(await readBody(req) || '{}'); }
       catch { return send(400, { ok: false, error: 'body must be JSON' }); }
 
-      const { txhash, user_ref } = body;
+      const { txhash, user_ref, expected_payer } = body;
       if (!txhash || !user_ref) {
         return send(400, { ok: false, error: 'txhash and user_ref are both required' });
       }
       try {
-        const out = await verify(String(txhash), project, String(user_ref));
+        const out = await verify(String(txhash), project, String(user_ref), expected_payer);
         // 200 for a definite answer either way; 503 when we could not look.
         return send(out.state === 'bad_request' ? 400 : 200, out);
       } catch (e) {

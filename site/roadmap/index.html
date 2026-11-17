@@ -166,9 +166,11 @@
             <a href="https://explorer.pc.am/api/status">explorer.pc.am/api/status</a> &mdash; read it
             rather than trusting a number written on a page.</dd>
         <dt>Block production</dt>
-        <dd class="warn">As of September 2026 our own pool finds roughly <b>two blocks in three</b>. That is a majority, and
-            it is the single largest thing wrong with this project today. It is also the gate on most
-            of the list below.</dd>
+        <dd class="warn">Independent pools and solo miners now find roughly half the chain&rsquo;s blocks,
+            down from two thirds on our own pool in September &mdash; still near the 50% majority line
+            where one operator could reorganise recent blocks. Live 30-day block attribution:
+            <a href="/mining/">pc.am/mining</a> and
+            <a href="https://github.com/pars5555/pcoin/blob/main/doc/DECENTRALIZATION.md">DECENTRALIZATION.md</a>.</dd>
         <dt>Exchanges</dt>
         <dd>Our own only. PCN trades on <a href="https://exchange.pc.am">exchange.pc.am</a>, a small
             PCN/USD order book we run. No outside exchange lists it.</dd>
@@ -252,11 +254,12 @@
     <ul class="items">
       <li>
         <h3>Miners who are not us <span class="pill wip">In progress</span></h3>
-        <p>This is the most important item on the page. While our pool finds most of the blocks, we
-        are in a position to reorganise the chain &mdash; and no amount of promising not to is worth
-        anything next to the number itself.</p>
-        <p class="gate"><b>What would fix it:</b> independent CPU miners, and splitting our own
-        hashrate up. Both, probably. <b>What it blocks:</b> most exchange listings, which read
+        <p>This is the most important item on the page. Independent pools and solo miners now find a
+        large share of blocks (<a href="/mining/">live charts</a>), while our own pools sit near the
+        50% 30-day majority line &mdash; and no amount of promising not to reorganise the chain is
+        worth anything next to keeping every operator well below half.</p>
+        <p class="gate"><b>What would fix it:</b> more independent pools and solo CPU miners, plus a
+        decentralised pool design such as P2Pool. <b>What it blocks:</b> most exchange listings, which read
         concentration as a risk to their own users, and reasonably so.</p>
       </li>
       <li>
@@ -264,13 +267,13 @@
         <p>Since 25 September 2026 the PCN price is the <b>PCN index</b>: the volume-weighted median
         of real trades between users on <a href="https://exchange.pc.am">exchange.pc.am</a>. Trades
         with our own bots and accounts never count, and neither do linked accounts or accounts under
-        three days old. It moves at most 2% per trade and 5% a day, stays between $0.015 and $0.10,
-        and holds still when trading is thin. Our services credit PCN at it, market.pc.am sells at it
-        plus 3%, and <a href="https://price.pc.am">price.pc.am</a> publishes it. Before that date the
-        price was a rate we posted ourselves.</p>
+        three days old. It moves at most 2% per trade and 5% in 24 hours, has no fixed floor or
+        ceiling, and holds its last value when trading is thin. Our services credit PCN at it,
+        market.pc.am sells at it plus 3%, and <a href="https://price.pc.am">price.pc.am</a> publishes
+        it. Before that date the price was a rate we posted ourselves.</p>
         <p>That is a step, not the finish. The book is young and thin, and we run the venue. A bot of
-        ours also keeps the PancakeSwap pool near a target set from the index, within a small daily budget; the
-        pool no longer sets the price.</p>
+        ours defends a $0.015 floor on the PancakeSwap pool and sells into premiums above its target,
+        within a small daily budget; the pool is not an input to the index.</p>
         <p class="gate"><b>What would fix it properly:</b> a price somebody who is not us agreed to,
         in a venue we do not run.</p>
       </li>

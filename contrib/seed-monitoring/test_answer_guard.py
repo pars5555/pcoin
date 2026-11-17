@@ -138,6 +138,28 @@ check(any("follow up" in w for w in H("my miner is stuck", "A person will look i
 check(not any("follow up" in w for w in H("my miner is stuck", "A person will look into it.", "high", {"kind": "bug", "summary": "x"}, {})),
       "the same promise WITH a report is not held for that reason")
 
+# ---- 6. URL allowlist in watcher and answer-bot guard ------------------------
+check(watch.link_allowed("https://pc.am/mining/"), "pc.am URL allowed")
+check(watch.link_allowed("https://explorer.pc.am/tx/abc"), "subdomain of pc.am allowed")
+check(not watch.link_allowed("https://evil.example?x=.pc.am"), "query-string .pc.am bypass rejected in watcher")
+check(not watch.link_allowed("https://evil.example#x=.pc.am"), "fragment .pc.am bypass rejected in watcher")
+check(not watch.link_allowed("https://pc.am@evil.example/phish"), "userinfo@ .pc.am bypass rejected in watcher")
+
+check(ans.guard("Download from https://pc.am/mining/ or https://github.com/pars5555/pcoin/releases.") is None,
+      "official pc.am and github links pass answer guard")
+check(ans.guard("Edit your pcoin.conf file and check explorer.pc.am.") is None,
+      "filenames like pcoin.conf are not misread as outside links")
+check(ans.guard("Claim your airdrop at https://claim-pcoin-drop.xyz/free") is not None,
+      "injected phishing link is blocked by answer guard")
+check(ans.guard("Visit https://evil.example?x=.pc.am right now") is not None,
+      "query-string .pc.am bypass is blocked by answer guard")
+check(ans.guard("Check https://checker.pc.am for status") is not None,
+      "private service domain is blocked by answer guard")
+check(ans.guard("The price is $0.05 right now.") is not None,
+      "two-decimal unverified rate ($0.05) is caught by RATE_RE")
+check(ans.guard("The fee is $0.00 to try.") is None,
+      "zero dollars ($0.00) is not misread as a PCN rate")
+
 print()
 print("%d FAILED" % len(FAILS) if FAILS else "ALL PASSED")
 sys.exit(1 if FAILS else 0)

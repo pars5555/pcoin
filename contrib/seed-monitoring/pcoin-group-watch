@@ -628,15 +628,21 @@ def is_unroutable(host):
 
 
 def link_allowed(url):
-    u = url.strip().lower()
-    for pre in ("https://", "http://"):
-        if u.startswith(pre):
-            u = u[len(pre):]
-    if u.startswith("www."):
-        u = u[4:]
-    host, _, path = u.partition("/")
-    host = host.split(":")[0].rstrip(".")
-    first = path.split("/")[0].split("?")[0]
+    raw = url.strip()
+    try:
+        sp = urllib.parse.urlsplit(raw if "://" in raw else "https://" + raw)
+    except ValueError:
+        return False
+    if sp.username or sp.password:
+        return False
+    host = (sp.hostname or "").lower().rstrip(".")
+    if host.startswith("www."):
+        host = host[4:]
+    if not host:
+        return False
+    path = sp.path.lstrip("/").lower()
+    first = path.split("/")[0] if path else ""
+    u = raw.lower()
     # OUR OWN LINKS ARE NEVER DELETED (owner, 2026-09-17). Every PCoin surface
     # lives under pc.am -- pc.am, pool.pc.am, exchange.pc.am, market.pc.am,
     # explorer.pc.am, wrapdesk.pc.am, docs.pc.am, price.pc.am, webai.pc.am --

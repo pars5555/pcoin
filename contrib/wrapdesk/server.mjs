@@ -747,8 +747,26 @@ const viewer = new AsyncLocalStorage();
 const viewerAcct = () => { const v = viewer.getStore(); return v ? v.acct : null; };
 const viewerEv = () => { const v = viewer.getStore(); return Boolean(v && v.ev); };
 const viewerIp = () => { const v = viewer.getStore(); return v ? v.ip : null; };
-const clientIp = (req) => (req.headers['x-forwarded-for'] || '').split(',')[0].trim()
-  || req.socket.remoteAddress || '?';
+const isLoopbackPeer = (a) => a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
+// Caddy terminates TLS directly on wrapdesk.pc.am (DNS-only, no Cloudflare) and
+// appends the real TCP peer IP to X-Forwarded-For. Reading the FIRST hop lets
+// any caller spoof X-Forwarded-For to bypass IP_DAILY_PCN and tooMany(ip);
+// reading the LAST hop when the socket peer is loopback takes Caddy's reading.
+const clientIp = (req) => {
+  const peer = req.socket.remoteAddress || '';
+  if (isLoopbackPeer(peer)) {
+    const xff = (req.headers['x-forwarded-for'] || '').split(',').map((s) => s.trim()).filter(Boolean);
+    if (xff.length) return xff[xff.length - 1];
+  }
+  return peer || '?';
+};
+
+let requestChain = Promise.resolve();
+function withRequestLock(fn) {
+  const next = requestChain.then(fn, fn);
+  requestChain = next.catch(() => {});
+  return next;
+}
 
 // ── chrome ──────────────────────────────────────────────────────────────────
 //
@@ -1033,8 +1051,8 @@ on their chains and the wallet each one paid is one click from the post. Treat a
 wrap as public, not private.</p>
 <p class="notice bad"><b>The market for wPCN is small.</b> The PancakeSwap pool holds
 only a few hundred dollars of liquidity, so even a small trade moves its price
-sharply; <b>we trade that pool ourselves</b> (a bot holds it within 3% of the PCN
-index in both directions, within a small daily budget), and the
+sharply; <b>we trade that pool ourselves</b> (a bot defends a $0.015 floor and
+sells into premiums above its target, within a small daily budget), and the
 <b>liquidity is not locked</b> — the project holds the LP tokens. Only send what
 you can afford to lose.</p>
 <p class="notice warn"><b>wPCN can trade above PCN, and only a limited amount can pull it back.</b> The
@@ -2300,40 +2318,38 @@ createServer((req, res) => viewer.run({ acct: accountOf(req), ev: accountVerifie
         }
       }
 
-      const st = load();
       const bscKey = bsc.toLowerCase();
-      // ONE BSC ADDRESS, MANY WRAPS (owner, 2026-09-23). A request used to be
-      // keyed by the BSC address alone, for ever. Since a deposit address takes
-      // at most PER_PERSON PCN in its whole life, a returning customer with the
-      // same wallet could only be handed an address that was already full --
-      // or, if the old request predated accounts, be refused outright ("that
-      // pairing is private"). The owner hit that trying to wrap himself.
-      //
-      // So for a signed-in account: reuse its own request for this BSC address
-      // only while that deposit address has received NOTHING (a repeated
-      // submit, or a changed amount); otherwise open a fresh request under
-      // `<bsc>#<n>`, with its own deposit address, subject to every limit below.
-      // Nothing about another person's request is revealed or touched. An
-      // unreadable chain is not "nothing received": it opens a fresh address
-      // rather than risk pointing someone at a full one. The watcher, the panel
-      // and the ops dashboard read request VALUES, never these keys.
-      let key = bscKey;
-      if (acct) {
+      // Serialize /request mutations AND re-read load() synchronously after
+      // `await deposits()` so no concurrent request can ever overwrite newer
+      // requests in requests.json or roll nextIndex back.
+      const mut = await withRequestLock(async () => {
+        // ONE BSC ADDRESS, MANY WRAPS (owner, 2026-09-23). Reuse an account's
+        // existing request for this BSC address only while that deposit address
+        // has received NOTHING; otherwise open `<bsc>#<n>`.
         let reuse = null;
-        const mineHere = Object.entries(st.requests)
-          .filter(([k, x]) => (k === bscKey || k.startsWith(bscKey + '#')) && x && x.account === acct)
-          .sort((a, b) => (b[1].created || 0) - (a[1].created || 0));
-        for (const [k, x] of mineHere) {
-          const got = await deposits(x.address);
-          if (got !== null && got.length === 0) { reuse = k; break; }
+        if (acct) {
+          const pre = load();
+          const mineHere = Object.entries(pre.requests)
+            .filter(([k, x]) => (k === bscKey || k.startsWith(bscKey + '#')) && x && x.account === acct)
+            .sort((a, b) => (b[1].created || 0) - (a[1].created || 0));
+          for (const [k, x] of mineHere) {
+            const got = await deposits(x.address);
+            if (got !== null && got.length === 0) { reuse = k; break; }
+          }
         }
-        if (reuse) key = reuse;
-        else if (st.requests[bscKey]) {
-          let n = 2;
-          while (st.requests[`${bscKey}#${n}`]) n++;
-          key = `${bscKey}#${n}`;
+
+        // Synchronous critical section: NO await between load() and save(st).
+        const st = load();
+        let key = bscKey;
+        if (acct) {
+          if (reuse && st.requests[reuse] && st.requests[reuse].account === acct) {
+            key = reuse;
+          } else if (st.requests[bscKey]) {
+            let n = 2;
+            while (st.requests[`${bscKey}#${n}`]) n++;
+            key = `${bscKey}#${n}`;
+          }
         }
-      }
 
       // ── the total allocation has to REFUSE, not just appear on the page ──
       //
@@ -2429,7 +2445,7 @@ createServer((req, res) => viewer.run({ acct: accountOf(req), ev: accountVerifie
       const headroom = TOTAL_ALLOC - committed;
       if (wpcnFor(amount) > headroom + 1e-8) {
         const maxPcn = Math.floor(headroom / (1 - FEE_PCT / 100) * 100) / 100;
-        return send(503, await home(headroom <= 0
+        return { errCode: 503, errHtml: headroom <= 0
           ? `<p class="err">The desk has allocated its full <b>${TOTAL_ALLOC} wPCN</b>
              and is not taking new wrap requests right now. Nothing is wrong with
              your request — the limit exists because the PancakeSwap pool is
@@ -2437,7 +2453,7 @@ createServer((req, res) => viewer.run({ acct: accountOf(req), ev: accountVerifie
           : `<p class="err">That would take the desk past its <b>${TOTAL_ALLOC} wPCN</b>
              total allocation. There is <b>${n2(headroom)} wPCN</b> left, so the
              most you can wrap right now is <b>${n2(maxPcn)} PCN</b>. The limit
-             exists because the PancakeSwap pool is small, and it will rise.</p>`));
+             exists because the PancakeSwap pool is small, and it will rise.</p>` };
       }
 
       let r = st.requests[key];
@@ -2449,29 +2465,29 @@ createServer((req, res) => viewer.run({ acct: accountOf(req), ev: accountVerifie
         if (acct) {
           const a = askedSince(st, (x) => x.account === acct, dayAgo);
           if (a.total + want > ACCOUNT_DAILY_PCN + 1e-8) {
-            return send(429, await home(`<p class="err">Your account has already asked to wrap
+            return { errCode: 429, errHtml: `<p class="err">Your account has already asked to wrap
               <b>${n2(a.total)} PCN</b> in the last 24 hours. The limit is
               <b>${ACCOUNT_DAILY_PCN} PCN a day</b> per account (and ${ACCOUNT_MONTHLY_PCN} PCN a
               month), so nothing new was created. You can ask again after ${freesAt(a.oldest)}.
               Do not send more to an address that has already taken ${PER_PERSON} PCN &mdash;
-              that is returned, not wrapped.</p>`));
+              that is returned, not wrapped.</p>` };
           }
         }
         if (ip) {
           const b = askedSince(st, (x) => x.ip === ip, dayAgo);
           if (b.total + want > IP_DAILY_PCN + 1e-8) {
-            return send(429, await home(`<p class="err"><b>${n2(b.total)} PCN</b> has already been asked
+            return { errCode: 429, errHtml: `<p class="err"><b>${n2(b.total)} PCN</b> has already been asked
               for from your connection in the last 24 hours. The limit is <b>${IP_DAILY_PCN} PCN a
               day per connection</b>, whichever account asks, so nothing new was created. You can
-              ask again after ${freesAt(b.oldest)}.</p>`));
+              ask again after ${freesAt(b.oldest)}.</p>` };
           }
         }
         if (tooMany(ip))
-          return send(429, await home(`<p class="err">Too many new requests from your
-            connection. Please try again later.</p>`));
+          return { errCode: 429, errHtml: `<p class="err">Too many new requests from your
+            connection. Please try again later.</p>` };
         if (st.nextIndex >= pool.length)
-          return send(503, await home(`<p class="err">The desk has run out of deposit
-            addresses. That is our problem, not yours — please get in touch.</p>`));
+          return { errCode: 503, errHtml: `<p class="err">The desk has run out of deposit
+            addresses. That is our problem, not yours — please get in touch.</p>` };
         const slot = pool.find((x) => x.i === st.nextIndex);
         // THE IP IS RECORDED. It was not, and working out who had taken the
         // allocation on 2026-09-23 meant joining the Caddy access log to this
@@ -2489,21 +2505,30 @@ createServer((req, res) => viewer.run({ acct: accountOf(req), ev: accountVerifie
         // See the note above claimCookieName().
         const owns = holdsClaim(req, key) || (acct && r.account && r.account === acct);
         if (!owns) {
-          return send(403, await home(`<p class="err">A wrap request already exists for that
+          return { errCode: 403, errHtml: `<p class="err">A wrap request already exists for that
             BSC address, and its deposit address is not shown to a visitor we cannot
             recognise — that pairing is private to whoever created it.</p>
             <p class="muted">If it was you: open this page in the browser you used the
             first time, or sign in with the account you created it under. If both are
             gone, get in touch and we will sort it out. Nothing is wrong with the
-            request itself and no coins are affected.</p>`));
+            request itself and no coins are affected.</p>` };
         }
-        // Only the owner may restate the amount. It used to be writable by anyone
-        // who knew the BSC address, so a stranger could overwrite the figure on
-        // somebody else's record.
-        if (amount > 0 && r.amount !== amount) { r.amount = amount; save(st); }
+        // Rate-limit repeated amount-update writes on the reuse path too.
+        if (amount > 0 && r.amount !== amount) {
+          if (tooMany(ip)) {
+            return { errCode: 429, errHtml: `<p class="err">Too many updates from your
+              connection. Please try again later.</p>` };
+          }
+          r.amount = amount;
+          save(st);
+        }
         // Re-issue, so a returning owner's claim does not expire under them.
         setCookie = claimCookieFor(key);
       }
+      return { r, setCookie };
+      });
+      if (mut.errCode) return send(mut.errCode, await home(mut.errHtml));
+      const { r, setCookie } = mut;
 
       const eligible = Math.min(amount, PER_PERSON);
       const net = eligible * (1 - FEE_PCT / 100);

@@ -48,22 +48,28 @@ const sess = lg.result.id, job = lg.result.job;
 console.log(`  job ${job.job_id}  target ${job.target.slice(0, 12)}…`);
 
 let found = null;
-for (let n = 0; n < 6000 && found === null; n++) {
+for (let n = 1; n < 6000 && found === null; n++) {
+  const candHex = n.toString(16).padStart(8, '0');
+  if (Buffer.from(candHex, 'hex').reverse().toString('hex') === candHex) continue;
   const h = Buffer.from(job.blob, 'hex'); h.writeUInt32LE(n, 76);
   if (await chk(h.toString('hex'), job.target)) found = n;
 }
 if (found === null) { console.log('  no share found in 6000 nonces'); process.exit(1); }
 const nh = found.toString(16).padStart(8, '0');
+const swapped = Buffer.from(nh, 'hex').reverse().toString('hex');
 
 const a = await rpc('submit', { id: sess, job_id: job.job_id, nonce: nh });
 const b = await rpc('submit', { id: sess, job_id: job.job_id, nonce: nh });
 const c = await rpc('submit', { id: sess, job_id: job.job_id, nonce: nh.toUpperCase() });
+const d = await rpc('submit', { id: sess, job_id: job.job_id, nonce: swapped });
 
 console.log(`  1st submit      : ${a.result ? 'ACCEPTED' : 'rejected: ' + a.error.message}`);
 console.log(`  2nd same nonce  : ${b.result ? 'ACCEPTED (BAD)' : 'rejected: ' + b.error.message}`);
 console.log(`  3rd UPPERCASED  : ${c.result ? 'ACCEPTED (BAD)' : 'rejected: ' + c.error.message}`);
-const dupMsg = (b.error?.message || '') + (c.error?.message || '');
-const ok = a.result && b.error && c.error && dupMsg.includes('duplicate');
-console.log(ok ? '  PASS: counted once, and case does not launder it'
-               : '  FAIL: ' + (dupMsg.includes('duplicate') ? 'first submit did not land' : 'rejected for the WRONG reason -- dedup not reached'));
+console.log(`  4th byte-swapped: ${d.result ? 'ACCEPTED (BAD)' : 'rejected: ' + d.error.message}`);
+const dupMsg = [b, c, d].map((x) => x.error?.message || '').join(' | ');
+const ok = a.result && b.error && c.error && d.error
+  && [b, c, d].every((x) => (x.error?.message || '').includes('duplicate'));
+console.log(ok ? '  PASS: counted once; case and byte-order aliasing do not launder it'
+               : '  FAIL: ' + (dupMsg.includes('duplicate') ? 'a replay or byte-swapped alias slipped through' : 'rejected for the WRONG reason -- dedup not reached'));
 v.kill(); s.end(); process.exit(ok ? 0 : 1);

@@ -627,6 +627,35 @@ section('orphans -- twice seen before believed, and never a silent reversal');
   // a race at one confirmation. What it says matters as much as that it fired.
   ok(alarm.length > 0, 'it raises an alarm instead', alarm || '(no alarm)');
   ok(alarm.includes('decide by hand'), 'and the alarm hands the decision to a human', alarm || '(no alarm)');
+  const repeatAlarm = await store.evaluateBlocks(1003, async () => 'aaaa'.repeat(16));
+  ok(repeatAlarm.alarms.length === 0, 'the alarm is emitted once, not repeated every minute');
+
+  // An IMMATURE coinbase-direct block (recordBlockPaidByCoinbase sets sent_txid
+  // to the block's own coinbase immediately) whose coinbase never matured has
+  // zero spendable coins on the chain and zero wallet funds sent: losing a race
+  // at 1 confirmation must mark it orphaned (void), not stick in pending/ALARM.
+  const cbOrphShare = await addShare('pc1qcborph', 'j4cb', '0000002d', 910);
+  const computedBefore = (await store.stats()).computed;
+  await store.recordBlockPaidByCoinbase({
+    hash: '91'.repeat(32), height: 910, value: 5000000000n, finder: 'pc1qcborph',
+    shareId: cbOrphShare.id, at: clock++, coinbaseTxid: 'cb91'.repeat(16),
+    outputs: [{ miner: 'pc1qcborph', value: 4900000000n, weight: 1000n }],
+    fee: 100000000n, windowWeight: 1000n,
+  });
+  ok((await store.stats()).computed === computedBefore + 4900000000n,
+    'pending coinbase-direct block initially counts in computed payouts');
+  await store.evaluateBlocks(911, async () => '92'.repeat(32));   // strike 1
+  const orphRes = await store.evaluateBlocks(912, async () => '92'.repeat(32)); // strike 2
+  const [cbState, cbAlarm] = (await store.sql("SELECT state, IFNULL(alarm,'') FROM blocks WHERE height=910;"))[0].split('|');
+  ok(cbState === 'orphaned' && cbAlarm === '' && orphRes.alarms.length === 0,
+    'an immature coinbase-direct block that loses a race transitions cleanly to orphaned with no alarm',
+    `state=${cbState} alarm=${cbAlarm}`);
+  const cbBal = (await store.balances()).find((b) => b.miner === 'pc1qcborph');
+  ok(cbBal.void === 4900000000n && cbBal.pending === 0n && cbBal.sent === 0n,
+    'its miner payout moves from pending to void',
+    `void=${pcn(cbBal.void)} pending=${pcn(cbBal.pending)}`);
+  ok((await store.stats()).computed === computedBefore,
+    'and stats().computed excludes the orphaned block so totalPaid is never overstated');
 
   // A chain that comes back clears the strike rather than staying half-orphaned.
   const solver2 = await addShare('pc1qcarol', 'j5', '00000003', 400);

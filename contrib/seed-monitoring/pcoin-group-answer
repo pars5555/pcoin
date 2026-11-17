@@ -472,7 +472,59 @@ def rate_is_live(found):
     return False
 
 
-RATE_RE = re.compile(r"\$\s?0\.0\d{3,}")
+RATE_RE = re.compile(r"\$\s?0\.0\d*[1-9]\d*")
+_DRAFT_URL_RE = re.compile(r"(?:https?://\S+|(?<![/@\w])(?:[a-z0-9-]+\.)+(?:am|com|org|net|io|ai|gg|me|xyz|app|dev|pro|rocks|stream|no|finance)(?:/\S*)?)", re.I)
+_OUR_TG_HANDLES = {"pcoinpcn", "pcoinpcnchat", "pcoinpcnbot", "pcoinaibot", "mywebsitebuilderbot"}
+_ALLOWED_POOL_DOMAINS = ("chatlab.rocks", "aioncore.pro")
+_COMMON_FILE_EXTS = {"exe", "msi", "zip", "tar", "gz", "deb", "apk", "ipa", "ps1", "sh", "py", "mjs", "js", "json", "conf", "dat", "log", "sqlite", "md", "txt", "csv", "html"}
+
+
+def draft_link_allowed(raw_url):
+    u = raw_url.strip().rstrip(").,!?:;>'\"`]")
+    if not u:
+        return True
+    # Do not confuse filenames like pcoin.conf, wallet.dat or server.mjs with domains.
+    if "://" not in u and "/" not in u:
+        tail = u.rsplit(".", 1)[-1].lower()
+        if tail in _COMMON_FILE_EXTS:
+            return True
+    try:
+        sp = urllib.parse.urlsplit(u if "://" in u else "https://" + u)
+    except ValueError:
+        return False
+    if sp.username or sp.password:
+        return False
+    host = (sp.hostname or "").lower().rstrip(".")
+    if host.startswith("www."):
+        host = host[4:]
+    if not host:
+        return False
+    # Private services must never appear even under *.pc.am / *.oonak.ai.
+    if host in ("checker.pc.am", "3dmodels.pc.am", "3dmodel.oonak.ai", "admin.pc.am", "root.pc.am"):
+        return False
+    if host == "pc.am" or host.endswith(".pc.am"):
+        return True
+    if host == "oonak.ai" or host.endswith(".oonak.ai"):
+        return True
+    if any(host == d or host.endswith("." + d) for d in _ALLOWED_POOL_DOMAINS):
+        return True
+    parts = [p for p in sp.path.lower().split("/") if p]
+    first = parts[0] if parts else ""
+    if host in ("t.me", "telegram.me"):
+        return first in _OUR_TG_HANDLES
+    if host == "github.com":
+        return first in ("pars5555", "oonak-ai", "doktor83")
+    if host == "discord.gg":
+        return first == "dgmdwjkb9f"
+    if host == "play.google.com":
+        return "am.pc.pcoin" in u.lower()
+    if host == "webcrafterai.com" or host.endswith(".webcrafterai.com"):
+        return True
+    if host in ("bscscan.com", "pancakeswap.finance", "x.com", "twitter.com"):
+        if host in ("x.com", "twitter.com"):
+            return first in ("pcoinpcn", "")
+        return True
+    return False
 
 
 def guard(text):
@@ -493,6 +545,10 @@ def guard(text):
     for found in RATE_RE.findall(text):
         if not rate_is_live(found):
             return 'a PCN rate we did not read live (%s)' % found.strip()
+    for raw_u in _DRAFT_URL_RE.findall(t):
+        cleaned = raw_u.rstrip(").,!?:;>'\"`]")
+        if cleaned and not draft_link_allowed(cleaned):
+            return "an outside or unapproved link (%s)" % cleaned
     for rule in FORBIDDEN:
         # A rule may carry a third element: a function that removes the
         # ALLOWED spellings before the pattern is applied. Blanking them is

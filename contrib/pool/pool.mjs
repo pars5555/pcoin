@@ -415,12 +415,19 @@ function makeJob(miner) {
     // submitted must be recorded as paying what it actually pays.
     payout,
     seen: new Set(),
+    seenRaw: new Set(),
     miner: miner.id,
   };
   state.jobs.set(id, job);
-  // Bounded: a job nobody solves is dead once the tip moves, and an unbounded
-  // map is a memory leak with a miner-controlled growth rate.
-  if (state.jobs.size > 500) {
+  if (miner.jobIds) {
+    miner.jobIds.push(id);
+    while (miner.jobIds.length > 4) {
+      state.jobs.delete(miner.jobIds.shift());
+    }
+  }
+  // Global safety bound above the per-miner cap (4 jobs/miner), so even 1,000
+  // connected miners keep their active jobs while memory stays strictly bounded.
+  while (state.jobs.size > 4096) {
     const oldest = state.jobs.keys().next().value;
     state.jobs.delete(oldest);
   }
@@ -628,18 +635,8 @@ async function handleSubmit(m, params, id) {
   const nonceHex = String(params.nonce || '');
   if (!/^[0-9a-fA-F]{8}$/.test(nonceHex)) return { error: { code: -1, message: 'nonce must be 8 hex chars' } };
   const nonce = nonceHex.toLowerCase();
-  // A duplicate nonce is the cheapest way to claim credit twice. This in-memory
-  // set exists to avoid paying 21.7 ms of RandomX for a replay; the UNIQUE
-  // index in the store is what actually makes it true across a restart.
-  if (job.seen.has(nonce)) return { error: { code: -1, message: 'duplicate share' } };
-  job.seen.add(nonce);
-  // OFFERED, not accepted. vardiff reads m.windowShares, which is incremented
-  // only after the validator AND the store have both said yes. So when the pool
-  // fell behind, every miner looked like it had found nothing and was eased 4x a
-  // minute -- which made each of them submit ~4x more work into the queue that
-  // was already the bottleneck. That is the positive feedback that took the heap
-  // from ~100 MB to 765 MB in twenty minutes on 2026-09-13.
-  m.windowOffered++;
+  // Fast path: exact string replay (case-normalized) costs zero RandomX hashes.
+  if (job.seenRaw.has(nonce)) return { error: { code: -1, message: 'duplicate share' } };
 
   // THE NONCE HEX MEANS TWO DIFFERENT THINGS DEPENDING ON WHO IS MINING.
   //
@@ -649,51 +646,60 @@ async function handleSubmit(m, params, id) {
   //             uint32 as big-endian TEXT            nonce 83 -> "00000053"
   //             (src/node/poolclient.cpp:316) -- the same four bytes reversed.
   //
-  // The node and this pool were written from the same assumption, so they agreed
-  // and the fleet mined happily. The disagreement is invisible until a
-  // third-party miner connects -- and then EVERY share it sends is rejected
-  // "share above target", because the pool rebuilds a header nobody mined and
-  // correctly rejects the hash of it. Confirmed against a patched xmrigCC:
-  // 100% rejection, while that miner's own hash matched the chain exactly.
-  //
-  // MINER-INTEGRATION.md 6 documents the STANDARD form, so until now this pool
-  // did not implement its own published spec.
-  //
-  // So: try the standard order first, fall back to the legacy one. The fallback
-  // costs one extra RandomX hash (~21 ms) and only on a share that would
-  // otherwise be rejected outright, so a hostile miner buys nothing but its own
-  // latency. Remove the fallback once no miner appears in the legacy log line.
-  // Whichever order a miner used last time is tried first, so only its FIRST
-  // share ever pays for two hashes. Without this memo every share from the
-  // existing fleet -- which all speaks the legacy order -- would cost double,
-  // for the whole migration.
+  // Both forms place four bytes into header[76..80]. Deduplication MUST key on
+  // those canonical 4 header bytes (`cand.hex`), NOT only the submitted string:
+  // otherwise a patched miner submits "53000000" and "00000053" for the same
+  // solved header and gets credited twice for one search.
   const nonceBytes  = Buffer.from(nonce, 'hex');
   const legacyBytes = Buffer.from(nonceBytes).reverse();
   const standardFirst = m.nonceOrder !== 'legacy';
-  const orders = standardFirst
+  const rawOrders = standardFirst
     ? [{ name: 'standard', bytes: nonceBytes }, { name: 'legacy', bytes: legacyBytes }]
     : [{ name: 'legacy', bytes: legacyBytes }, { name: 'standard', bytes: nonceBytes }];
   // A palindromic nonce is identical either way -- do not pay for it twice.
-  if (legacyBytes.equals(nonceBytes)) orders.length = 1;
+  if (legacyBytes.equals(nonceBytes)) rawOrders.length = 1;
+
+  let anyCanonicalSeen = false;
+  const orders = [];
+  for (const cand of rawOrders) {
+    const hex = cand.bytes.toString('hex');
+    if (job.seen.has(hex)) {
+      anyCanonicalSeen = true;
+    } else {
+      orders.push({ ...cand, hex });
+    }
+  }
+  if (!orders.length) return { error: { code: -1, message: 'duplicate share' } };
+
+  // OFFERED, not accepted. vardiff reads m.windowShares, which is incremented
+  // only after the validator AND the store have both said yes.
+  m.windowOffered++;
 
   // NEVER trust a hash the miner sends. Recompute.
   let header = null;
   let r = null;
   let order = null;
+  let canonicalNonce = null;
   for (const cand of orders) {
     const h = Buffer.from(job.header);
     cand.bytes.copy(h, 76);
     r = await validator.check(h.toString('hex'), job.target.toString('hex'));
-    if (r.dead) { job.seen.delete(nonce); return { error: { code: -1, message: 'pool validator unavailable' } }; }
-    // The nonce comes back OUT of the seen-set, same reasoning as the store
-    // failure path below: a retry must not then be refused as a duplicate.
+    if (r.dead) return { error: { code: -1, message: 'pool validator unavailable' } };
     // Deliberately does not touch m.rejected -- that counter is the miner's
     // honesty record and this is the pool's fault, not theirs.
-    if (r.busy) { job.seen.delete(nonce); return { error: { code: -1, message: 'pool is behind; retry this share' } }; }
+    if (r.busy) return { error: { code: -1, message: 'pool is behind; retry this share' } };
     if (r.err) return { error: { code: -1, message: 'malformed share' } };
-    if (r.ok) { header = h; order = cand.name; break; }
+    if (r.ok) { header = h; order = cand.name; canonicalNonce = cand.hex; break; }
   }
-  if (!header) { m.rejected++; return { error: { code: -1, message: 'share above target' } }; }
+  if (!header) {
+    if (anyCanonicalSeen) return { error: { code: -1, message: 'duplicate share' } };
+    m.rejected++;
+    return { error: { code: -1, message: 'share above target' } };
+  }
+  if (job.seen.has(canonicalNonce)) return { error: { code: -1, message: 'duplicate share' } };
+  job.seen.add(canonicalNonce);
+  job.seenRaw.add(nonce);
+
   if (order && m.nonceOrder !== order) {
     m.nonceOrder = order;
     if (order === 'legacy') {
@@ -706,18 +712,17 @@ async function handleSubmit(m, params, id) {
   // this project has already paid for three times: an unwritable store is
   // UNKNOWN, and unknown must never become a definite yes.
   //
-  // On failure the nonce comes back out of the seen-set so an honest retry can
-  // land. That is safe because the retry is idempotent at the store: the same
-  // (job_id, nonce) maps to the same row, so a write that actually succeeded
-  // and merely lost its response cannot be counted twice.
+  // Stored under `canonicalNonce` (header[76..80] hex) so UNIQUE(job_id, nonce)
+  // enforces one credit per solved header even across byte-order aliases.
   let stored;
   try {
     stored = await store.recordShare({
       at: Date.now(), miner: m.login, session: m.id, jobId: job.id,
-      nonce, height: job.height, targetHex: job.target.toString('hex'),
+      nonce: canonicalNonce, height: job.height, targetHex: job.target.toString('hex'),
     });
   } catch (e) {
-    job.seen.delete(nonce);
+    job.seen.delete(canonicalNonce);
+    job.seenRaw.delete(nonce);
     log(`SHARE NOT RECORDED for ${m.login}: ${e.message.slice(0, 140)}`);
     return { error: { code: -1, message: 'pool could not record the share; retry' } };
   }
@@ -877,9 +882,9 @@ async function apiSnapshot() {
     poolHashrate = Number(work) / WINDOW_S;
     sharesPerSecond = count / WINDOW_S;
     const st = await store.stats();
-    totalBlocks = st.blocks;
+    totalBlocks = st.pending + st.mature;
     totalPaid = Number(st.computed) / 1e8;
-    const [last] = await store.sql('SELECT IFNULL(MAX(found_at),0) FROM blocks;');
+    const [last] = await store.sql("SELECT IFNULL(MAX(found_at),0) FROM blocks WHERE state != 'orphaned';");
     lastPoolBlockTime = Number(last) || null;
   } catch (e) {
     log(`api snapshot: ledger unreadable (${e.message.slice(0, 80)})`);
@@ -950,87 +955,169 @@ const store = new Store({
   },
 });
 
+const MAX_LINE_BYTES = 4096;
+const MAX_QUEUED_LINES = 32;
+const LOGIN_TIMEOUT_MS = 30000;
+const MAX_CONNS_PER_IP = CFG.maxConnsPerIp || 64;
+const connsByIp = new Map();
+
 const server = net.createServer((sock) => {
+  const ip = sock.remoteAddress || 'unknown';
+  const curConns = connsByIp.get(ip) || 0;
+  if (curConns >= MAX_CONNS_PER_IP) {
+    sock.destroy();
+    return;
+  }
+  connsByIp.set(ip, curConns + 1);
+
   sock.setEncoding('utf8');
+  sock.setKeepAlive(true, 60000);
   let buf = '';
   let miner = null;
+  let closed = false;
+  const lineQueue = [];
+  let draining = false;
 
-  sock.on('data', async (d) => {
+  // Drop idle unauthenticated sockets (port scanners, half-open TCP floods)
+  // without ever disconnecting a logged-in slow miner between shares.
+  let loginTimer = setTimeout(() => {
+    if (!miner && !closed) sock.destroy();
+  }, LOGIN_TIMEOUT_MS);
+
+  async function processLine(line) {
+    let msg;
+    try { msg = JSON.parse(line); } catch { send(sock, { id: null, error: { code: -1, message: 'bad json' } }); return; }
+    // `null` parses fine and then `msg.method` throws, so guard non-objects.
+    if (msg === null || typeof msg !== 'object') { send(sock, { id: null, error: { code: -1, message: 'bad json' } }); return; }
+
+    if (msg.method === 'login') {
+      if (miner) {
+        send(sock, { id: msg.id ?? null, error: { code: -1, message: 'already logged in' } });
+        return;
+      }
+      const login = String(msg.params?.login || '').trim();
+      // FLEET-ONLY IS ENFORCED, NOT INTENDED. A stranger who finds the port
+      // gets told plainly rather than silently accruing a balance nobody
+      // planned to pay. The same switch closes the pool to NEW miners when
+      // our share of the network is too high (doc/DECENTRALIZATION.md,
+      // contrib/pool/pcoin-pool-close-new): then `closedMessage` says why and
+      // where to go instead, because "not open yet" would be a lie.
+      if (CFG.allowlist.length && !CFG.allowlist.includes(login)) {
+        log(`rejected login from ${sock.remoteAddress}: ${login.slice(0, 24)}… not on the allowlist`);
+        send(sock, { id: msg.id, error: { code: -1, message: CFG.closedMessage || 'this pool is not open yet' } });
+        sock.end();
+        return;
+      }
+      // The checksum is checked HERE, at the door, and not inside
+      // addressToScript: that function is also the payout path, and an
+      // address already in the PPLNS window must not be able to freeze
+      // payouts by throwing there. See assertBech32Checksum in block.mjs --
+      // a typo'd login had already been paid 712 PCN it could never spend.
+      // addressToScript goes FIRST so a wrong network or a taproot pc1p
+      // address is refused with its real reason; checked first, the
+      // bech32 constant would reject a pc1p as "a typo", which it is not.
+      try { addressToScript(login, CFG.hrp); assertBech32Checksum(login); }
+      catch (e) { send(sock, { id: msg.id, error: { code: -1, message: `bad payout address: ${e.message}` } }); sock.end(); return; }
+
+      if (loginTimer) { clearTimeout(loginTimer); loginTimer = null; }
+      miner = {
+        id: randomBytes(8).toString('hex'),
+        login, sock,
+        extranonce: randomBytes(2).toString('hex'),
+        jobCounter: 0,
+        jobIds: [],
+        diffFactor: CFG.vardiff.startFactor,
+        accepted: 0, rejected: 0,
+        windowStart: Date.now(), windowShares: 0, windowOffered: 0,
+      };
+      state.miners.set(miner.id, miner);
+      log(`login ${login} from ${sock.remoteAddress} (session ${miner.id})`);
+      send(sock, { id: msg.id, result: { id: miner.id, job: makeJob(miner), status: 'OK' } });
+
+    } else if (msg.method === 'submit') {
+      if (!miner) { send(sock, { id: msg.id, error: { code: -1, message: 'not logged in' } }); return; }
+      if (state.storeDown) {
+        send(sock, { id: msg.id, error: { code: -1, message: 'pool ledger unavailable; not accepting shares' } });
+        return;
+      }
+      const out = await handleSubmit(miner, msg.params || {}, msg.id);
+      send(sock, { id: msg.id, ...out });
+
+    } else if (msg.method === 'getjob') {
+      if (!miner) { send(sock, { id: msg.id, error: { code: -1, message: 'not logged in' } }); return; }
+      send(sock, { id: msg.id, result: makeJob(miner) });
+
+    } else if (msg.method === 'keepalived') {
+      send(sock, { id: msg.id, result: { status: 'KEEPALIVED' } });
+
+    } else {
+      send(sock, { id: msg.id ?? null, error: { code: -1, message: `unknown method ${msg.method}` } });
+    }
+  }
+
+  async function drainQueue() {
+    if (draining) return;
+    draining = true;
+    try {
+      while (lineQueue.length > 0 && !closed) {
+        const line = lineQueue.shift();
+        if (lineQueue.length < MAX_QUEUED_LINES / 2 && sock.isPaused()) sock.resume();
+        await processLine(line);
+      }
+    } catch (e) {
+      log(`stratum socket error from ${ip}: ${e.message?.slice(0, 120)}`);
+      sock.destroy();
+    } finally {
+      draining = false;
+      if (!closed && sock.isPaused() && lineQueue.length < MAX_QUEUED_LINES) sock.resume();
+    }
+  }
+
+  sock.on('data', (d) => {
+    if (closed) return;
     buf += d;
+    if (buf.length > MAX_LINE_BYTES && buf.indexOf('\n') < 0) {
+      log(`dropping ${ip}: line exceeded ${MAX_LINE_BYTES} bytes`);
+      sock.destroy();
+      return;
+    }
     let i;
     while ((i = buf.indexOf('\n')) >= 0) {
-      const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
-      if (!line) continue;
-      let msg;
-      try { msg = JSON.parse(line); } catch { send(sock, { id: null, error: { code: -1, message: 'bad json' } }); continue; }
-      // `null` parses fine and then `msg.method` throws inside this async listener,
-      // which nothing catches -- one line of "null" would take the pool down.
-      if (msg === null || typeof msg !== 'object') { send(sock, { id: null, error: { code: -1, message: 'bad json' } }); continue; }
-
-      if (msg.method === 'login') {
-        const login = String(msg.params?.login || '').trim();
-        // FLEET-ONLY IS ENFORCED, NOT INTENDED. A stranger who finds the port
-        // gets told plainly rather than silently accruing a balance nobody
-        // planned to pay. The same switch closes the pool to NEW miners when
-        // our share of the network is too high (doc/DECENTRALIZATION.md,
-        // contrib/pool/pcoin-pool-close-new): then `closedMessage` says why and
-        // where to go instead, because "not open yet" would be a lie.
-        if (CFG.allowlist.length && !CFG.allowlist.includes(login)) {
-          log(`rejected login from ${sock.remoteAddress}: ${login.slice(0, 24)}… not on the allowlist`);
-          send(sock, { id: msg.id, error: { code: -1, message: CFG.closedMessage || 'this pool is not open yet' } });
-          sock.end();
-          return;
-        }
-        // The checksum is checked HERE, at the door, and not inside
-        // addressToScript: that function is also the payout path, and an
-        // address already in the PPLNS window must not be able to freeze
-        // payouts by throwing there. See assertBech32Checksum in block.mjs --
-        // a typo'd login had already been paid 712 PCN it could never spend.
-        // addressToScript goes FIRST so a wrong network or a taproot pc1p
-        // address is refused with its real reason; checked first, the
-        // bech32 constant would reject a pc1p as "a typo", which it is not.
-        try { addressToScript(login, CFG.hrp); assertBech32Checksum(login); }
-        catch (e) { send(sock, { id: msg.id, error: { code: -1, message: `bad payout address: ${e.message}` } }); sock.end(); return; }
-
-        miner = {
-          id: randomBytes(8).toString('hex'),
-          login, sock,
-          extranonce: randomBytes(2).toString('hex'),
-          jobCounter: 0,
-          diffFactor: CFG.vardiff.startFactor,
-          accepted: 0, rejected: 0,
-          windowStart: Date.now(), windowShares: 0, windowOffered: 0,
-        };
-        state.miners.set(miner.id, miner);
-        log(`login ${login} from ${sock.remoteAddress} (session ${miner.id})`);
-        send(sock, { id: msg.id, result: { id: miner.id, job: makeJob(miner), status: 'OK' } });
-
-      } else if (msg.method === 'submit') {
-        if (!miner) { send(sock, { id: msg.id, error: { code: -1, message: 'not logged in' } }); continue; }
-        if (state.storeDown) {
-          send(sock, { id: msg.id, error: { code: -1, message: 'pool ledger unavailable; not accepting shares' } });
-          continue;
-        }
-        const out = await handleSubmit(miner, msg.params || {}, msg.id);
-        send(sock, { id: msg.id, ...out });
-
-      } else if (msg.method === 'getjob') {
-        if (!miner) { send(sock, { id: msg.id, error: { code: -1, message: 'not logged in' } }); continue; }
-        send(sock, { id: msg.id, result: makeJob(miner) });
-
-      } else if (msg.method === 'keepalived') {
-        send(sock, { id: msg.id, result: { status: 'KEEPALIVED' } });
-
-      } else {
-        send(sock, { id: msg.id ?? null, error: { code: -1, message: `unknown method ${msg.method}` } });
+      const rawLine = buf.slice(0, i);
+      buf = buf.slice(i + 1);
+      if (rawLine.length > MAX_LINE_BYTES) {
+        log(`dropping ${ip}: line exceeded ${MAX_LINE_BYTES} bytes`);
+        sock.destroy();
+        return;
       }
+      const line = rawLine.trim();
+      if (!line) continue;
+      lineQueue.push(line);
+      if (lineQueue.length >= MAX_QUEUED_LINES && !sock.isPaused()) sock.pause();
     }
+    if (buf.length > MAX_LINE_BYTES) {
+      log(`dropping ${ip}: buffer exceeded ${MAX_LINE_BYTES} bytes`);
+      sock.destroy();
+      return;
+    }
+    drainQueue();
   });
 
   const bye = () => {
+    if (closed) return;
+    closed = true;
+    if (loginTimer) { clearTimeout(loginTimer); loginTimer = null; }
+    lineQueue.length = 0;
+    const rem = (connsByIp.get(ip) || 1) - 1;
+    if (rem <= 0) connsByIp.delete(ip);
+    else connsByIp.set(ip, rem);
     if (miner) {
       log(`bye ${miner.login} (accepted ${miner.accepted}, rejected ${miner.rejected})`);
+      if (miner.jobIds) {
+        for (const jid of miner.jobIds) state.jobs.delete(jid);
+      }
       state.miners.delete(miner.id);
+      miner = null;
     }
   };
   sock.on('close', bye);

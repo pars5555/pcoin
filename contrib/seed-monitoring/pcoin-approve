@@ -803,14 +803,23 @@ FORBIDDEN_PUBLIC_NAMES = (
 )
 
 
+_ZW_RE = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2060\ufeff\u00ad]")
+
+
+def _norm_for_private_check(text):
+    s = _ZW_RE.sub("", (text or "").lower())
+    s = s.replace("[.]", ".").replace("(.)", ".")
+    return s
+
+
 def forbidden_name_in(text):
     """The private service named in `text`, or None if there is none.
 
-    Case-insensitive, and matches the whole name rather than a bare word: the
-    ordinary English word "checker" must not trip this, only the address that
-    states the service exists.
+    Case-insensitive, strips zero-width characters and defanged dots, and matches
+    the whole name rather than a bare word: the ordinary English word "checker"
+    must not trip this, only the address that states the service exists.
     """
-    low = (text or "").lower()
+    low = _norm_for_private_check(text)
     for name in FORBIDDEN_PUBLIC_NAMES:
         if name in low:
             return name
@@ -836,7 +845,7 @@ def cmd_submit(a):
     # can be stopped from being named in public, and it stops it outright. Placed
     # after the length checks so the message it prints is about the leak and not
     # about formatting, and before the queue is touched so nothing is written.
-    bad = forbidden_name_in(text)
+    bad = forbidden_name_in(text) or forbidden_name_in(getattr(a, "caption", "") or "")
     if bad:
         notify_ops("private service named in a public message",
                    "a submission from %s named %s and was REFUSED. Nothing was "
@@ -910,7 +919,9 @@ def _submit_locked(a, text, photo_sha, photo_b64):
         "parse_mode": ("Markdown" if getattr(a, "markdown", False) else ""),
         # Non-empty = never publish on the timeout; wait for a decision. Not in
         # the digest: it changes WHEN something may publish, never WHAT.
-        "hold": (getattr(a, "hold", "") or "").strip()[:300],
+        # Channel announcements (@PCoinPCN) ALWAYS wait for explicit approval
+        # (CLAUDE.md: "Nothing reaches @PCoinPCN until he has said so").
+        "hold": (getattr(a, "hold", "") or ("channel announcement requires explicit owner confirmation" if a.dest == "channel" else "")).strip()[:300],
         "photo_b64": photo_b64,
         "photo_sha": photo_sha,
         "state": "pending",

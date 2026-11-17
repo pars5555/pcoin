@@ -795,25 +795,33 @@ export class Store {
           out.pending++;
           continue;
         }
-        // DETECT A REORG, BUT NEVER AUTO-REVERSE A CREDIT. If any of this
-        // block's payouts have actually been sent -- which nothing in step 3
-        // can do, and step 4 will -- the coins are gone and clawing back a
-        // balance is not the pool's call to make silently. Raise it and leave
-        // the ledger alone. Only an unsent block may be voided automatically.
+        // DETECT A REORG, BUT NEVER AUTO-REVERSE A SPENDABLE CREDIT.
+        //
+        // Under coinbase-direct payouts (recordBlockPaidByCoinbase), `sent_txid`
+        // is set immediately at 1 confirmation to the block's own coinbase txid.
+        // While the block is still `pending` (< 100 confirmations), consensus
+        // maturity prevents anyone from spending that coinbase, and no pool
+        // wallet ever sent funds: if a rival block wins at that height, the
+        // coinbase simply never existed on the active chain and the block is an
+        // ordinary orphan (`void`).
+        //
+        // Once a block has reached `mature` (or Step 4 sent external payouts
+        // after maturity), its coins were spendable: never silently reverse it,
+        // hold the state and raise the alarm once for a human to decide.
         const [sent] = (await this.db.run(
           `SELECT COUNT(*) FROM payouts WHERE block_hash=${lit(hash)} AND sent_txid IS NOT NULL;`)).rows;
-        if (Number(sent) > 0) {
+        if (was === 'mature' && Number(sent) > 0) {
           const msg = `height ${Number(h)} was replaced at its height by a rival block`
             + ` after ${sent} payout(s) were recorded against its coinbase`
             + ` -- that coinbase is not on the chain, ledger left alone, decide by hand`;
           if (b.alarm !== msg) {
             updates.push(`UPDATE blocks SET alarm=${lit(msg)} WHERE hash=${lit(hash)};`);
+            out.alarms.push({ hash, height: Number(h), message: msg });
           }
-          out.alarms.push({ hash, height: Number(h), message: msg });
           continue;
         }
         updates.push(
-          `UPDATE blocks SET state='orphaned', state_at=${num(now)}, confirmations=${num(confs)} `
+          `UPDATE blocks SET state='orphaned', state_at=${num(now)}, confirmations=${num(confs)}, alarm=NULL `
           + `WHERE hash=${lit(hash)};`);
         out.orphaned.push({ hash, height: Number(h), wasMature: was === 'mature' });
         continue;
@@ -864,7 +872,7 @@ export class Store {
       + " (SELECT COUNT(*) FROM blocks WHERE state='pending'),"
       + " (SELECT COUNT(*) FROM blocks WHERE state='mature'),"
       + " (SELECT COUNT(*) FROM blocks WHERE state='orphaned'),"
-      + ' (SELECT IFNULL(SUM(amount),0) FROM payouts);');
+      + " (SELECT IFNULL(SUM(p.amount),0) FROM payouts p JOIN blocks b ON b.hash = p.block_hash WHERE b.state != 'orphaned');");
     const [shares, blocks, pending, mature, orphaned, owed] = r.rows[0].split('|');
     return {
       shares: Number(shares), blocks: Number(blocks),

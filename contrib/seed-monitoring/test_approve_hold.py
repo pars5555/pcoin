@@ -130,6 +130,19 @@ submit("Withdrawals are cleared and the balance is correct again.", "k-ok-after"
 check(len(ap.load()["items"]) == before + 1, "an ordinary message after the refusal still queues")
 check(not OPS, "an ordinary message raises no ops alert")
 
+check(ap.forbidden_name_in("see check\u200ber.pc.am") == "checker.pc.am",
+      "zero-width characters do not bypass forbidden_name_in")
+check(ap.forbidden_name_in("see checker[.]pc[.]am") == "checker.pc.am",
+      "defanged [.] dots do not bypass forbidden_name_in")
+
+# Channel (@PCoinPCN) submissions must always hold for explicit owner approval.
+a_chan = types.SimpleNamespace(dest="channel", text="Official release notes.", caption="",
+                               photo=None, key="k-chan-1", reply_to="", source="pcoin-announce",
+                               markdown=False, hold="")
+ap.cmd_submit(a_chan)
+chan_item = [i for i in ap.load()["items"] if i.get("key") == "k-chan-1"][0]
+check(bool(chan_item["hold"]), "a channel announcement automatically gets a hold so it never auto-publishes")
+
 print()
 print("%d FAILED" % len(FAILS) if FAILS else "ALL PASSED")
 sys.exit(1 if FAILS else 0)

@@ -464,16 +464,21 @@ def is_unroutable(host):
 
 
 def link_allowed(url, guild=""):
-    u = url.strip().lower()
-    for pre in ("https://", "http://"):
-        if u.startswith(pre):
-            u = u[len(pre):]
-    if u.startswith("www."):
-        u = u[4:]
-    host, _, path = u.partition("/")
-    host = host.split(":")[0].rstrip(".")
-    parts = [p for p in path.split("?")[0].split("/") if p]
+    raw = url.strip()
+    try:
+        sp = urllib.parse.urlsplit(raw if "://" in raw else "https://" + raw)
+    except ValueError:
+        return False
+    if sp.username or sp.password:
+        return False
+    host = (sp.hostname or "").lower().rstrip(".")
+    if host.startswith("www."):
+        host = host[4:]
+    if not host:
+        return False
+    parts = [p for p in sp.path.lower().split("/") if p]
     first = parts[0] if parts else ""
+    u = raw.lower()
     if host == "pc.am" or host.endswith(".pc.am"):
         return True
     if is_unroutable(host):
