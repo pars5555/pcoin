@@ -384,10 +384,10 @@ def collect_webai():
     r = blank("webai.pc.am", "35.239.156.16")
     # The container has no shell-friendly way to take a script as an argument
     # without quoting it through three layers, so it goes in on stdin too.
-    inner = "sudo docker exec -i webai sh -c 'cat > /tmp/rd.js && node /tmp/rd.js; rc=$?; rm -f /tmp/rd.js; exit $rc'"
+    inner = "docker exec -i webai sh -c 'cat > /tmp/rd.js && node /tmp/rd.js; rc=$?; rm -f /tmp/rd.js; exit $rc'"
     ok, out = run(["ssh", "-i", PANEL_KEY, "-o", "BatchMode=yes",
                    "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=no",
-                   "rba@35.239.156.16", inner], stdin_text=WEBAI_JS)
+                   "root@35.239.156.16", inner], stdin_text=WEBAI_JS)
     if not ok:
         r["error"] = out
         return r

@@ -40,7 +40,7 @@ import urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 ASSET = "pcoin-win64-miner.zip"
-PCAM_HOST = os.environ.get("PCAM_HOST", "rba@35.239.156.16")
+PCAM_HOST = os.environ.get("PCAM_HOST", "root@35.239.156.16")
 PCAM_DL = "/var/www/pc.am/dl"
 GH_REPO = os.environ.get("GH_REPO", "pars5555/pcoin")
 
