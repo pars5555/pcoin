@@ -615,6 +615,12 @@ private:
     /** Various helpers for headers processing, invoked by ProcessHeadersMessage() */
     /** Return true if headers are continuous and have valid proof-of-work (DoS points assigned on failure) */
     bool CheckHeadersPoW(const std::vector<CBlockHeader>& headers, const Consensus::Params& consensusParams, Peer& peer);
+    /** Bounded cache of header SHA256d ids whose RandomX PoW has already passed, so
+     *  replayed unconnecting headers cannot burn 15-50 ms/header on msghand. */
+    Mutex m_verified_pow_mutex;
+    std::deque<uint256> m_verified_pow_fifo GUARDED_BY(m_verified_pow_mutex);
+    std::set<uint256> m_verified_pow_set GUARDED_BY(m_verified_pow_mutex);
+    static constexpr size_t MAX_VERIFIED_POW_HEADERS{4096};
     /** Calculate an anti-DoS work threshold for headers chains */
     arith_uint256 GetAntiDoSWorkThreshold();
     /** Deal with state tracking and headers sync for peers that send
@@ -2253,9 +2259,10 @@ void PeerManagerImpl::ProcessGetBlockData(CNode& pfrom, Peer& peer, const CInv& 
         MakeAndPushMessage(pfrom, NetMsgType::BLOCK, Span{block_data});
         // Don't set pblock as we've sent the block
     } else {
-        // Send block from disk
+        // Send block from disk (via *pindex so we verify header hash against the
+        // validated index instead of re-hashing RandomX on every non-witness getdata).
         std::shared_ptr<CBlock> pblockRead = std::make_shared<CBlock>();
-        if (!m_chainman.m_blockman.ReadBlock(*pblockRead, block_pos)) {
+        if (!m_chainman.m_blockman.ReadBlock(*pblockRead, *pindex)) {
             if (WITH_LOCK(m_chainman.GetMutex(), return m_chainman.m_blockman.IsBlockPruned(*pindex))) {
                 LogDebug(BCLog::NET, "Block was pruned before it could be read, %s\n", pfrom.DisconnectMsg(fLogIPs));
             } else {
@@ -2442,19 +2449,32 @@ void PeerManagerImpl::SendBlockTransactions(CNode& pfrom, Peer& peer, const CBlo
 
 bool PeerManagerImpl::CheckHeadersPoW(const std::vector<CBlockHeader>& headers, const Consensus::Params& consensusParams, Peer& peer)
 {
-    // PCoin: RandomX verification costs ~1ms per header (vs a ~free SHA256d
-    // upstream), so a peer endlessly replaying valid, already-known headers
-    // (e.g. the honest chain's own headers) could burn our msghand thread's
-    // CPU at zero cost to itself. Any header whose (SHA256d) id is already
-    // in our block index had its proof of work verified when it was first
-    // accepted, so only spend RandomX time on genuinely new headers.
+    // Check continuity FIRST (pure SHA256d, ~microseconds): an attacker sending
+    // 2,000 copies of one valid header in a single `headers` message fails here
+    // at header #2 with zero RandomX hashes instead of stalling msghand for
+    // 30-90 seconds.
+    if (!CheckHeadersAreContinuous(headers)) {
+        Misbehaving(peer, "non-continuous headers sequence");
+        return false;
+    }
+
+    // PCoin: RandomX verification costs ~15-50 ms per header in light mode (vs a
+    // ~free SHA256d upstream), so skip any header already in our block index OR
+    // in our bounded verified-PoW cache (which stops replayed unconnecting
+    // headers from burning RandomX repeatedly).
     std::vector<CBlockHeader> unknown_headers;
+    std::vector<uint256> unknown_hashes;
     unknown_headers.reserve(headers.size());
+    unknown_hashes.reserve(headers.size());
     {
         LOCK(cs_main);
+        LOCK(m_verified_pow_mutex);
         for (const CBlockHeader& header : headers) {
-            if (m_chainman.m_blockman.LookupBlockIndex(header.GetHash()) == nullptr) {
+            const uint256 h{header.GetHash()};
+            if (m_chainman.m_blockman.LookupBlockIndex(h) == nullptr &&
+                m_verified_pow_set.find(h) == m_verified_pow_set.end()) {
                 unknown_headers.push_back(header);
+                unknown_hashes.push_back(h);
             }
         }
     }
@@ -2465,10 +2485,17 @@ bool PeerManagerImpl::CheckHeadersPoW(const std::vector<CBlockHeader>& headers, 
         return false;
     }
 
-    // Are these headers connected to each other?
-    if (!CheckHeadersAreContinuous(headers)) {
-        Misbehaving(peer, "non-continuous headers sequence");
-        return false;
+    if (!unknown_hashes.empty()) {
+        LOCK(m_verified_pow_mutex);
+        for (const uint256& h : unknown_hashes) {
+            if (m_verified_pow_set.insert(h).second) {
+                m_verified_pow_fifo.push_back(h);
+                if (m_verified_pow_fifo.size() > MAX_VERIFIED_POW_HEADERS) {
+                    m_verified_pow_set.erase(m_verified_pow_fifo.front());
+                    m_verified_pow_fifo.pop_front();
+                }
+            }
+        }
     }
     return true;
 }

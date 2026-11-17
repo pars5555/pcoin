@@ -1362,7 +1362,8 @@ curl -s https://explorer.pc.am/api/address/pc1q&hellip;?history=5
 # what is a PCN worth right now?
 curl -s https://price.pc.am      # -&gt; {"creditRateUsd":&lt;USD per PCN&gt;, &hellip;}  read it live, never copy it</pre>
         <p class="note">
-          Credit after <b>3 confirmations</b>, and key your ledger on
+          Credit small, capped service payments after <b>3 confirmations</b> (<b>20+</b> for exchanges
+          or irreversible withdrawals), and key your ledger on
           <span class="mono">(txid,&nbsp;address)</span> &mdash; not on
           <span class="mono">(txid,&nbsp;vout)</span>. That one detail was shipped wrong by
           every integration before it was caught, and it silently loses a customer&rsquo;s

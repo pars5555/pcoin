@@ -130,16 +130,37 @@ namespace PCoinTray
             {
                 ok &= Check(log, "PCoin origin path", "84h/9444h/0h", pc.OriginPath);
                 ok &= Check(log, "PCoin master fingerprint", "73c5da0a", pc.MasterFingerprint);
-                Log(log, "PCoin account xprv m/84'/9444'/0' = " + pc.AccountXprv);
-                Log(log, "PCoin receive descriptor = " + pc.Descriptor(0));
-                Log(log, "PCoin change  descriptor = " + pc.Descriptor(1));
-                for (uint i = 0; i < 3; i++) Log(log, "PCoin m/84'/9444'/0'/0/" + i + " = " + pc.Address(0, i));
-                for (uint i = 0; i < 3; i++) Log(log, "PCoin m/84'/9444'/0'/1/" + i + " = " + pc.Address(1, i));
-
+                ok &= Check(log, "PCoin account xprv m/84'/9444'/0'",
+                    "xprv9y14Hos54MVJgZi4fDbHMeHQznnF9PCiwjtq5yCv6YKF1nCBFDSzHRtXHxqCWKy4EE5VXRJDdKcyfpSgrrTKKXJLvkPqWfpcLAXQtZcMRwL",
+                    pc.AccountXprv);
+                ok &= Check(log, "PCoin m/84'/9444'/0'/0/0", "pc1qj7lccmpqhdgg6enh503hqqyx244e49yespm8pf", pc.Address(0, 0));
+                ok &= Check(log, "PCoin m/84'/9444'/0'/0/1", "pc1q0ncnjjyklxwts46h7e7jmls0l8d99lhv3wk0sm", pc.Address(0, 1));
+                ok &= Check(log, "PCoin m/84'/9444'/0'/0/2", "pc1qzze3twr9c0cg0s3v2yh7797gae4ufk7zu4wux0", pc.Address(0, 2));
+                ok &= Check(log, "PCoin m/84'/9444'/0'/1/0", "pc1qel0k9nyfvgqsgkc4fv9jp9ff37gw48gnsqt2rs", pc.Address(1, 0));
+                ok &= Check(log, "PCoin m/84'/9444'/0'/1/1", "pc1qszm5tcmmewdgjny34klqv3dupm6jd5939k6e20", pc.Address(1, 1));
+                ok &= Check(log, "PCoin m/84'/9444'/0'/1/2", "pc1qxyzkhz58fs86rxjmm96hz58zt3j0qnx8s76tyg", pc.Address(1, 2));
                 ok &= Check(log, "PCoin address prefix", "pc1q", pc.Address(0, 0).Substring(0, 4));
             }
 
-            // --- regtest must not reuse the mainnet coin type ---------------
+            // --- testnets and regtest must not reuse the mainnet coin type --
+            using (var tn = SeedAccount.FromMnemonic(TEST_MNEMONIC, PCoinNetwork.Test))
+            {
+                ok &= Check(log, "testnet coin type is 1", "84h/1h/0h", tn.OriginPath);
+                ok &= Check(log, "testnet uses tprv", "tprv", tn.AccountXprv.Substring(0, 4));
+                ok &= Check(log, "testnet address prefix", "tpc1q", tn.Address(0, 0).Substring(0, 5));
+            }
+            using (var tn4 = SeedAccount.FromMnemonic(TEST_MNEMONIC, PCoinNetwork.Testnet4))
+            {
+                ok &= Check(log, "testnet4 coin type is 1", "84h/1h/0h", tn4.OriginPath);
+                ok &= Check(log, "testnet4 uses tprv", "tprv", tn4.AccountXprv.Substring(0, 4));
+                ok &= Check(log, "testnet4 address prefix", "tpc1q", tn4.Address(0, 0).Substring(0, 5));
+            }
+            using (var sg = SeedAccount.FromMnemonic(TEST_MNEMONIC, PCoinNetwork.Signet))
+            {
+                ok &= Check(log, "signet coin type is 1", "84h/1h/0h", sg.OriginPath);
+                ok &= Check(log, "signet uses tprv", "tprv", sg.AccountXprv.Substring(0, 4));
+                ok &= Check(log, "signet address prefix", "tpc1q", sg.Address(0, 0).Substring(0, 5));
+            }
             using (var rt = SeedAccount.FromMnemonic(TEST_MNEMONIC, PCoinNetwork.Regtest))
             {
                 ok &= Check(log, "regtest coin type is 1", "84h/1h/0h", rt.OriginPath);
@@ -2132,6 +2153,20 @@ namespace PCoinTray
                 Cpu.WhyNotOffered(400.0, 0.0635).Contains("day gate").ToString());
             ok &= Check(log, "refusal names an unreadable chain", "True",
                 Cpu.WhyNotOffered(50000.0, 0.0).Contains("not readable").ToString());
+
+            // ---- pool endpoint validation -------------------------------
+            ok &= Check(log, "pool endpoint accepts host:port", "True",
+                TrayApp.IsValidPoolEndpoint(TrayApp.CleanPoolEndpoint("pool.pc.am:3333")).ToString());
+            ok &= Check(log, "pool endpoint strips stratum+tcp://", "pool2.pc.am:3333",
+                TrayApp.CleanPoolEndpoint("stratum+tcp://pool2.pc.am:3333/"));
+            ok &= Check(log, "pool endpoint accepts bracketed ipv6", "True",
+                TrayApp.IsValidPoolEndpoint("[2a0a:4cc0::1]:3333").ToString());
+            ok &= Check(log, "pool endpoint rejects CLI option injection", "False",
+                TrayApp.IsValidPoolEndpoint("-conf=evil.conf:3333").ToString());
+            ok &= Check(log, "pool endpoint rejects quote/space injection", "False",
+                TrayApp.IsValidPoolEndpoint("pool.pc.am:3333\" -regtest").ToString());
+            ok &= Check(log, "pool endpoint rejects out-of-range port", "False",
+                TrayApp.IsValidPoolEndpoint("pool.pc.am:70000").ToString());
 
             return ok;
         }

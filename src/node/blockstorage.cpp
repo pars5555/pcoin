@@ -1014,7 +1014,7 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
     return true;
 }
 
-bool BlockManager::ReadBlock(CBlock& block, const FlatFilePos& pos) const
+bool BlockManager::ReadBlock(CBlock& block, const FlatFilePos& pos, bool check_pow) const
 {
     block.SetNull();
 
@@ -1034,9 +1034,18 @@ bool BlockManager::ReadBlock(CBlock& block, const FlatFilePos& pos) const
     }
 
     // Check the header
-    // PCoin: verify RandomX PoW (the block hash itself no longer proves work).
-    if (!CheckProofOfWorkRandomX(block, block.nBits, GetConsensus())) {
-        LogError("%s: Errors in block header at %s\n", __func__, pos.ToString());
+    // PCoin: when reading by FlatFilePos alone, verify full RandomX PoW; when
+    // reading via a validated CBlockIndex (`check_pow == false`), cheaply verify
+    // nBits and rely on the caller's 256-bit header SHA256d match against the
+    // already-validated index so `getdata`/RPC reads cannot burn 20-50 ms of
+    // RandomX CPU per historical block.
+    if (check_pow) {
+        if (!CheckProofOfWorkRandomX(block, block.nBits, GetConsensus())) {
+            LogError("%s: Errors in block header at %s\n", __func__, pos.ToString());
+            return false;
+        }
+    } else if (!DeriveTarget(block.nBits, GetConsensus().powLimit)) {
+        LogError("%s: Invalid nBits in block header at %s\n", __func__, pos.ToString());
         return false;
     }
 
@@ -1053,7 +1062,7 @@ bool BlockManager::ReadBlock(CBlock& block, const CBlockIndex& index) const
 {
     const FlatFilePos block_pos{WITH_LOCK(cs_main, return index.GetBlockPos())};
 
-    if (!ReadBlock(block, block_pos)) {
+    if (!ReadBlock(block, block_pos, /*check_pow=*/false)) {
         return false;
     }
     if (block.GetHash() != index.GetBlockHash()) {

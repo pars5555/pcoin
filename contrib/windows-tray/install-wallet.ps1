@@ -116,7 +116,6 @@ if ((Test-Path $cliPath) -and (Test-Path $DataDir)) {
 }
 
 # --- download and verify -------------------------------------------------
-$zip = Join-Path $env:TEMP $name
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $verFile = Join-Path $InstallDir '.pcoin_wallet_version'
 $sameVer = (-not $ZipPath) -and (-not $Force) -and (Test-Path $verFile) -and `
@@ -126,6 +125,16 @@ $sameVer = (-not $ZipPath) -and (-not $Force) -and (Test-Path $verFile) -and `
 if ($sameVer) {
     Write-Output "  already at v$Version - skipping download (use -Force to reinstall)"
 } else {
+    if ($script:IsAdmin) {
+        try {
+            & icacls $InstallDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)(F)' '*S-1-5-32-544:(OI)(CI)(F)' '*S-1-5-32-545:(OI)(CI)(RX)' | Out-Null
+        } catch { }
+    }
+    $stage = Join-Path $InstallDir ('.stage-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force -Path $stage | Out-Null
+    $zip = Join-Path $stage $name
+    $tmp = Join-Path $stage 'unpack'
+    try {
     if ($ZipPath) {
         if (-not (Test-Path $ZipPath)) { throw "ZipPath not found: $ZipPath" }
         Write-Output "  using local zip: $ZipPath"
@@ -148,8 +157,6 @@ if ($sameVer) {
         throw "no expected SHA-256 is pinned for v$Version (got $got); refusing to install an unverified download"
     }
 
-    $tmp = Join-Path $env:TEMP 'pcoin-wallet-unpack'
-    if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
     Expand-Archive -Path $zip -DestinationPath $tmp -Force
 
     # The archive lays the node out as pcoin-<ver>\bin\*.exe; the app looks
@@ -174,6 +181,9 @@ if ($sameVer) {
     }
     Write-Output "  installed to $InstallDir"
     Set-Content -Path $verFile -Value $Version -Encoding ascii
+    } finally {
+        if (Test-Path $stage) { Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue }
+    }
 }
 if (-not (Test-Path (Join-Path $InstallDir 'PCoinWallet.exe'))) {
     throw "PCoinWallet.exe is missing from $name - archive layout unexpected"
@@ -199,6 +209,39 @@ if (-not (Test-Path $conf)) {
 Write-Output "  data directory: $DataDir"
 
 # --- best-effort host tweaks (need admin; not fatal) ---------------------
+if ($script:IsAdmin) {
+    try {
+        $aclWho = $null
+        try { $aclWho = (Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).UserName } catch { }
+        if (-not $aclWho -and $env:USERDOMAIN -and $env:USERNAME -and $env:USERNAME -notmatch '^(SYSTEM|LOCAL SERVICE|NETWORK SERVICE)$') {
+            $aclWho = "$env:USERDOMAIN\$env:USERNAME"
+        }
+        $dirGrants = @('*S-1-5-18:(OI)(CI)(F)', '*S-1-5-32-544:(OI)(CI)(F)', '*S-1-5-32-545:(OI)(CI)(RX)', '*S-1-3-0:(OI)(CI)(IO)(M)')
+        if ($aclWho) { $dirGrants += "${aclWho}:(RX,WD,AD)" }
+        & icacls $InstallDir /setowner '*S-1-5-32-544' | Out-Null
+        & icacls $InstallDir /inheritance:r /grant:r @dirGrants | Out-Null
+        foreach ($bin in (Get-ChildItem -Path $InstallDir -File -ErrorAction SilentlyContinue |
+                          Where-Object { $_.Extension -in @('.exe', '.dll', '.ps1') -or $_.Name -eq '.pcoin_wallet_version' })) {
+            & icacls $bin.FullName /setowner '*S-1-5-32-544' | Out-Null
+            & icacls $bin.FullName /inheritance:r /grant:r '*S-1-5-18:(F)' '*S-1-5-32-544:(F)' '*S-1-5-32-545:(RX)' | Out-Null
+        }
+        $dataGrants = @('*S-1-5-18:(OI)(CI)(F)', '*S-1-5-32-544:(OI)(CI)(F)')
+        if ($aclWho) { $dataGrants += "${aclWho}:(OI)(CI)(M)" }
+        & icacls $DataDir /inheritance:r /grant:r @dataGrants | Out-Null
+        if ($aclWho) {
+            foreach ($stName in @('pcoin-wallet.cfg', 'pcoin-wallet.log', 'pcoin-wallet-settings.json',
+                                  'pcoin-seed.dat', 'pcoin-seed.info', 'pcoin-pending-uri.txt',
+                                  'pcoin-addressbook.json', 'pcoin-addressbook.corrupt.json')) {
+                $stPath = Join-Path $InstallDir $stName
+                if (Test-Path $stPath) { & icacls $stPath /grant "${aclWho}:(M)" | Out-Null }
+            }
+        }
+        Write-Output '  install folder and binaries locked to Administrators'
+    } catch {
+        Write-Output ('  folder ACL hardening skipped: ' + $_.Exception.Message)
+    }
+}
+
 try {
     Add-MpPreference -ExclusionPath $InstallDir, $DataDir -ErrorAction Stop
     Write-Output '  defender exclusion added'

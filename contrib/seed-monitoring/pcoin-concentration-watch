@@ -75,12 +75,14 @@ Usage:
 
 --end-height judges a past window (an audit: it implies --dry-run).
 
-Exits 0 even when it alerts: this is a monitor, and a monitor that fails a
-timer unit just buries its own message.
+Exits 0 when the measurement succeeds (even when it sends a concentration
+alert), and exits 1 when the monitor itself cannot read the chain so systemd's
+OnFailure=pcoin-alert@%n.service reports the broken check.
 """
 
 import argparse
 import collections
+import decimal
 import json
 import math
 import os
@@ -116,6 +118,7 @@ OUR_POOLS = {
 # How a pool's fee output is recognised: a round percentage of the coinbase
 # (0.5% steps up to 10%) give or take FEE_SLACK_SATS of rounding.
 FEE_STEPS = range(1, 21)          # k/200 of the coinbase: 0.5% .. 10%
+OUR_FEE_BPS = 200                 # both pool.pc.am and pool2.pc.am charge 2.00%
 FEE_SLACK_SATS = 1000             # a PPLNS split leaves < 1 sat per miner over
 # Pool-shaped blocks whose fee output cannot be found. They are counted as ONE
 # party, which can only overstate any single one of them -- the safe direction
@@ -183,7 +186,7 @@ def pool_miner_counts(timeout=12):
     return out
 
 
-def fee_address(paying):
+def fee_address(paying, ignore_addrs=()):
     """The address a pool pays its fee to, or None.
 
     A PPLNS pool takes a fixed percentage of the block and pays it -- plus a few
@@ -200,6 +203,8 @@ def fee_address(paying):
     total = sum(v for v, _ in paying)
     best = None
     for v, a in paying:
+        if not a or a in ignore_addrs:
+            continue
         for k in FEE_STEPS:
             d = abs(v - total * k // 200)
             if d <= FEE_SLACK_SATS and (best is None or d < best[0]):
@@ -207,7 +212,28 @@ def fee_address(paying):
     return best[1] if best else None
 
 
-def classify(block, ours):
+def our_fee_address(paying, ours, custom_ours=False):
+    """Return the matched address in `ours` only when an output to it has our
+    expected ~2% pool fee size (or any FEE_STEPS fee when --ours overrides).
+
+    Never match bare address presence: otherwise a hostile miner or pool can
+    append a 1-satoshi (or 0.5%) output to the public treasury address and
+    blind the largest-other-party alert.
+    """
+    total = sum(v for v, _ in paying)
+    if total <= 0:
+        return None
+    if custom_ours:
+        fee = fee_address(paying)
+        return fee if fee in ours else None
+    target = total * OUR_FEE_BPS // 10000
+    for v, a in paying:
+        if a in ours and abs(v - target) <= FEE_SLACK_SATS:
+            return a
+    return None
+
+
+def classify(block, ours, custom_ours=False):
     """-> (kind, key), kind 'ours' | 'outside' | 'solo', or (None, None).
 
     key is who found it: our pool's label, an outside pool's fee address (or
@@ -223,27 +249,30 @@ def classify(block, ours):
     cb = txs[0]
     paying = []
     for o in cb.get("vout") or []:
-        if float(o.get("value") or 0) <= 0:
+        val = decimal.Decimal(str(o.get("value") or 0))
+        if val <= 0:
             continue  # the witness commitment is a zero-value OP_RETURN
         spk = o.get("scriptPubKey") or {}
         addr = spk.get("address")
         if not addr:
             addrs = spk.get("addresses") or []
             addr = addrs[0] if addrs else None
-        # Amounts arrive as bare JSON numbers: round to satoshis explicitly.
-        paying.append((int(round(float(o["value"]) * 1e8)), addr))
+        paying.append((int((val * 100000000).to_integral_value(rounding=decimal.ROUND_HALF_UP)), addr))
     if not paying:
         return None, None
     if len(paying) >= 2:
-        for _, a in paying:
-            if a in ours:
-                return "ours", ours[a]
-        fee = fee_address(paying)
+        our = our_fee_address(paying, ours, custom_ours=custom_ours)
+        if our:
+            return "ours", ours[our]
+        # Any output to `ours` that did NOT satisfy `our_fee_address` (e.g. a
+        # 1-sat or 0.5% decoy output to the treasury) is ignored when searching
+        # for an outside pool's fee output.
+        fee = fee_address(paying, ignore_addrs=() if custom_ours else tuple(ours.keys()))
         if fee:
             return "outside", fee
         if len(paying) >= 3:
             return "outside", UNIDENTIFIED
-    return "solo", paying[0][1]
+    return "solo", max(paying, key=lambda x: x[0])[1]
 
 
 def ci95(k, n):
@@ -315,7 +344,9 @@ def main():
     a = ap.parse_args()
 
     ours = OUR_POOLS
+    custom_ours = False
     if a.ours:
+        custom_ours = True
         ours = {}
         for item in a.ours:
             addr, _, label = item.partition("=")
@@ -328,9 +359,10 @@ def main():
 
     cli = find_cli()
     if not cli:
-        # A monitor that cannot read the chain must say so, not report 0%.
+        # A monitor that cannot read the chain must fail loudly so systemd's
+        # OnFailure=pcoin-alert@%n.service alerts on the broken check.
         print("no usable bitcoin-cli on this host", file=sys.stderr)
-        return 0
+        return 1
 
     tip = int(rpc(cli, "getblockcount"))
     if a.end_height is not None:
@@ -344,7 +376,7 @@ def main():
     for h in range(lo, tip + 1):
         try:
             bh = rpc(cli, "getblockhash", str(h))
-            kind, key = classify(rpc(cli, "getblock", bh, "2"), ours)
+            kind, key = classify(rpc(cli, "getblock", bh, "2"), ours, custom_ours=custom_ours)
         except Exception:
             kind, key = None, None
         if kind == "ours":
@@ -361,7 +393,7 @@ def main():
     if n < a.window * 0.8:
         print("only %d/%d blocks readable -- refusing to judge" % (n, a.window),
               file=sys.stderr)
-        return 0
+        return 1
 
     # The largest party that is not our pools: one outside pool or one solo
     # address. Keyed by address, so a pool operator who also mines solo to its
@@ -502,4 +534,4 @@ if __name__ == "__main__":
         sys.exit(main())
     except Exception as e:
         print("concentration-watch failed: %s" % e, file=sys.stderr)
-        sys.exit(0)
+        sys.exit(1)

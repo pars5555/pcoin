@@ -193,7 +193,7 @@ rpcauth=...            # per upstream; RPC binds loopback by default</code></pre
 
   <h2><span class="n">5</span>Deposits</h2>
   <ul>
-    <li><b>3 confirmations</b> for ordinary deposits; <b>100</b> for coinbase outputs, which is consensus and not negotiable.</li>
+    <li><b>20+ confirmations</b> for exchange deposits with irreversible withdrawals (our own low-value, capped service top-ups run 3 confirmations corroborated across two independent explorers); <b>100</b> for coinbase outputs, which is consensus and not negotiable.</li>
     <li><b>Key your ledger on <code>(txid, address)</code>, never <code>(txid, vout)</code>.</b> Deposit <code>vout</code> is routinely 0, so the wrong key silently drops a second deposit instead of erroring. Every integration that got this wrong got it wrong this way.</li>
     <li><b>Gate on the deposit&#39;s own block height</b>, not on the tip minus a constant.</li>
     <li><b>A failed or timed-out read resolves nothing.</b> An errored explorer call is not &quot;no payment&quot;; an unreadable rate is not a rate of zero. Hold — never credit, never reject.</li>

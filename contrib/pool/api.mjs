@@ -10,9 +10,7 @@
 //   GET /health             for uptime checks
 //
 // Public, no auth, CORS open, read-only. It exposes AGGREGATES only: no miner
-// addresses, no share detail, nothing that identifies who is mining here. The
-// pool is allowlisted to a handful of machines right now and publishing their
-// payout addresses would be a gift to nobody.
+// addresses, no share detail, nothing that identifies who is mining here.
 //
 // TWO RULES IT FOLLOWS, both of which are this project's own:
 //

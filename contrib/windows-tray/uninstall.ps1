@@ -294,7 +294,48 @@ Write-Output 'Removing files...'
 # working directory is the folder makes the folder undeletable even when every
 # file in it is gone.
 Set-Location $env:TEMP
-if ($KeepData) {
+
+function Test-SafeDeleteTree {
+    param([string]$TargetPath)
+    if (-not $TargetPath) { return $false }
+    $full = [IO.Path]::GetFullPath($TargetPath).TrimEnd('\')
+    if ($full.Length -le 3 -or $full -match '^[A-Za-z]:$') { return $false }
+    $forbid = @(
+        $env:SystemDrive, $env:SystemRoot, $env:ProgramFiles, ${env:ProgramFiles(x86)},
+        $env:ProgramData, $env:USERPROFILE, $env:APPDATA, $env:LOCALAPPDATA, $env:TEMP,
+        [Environment]::GetFolderPath('Desktop'),
+        [Environment]::GetFolderPath('MyDocuments'),
+        [Environment]::GetFolderPath('Startup'),
+        [Environment]::GetFolderPath('Programs'),
+        [Environment]::GetFolderPath('StartMenu')
+    )
+    if ($env:USERPROFILE) {
+        $forbid += (Join-Path $env:USERPROFILE 'Downloads')
+        $forbid += (Join-Path $env:SystemDrive 'Users')
+    }
+    foreach ($p in $forbid) {
+        if ($p -and $full.Equals([IO.Path]::GetFullPath($p).TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
+            return $false
+        }
+    }
+    return $true
+}
+
+if (-not (Test-SafeDeleteTree $InstallDir)) {
+    Write-Output "  safety check: $InstallDir is a shared or system folder; removing only known PCoin files"
+    $knownFiles = @('PCoinTray.exe', 'bitcoind.exe', 'bitcoin-cli.exe', 'bitcoin-tx.exe',
+                    'bitcoin-util.exe', 'bitcoin-wallet.exe', 'uninstall.ps1', '.pcoin_version',
+                    'COPYING', 'START HERE.txt', 'pcoin-tray.cfg', 'pcoin-tray.log', 'pcoin-selftest.txt',
+                    'pcoin-seed.dat', 'pcoin-seed.info', 'pcoin-forward.json',
+                    'pcoin-addressbook.json', 'pcoin-addressbook.corrupt.json')
+    foreach ($kf in $knownFiles) {
+        $kp = Join-Path $InstallDir $kf
+        if (Test-Path $kp) { try { Remove-Item $kp -Force -ErrorAction Stop } catch { } }
+    }
+    if (-not $KeepData -and $DataDir -and (Test-Path $DataDir) -and (Test-SafeDeleteTree $DataDir)) {
+        try { Remove-Item $DataDir -Recurse -Force -ErrorAction Stop } catch { }
+    }
+} elseif ($KeepData) {
     foreach ($f in (Get-ChildItem $InstallDir -Force -ErrorAction SilentlyContinue)) {
         if ($f.FullName -eq $DataDir) { continue }
         try { Remove-Item $f.FullName -Recurse -Force -ErrorAction Stop } catch { }
@@ -302,7 +343,7 @@ if ($KeepData) {
     Write-Output "  program files removed; chain data kept at $DataDir"
 } else {
     try { Remove-Item $InstallDir -Recurse -Force -ErrorAction Stop } catch { }
-    if ($DataDir -and (Test-Path $DataDir) -and -not $DataDir.StartsWith($InstallDir, 'OrdinalIgnoreCase')) {
+    if ($DataDir -and (Test-Path $DataDir) -and -not $DataDir.StartsWith($InstallDir, 'OrdinalIgnoreCase') -and (Test-SafeDeleteTree $DataDir)) {
         try { Remove-Item $DataDir -Recurse -Force -ErrorAction Stop } catch { }
     }
 }

@@ -141,10 +141,12 @@ Standard Bitcoin Core practice applies. Two chain-specific points:
 or two from time to time, which is what you get when propagation delay is a
 meaningful fraction of block spacing. Read `reorg_count` from
 <https://explorer.pc.am/api/status> for the count to date rather than trusting a
-figure written here, which rots. Do not credit at 1 confirmation. Treat
-this as a small chain and require depth accordingly; 20+ is not paranoid at
-current hashrate. Note that **hashrate is currently low and concentrated**, so
-the cost of a deep reorg is correspondingly low. Price that in.
+figure written here, which rots. Do not credit at 1 confirmation. The project's
+own low-value, capped AI service rails credit at 3 confirmations corroborated
+across two independent explorers; for an exchange, custodian, or any integration
+with irreversible withdrawals, treat this as a small chain and require **20+
+confirmations** at current hashrate. Note that **hashrate is currently low and
+concentrated**, so the cost of a deep reorg is correspondingly low. Price that in.
 
 **Block timestamps are not monotonic in height.** Consensus requires only that
 a timestamp beats the median of the previous eleven. A block can carry a time
@@ -277,8 +279,11 @@ Stated plainly, because assuming otherwise wastes days:
 * **`getdeploymentinfo` does not mention LWMA.** Its softfork list is unchanged
   from upstream. LWMA is a plain height check, not a deployment; the only way to
   see its state is the height.
-* **The Python functional test framework cannot talk to a PCoin node** — it still
-  carries Bitcoin's network magic. Any test using `add_p2p_connection` hangs.
+* **Python functional tests that solve blocks in Python still grind SHA-256d** —
+  `MAGIC_BYTES` in `test/functional/test_framework/messages.py` matches PCoin's
+  network magic so `P2PInterface` / `add_p2p_connection` works, but `CBlock.solve()`
+  has not been ported to RandomX; use `generatetoaddress` / `generateblock` RPCs or
+  `src/test/pow_tests.cpp`.
 
 ---
 

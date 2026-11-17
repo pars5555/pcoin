@@ -1447,7 +1447,11 @@ namespace PCoinTray
                     string v = line.Substring(eq + 1).Trim();
                     if (k == "address") _address = v;
                     else if (k == "addresswallet") _addressWallet = v;
-                    else if (k == "poolurl") _poolUrl = v;
+                    else if (k == "poolurl")
+                    {
+                        string cleaned = CleanPoolEndpoint(v);
+                        _poolUrl = IsValidPoolEndpoint(cleaned) ? cleaned : "";
+                    }
                     else if (k == "seedprompt") _seedDeclined = v == "declined";
                     else if (k == "fastmode") _fastMode = v == "1";
                     else if (k == "autostart") _autostartPref = v != "0";
@@ -2379,9 +2383,51 @@ namespace PCoinTray
         //! restarts in the new mode -- StartMining branches on _poolUrl, so the
         //! same thread count now goes to (or leaves) the pool. Suggest-only: the
         //! app never calls this on its own, only when the user clicks Apply.
+        internal static bool IsValidPoolEndpoint(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return false;
+            if (s.Length > 253) return false;
+            // Allow optional stratum+tcp:// prefix stripped by caller, or plain host:port / [ipv6]:port.
+            int colon = s.LastIndexOf(':');
+            if (colon <= 0 || colon == s.Length - 1) return false;
+            string host = s.Substring(0, colon);
+            if (host.Length == 0 || host[0] == '-' || host[0] == '.' || host[host.Length - 1] == '-')
+                return false;
+            if (host[0] == '[' && host[host.Length - 1] != ']') return false;
+            if (host[0] != '[' && host.IndexOf(':') >= 0) return false;
+            string portStr = s.Substring(colon + 1);
+            int port;
+            if (!int.TryParse(portStr, NumberStyles.None, CultureInfo.InvariantCulture, out port) || port < 1 || port > 65535)
+                return false;
+            foreach (char c in host)
+            {
+                bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                          (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '[' || c == ']' || c == ':';
+                if (!ok) return false;
+            }
+            return true;
+        }
+
+        internal static string CleanPoolEndpoint(string raw)
+        {
+            string s = (raw ?? "").Trim();
+            if (s.StartsWith("stratum+tcp://", StringComparison.OrdinalIgnoreCase))
+                s = s.Substring("stratum+tcp://".Length).Trim();
+            else if (s.StartsWith("tcp://", StringComparison.OrdinalIgnoreCase))
+                s = s.Substring("tcp://".Length).Trim();
+            s = s.TrimEnd('/');
+            return s;
+        }
+
         void SetPool(string url)
         {
-            url = (url ?? "").Trim();
+            url = CleanPoolEndpoint(url);
+            if (!string.IsNullOrEmpty(url) && !IsValidPoolEndpoint(url))
+            {
+                MessageBox.Show("Pool address must be host:port (for example pool.pc.am:3333).",
+                    "PCoin Miner", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
             if (url == _poolUrl) return;              // no change
             _cancelCalibrate = true;                  // a mode change ends any in-flight tune
             _poolUrl = url;
@@ -2422,6 +2468,11 @@ namespace PCoinTray
             string t = threads.ToString(CultureInfo.InvariantCulture);
             if (!string.IsNullOrEmpty(_poolUrl))
             {
+                if (!IsValidPoolEndpoint(_poolUrl))
+                {
+                    Program.Note("refusing invalid pool endpoint in StartMining: " + _poolUrl);
+                    return;
+                }
                 Cli("startpoolmining \"" + _poolUrl + "\" \"" + _address + "\" " + t);
                 return;
             }

@@ -207,10 +207,11 @@ and the pool is a second opinion rather than the source of truth.
 > **Since 2026-09-25 the anchor is a traded price, not a posted one.** The credit
 > rate price.pc.am publishes, `creditRateUsd` (still `serviceRate` inside the
 > price server and in its diagnostic `/detail`), is the PCN index: the
-> volume-weighted median of user-to-user trades on exchange.pc.am, bounded
-> $0.015–$0.10, moving at most 2% a trade and 5% a day. The pool feeds it
-> nothing; `poolUsd` is published beside it as information only. The gate above
-> still governs ever wiring the pool in.
+> volume-weighted median of user-to-user trades on exchange.pc.am, moving at
+> most 2% a trade and 5% a day (the initial $0.015–$0.10 launch bounds were
+> removed on 2026-09-29). The pool feeds it nothing; `poolUsd` is published
+> beside it as information only. The gate above still governs ever wiring the
+> pool in.
 
 ### Can the price grow without limit?
 

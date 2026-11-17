@@ -395,19 +395,19 @@ node pcoin-seed-vault.mjs new --system myapp</code></pre>
 
   <table>
     <tr><th>Gate</th><th>Value</th><th>Why</th></tr>
-    <tr><td>confirmations</td><td><strong>3</strong></td><td>reorgs of a block or two are routine on a chain this small; the explorer counts them</td></tr>
+    <tr><td>confirmations</td><td><strong>3+</strong> (<strong>20+</strong> for exchanges)</td><td>reorgs of a block or two are routine on a chain this small; exchanges and custodians with irreversible withdrawals should require 20+</td></tr>
     <tr><td>deposit height</td><td>&ge; 2800</td><td>below it difficulty is frozen</td></tr>
     <tr><td>coinbase maturity</td><td>100</td><td>mined output, not spendable sooner</td></tr>
     <tr><td>index health</td><td><code>index.stale == false</code> and <code>blocks_behind == 0</code></td><td><code>blocks_unwound</code> and <code>reorg_count</code> are lifetime counters, not health &mdash; they only ever grow</td></tr>
     <tr><td>minimum deposit</td><td>your call</td><td>ignore dust rather than write a row per satoshi</td></tr>
   </table>
 
-  <p>Every production integration runs <strong>3 confirmations</strong> — about half an
-  hour at the 600&nbsp;s target, less when the chain runs fast. Several also corroborate
-  every deposit above $0.05 against a second, independent explorer, which is the better
-  defence at a shallow depth. Make it a config value,
-  not a constant, and raise it for large amounts. Pair a low value with a per-user
-  monthly cap: the cap is what bounds your loss between reviews.</p>
+  <p>Our own low-value, capped service rails run <strong>3 confirmations</strong> — about half an
+  hour at the 600&nbsp;s target, less when the chain runs fast — and corroborate
+  every deposit above $0.05 against a second, independent explorer, paired with a per-user
+  monthly cap that bounds loss between reviews. <strong>Exchanges, bridges, and any integration
+  with irreversible withdrawals should require 20+ confirmations</strong> at current hashrate.
+  Make it a config value, not a constant, and raise it for large amounts.</p>
 
   <h3>Gate on the deposit's height, not the tip</h3>
   <p>Below height 2800 the difficulty <strong>was frozen</strong> at

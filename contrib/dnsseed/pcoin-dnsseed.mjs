@@ -39,6 +39,7 @@ import dgram from 'node:dgram';
 import net from 'node:net';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
 
 const CONF = process.env.PCOIN_DNSSEED_CONF || '/etc/pcoin-dnsseed.json';
 const cfg = {
@@ -54,6 +55,8 @@ const cfg = {
   seeds: ['35.239.156.16', '178.105.3.51', '152.53.171.190'],
   state: '/var/lib/pcoin-dnsseed/nodes.json',
   maxAnswers: 16,
+  maxPerSubnet: 2,
+  maxLagBlocks: 144,
   ttl: 60,
   crawlConcurrency: 24,
   crawlIntervalMs: 60000,
@@ -80,8 +83,65 @@ const nodes = new Map();
 const nkey = (host, port) => host + '/' + port;
 const isV6 = h => h.includes(':');
 
+function v6Bytes(h) {
+  const b = Buffer.alloc(16);
+  const half = h.split('::');
+  if (half.length > 2) return null;
+  const L = half[0] ? half[0].split(':').filter(Boolean) : [];
+  const R = half.length > 1 ? (half[1] ? half[1].split(':').filter(Boolean) : []) : null;
+  if (R === null && L.length !== 8) return null;
+  if (R !== null && L.length + R.length > 7) return null;
+  const groups = R === null ? L : [...L, ...Array(Math.max(0, 8 - L.length - R.length)).fill('0'), ...R];
+  for (let i = 0; i < 8; i++) {
+    const g = groups[i] || '0';
+    if (!/^[0-9a-fA-F]{1,4}$/.test(g)) return null;
+    b.writeUInt16BE(parseInt(g, 16) & 0xffff, i * 2);
+  }
+  return b;
+}
+
+function isRoutableHost(host) {
+  if (!host || typeof host !== 'string') return false;
+  if (!isV6(host)) {
+    const parts = host.split('.');
+    if (parts.length !== 4) return false;
+    const oct = parts.map(p => (/^\d{1,3}$/.test(p) ? Number(p) : -1));
+    if (oct.some(x => x < 0 || x > 255)) return false;
+    const [a, b, c] = oct;
+    if (a === 0 || a === 10 || a === 127 || a >= 224) return false;
+    if (a === 100 && b >= 64 && b <= 127) return false;       // RFC 6598 CGNAT 100.64.0.0/10
+    if (a === 169 && b === 254) return false;                 // link-local
+    if (a === 172 && b >= 16 && b <= 31) return false;        // RFC 1918
+    if (a === 192 && b === 168) return false;                 // RFC 1918
+    if (a === 192 && b === 0 && (c === 0 || c === 2)) return false; // IANA special / TEST-NET-1
+    if (a === 198 && (b === 18 || b === 19)) return false;    // benchmarking 198.18.0.0/15
+    if (a === 198 && b === 51 && c === 100) return false;     // TEST-NET-2
+    if (a === 203 && b === 0 && c === 113) return false;      // TEST-NET-3
+    return true;
+  }
+  const b = v6Bytes(host);
+  if (!b) return false;
+  if (b.every(x => x === 0)) return false;                    // ::
+  if (b.subarray(0, 15).every(x => x === 0) && b[15] === 1) return false; // ::1
+  if (b.subarray(0, 10).every(x => x === 0) && b[10] === 0xff && b[11] === 0xff) return false; // v4-mapped
+  if (b[0] === 0xfe && (b[1] & 0xc0) === 0x80) return false;  // fe80::/10 link-local
+  if ((b[0] & 0xfe) === 0xfc) return false;                   // fc00::/7 ULA
+  if (b[0] === 0xff) return false;                            // ff00::/8 multicast
+  if (b[0] === 0x20 && b[1] === 0x01 && b[2] === 0x0d && b[3] === 0xb8) return false; // 2001:db8::/32 doc
+  return true;
+}
+
+function subnetKey(host) {
+  if (!isV6(host)) {
+    const p = host.split('.');
+    return 'v4:' + p[0] + '.' + p[1] + '.' + p[2];
+  }
+  const b = v6Bytes(host);
+  return b ? 'v6:' + b.subarray(0, 6).toString('hex') : 'v6:' + host;
+}
+
 function remember(host, port) {
-  if (!host || !port) return false;
+  if (!host || !port || !isRoutableHost(host)) return false;
   const k = nkey(host, port);
   if (nodes.has(k)) return false;
   nodes.set(k, {
@@ -92,15 +152,19 @@ function remember(host, port) {
 }
 
 try {
-  for (const n of JSON.parse(fs.readFileSync(cfg.state, 'utf8'))) nodes.set(nkey(n.host, n.port), n);
+  for (const n of JSON.parse(fs.readFileSync(cfg.state, 'utf8'))) {
+    if (n && isRoutableHost(n.host)) nodes.set(nkey(n.host, n.port), n);
+  }
   log('loaded ' + nodes.size + ' nodes from ' + cfg.state);
 } catch { log('no saved state; starting from the configured seeds'); }
 for (const s of cfg.seeds) remember(s, cfg.p2pPort);
 
 function saveState() {
   try {
-    fs.mkdirSync(cfg.state.replace(/[/][^/]+$/, ''), { recursive: true });
-    fs.writeFileSync(cfg.state, JSON.stringify([...nodes.values()]));
+    fs.mkdirSync(path.dirname(cfg.state), { recursive: true });
+    const tmp = cfg.state + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify([...nodes.values()]));
+    fs.renameSync(tmp, cfg.state);
   } catch (e) { log('could not save state: ' + e.message); }
 }
 
@@ -164,18 +228,14 @@ function parseAddr(buf) {
     const ip = buf.subarray(o, o + 16); o += 16;
     const port = buf.readUInt16BE(o); o += 2;
     if (ip.subarray(0, 12).equals(V4)) {
-      const a = ip[12], b = ip[13];
-      if (a === 0 || a === 10 || a === 127 || a >= 224) continue;
-      if (a === 192 && b === 168) continue;
-      if (a === 172 && b >= 16 && b <= 31) continue;
-      if (a === 169 && b === 254) continue;
-      out.push([a + '.' + b + '.' + ip[14] + '.' + ip[15], port]);
+      const h = ip[12] + '.' + ip[13] + '.' + ip[14] + '.' + ip[15];
+      if (!isRoutableHost(h)) continue;
+      out.push([h, port]);
     } else if (!ip.every(x => x === 0)) {
       const parts = [];
       for (let j = 0; j < 16; j += 2) parts.push(ip.readUInt16BE(j).toString(16));
       const h = parts.join(':');
-      if (h.startsWith('fe80') || h.startsWith('fc') || h.startsWith('fd')) continue;
-      if (parts.every(p => p === '0')) continue;
+      if (!isRoutableHost(h)) continue;
       out.push([h, port]);
     }
   }
@@ -219,9 +279,14 @@ function probe(n) {
           try {
             result.services = Number(payload.readBigUInt64LE(4));
             let o = 4 + 8 + 8 + 26 + 26 + 8;
-            const uaLen = payload[o]; o += 1;
-            result.ua = payload.subarray(o, o + uaLen).toString('ascii'); o += uaLen;
-            result.height = payload.readInt32LE(o);
+            let uaLen = payload[o]; o += 1;
+            if (uaLen === 0xfd) { uaLen = payload.readUInt16LE(o); o += 2; }
+            else if (uaLen === 0xfe) { uaLen = payload.readUInt32LE(o); o += 4; }
+            else if (uaLen === 0xff) { uaLen = 0; o = payload.length; }
+            if (o + uaLen + 4 <= payload.length) {
+              result.ua = payload.subarray(o, o + uaLen).toString('ascii'); o += uaLen;
+              result.height = Math.max(0, payload.readInt32LE(o));
+            }
           } catch { /* a short version message is not fatal */ }
           sock.write(msg('verack'));
         } else if (cmd === 'verack') {
@@ -358,13 +423,40 @@ function answersFor(qname, qtype) {
   if (requiredBits) pool = pool.filter(n => (n.services & requiredBits) === requiredBits);
   if (qtype !== TYPE.ANY) pool = pool.filter(n => n.v6 === (qtype === TYPE.AAAA));
 
+  // Enforce a chain-height floor relative to reachable configured seeds so
+  // stalled or fake-handshake peers on height 0 cannot pollute bootstrap.
+  let refHeight = 0;
+  for (const s of cfg.seeds) {
+    const sn = nodes.get(nkey(s, cfg.p2pPort));
+    if (sn && good(sn, now) && sn.height > refHeight) refHeight = sn.height;
+  }
+  const minHeight = refHeight > cfg.maxLagBlocks ? refHeight - cfg.maxLagBlocks : 0;
+  if (minHeight > 0) {
+    const fresh = pool.filter(n => (n.height || 0) >= minHeight);
+    if (fresh.length > 0) pool = fresh;
+  }
+
   // Shuffle: a seed that always answers in the same order concentrates the
   // whole network onto whichever node happens to sort first.
   for (let i = pool.length - 1; i > 0; i--) {
     const j = crypto.randomInt(i + 1);
     [pool[i], pool[j]] = [pool[j], pool[i]];
   }
-  return pool.slice(0, cfg.maxAnswers).map(n => ({ type: n.v6 ? TYPE.AAAA : TYPE.A, host: n.host }));
+
+  // Cap answers per /24 (IPv4) or /48 (IPv6) so one hosting subnet cannot
+  // crowd out the rest of the network.
+  const picked = [];
+  const subnetCounts = new Map();
+  const cap = cfg.maxPerSubnet > 0 ? cfg.maxPerSubnet : cfg.maxAnswers;
+  for (const n of pool) {
+    if (picked.length >= cfg.maxAnswers) break;
+    const sk = subnetKey(n.host);
+    const seen = subnetCounts.get(sk) || 0;
+    if (seen >= cap) continue;
+    subnetCounts.set(sk, seen + 1);
+    picked.push({ type: n.v6 ? TYPE.AAAA : TYPE.A, host: n.host });
+  }
+  return picked;
 }
 
 const v4buf = h => Buffer.from(h.split('.').map(Number));

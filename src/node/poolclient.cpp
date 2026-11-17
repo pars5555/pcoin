@@ -15,11 +15,19 @@
 
 #include <algorithm>
 #include <cstring>
+#include <thread>
 
 namespace node {
 
 namespace {
 enum RequestKind { REQ_LOGIN = 1, REQ_SUBMIT = 2, REQ_KEEPALIVE = 3 };
+
+template <typename T>
+std::optional<T> SafeJsonInt(const UniValue& v)
+{
+    if (!v.isNum()) return std::nullopt;
+    return ToIntegral<T>(v.getValStr());
+}
 
 //! Cap the receive buffer. A pool that never sends a newline is a pool that
 //! would otherwise grow this without bound.
@@ -213,12 +221,13 @@ void PoolClient::SetJob(const UniValue& job, bool from_login)
     }
 
     const UniValue& h{job.find_value("height")};
+    const int parsed_height{SafeJsonInt<int>(h).value_or(0)};
     {
         std::lock_guard<std::mutex> lock(m_job_mutex);
         m_job.id = job_id.get_str();
         m_job.header = header;
         m_job.target = target_arith;
-        m_job.height = h.isNum() ? h.getInt<int>() : 0;
+        m_job.height = parsed_height;
         m_job.generation = ++m_job_seq;
         m_have_job = true;
         m_job_height = m_job.height;
@@ -229,7 +238,7 @@ void PoolClient::SetJob(const UniValue& job, bool from_login)
         m_status.clear();
     }
     LogPrintf("PCoin pool miner: %s job %s for height %d\n",
-              from_login ? "first" : "new", job_id.get_str(), h.isNum() ? h.getInt<int>() : 0);
+              from_login ? "first" : "new", job_id.get_str(), parsed_height);
 }
 
 void PoolClient::HandleLine(const std::string& line)
@@ -248,11 +257,12 @@ void PoolClient::HandleLine(const std::string& line)
     }
 
     const UniValue& id{msg.find_value("id")};
-    if (!id.isNum()) return;
+    const auto parsed_id{SafeJsonInt<int64_t>(id)};
+    if (!parsed_id.has_value()) return;
     int kind{0};
     {
         std::lock_guard<std::mutex> lock(m_inflight_mutex);
-        auto it{m_inflight.find(id.getInt<int64_t>())};
+        auto it{m_inflight.find(*parsed_id)};
         if (it == m_inflight.end()) return;   // unmatched: ignore, never guess
         kind = it->second;
         m_inflight.erase(it);
@@ -359,7 +369,11 @@ void PoolClient::Pump(std::chrono::milliseconds budget)
     const auto now{std::chrono::steady_clock::now()};
 
     if (!m_sock) {
-        if (now < m_retry_at) return;
+        if (now < m_retry_at) {
+            const auto rem{std::chrono::duration_cast<std::chrono::milliseconds>(m_retry_at - now)};
+            std::this_thread::sleep_for(std::max(std::chrono::milliseconds{1}, std::min(budget, rem)));
+            return;
+        }
         if (!Connect()) return;
     }
 
@@ -397,7 +411,14 @@ void PoolClient::Pump(std::chrono::milliseconds budget)
                 std::string line{m_rx.substr(0, pos)};
                 m_rx.erase(0, pos + 1);
                 while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
-                if (!line.empty()) HandleLine(line);
+                if (!line.empty()) {
+                    try {
+                        HandleLine(line);
+                    } catch (const std::exception& e) {
+                        Fail(std::string("malformed message from ") + Describe() + ": " + e.what(), /*refused=*/false);
+                        return;
+                    }
+                }
                 if (!m_sock) return;  // HandleLine may have dropped us
             }
         }

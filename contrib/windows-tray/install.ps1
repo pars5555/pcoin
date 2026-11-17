@@ -302,7 +302,6 @@ foreach ($sd in @([Environment]::GetFolderPath('Startup'), (Join-Path $env:APPDA
 } # end if (-not $NoCleanup)
 
 # --- download and verify -------------------------------------------------
-$zip = Join-Path $env:TEMP $name
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 # Elevate straight to a UAC prompt -- the UAC dialog IS the yes/no, so a separate
@@ -350,6 +349,18 @@ $sameVer = (-not $ZipPath) -and (-not $Force) -and (Test-Path $verFile) -and `
 if ($sameVer) {
     Write-Output "  already at v$Version -- skipping download (use -Force to reinstall)"
 } else {
+# Lock $InstallDir before staging when elevated so no unprivileged local process
+# can race symlinks or swap unpacked binaries during extraction.
+if ($script:IsAdmin) {
+    try {
+        & icacls $InstallDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)(F)' '*S-1-5-32-544:(OI)(CI)(F)' '*S-1-5-32-545:(OI)(CI)(RX)' | Out-Null
+    } catch { }
+}
+$stage = Join-Path $InstallDir ('.stage-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force -Path $stage | Out-Null
+$zip = Join-Path $stage $name
+$tmp = Join-Path $stage 'unpack'
+try {
 if ($ZipPath) {
     if (-not (Test-Path $ZipPath)) { throw "ZipPath not found: $ZipPath" }
     Write-Output "  using local zip: $ZipPath"
@@ -361,8 +372,6 @@ $got = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
 if ($Sha256 -and $got -ne $Sha256.ToLower()) { throw "SHA256 mismatch: got $got" }
 Write-Output "  sha256 ok"
 
-$tmp = Join-Path $env:TEMP 'pcoin-unpack'
-if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
 Expand-Archive -Path $zip -DestinationPath $tmp -Force
 
 # The release archive lays the binaries out as pcoin-<ver>\bin\*.exe, but every
@@ -420,6 +429,9 @@ foreach ($attempt in 1..6) {
 }
 Write-Output "  installed to $InstallDir"
 Set-Content -Path $verFile -Value $Version -Encoding ascii
+} finally {
+    if (Test-Path $stage) { Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue }
+}
 }
 
 # --- node configuration --------------------------------------------------
@@ -605,15 +617,56 @@ if ($threadsOut -gt 0) { Write-Output "  configured to mine with $threadsOut cor
 else { Write-Output '  configured; mining is OFF' }
 
 # --- best-effort host tweaks (need admin; not fatal) ---------------------
+if ($script:IsAdmin) {
+    # C:\ inherits Authenticated-Users-Modify by default, while the logon task
+    # below runs PCoinTray.exe with /rl HIGHEST. Strip inherited Modify, lock
+    # every binary/script to SYSTEM + Administrators (Users read/execute only,
+    # no DeleteChild on $InstallDir), and restrict $DataDir and config/state
+    # files to SYSTEM, Administrators, and the interactive owner account.
+    try {
+        $aclWho = $null
+        try { $aclWho = (Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).UserName } catch { }
+        if (-not $aclWho -and $env:USERDOMAIN -and $env:USERNAME -and $env:USERNAME -notmatch '^(SYSTEM|LOCAL SERVICE|NETWORK SERVICE)$') {
+            $aclWho = "$env:USERDOMAIN\$env:USERNAME"
+        }
+        $dirGrants = @('*S-1-5-18:(OI)(CI)(F)', '*S-1-5-32-544:(OI)(CI)(F)', '*S-1-5-32-545:(OI)(CI)(RX)', '*S-1-3-0:(OI)(CI)(IO)(M)')
+        if ($aclWho) { $dirGrants += "${aclWho}:(RX,WD,AD)" }
+        & icacls $InstallDir /setowner '*S-1-5-32-544' | Out-Null
+        & icacls $InstallDir /inheritance:r /grant:r @dirGrants | Out-Null
+        foreach ($bin in (Get-ChildItem -Path $InstallDir -File -ErrorAction SilentlyContinue |
+                          Where-Object { $_.Extension -in @('.exe', '.dll', '.ps1') -or $_.Name -eq '.pcoin_version' })) {
+            & icacls $bin.FullName /setowner '*S-1-5-32-544' | Out-Null
+            & icacls $bin.FullName /inheritance:r /grant:r '*S-1-5-18:(F)' '*S-1-5-32-544:(F)' '*S-1-5-32-545:(RX)' | Out-Null
+        }
+        $dataGrants = @('*S-1-5-18:(OI)(CI)(F)', '*S-1-5-32-544:(OI)(CI)(F)')
+        if ($aclWho) { $dataGrants += "${aclWho}:(OI)(CI)(M)" }
+        & icacls $DataDir /inheritance:r /grant:r @dataGrants | Out-Null
+        if ($aclWho) {
+            foreach ($stName in @('pcoin-tray.cfg', 'pcoin-tray.log', 'pcoin-seed.dat', 'pcoin-seed.info',
+                                  'pcoin-forward.json', 'pcoin-addressbook.json', 'pcoin-addressbook.corrupt.json')) {
+                $stPath = Join-Path $InstallDir $stName
+                if (Test-Path $stPath) { & icacls $stPath /grant "${aclWho}:(M)" | Out-Null }
+            }
+        }
+        Write-Output '  install folder and binaries locked to Administrators'
+    } catch {
+        Write-Output ('  folder ACL hardening skipped: ' + $_.Exception.Message)
+    }
+}
+
 try {
     Add-MpPreference -ExclusionPath $InstallDir, $DataDir -ErrorAction Stop
     Write-Output '  defender exclusions added'
 } catch { Write-Output '  defender exclusions skipped (needs admin)' }
 
 try {
-    if (-not (Get-NetFirewallRule -DisplayName 'PCoin P2P 9444' -ErrorAction SilentlyContinue)) {
+    $fwProg = Join-Path $InstallDir 'bitcoind.exe'
+    $fwRule = Get-NetFirewallRule -DisplayName 'PCoin P2P 9444' -ErrorAction SilentlyContinue
+    if ($fwRule) {
+        $fwRule | Set-NetFirewallRule -Program $fwProg -ErrorAction Stop | Out-Null
+    } else {
         New-NetFirewallRule -DisplayName 'PCoin P2P 9444' -Direction Inbound `
-            -Protocol TCP -LocalPort 9444 -Action Allow -ErrorAction Stop | Out-Null
+            -Protocol TCP -LocalPort 9444 -Program $fwProg -Action Allow -ErrorAction Stop | Out-Null
     }
     Write-Output '  firewall rule ok'
 } catch { Write-Output '  firewall rule skipped (needs admin)' }
