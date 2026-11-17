@@ -742,15 +742,44 @@ export class Store {
     // stale rate (CLAUDE.md §10.12) -- so "it matured, we are done" is not a
     // safe assumption to bake in.
     const r = await this.db.run(
-      "SELECT hash, height, orphan_strikes, state FROM blocks WHERE state IN ('pending','mature') ORDER BY height;");
+      "SELECT hash, height, orphan_strikes, state, IFNULL(alarm,'') FROM blocks WHERE state IN ('pending','mature') ORDER BY height;");
     const out = { matured: [], dematured: [], orphaned: [], alarms: [], pending: 0, unreadable: 0 };
-    for (const line of r.rows) {
-      const [hash, hs, strikesRaw, was] = line.split('|');
-      const h = BigInt(hs);
-      const strikes = Number(strikesRaw);
+    if (!r.rows || !r.rows.length) return out;
+
+    const parsedRows = r.rows.map((line) => {
+      const [hash, hs, strikesRaw, was, existingAlarm] = line.split('|');
+      return {
+        hash,
+        height: BigInt(hs),
+        strikes: Number(strikesRaw),
+        was,
+        alarm: existingAlarm || null,
+      };
+    });
+
+    let actualMap = null;
+    if (typeof hashAt.batch === 'function') {
+      const heights = parsedRows.map((row) => Number(row.height));
+      actualMap = await hashAt.batch(heights);
+    }
+
+    const updates = [];
+    let needMatureBulkConfirmations = false;
+
+    for (const b of parsedRows) {
+      const h = b.height;
+      const hash = b.hash;
+      const strikes = b.strikes;
+      const was = b.was;
       const confs = tip - h + 1n;
 
-      const actual = await hashAt(Number(h));
+      let actual;
+      if (actualMap && actualMap.has(Number(h))) {
+        actual = actualMap.get(Number(h));
+      } else {
+        actual = await hashAt(Number(h));
+      }
+
       if (actual === null || actual === undefined) {
         // Unreadable. Not orphaned, not mature, not a strike.
         out.unreadable++;
@@ -762,7 +791,7 @@ export class Store {
         // answer. The same two-observation rule the forwarding engine uses for
         // a negative confirmation count (CLAUDE.md §7.2).
         if (strikes + 1 < 2) {
-          await this.db.run(`UPDATE blocks SET orphan_strikes=${num(strikes + 1)} WHERE hash=${lit(hash)};`);
+          updates.push(`UPDATE blocks SET orphan_strikes=${num(strikes + 1)} WHERE hash=${lit(hash)};`);
           out.pending++;
           continue;
         }
@@ -774,35 +803,16 @@ export class Store {
         const [sent] = (await this.db.run(
           `SELECT COUNT(*) FROM payouts WHERE block_hash=${lit(hash)} AND sent_txid IS NOT NULL;`)).rows;
         if (Number(sent) > 0) {
-          // `confs` is how far past this block's HEIGHT the chain has moved. It
-          // is NOT how deep this block ever was, and the message below used to
-          // say the second while meaning the first.
-          //
-          // Measured 2026-10-23 on height 12789: it read "left the chain at 809
-          // confirmations" -- which is what a chain-splitting DEEP REORG sounds
-          // like -- for a block that lost the race at ONE confirmation to a
-          // rival mined 23 seconds earlier. `getblock` on the dead hash reports
-          // confirmations: -1, and the height is now held by a different hash.
-          // An operator cannot tell a routine stale block from a reorg out of
-          // that sentence, and the two call for opposite responses: do nothing,
-          // or stop everything. Say which one it is.
-          //
-          // The stored text is read back by payouts.mjs's block listing, so a
-          // wrong sentence here is not cosmetic -- it is the operator's report.
-          // It stays free of apostrophes so `lit()` has nothing to escape, and
-          // it carries NO live counter: this row is rewritten every maturity
-          // poll, so an interpolated depth changed the text every block and
-          // minted a fresh alert key each time (804, then 806, then 807 for one
-          // orphan). The depth is already in the listing; a message states a
-          // fact, it does not tick.
           const msg = `height ${Number(h)} was replaced at its height by a rival block`
             + ` after ${sent} payout(s) were recorded against its coinbase`
             + ` -- that coinbase is not on the chain, ledger left alone, decide by hand`;
-          await this.db.run(`UPDATE blocks SET alarm=${lit(msg)} WHERE hash=${lit(hash)};`);
+          if (b.alarm !== msg) {
+            updates.push(`UPDATE blocks SET alarm=${lit(msg)} WHERE hash=${lit(hash)};`);
+          }
           out.alarms.push({ hash, height: Number(h), message: msg });
           continue;
         }
-        await this.db.run(
+        updates.push(
           `UPDATE blocks SET state='orphaned', state_at=${num(now)}, confirmations=${num(confs)} `
           + `WHERE hash=${lit(hash)};`);
         out.orphaned.push({ hash, height: Number(h), wasMature: was === 'mature' });
@@ -812,22 +822,36 @@ export class Store {
       // On the active chain. Clear any strike -- a chain that came back is not
       // half-orphaned.
       if (confs >= this.maturity) {
-        await this.db.run(
-          `UPDATE blocks SET state='mature', state_at=${num(now)}, confirmations=${num(confs)}, `
-          + `orphan_strikes=0, alarm=NULL WHERE hash=${lit(hash)};`);
-        if (was !== 'mature') out.matured.push({ hash, height: Number(h) });
+        if (was !== 'mature') {
+          updates.push(
+            `UPDATE blocks SET state='mature', state_at=${num(now)}, confirmations=${num(confs)}, `
+            + `orphan_strikes=0, alarm=NULL WHERE hash=${lit(hash)};`);
+          out.matured.push({ hash, height: Number(h) });
+        } else {
+          // Already mature: state_at reflects when it matured and is not overwritten.
+          if (strikes > 0 || b.alarm) {
+            updates.push(`UPDATE blocks SET orphan_strikes=0, alarm=NULL WHERE hash=${lit(hash)};`);
+          }
+          needMatureBulkConfirmations = true;
+        }
       } else {
         // Not deep enough -- or not any more. "payable" has to mean "spendable
         // now", so a block a reorg pushed back under the maturity depth returns
-        // to pending rather than latching at mature. Otherwise the report would
-        // call coins payable that the wallet would refuse to spend, and step 4
-        // would read that as permission.
+        // to pending rather than latching at mature.
         if (was === 'mature') out.dematured.push({ hash, height: Number(h), confirmations: Number(confs) });
-        await this.db.run(
+        updates.push(
           `UPDATE blocks SET state='pending', confirmations=${num(confs)}, orphan_strikes=0, alarm=NULL `
           + `WHERE hash=${lit(hash)};`);
         out.pending++;
       }
+    }
+
+    if (needMatureBulkConfirmations) {
+      updates.push(`UPDATE blocks SET confirmations=${num(tip)} - height + 1 WHERE state='mature';`);
+    }
+
+    if (updates.length > 0) {
+      await this.db.run('BEGIN IMMEDIATE;\n' + updates.join('\n') + '\nCOMMIT;');
     }
     return out;
   }

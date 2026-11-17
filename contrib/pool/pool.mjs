@@ -41,6 +41,8 @@
 // the share target. A miner writes its nonce at offset 76 and hashes.
 
 import net from 'node:net';
+import http from 'node:http';
+import { readFileSync } from 'node:fs';
 import { spawn, execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import {
@@ -59,15 +61,152 @@ const CFG = loadConfig(cfgPath);
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
 // ── the node ────────────────────────────────────────────────────────────────
-// Shelling out to bitcoin-cli rather than speaking JSON-RPC: the node's RPC is
-// loopback-bound INSIDE its container, which is deliberate (see CLAUDE.md), and
-// docker exec is the supported way in. One process per call is cheap next to a
-// 21.7 ms share.
-const cli = (args) => new Promise((res, rej) => {
+// Speak HTTP JSON-RPC over a keep-alive Agent when credentials are known
+// (from CFG.rpc or parsed from CFG.cliCommand -conf=<file>), falling back to
+// shelling out to bitcoin-cli when only CLI command is provided (e.g. docker exec
+// in regtest tests). Direct HTTP avoids per-call process clone/exec overhead and
+// supports JSON-RPC batching, turning thousands of getblockhash calls into a
+// few milliseconds of keep-alive HTTP requests.
+const cliExecFile = (args) => new Promise((res, rej) => {
   execFile(CFG.cliCommand[0], [...CFG.cliCommand.slice(1), ...args],
     { maxBuffer: 64 * 1024 * 1024 }, (e, out, err) => e ? rej(new Error(err || e.message)) : res(out.trim()));
 });
-const cliJson = async (args) => JSON.parse(await cli(args));
+
+function parseConfFile(filePath) {
+  try {
+    const content = readFileSync(filePath, 'utf8');
+    const conf = {};
+    for (const rawLine of content.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith('#') || line.startsWith(';')) continue;
+      const eq = line.indexOf('=');
+      if (eq === -1) continue;
+      conf[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+    }
+    return conf;
+  } catch {
+    return null;
+  }
+}
+
+function resolveRpcConfig(cfg) {
+  if (cfg.rpc && cfg.rpc.user && cfg.rpc.pass) {
+    return {
+      host: cfg.rpc.host || '127.0.0.1',
+      port: Number(cfg.rpc.port) || 9443,
+      user: cfg.rpc.user,
+      pass: cfg.rpc.pass,
+    };
+  }
+  if (Array.isArray(cfg.cliCommand)) {
+    for (const arg of cfg.cliCommand) {
+      if (arg.startsWith('-conf=')) {
+        const confPath = arg.slice(6);
+        const parsed = parseConfFile(confPath);
+        if (parsed && parsed.rpcuser && parsed.rpcpassword) {
+          return {
+            host: parsed.rpcconnect || '127.0.0.1',
+            port: Number(parsed.rpcport) || 9443,
+            user: parsed.rpcuser,
+            pass: parsed.rpcpassword,
+          };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+const rpcConfig = resolveRpcConfig(CFG);
+const rpcAgent = rpcConfig ? new http.Agent({ keepAlive: true, maxSockets: 10, timeout: 30000 }) : null;
+const rpcAuth = rpcConfig ? 'Basic ' + Buffer.from(`${rpcConfig.user}:${rpcConfig.pass}`).toString('base64') : null;
+
+function httpRpcRequest(payload) {
+  return new Promise((resolve, reject) => {
+    if (!rpcConfig) return reject(new Error('RPC not configured'));
+    const body = JSON.stringify(payload);
+    const req = http.request({
+      hostname: rpcConfig.host,
+      port: rpcConfig.port,
+      path: '/',
+      method: 'POST',
+      agent: rpcAgent,
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+        'Authorization': rpcAuth,
+      },
+    }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        if (res.statusCode === 401) return reject(new Error('RPC unauthorized (401)'));
+        try { resolve(JSON.parse(data)); } catch (e) { reject(new Error(`RPC response parse error: ${e.message} (status ${res.statusCode})`)); }
+      });
+    });
+    req.setTimeout(15000, () => req.destroy(new Error('RPC request timed out after 15s')));
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+function formatRpcParams(method, rawParams) {
+  if (!rawParams || !rawParams.length) return [];
+  if (method === 'getblockhash') return [Number(rawParams[0])];
+  if (method === 'getblocktemplate') {
+    if (typeof rawParams[0] === 'string' && rawParams[0].startsWith('{')) {
+      try { return [JSON.parse(rawParams[0])]; } catch { return rawParams; }
+    }
+  }
+  return rawParams;
+}
+
+async function httpRpcCall(method, params) {
+  const resp = await httpRpcRequest({
+    jsonrpc: '1.0',
+    id: 'pool',
+    method,
+    params,
+  });
+  if (resp.error) {
+    const msg = resp.error.message || JSON.stringify(resp.error);
+    throw new Error(`RPC ${method} error: ${msg}`);
+  }
+  return resp.result;
+}
+
+const cli = async (args) => {
+  if (rpcConfig) {
+    try {
+      const method = args[0];
+      const params = formatRpcParams(method, args.slice(1));
+      const res = await httpRpcCall(method, params);
+      if (typeof res === 'object' && res !== null) return JSON.stringify(res);
+      return res === null || res === undefined ? '' : String(res);
+    } catch (e) {
+      if (!CFG.cliCommand || !CFG.cliCommand.length) throw e;
+    }
+  }
+  return cliExecFile(args);
+};
+
+const cliJson = async (args) => {
+  if (rpcConfig) {
+    try {
+      const method = args[0];
+      const params = formatRpcParams(method, args.slice(1));
+      const res = await httpRpcCall(method, params);
+      if (typeof res === 'string') {
+        try { return JSON.parse(res); } catch { return res; }
+      }
+      return res;
+    } catch (e) {
+      if (!CFG.cliCommand || !CFG.cliCommand.length) throw e;
+    }
+  }
+  return JSON.parse(await cliExecFile(args));
+};
 
 // Submit through STDIN, never argv. A block's hex is ~145,000 characters and
 // Linux caps one argv entry at MAX_ARG_STRLEN (131,072), so execFile fails with
@@ -90,6 +229,50 @@ const cliStdin = (args) => new Promise((res, rej) => {
   p.stdin.on('error', rej);
   p.stdin.end(args.join('\n') + '\n');
 });
+
+// Submit through direct HTTP JSON-RPC when available (immune to argv length limits),
+// or fall back to STDIN via cliStdin.
+const cliSubmitBlock = async (blockHex) => {
+  if (rpcConfig) {
+    try {
+      const res = await httpRpcCall('submitblock', [blockHex]);
+      return res === null || res === undefined ? '' : String(res);
+    } catch (e) {
+      if (!CFG.cliCommand || !CFG.cliCommand.length) throw e;
+    }
+  }
+  return cliStdin(['submitblock', blockHex]);
+};
+
+async function getBlockHashesBatch(heights) {
+  if (rpcConfig) {
+    const results = new Map();
+    const CHUNK_SIZE = 500;
+    for (let i = 0; i < heights.length; i += CHUNK_SIZE) {
+      const chunk = heights.slice(i, i + CHUNK_SIZE);
+      const batch = chunk.map((h, idx) => ({
+        jsonrpc: '1.0',
+        id: idx,
+        method: 'getblockhash',
+        params: [Number(h)],
+      }));
+      try {
+        const res = await httpRpcRequest(batch);
+        if (Array.isArray(res)) {
+          for (const item of res) {
+            if (item && !item.error && item.result !== undefined && item.result !== null) {
+              results.set(Number(chunk[item.id]), item.result);
+            }
+          }
+        }
+      } catch (e) {
+        log(`batch getblockhash failed for chunk ${i}..${i + chunk.length}: ${e.message.slice(0, 80)}`);
+      }
+    }
+    return results;
+  }
+  return null;
+}
 
 
 // ── the validator, kept warm ────────────────────────────────────────────────
@@ -261,7 +444,10 @@ function pushJobs(reason) {
 }
 
 // ── template polling ────────────────────────────────────────────────────────
+let refreshTemplateInFlight = false;
 async function refreshTemplate() {
+  if (refreshTemplateInFlight) return;
+  refreshTemplateInFlight = true;
   try {
     const t = await cliJson(['getblocktemplate', '{"rules":["segwit"]}']);
     const changed = !state.tpl || state.tpl.previousblockhash !== t.previousblockhash;
@@ -352,6 +538,8 @@ async function refreshTemplate() {
     // An unreadable node is UNKNOWN, not "no new work". Keep serving the last
     // job rather than inventing one; miners keep hashing on work that was valid.
     log(`template refresh failed: ${e.message.slice(0, 120)}`);
+  } finally {
+    refreshTemplateInFlight = false;
   }
 }
 
@@ -571,7 +759,7 @@ async function handleSubmit(m, params, id) {
     const blockId = Buffer.from(sha256d(header)).reverse().toString('hex');
     log(`BLOCK CANDIDATE at height ${job.height} by ${m.login} -- ${blockId}`);
     try {
-      const res = await cliStdin(['submitblock', blockHex]);
+      const res = await cliSubmitBlock(blockHex);
       if (res === '') {
         log(`BLOCK ACCEPTED ${blockId}`);
         state.blocksFound++;
@@ -643,7 +831,10 @@ async function recordBlock(job, blockId, m, shareId) {
  * place with its timestamp rather than replace it with zeros. A directory
  * showing "0 H/s" reads as a dead pool.
  */
+let refreshNetworkStatsInFlight = false;
 async function refreshNetworkStats() {
+  if (networkStatsInFlight) return;
+  networkStatsInFlight = true;
   try {
     const [info, hps] = await Promise.all([
       cliJson(['getblockchaininfo']),
@@ -664,6 +855,8 @@ async function refreshNetworkStats() {
   } catch (e) {
     if (state.net) state.net.readable = false;   // keep the last good reading, flagged
     log(`network stats unreadable (${e.message.slice(0, 80)}) — serving the last known values`);
+  } finally {
+    networkStatsInFlight = false;
   }
 }
 
@@ -712,24 +905,32 @@ async function apiSnapshot() {
  * blocks, so its payouts sit as PENDING for ~17 hours. Miners must be able to
  * see that wait, or they report it as a bug — and they are right to.
  */
+let maturityInFlight = false;
 async function evaluateMaturity() {
-  let tip = null;
-  try { tip = (await cliJson(['getblockchaininfo'])).blocks; }
-  catch (e) { log(`maturity: tip unreadable (${e.message.slice(0, 80)}) — resolving nothing`); }
-  const hashAt = async (h) => { try { return await cli(['getblockhash', String(h)]); } catch { return null; } };
+  if (maturityInFlight) return;
+  maturityInFlight = true;
   try {
-    const r = await store.evaluateBlocks(tip, hashAt);
-    if (r.skipped) return;
-    for (const b of r.matured) log(`block ${b.height} MATURED — its payouts are now payable (still unsent)`);
-    for (const b of r.orphaned) {
-      log(`block ${b.height} ORPHANED${b.wasMature ? ' AFTER MATURING' : ''} — its payouts are void`);
+    let tip = null;
+    try { tip = (await cliJson(['getblockchaininfo'])).blocks; }
+    catch (e) { log(`maturity: tip unreadable (${e.message.slice(0, 80)}) — resolving nothing`); }
+    const hashAt = async (h) => { try { return await cli(['getblockhash', String(h)]); } catch { return null; } };
+    hashAt.batch = getBlockHashesBatch;
+    try {
+      const r = await store.evaluateBlocks(tip, hashAt);
+      if (r.skipped) return;
+      for (const b of r.matured) log(`block ${b.height} MATURED — its payouts are now payable (still unsent)`);
+      for (const b of r.orphaned) {
+        log(`block ${b.height} ORPHANED${b.wasMature ? ' AFTER MATURING' : ''} — its payouts are void`);
+      }
+      for (const b of r.dematured) {
+        log(`block ${b.height} fell back to PENDING at ${b.confirmations} confirmations (a reorg buried it less deeply)`);
+      }
+      for (const a of r.alarms) log(`*** ALARM *** block ${a.height} ${a.message}. Ledger NOT changed — decide by hand.`);
+    } catch (e) {
+      log(`maturity pass failed: ${e.message.slice(0, 140)}`);
     }
-    for (const b of r.dematured) {
-      log(`block ${b.height} fell back to PENDING at ${b.confirmations} confirmations (a reorg buried it less deeply)`);
-    }
-    for (const a of r.alarms) log(`*** ALARM *** block ${a.height} ${a.message}. Ledger NOT changed — decide by hand.`);
-  } catch (e) {
-    log(`maturity pass failed: ${e.message.slice(0, 140)}`);
+  } finally {
+    maturityInFlight = false;
   }
 }
 

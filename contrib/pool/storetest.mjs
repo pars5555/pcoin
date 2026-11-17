@@ -523,6 +523,24 @@ section('maturity -- 100 blocks, and unknown resolves nothing');
   ok(bob2.sent > 0n && bob2.pending === 0n, 'and moves from pending to spendable once mature',
     `pending=${pcn(bob2.pending)} spendable=${pcn(bob2.sent)}`);
   ok(bob2.void === 0n, 'and none of it is void while the block is on the chain');
+
+  // Once mature, state_at must record when the block matured and NOT be rewritten every sweep.
+  const [s5, m1_at] = (await store.sql('SELECT state, state_at FROM blocks WHERE height=102;'))[0].split('|');
+  await store.evaluateBlocks(205, hashAt, Date.now() + 60000);
+  const [s6, m2_at] = (await store.sql('SELECT state, state_at FROM blocks WHERE height=102;'))[0].split('|');
+  ok(m1_at === m2_at, 'state_at is NOT overwritten on already mature blocks');
+
+  // hashAt.batch is used when provided
+  let batchCalled = false;
+  const batchHashAt = async (h) => 'aa'.repeat(32);
+  batchHashAt.batch = async (heights) => {
+    batchCalled = true;
+    const map = new Map();
+    for (const h of heights) map.set(h, 'aa'.repeat(32));
+    return map;
+  };
+  await store.evaluateBlocks(210, batchHashAt);
+  ok(batchCalled === true, 'hashAt.batch is used when provided');
 }
 
 // ── 8. orphans ──────────────────────────────────────────────────────────────
