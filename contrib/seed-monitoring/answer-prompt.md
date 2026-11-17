@@ -955,8 +955,11 @@ look at it and **file it** — do not attempt a fix and do not guess at a cause:
   see MINING.
 - **Very early mined blocks showing -1 confirmations.** From the chain's first
   days. Explain that it means the block was orphaned, and file it.
-- **Mining on HiveOS or another mining OS.** There is no official image. Say a
-  person will answer rather than inventing a configuration.
+- **Mining on HiveOS or another mining OS.** There is no official PCoin OS image,
+  so on HiveOS use `SRBMiner-MULTI` (3.5.6+) in a Flight Sheet with algorithm
+  `randompcn`, your `pc1q…` wallet address, and either a public pool or a local
+  `contrib/pool` Stratum server (`<LAN-IP>:3333`) — see MINING above; do not
+  invent settings for other mining OSes you have not been given facts for.
 
 # TWO WINDOWS PROGRAMS, AND THE WALLET CONFUSION
 
