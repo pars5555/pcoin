@@ -88,7 +88,46 @@ SENT.clear()
 ap.cmd_tick(None)
 check(len([p for m, p in SENT if "STILL WAITING" in p.get("text", "")]) == 1, "reminded again after HOLD_REMIND_SECONDS")
 
-# --- a private service named in a public message is REFUSED, not published.
+check(ap.dest_of("channel") is not None, "channel destination exists")
+check(ap.dest_of("tgdm:123456789") == {"chat": "123456789", "tg_private_only": True, "label": "Telegram DM with user 123456789"},
+      "tgdm:<positive_id> resolves to tg_private_only destination")
+check(ap.dest_of("tgdm:-1003975107618") is None, "tgdm: rejects negative group/channel IDs")
+
+# Verify tg_publish passes allow_sending_without_reply and enforces getChat=='private' on tgdm:
+SENT.clear()
+mid_pub = ap.tg_publish("tok", {"chat": "-1003975107618"}, {"text": "Hello", "reply_to": "855"})
+check(SENT[-1][0] == "sendMessage" and SENT[-1][1].get("allow_sending_without_reply") == "true"
+      and SENT[-1][1].get("reply_to_message_id") == "855",
+      "tg_publish includes allow_sending_without_reply='true' on replies")
+
+def fake_api_dm_check(token, method, params=None, files=None, timeout=None, **kw):
+    SENT.append((method, dict(params or {})))
+    if method == "getChat":
+        return {"ok": True, "result": {"id": int(params["chat_id"]), "type": "private"}}
+    return {"ok": True, "result": {"message_id": 2001}}
+
+ap.api = fake_api_dm_check
+SENT.clear()
+ap.tg_publish("tok", ap.dest_of("tgdm:123456789"), {"text": "DM answer", "reply_to": "tgdm:123456789:42"})
+check([m for m, _ in SENT] == ["getChat", "sendMessage"]
+      and SENT[-1][1].get("reply_to_message_id") == "42"
+      and SENT[-1][1].get("allow_sending_without_reply") == "true",
+      "tg_publish verifies private chat via getChat and strips tgdm:<uid>: prefix from reply_to")
+
+def fake_api_dm_group_spoof(token, method, params=None, files=None, timeout=None, **kw):
+    if method == "getChat":
+        return {"ok": True, "result": {"id": int(params["chat_id"]), "type": "supergroup"}}
+    return {"ok": True, "result": {"message_id": 2002}}
+
+ap.api = fake_api_dm_group_spoof
+spoof_err = None
+try:
+    ap.tg_publish("tok", ap.dest_of("tgdm:123456789"), {"text": "DM answer"})
+except ValueError as e:
+    spoof_err = str(e)
+check(spoof_err is not None and "not a private Telegram DM" in spoof_err,
+      "tg_publish refuses tgdm: if Telegram getChat does not say type=='private'")
+ap.api = fake_api
 #
 # This is the leak from 2026-10-22: a review session submitted "If you were
 # referring to checker.pc.am, the issue has been resolved..." straight through

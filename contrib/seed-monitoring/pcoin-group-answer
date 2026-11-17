@@ -160,7 +160,11 @@ def _get_bytes(url, limit=IMAGE_MAX_BYTES, timeout=20):
     if parts.scheme != "https" or host not in IMAGE_HOSTS:
         return None
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as r:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; PCoinBot/1.0; +https://pc.am)"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             # read one byte past the cap: a file AT the cap is fine, one over it
             # is refused rather than silently truncated into a corrupt image.
             b = r.read(limit + 1)
@@ -236,6 +240,9 @@ def askable_text(r):
     return d
 
 
+DYNAMIC_TGDM = re.compile(r"^tgdm:([1-9]\d{4,15})$")
+
+
 def dest_for(chat):
     """Which approval destination a message from `chat` may be answered into.
 
@@ -249,6 +256,8 @@ def dest_for(chat):
     """
     if chat is None:
         return "group"
+    if isinstance(chat, str) and DYNAMIC_TGDM.match(chat):
+        return chat
     if isinstance(chat, str) and chat.startswith("discord:"):
         ch = chat.split(":", 1)[1]
         ids = discord_channel_ids()
@@ -652,7 +661,8 @@ def own_replies(chat, date):
     only inside the same time window as the thread. Unreadable queue: no lines,
     never an error -- missing context degrades the answer, it must not stop it.
     """
-    dest = DEST_FOR_CHAT.get(str(chat))
+    s_chat = str(chat or "")
+    dest = s_chat if DYNAMIC_TGDM.match(s_chat) else DEST_FOR_CHAT.get(s_chat)
     if not dest:
         return []
     try:
@@ -699,8 +709,10 @@ def published_replies_by_target():
     never skip a question."""
     out = {}
     for it in _queue_items():
+        it_dest = str(it.get("dest") or "") if isinstance(it, dict) else ""
         if (isinstance(it, dict) and it.get("state") == "published"
-                and it.get("dest") in DEST_FOR_CHAT.values() and it.get("reply_to")):
+                and (it_dest in DEST_FOR_CHAT.values() or DYNAMIC_TGDM.match(it_dest))
+                and it.get("reply_to")):
             at = int(it.get("published_tg_at") or it.get("published_at") or 0)
             if at:
                 t = str(it["reply_to"])
@@ -870,6 +882,9 @@ def report_listing_offer(tg_token, row, author, text, model):
     if chat.startswith("discord:"):
         where = "PCoin Discord"
         link = "https://discord.com/channels/1547398066313891890/%s/%s" % (chat.split(":", 1)[1], mid)
+    elif chat.startswith("tgdm:"):
+        where = "PCoin Bot DM"
+        link = "tg://user?id=%s" % chat.split(":", 1)[1]
     else:
         where = "PCoin Chat"
         link = "https://t.me/PCoinPCNChat/%s" % mid
@@ -1026,13 +1041,31 @@ def remove_advert(tg_token, row, author, text, model):
 # promise of a human with nothing filed. Those drafts are queued with --hold:
 # the gate never publishes them on its own. How-to answers, links and scam
 # warnings keep the 15-minute auto-publish.
+_BENIGN_MINING_TERMS = re.compile(
+    r"(?i)("
+    r"\bhash\s*rates?\b|"
+    r"\bpayout\s+address(?:es)?\b|"
+    r"\bblock\s+rewards?\b|"
+    r"\b(?:pool|mining|2%|network|transaction|tx)\s+fees?\b|"
+    r"\b(?:pools?|miners?|versions?|commands?|options?|steps?|files?|addresses?)\s+listed\b|"
+    r"\blisted\s+(?:on\s+(?:the\s+)?(?:pc\.am|home\s*page|site|website|page|github)|above|below|here|there)\b"
+    r")"
+)
+
+
+def _strip_mining_terms(s):
+    return _BENIGN_MINING_TERMS.sub(" ", s or "")
+
+
 HOLD_TOPIC = re.compile(
     r"(?i)(\$|\busdt?\b|\bprice|\brate\b|\bpay(out|ment|s|ing)?\b|\bpaid\b|withdraw|deposit|"
-    r"\bminimum|\bfees?\b|refund|\bwrap|redeem|\bwpcn\b|listing|\blisted\b|coinmarketcap|coingecko|"
-    r"\bcmc\b|bount|referr|\breward|cash ?out|\bsell|\bbuy|invest|\bexchange\b)")
+    r"\bminimum|\bfees?\b|refund|\bwrap|redeem|\bwpcn\b|listing|"
+    r"\blisted\s+on\s+(?:an?\s+)?(?:exchange|cmc|coinmarketcap|coingecko|cex|dex|tracker)|"
+    r"coinmarketcap|coingecko|\bcmc\b|bount|referr|\breward|cash ?out|\bsell|\bbuy|invest|\bexchange\b)")
 HOLD_MINING = re.compile(
-    r"(?i)(by default|default (mode|pool|setting)|\bsolo\b|how long.{0,40}(block|mine|mining)|"
-    r"time to (find|mine) a block|blocks? per (day|hour))")
+    r"(?i)(by default|default (?:mode|pool|setting)|is the default|defaults? to (?:pool|solo)|"
+    r"solo takes|how long.{0,40}(?:block|mine|mining)|"
+    r"time to (?:find|mine) a block|blocks? per (?:day|hour|week|month))")
 HOLD_DENIAL = re.compile(
     r"(?i)(not official|unofficial|ha(s|ve)(n't| not) (announced|said|published)|never (announced|tied|said)|"
     r"can(no|')?t (confirm|verify)|treat (it|this|that) as a scam|is not ours|does(n't| not) exist|"
@@ -1049,8 +1082,9 @@ BOT_HANDLE = "@pcoinpcnbot"
 def hold_reasons(question, answer, confidence, report, row, thread=()):
     """The reasons this draft must wait for the owner, or [] to allow auto-publish."""
     q, a = question or "", answer or ""
+    qt, at = _strip_mining_terms(q), _strip_mining_terms(a)
     why = []
-    if HOLD_TOPIC.search(q) or HOLD_TOPIC.search(a):
+    if HOLD_TOPIC.search(qt) or HOLD_TOPIC.search(at):
         why.append("money, price, listing, bounty or withdrawal")
     if HOLD_MINING.search(q) or HOLD_MINING.search(a):
         why.append("mining defaults or block times")
@@ -1439,6 +1473,12 @@ def main():
             continue
 
         if out.get("spam") is True and str(r.get("from_id")) not in OWNER_IDS:
+            if str(r.get("chat") or "").startswith("tgdm:"):
+                act(action="ignored-dm-spam", message_id=mid, who=author,
+                    asked=text[:300], model=used_model)
+                st["handled"][mid] = int(now)
+                print("  private DM spam %s ignored (cannot delete in 1:1 DM)" % mid)
+                continue
             ok_removed = remove_advert(tg, r, author, text, used_model)
             if ok_removed is None:
                 continue        # the report did not go out, so nothing was deleted: retry next run
@@ -1559,7 +1599,12 @@ def main():
                             or (text[:120] + ("…" if len(text) > 120 else ""))),
                 "detail": detail,
                 "from": author,
-                "link": "https://t.me/PCoinPCNChat/%s" % mid,
+                "link": ("https://discord.com/channels/1547398066313891890/%s/%s"
+                         % (str(r.get("chat")).split(":", 1)[1], mid)
+                         if str(r.get("chat") or "").startswith("discord:")
+                         else ("tg://user?id=%s" % str(r.get("chat")).split(":", 1)[1]
+                               if str(r.get("chat") or "").startswith("tgdm:")
+                               else "https://t.me/PCoinPCNChat/%s" % mid)),
                 # QUEUED, not answered. This said `answered: True` the moment a
                 # draft was handed to the approval gate -- but a queued draft can
                 # still be cancelled, and one already had been, so the panel was

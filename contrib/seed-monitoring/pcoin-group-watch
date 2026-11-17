@@ -204,15 +204,18 @@ BUY_BUTTONS = json.dumps({"inline_keyboard": [
 BUY_RE = re.compile(r"^/buy(@PCoinPCNBot)?(\s|$)", re.I)
 LINK_RE = re.compile(r"^/(links?|community|join|discord|channel|group|tg|telegram|help|start)(@PCoinPCNBot)?(\s|$)", re.I)
 COMMUNITY_COOLDOWN_PRIVATE = 10
+COMMUNITY_WELCOME_PRIVATE = 86400
 COMMUNITY_COOLDOWN_GROUP = 30
 
 
 def answer_community(token, msg, st):
     """Answer with community links or buy guide:
-    - In private chat: ANY message from a user (text, command, sticker, etc.)
-      triggers the community links response (with per-chat cooldown).
-    - In group chat: /links, /join, /discord, /channel, /group, /community,
-      /help, /start, /buy trigger the response (with group cooldown).
+    - Explicit commands (/buy, /links, /join, /discord, /channel, /group,
+      /community, /help, /start) in private or group chat reply with the links
+      or buy card and consume the update (no AI answer needed for /start).
+    - Non-command private DMs send the welcome links card at most once per 24h,
+      and return False so the DM is ALSO relayed to ops and spooled for
+      pcoin-group-answer instead of being swallowed unanswered.
     """
     if (msg.get("from") or {}).get("is_bot"):
         return False
@@ -229,16 +232,30 @@ def answer_community(token, msg, st):
         return False
 
     now = time.time()
-    cooldown = COMMUNITY_COOLDOWN_PRIVATE if is_private else COMMUNITY_COOLDOWN_GROUP
     last = st.setdefault("community_last", {})
     last_time = float(last.get(str(chat_id), 0))
+
+    if is_private and not is_buy and not is_link_cmd:
+        if now - last_time >= COMMUNITY_WELCOME_PRIVATE:
+            if DRY:
+                print("  [dry-run] would send 24h welcome links in private DM %s" % chat_id)
+            else:
+                try:
+                    api(token, "sendMessage", {
+                        "chat_id": chat_id, "text": COMMUNITY_TEXT, "parse_mode": "HTML",
+                        "reply_markup": COMMUNITY_BUTTONS,
+                        "reply_to_message_id": msg.get("message_id"),
+                        "allow_sending_without_reply": "true",
+                        "disable_web_page_preview": "true"})
+                    last[str(chat_id)] = now
+                except Exception as e:
+                    print("  private welcome reply failed (%s)" % type(e).__name__, file=sys.stderr)
+        return False
+
+    cooldown = COMMUNITY_COOLDOWN_PRIVATE if is_private else COMMUNITY_COOLDOWN_GROUP
     if now - last_time < cooldown:
-        # Already answered recently: stay quiet, but let the message fall through
-        # to spool/relay instead of vanishing. Returning True here CONSUMED it, so
-        # a question that arrived inside the 30 s group / 10 s private window was
-        # never relayed, never spooled and never reached the answer bot -- the
-        # sender got nothing at all. `pcoin-discord-watch` had this same bug and
-        # fixed it the same way (its :306); this copy did not follow.
+        # Already answered recently: stay quiet, and let the message fall through
+        # to spool/relay instead of vanishing.
         return False
 
     send_text = BUY_TEXT if is_buy else COMMUNITY_TEXT
@@ -940,19 +957,21 @@ def main():
         chat = (msg.get("chat") or {}).get("id")
         chat_type = (msg.get("chat") or {}).get("type")
 
-        # Private chat: the community links responder runs here, before the
-        # group filter below, which would otherwise consume a private message
-        # unanswered. An EDITED message is never a fresh command. Group
-        # messages are handled AFTER moderation so a scam link cannot hide
-        # behind a command prefix like "/help https://evil".
+        # Private chat: explicit commands (/start, /links, /buy, ...) are
+        # answered and consumed here; non-command DMs get the 24h welcome links
+        # card and fall through to relay + spool so real DM questions get
+        # relayed to ops and answered by pcoin-group-answer.
         if u.get("message") and chat_type == "private" and answer_community(token, msg, st):
             delivered_through = uid
             continue
 
-        # Everything not from OUR group is consumed and ignored on purpose: this
-        # is the only poller, so leaving them unconsumed would stall the offset
-        # for ever behind traffic from the bot's other chats.
-        if chat not in WATCHED:
+        is_private_dm = (u.get("message") and chat_type == "private"
+                         and isinstance(chat, int) and chat > 0)
+
+        # Everything not from OUR group (or a 1-on-1 user DM) is consumed and
+        # ignored on purpose: this is the only poller, so leaving them
+        # unconsumed would stall the offset for ever behind other chats.
+        if chat not in WATCHED and not is_private_dm:
             delivered_through = uid
             continue
         if (msg.get("from") or {}).get("is_bot"):
@@ -967,9 +986,9 @@ def main():
             delivered_through = uid
             continue
 
-        # ---- moderation, BEFORE relay and spool ----------------------------
+        # ---- moderation, BEFORE relay and spool (group chats only) ---------
         uid_from = (msg.get("from") or {}).get("id")
-        if uid_from != OWNER_ID:
+        if not is_private_dm and uid_from != OWNER_ID:
             reason, do_delete = moderation_reason(
                 msg, regular=is_regular(st, uid_from, int(msg.get("date") or time.time())))
             if reason:
@@ -994,22 +1013,35 @@ def main():
 
         # Group community links: /links, /join, /discord, /buy, etc. AFTER
         # moderation above, so a scam link cannot hide behind a command prefix.
-        if u.get("message") and answer_community(token, msg, st):
+        if not is_private_dm and u.get("message") and answer_community(token, msg, st):
             delivered_through = uid
             continue
 
-        note_member(st, uid_from, int(msg.get("date") or time.time()))
+        if not is_private_dm:
+            note_member(st, uid_from, int(msg.get("date") or time.time()))
         text = describe(msg)
         urgent = bool(msg.get("text") and TRIGGERS.search(msg["text"]))
-        head = "🆘 <b>PCoin Chat — someone needs help</b>" if urgent else "💬 <b>PCoin Chat</b>"
-        body = ("%s\n<b>%s</b>\n%s\n\n<a href=\"https://t.me/PCoinPCNChat/%d\">open the message</a>"
-                % (head, html.escape(who(msg)), html.escape(text[:1200]), msg.get("message_id", 0)))
+        if is_private_dm:
+            head = "🆘 <b>PCoin Bot DM — someone needs help</b>" if urgent else "📩 <b>PCoin Bot DM</b>"
+            body = ("%s\n<b>%s</b> (id <code>%s</code>)\n%s"
+                    % (head, html.escape(who(msg)), uid_from or chat, html.escape(text[:1200])))
+            spool_chat = "tgdm:%d" % chat
+            spool_mid = "tgdm:%d:%s" % (chat, msg.get("message_id"))
+            raw_rmid = (msg.get("reply_to_message") or {}).get("message_id")
+            spool_rmid = ("tgdm:%d:%s" % (chat, raw_rmid)) if raw_rmid else None
+        else:
+            head = "🆘 <b>PCoin Chat — someone needs help</b>" if urgent else "💬 <b>PCoin Chat</b>"
+            body = ("%s\n<b>%s</b>\n%s\n\n<a href=\"https://t.me/PCoinPCNChat/%d\">open the message</a>"
+                    % (head, html.escape(who(msg)), html.escape(text[:1200]), msg.get("message_id", 0)))
+            spool_chat = chat
+            spool_mid = msg.get("message_id")
+            spool_rmid = (msg.get("reply_to_message") or {}).get("message_id")
 
         try:
             with open(LOG, "a", encoding="utf-8") as fh:
                 fh.write("%s\t%s\t%s\t%s\n" % (
                     time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(msg.get("date", time.time()))),
-                    who(msg), text.replace("\n", " ")[:600], msg.get("message_id", 0)))
+                    who(msg), text.replace("\n", " ")[:600], spool_mid or 0))
         except OSError as e:
             print("  log write failed: %s" % e, file=sys.stderr)
 
@@ -1024,8 +1056,8 @@ def main():
                         # WHICH CHAT. Absent until there were two of them, and a
                         # row that does not say where it came from is a row that
                         # can be answered into the wrong group.
-                        "chat": chat,
-                        "message_id": msg.get("message_id"),
+                        "chat": spool_chat,
+                        "message_id": spool_mid,
                         "date": msg.get("date", int(time.time())),
                         "from": who(msg),
                         "from_id": (msg.get("from") or {}).get("id"),
@@ -1034,7 +1066,7 @@ def main():
                         # WHAT THIS MESSAGE IS ANSWERING. "You sure that
                         # correct?" cannot be answered on its own, and that is
                         # exactly what the answer bot used to be handed.
-                        "reply_to_id": ((msg.get("reply_to_message") or {}).get("message_id")),
+                        "reply_to_id": spool_rmid,
                         "reply_to_from": (who(msg["reply_to_message"])
                                           if msg.get("reply_to_message") else None),
                         "reply_to_text": (describe(msg["reply_to_message"])[:600]

@@ -138,6 +138,32 @@ check(any("follow up" in w for w in H("my miner is stuck", "A person will look i
 check(not any("follow up" in w for w in H("my miner is stuck", "A person will look into it.", "high", {"kind": "bug", "summary": "x"}, {})),
       "the same promise WITH a report is not held for that reason")
 
+# Benign mining answers must NOT false-positive HOLD_TOPIC / HOLD_MINING:
+check(H("Is Rabid pool good?",
+        "Rabid Mining is one of the independent pools listed on the pc.am home page, with a 1% pool fee.",
+        "high", None, {}) == [],
+      "pools listed on pc.am + pool fee is not misread as exchange listing/money")
+check(H("How much shares and coins?",
+        "Shares convert when the pool finds a 50 PCN block reward; paste your payout address into https://explorer.pc.am to check your hash rate.",
+        "high", None, {}) == [],
+      "payout address + block reward + hash rate in a mining explanation is not held")
+check(H("Can I mine solo?",
+        "Yes — solo mining is built into the PCoin node and Windows/Android miner apps; see https://pc.am/mining/.",
+        "high", None, {}) == [],
+      "encouraging/explaining solo mining without default/ETA claims is not held")
+check(any("money" in w for w in H("Are you listed on CoinGecko?", "Not listed on CoinGecko yet.", "high", None, {})),
+      "tracker/exchange 'listed on CoinGecko' IS still held")
+
+# Private DM destination & watcher fallthrough:
+check(ans.dest_for("tgdm:123456789") == "tgdm:123456789", "tgdm:<positive_id> maps to private DM destination")
+check(ans.dest_for("tgdm:-1003975107618") is None, "negative/group id in tgdm: is rejected by dest_for")
+dm_st = {}
+watch.DRY = True
+check(watch.answer_community("tok", {"from": {"id": 99}, "chat": {"id": 99, "type": "private"}, "text": "/start"}, dm_st) is True,
+      "/start in private DM is answered and consumed by answer_community")
+check(watch.answer_community("tok", {"from": {"id": 99}, "chat": {"id": 99, "type": "private"}, "text": "Why is my wallet stuck?"}, dm_st) is False,
+      "non-command question in private DM falls through to relay + AI spool")
+
 # ---- 6. URL allowlist in watcher and answer-bot guard ------------------------
 check(watch.link_allowed("https://pc.am/mining/"), "pc.am URL allowed")
 check(watch.link_allowed("https://explorer.pc.am/tx/abc"), "subdomain of pc.am allowed")

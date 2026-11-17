@@ -134,6 +134,7 @@ OWNER = int(os.environ.get("APPROVE_OWNER", "508669931"))
 # trusted -- dc_publish asks Discord whose channel it is and refuses anything
 # outside our guild before posting. See the header note on allow-lists.
 DYNAMIC_DC = re.compile(r"^dc:(\d{15,25})$")
+DYNAMIC_TGDM = re.compile(r"^tgdm:([1-9]\d{4,15})$")
 
 
 def dc_channel(channel_id, bot_token):
@@ -164,6 +165,11 @@ def dest_of(name):
     if m:
         return {"discord": "botid:" + m.group(1),
                 "label": "the Discord channel this was asked in (%s)" % m.group(1)}
+    m_dm = DYNAMIC_TGDM.match(str(name or ""))
+    if m_dm:
+        uid = m_dm.group(1)
+        return {"chat": uid, "tg_private_only": True,
+                "label": "Telegram DM with user %s" % uid}
     return None
 
 
@@ -502,11 +508,25 @@ def notify_ops(subject, body):
 # ── publishing, one side at a time ─────────────────────────────────────────
 def tg_publish(token, dest, i):
     """The Telegram side. Returns the message id; raises on ANY failure."""
+    if dest.get("tg_private_only"):
+        # Defence in depth: verify with Telegram that the positive ID really is
+        # a 1-on-1 private chat before sending, matching dc_publish's guild check.
+        gc = api(token, "getChat", {"chat_id": str(dest["chat"])}, timeout=15)
+        if not gc.get("ok") or (gc.get("result") or {}).get("type") != "private":
+            raise ValueError("refusing tgdm publish: chat %s is not a private Telegram DM" % dest["chat"])
+
     pm = i.get("parse_mode") or ""
+    raw_reply = str(i.get("reply_to") or "")
+    if raw_reply.startswith("tgdm:"):
+        raw_reply = raw_reply.rsplit(":", 1)[-1]
+
     if i.get("photo_b64"):
         p = {"chat_id": dest["chat"], "caption": i["text"][:MAX_CAPTION]}
         if pm:
             p["parse_mode"] = pm
+        if raw_reply:
+            p["reply_to_message_id"] = raw_reply
+            p["allow_sending_without_reply"] = "true"
         r = api(token, "sendPhoto", p,
                 files={"photo": ("card.png", base64.b64decode(i["photo_b64"]))})
     else:
@@ -514,8 +534,9 @@ def tg_publish(token, dest, i):
              "disable_web_page_preview": "true"}
         if pm:
             p["parse_mode"] = pm
-        if i.get("reply_to"):
-            p["reply_to_message_id"] = str(i["reply_to"])
+        if raw_reply:
+            p["reply_to_message_id"] = raw_reply
+            p["allow_sending_without_reply"] = "true"
         r = api(token, "sendMessage", p)
     if not r.get("ok"):
         raise ValueError(r.get("description") or "telegram said not ok")
