@@ -831,7 +831,7 @@ async function recordBlock(job, blockId, m, shareId) {
  * place with its timestamp rather than replace it with zeros. A directory
  * showing "0 H/s" reads as a dead pool.
  */
-let refreshNetworkStatsInFlight = false;
+let networkStatsInFlight = false;
 async function refreshNetworkStats() {
   if (networkStatsInFlight) return;
   networkStatsInFlight = true;
