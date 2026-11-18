@@ -44,7 +44,7 @@ IMAGE_ALT = "PCoin — the coin anyone can mine. An independent Layer-1 blockcha
 # Same rule as make-sitemap.py: a path segment of 16+ hex characters is the
 # unlisted admin path, not a page. It gets no tags and no canonical, because a
 # canonical URL is a request to index it.
-SECRET = re.compile(r"^[0-9a-f]{16,}$", re.I)
+SECRET = re.compile(r"^(?:[0-9a-f]{16,}|google[0-9a-f]+\.html)$", re.I)
 
 TITLE = re.compile(rb"<title>(.*?)</title>", re.S | re.I)
 DESC = re.compile(rb'<meta\s+name="description"\s+content="(.*?)"\s*/?>', re.S | re.I)

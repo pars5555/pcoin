@@ -38,7 +38,7 @@ BASE = "https://pc.am"
 OUT = SITE / "sitemap.xml"
 
 # A path segment of 16+ hex characters is an unlisted path, never a page.
-SECRET = re.compile(r"^[0-9a-f]{16,}$", re.I)
+SECRET = re.compile(r"^(?:[0-9a-f]{16,}|google[0-9a-f]+\.html)$", re.I)
 NOINDEX = re.compile(r'<meta\s+name=["\']robots["\'][^>]*\bnoindex\b', re.I)
 
 # Priority is a hint, not a ranking. The homepage leads; the pages a visitor is
