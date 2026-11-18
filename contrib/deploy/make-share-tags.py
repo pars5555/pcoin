@@ -38,7 +38,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SITE = ROOT / "site"
 BASE = "https://pc.am"
-IMAGE = f"{BASE}/img/og-pc-am.png"
+IMAGE = f"{BASE}/og-preview.png"
 IMAGE_ALT = "PCoin — the coin anyone can mine. An independent Layer-1 blockchain."
 
 # Same rule as make-sitemap.py: a path segment of 16+ hex characters is the

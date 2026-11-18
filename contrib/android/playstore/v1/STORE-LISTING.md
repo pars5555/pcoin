@@ -1,10 +1,10 @@
 # PCoin Wallet — store listing copy
 
-App name (30): **PCoin Wallet**
+App name (28/30): `PCoin Wallet — PCN Full Node`
 
-## Short description (74/80)
+## Short description (78/80)
 
-Non-custodial PCoin (PCN) wallet that runs a real full node on your phone.
+Non-custodial PCoin (PCN) crypto wallet running a real full node on your phone.
 
 ## Full description (1569/4000)
 
@@ -73,4 +73,4 @@ box blurred. Reused unchanged for the 7-inch and 10-inch tablet slots.
 
 - Category: **Finance** · App (not game) · Free
 - Email `pcoinpcn@gmail.com` · Website `https://pc.am` · no phone
-- Privacy policy `https://pc.am/wallet-privacy.html`
+- Privacy policy `https://pc.am/wallet-privacy.html` (general policy `https://pc.am/privacy/`, data deletion `https://pc.am/delete-data/`)

@@ -29,6 +29,7 @@ import argparse
 import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -38,6 +39,7 @@ OUT = SITE / "sitemap.xml"
 
 # A path segment of 16+ hex characters is an unlisted path, never a page.
 SECRET = re.compile(r"^[0-9a-f]{16,}$", re.I)
+NOINDEX = re.compile(r'<meta\s+name=["\']robots["\'][^>]*\bnoindex\b', re.I)
 
 # Priority is a hint, not a ranking. The homepage leads; the pages a visitor is
 # sent to by name come next; reference material is lower. Anything not named
@@ -45,32 +47,57 @@ SECRET = re.compile(r"^[0-9a-f]{16,}$", re.I)
 PRIORITY = {
     "": "1.0",
     "mining": "0.9", "wallet": "0.9", "download": "0.9", "buy": "0.8",
-    "faq": "0.8", "docs": "0.8", "pay": "0.7", "exchanges": "0.7",
-    "bounty": "0.7", "news": "0.7", "app": "0.6",
-    "roadmap": "0.6", "whitepaper": "0.6", "listing": "0.5",
+    "faq": "0.8", "docs": "0.8", "exchanges": "0.7",
+    "bounty": "0.7", "news": "0.7", "app": "0.7",
+    "roadmap": "0.6", "whitepaper": "0.6", "listing": "0.6",
+    "privacy": "0.5", "terms": "0.5", "delete-data": "0.5",
+    "wallet-privacy.html": "0.5",
 }
 DEFAULT_PRIORITY = "0.6"
 
+CHANGEFREQ = {
+    "": "daily",
+    "news": "daily",
+    "mining": "weekly", "wallet": "weekly", "download": "weekly",
+    "buy": "weekly", "faq": "weekly", "docs": "weekly",
+    "exchanges": "weekly", "bounty": "weekly", "app": "weekly",
+    "roadmap": "weekly", "listing": "weekly",
+    "whitepaper": "monthly", "privacy": "monthly",
+    "terms": "monthly", "delete-data": "monthly",
+    "wallet-privacy.html": "monthly",
+}
+DEFAULT_CHANGEFREQ = "weekly"
+
 
 def git_lastmod(path):
-    """Last commit date for a file, or None if git has never seen it."""
+    """Last commit date for a file, or today's UTC date if modified/uncommitted."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     try:
+        st = subprocess.run(
+            ["git", "-C", str(ROOT), "status", "--porcelain", "--", str(path)],
+            capture_output=True, text=True, timeout=30)
+        if st.stdout.strip():
+            return today
         out = subprocess.run(
             ["git", "-C", str(ROOT), "log", "-1", "--format=%cs", "--", str(path)],
             capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.SubprocessError):
-        return None
+        return today
     d = out.stdout.strip()
-    return d if re.fullmatch(r"\d{4}-\d{2}-\d{2}", d) else None
+    return d if re.fullmatch(r"\d{4}-\d{2}-\d{2}", d) else today
 
 
 def pages():
-    """(url-path, file) for every page, with exclusions reported."""
+    """(url-path, file) for every indexable page, with exclusions reported."""
     found, skipped = [], []
     for f in sorted(SITE.rglob("*.html")):
         rel = f.relative_to(SITE)
         if any(SECRET.match(part) for part in rel.parts):
-            skipped.append(str(rel))
+            skipped.append(f"unlisted path: {rel}")
+            continue
+        raw = f.read_text(encoding="utf-8", errors="replace")
+        if NOINDEX.search(raw[:4096]):
+            skipped.append(f"noindex: {rel}")
             continue
         if f.name == "index.html":
             d = rel.parent.as_posix()
@@ -92,6 +119,7 @@ def build():
         mod = git_lastmod(f)
         if mod:
             lines.append(f"    <lastmod>{mod}</lastmod>")
+        lines.append(f"    <changefreq>{CHANGEFREQ.get(key, DEFAULT_CHANGEFREQ)}</changefreq>")
         lines.append(f"    <priority>{PRIORITY.get(key, DEFAULT_PRIORITY)}</priority>")
         lines.append("  </url>")
     lines.append("</urlset>")
@@ -106,7 +134,7 @@ def main():
 
     xml, found, skipped = build()
     for s in skipped:
-        print(f"excluded (unlisted path): {s}", file=sys.stderr)
+        print(f"excluded ({s})", file=sys.stderr)
 
     if a.check:
         have = OUT.read_text(encoding="utf-8") if OUT.exists() else ""

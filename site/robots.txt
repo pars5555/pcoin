@@ -30,5 +30,8 @@
 
 User-agent: *
 Allow: /
+Disallow: /admin
+Disallow: /api/
+Disallow: /pay/
 
 Sitemap: https://pc.am/sitemap.xml

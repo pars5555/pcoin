@@ -1,0 +1,26 @@
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "am.pc.pcoinwallet",
+      "sha256_cert_fingerprints": [
+        "2D:C0:84:24:50:7C:08:C1:2F:5A:FB:7C:E7:32:8D:5F:4F:EC:77:2D:DE:04:DE:40:D6:9A:69:E8:DC:AC:CB:32"
+      ]
+    }
+  },
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "am.pc.pcoinminer",
+      "sha256_cert_fingerprints": [
+        "2D:C0:84:24:50:7C:08:C1:2F:5A:FB:7C:E7:32:8D:5F:4F:EC:77:2D:DE:04:DE:40:D6:9A:69:E8:DC:AC:CB:32"
+      ]
+    }
+  }
+]
