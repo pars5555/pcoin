@@ -1059,7 +1059,8 @@ def _strip_mining_terms(s):
 
 HOLD_TOPIC = re.compile(
     r"(?i)(\$|\busdt?\b|\bprice|\brate\b|\bpay(out|ment|s|ing)?\b|\bpaid\b|withdraw|deposit|"
-    r"\bminimum|\bfees?\b|refund|\bwrap|redeem|\bwpcn\b|listing|"
+    r"\bminimum\b(?!\s+(?:\d+\s*(?:gb|mb|gib|cores?|threads?)|ram|cpu|system|requirements?|specs?|hardware))|"
+    r"\bfees?\b|refund|\bwrap|redeem|\bwpcn\b|listing|"
     r"\blisted\s+on\s+(?:an?\s+)?(?:exchange|cmc|coinmarketcap|coingecko|cex|dex|tracker)|"
     r"coinmarketcap|coingecko|\bcmc\b|bount|referr|\breward|cash ?out|\bsell|\bbuy|invest|\bexchange\b)")
 HOLD_MINING = re.compile(
@@ -1073,9 +1074,14 @@ HOLD_DENIAL = re.compile(
 HOLD_DEFLECT = re.compile(
     r"(?i)\b(a person|someone|a human|the team|a moderator|an admin)\b.{0,20}\b(will|would|can|is going to)\b.{0,20}"
     r"\b(follow|look|check|answer|explain|get back|reply|respond)")
+# NARROWED 2026-11-20 (owner, option 3). Only a real DISPUTE or accusation holds a
+# reply that follows a bot answer. Merely replying to the bot, asking for a person
+# ("flag it for a person"), or saying "human" no longer does: those drafts are
+# ordinary follow-ups, and the topic/denial/confidence holds below still catch
+# every one that touches money, listings, withdrawals or a denial.
 HOLD_DISPUTE = re.compile(
-    r"(?i)(\bwrong\b|not true|incorrect|that's not|thats not|you said|you told|\bofficial chan|"
-    r"flag it|for a person|a real person|\bhuman\b)")
+    r"(?i)(\bwrong\b|not true|incorrect|that's not|thats not|you said|you told|"
+    r"\bliar\b|\blying\b|\bfake\b|\bmisleading\b)")
 BOT_HANDLE = "@pcoinpcnbot"
 
 
@@ -1094,8 +1100,8 @@ def hold_reasons(question, answer, confidence, report, row, thread=()):
         why.append("the model was not highly confident")
     replied_to_bot = BOT_HANDLE in str((row or {}).get("reply_to_from") or "").lower()
     bot_in_thread = any(str(l).startswith("PCoin (you") for l in (thread or ()))
-    if replied_to_bot or (bot_in_thread and HOLD_DISPUTE.search(q)):
-        why.append("it answers someone replying to or disputing an earlier bot answer")
+    if (replied_to_bot or bot_in_thread) and HOLD_DISPUTE.search(q):
+        why.append("it answers someone disputing or correcting an earlier bot answer")
     if HOLD_DEFLECT.search(a) and not report:
         why.append("it promises a person will follow up but files nothing")
     return why

@@ -130,9 +130,27 @@ check(any("denies" in w for w in H("Is the pinned counter real?", "The project h
       "a denial is held")
 check(any("confident" in w for w in H("hi", "Hello!", "medium", None, {})), "medium confidence is held")
 check(any("disputing" in w for w in H("that's wrong", "Sorry.", "high", None, {"reply_to_from": "PCoin (@PCoinPCNBot)"})),
-      "a reply to the bot is held")
-check(any("disputing" in w for w in H("Please flag it for a person", "ok", "high", None, {}, ["PCoin (you, an earlier reply that WAS posted): x"])),
+      "a DISPUTE replying to the bot is held")
+check(any("disputing" in w for w in H("You said it was banned, that is not true", "ok", "high", None, {}, ["PCoin (you, an earlier reply that WAS posted): x"])),
       "a dispute after a bot reply in the thread is held")
+# Narrowed 2026-11-20: a plain follow-up to the bot is no longer held for that reason alone.
+BT_ANS = ("The BitcoinTalk account that posted PCoin's announcement was banned by the forum's moderators on 9 September 2026; "
+          "the appeal is pending and nothing about PCoin itself changed. Official news lives in @PCoinPCN and https://pc.am.")
+check(H("Please update in bitcointalk and other forum . We need community", BT_ANS, "high", None,
+        {"reply_to_from": "PCoin (@PCoinPCNBot)"}) == [],
+      "a plain follow-up replying to the bot (BitcoinTalk/community) is NOT held")
+check(H("Please flag it for a person", "Understood, thanks.", "high", None, {},
+        ["PCoin (you, an earlier reply that WAS posted): x"]) == [],
+      "asking for a person after a bot reply is not held for dispute")
+check(any("disputing" in w for w in H("you are lying", "Understood.", "high", None, {"reply_to_from": "PCoin (@PCoinPCNBot)"})),
+      "an accusation replying to the bot is still held")
+check(any("money" in w for w in H("is the bot wrong about my withdrawal fee?", "The fee is shown on the withdraw page.", "high", None,
+                                  {"reply_to_from": "PCoin (@PCoinPCNBot)"})),
+      "a money topic replying to the bot is still held")
+check(H("What are the minimum system requirements?", "Any 64-bit CPU with 4 GB RAM works; minimum 2 GB free.", "high", None, {}) == [],
+      "a hardware 'minimum' is not mistaken for a money minimum")
+check(any("money" in w for w in H("What is the minimum withdrawal?", "See the withdrawal page.", "high", None, {})),
+      "a withdrawal minimum is still held")
 check(any("follow up" in w for w in H("my miner is stuck", "A person will look into it.", "high", None, {})),
       "a promise of a person with no report is held")
 check(not any("follow up" in w for w in H("my miner is stuck", "A person will look into it.", "high", {"kind": "bug", "summary": "x"}, {})),
