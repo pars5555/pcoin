@@ -111,7 +111,7 @@ DEPLOYMENTS = {
 NOT_DEPLOYED_OK = {
     "pool": {"blocktest.mjs", "coinbasetest.mjs", "duptest.mjs",
              "storetest.mjs", "testminer.mjs"},
-    "market": {"gen_ladder.mjs", "ops-send-test.mjs", "announce-spool-test.mjs", "ipn-deploy-test.sh",
+    "market": {"gen_ladder.mjs", "ops-send-test.mjs", "announce-spool-test.mjs", "email-verify-test.mjs", "ipn-deploy-test.sh",
                "ipn-deploy.sh", "ipn-e2e-test.mjs", "ipn-test.mjs", "ladder-index-test.mjs", "price-feed-test.mjs"},
     "admin": {"send-test.mjs", "transfer-test.mjs", "transfer-crypto.entry.mjs", "admin-gate-test.mjs",
               "exchange-preview.mjs", "exchange-preview-drive.mjs", "exchange-preview-cf-drive.mjs",

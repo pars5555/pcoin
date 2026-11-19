@@ -186,6 +186,14 @@ check(ans.guard("The price is $0.05 right now.") is not None,
 check(ans.guard("The fee is $0.00 to try.") is None,
       "zero dollars ($0.00) is not misread as a PCN rate")
 
+# ---- 7. 'a phrase' leak detector vs real scam warning prose ---------------
+check(ans.guard("You're right that there have been a few today — those are spam accounts, not PCoin people. Nobody from PCoin will ever DM you first or ask for a recovery phrase, and nobody is running a Solana giveaway or a trading group here: block and report those accounts.") is None,
+      "scam warning mentioning 'recovery phrase, and nobody is running...' passes guard")
+check(ans.guard("My recovery phrase: abandon ability able about above absent") == "a phrase",
+      "recovery phrase with colon and words IS still held as a phrase")
+check(ans.guard("His seed phrase is abandon ability able about above absent absorb abstract") == "a phrase",
+      "6+ lowercase words after 'seed phrase is' IS still held as a phrase")
+
 print()
 print("%d FAILED" % len(FAILS) if FAILS else "ALL PASSED")
 sys.exit(1 if FAILS else 0)

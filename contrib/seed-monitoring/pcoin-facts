@@ -688,7 +688,8 @@ def block(c):
         # matters; reporting only the first would hide the failure it catches.
         unver = wd.get("paidButUnverified")
         oldest = wd.get("queueOldestSeconds")
-        out.append("WITHDRAWALS PAID SO FAR: %s, of which %s are confirmed on the chain%s. "
+        out.append("WITHDRAWALS PAID SO FAR: %s, of which %s are confirmed on their respective chains "
+                   "(PCN payouts on explorer.pc.am; USDT payouts on BNB Smart Chain or TRON)%s. "
                    "%s"
                    % (wd.get("paid"), wd.get("verifiedOnChain"),
                       "" if not unver else " (%s not yet confirmed)" % unver,

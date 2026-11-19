@@ -881,9 +881,23 @@ def main():
             if e.code == 409:
                 sys.exit("CONFLICT (409): something else is polling getUpdates for this bot. "
                          "Only one consumer may. Find it and stop it -- do not retry.")
-            if e.code >= 500 and attempt < 2:
-                time.sleep(2 ** attempt)
-                continue
+            if e.code >= 500:
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+                    continue
+                now = time.time()
+                since = st.get("net_down_since")
+                if not isinstance(since, (int, float)) or since <= 0:
+                    since = now
+                    st["net_down_since"] = since
+                    save_state(st)
+                down_for = now - since
+                if down_for < NET_QUIET_SECONDS:
+                    print("  getUpdates HTTP %d; down %.0fs, staying quiet until %ds"
+                          % (e.code, down_for, NET_QUIET_SECONDS), file=sys.stderr)
+                    return 0
+                sys.exit("getUpdates HTTP %d for %.0f minutes -- Telegram API failing."
+                         % (e.code, down_for / 60.0))
             sys.exit("getUpdates failed: HTTP %d" % e.code)
         except (urllib.error.URLError, OSError) as e:
             # Transport only. Report the TYPE, never the exception object: a URL

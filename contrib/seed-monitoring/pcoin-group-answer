@@ -419,7 +419,7 @@ FORBIDDEN = [
     (re.compile(r"(?i)(?<![\w/])(?:/opt/|/etc/|/var/lib/|/usr/local/|/var/www/)"), "a server path"),  # \b NEVER MATCHED HERE: there is no word boundary between a space and a slash, so this rule only ever fired on the useless case (a/opt/x) and missed every real one (it is in /opt/x). Broken in all 11 backups; found 2026-09-17 by a test that asserted the rule FIRES, rather than one that asserted an answer passed.
     (re.compile(r"(?i)\b(systemctl|journalctl|ssh\s+root|sudo\s|crontab|docker\s|pm2\s)"), "a server command"),
     (re.compile(r"(?i)\b(bearer\s+[\w\-.]{12,}|api[_-]?key\s*[:=]|token\s*[:=])"), "a credential"),
-    (re.compile(r"(?i)\b(seed phrase|recovery phrase)\b.{0,40}\b(is|:)\s*\w+\s+\w+\s+\w+"), "a phrase"),
+    (re.compile(r"(?i)\b(seed phrase|recovery phrase)\b[^.!?,;\n]{0,25}(?::\s*\w+\s+\w+\s+\w+|\bis\s*[:=]?\s*(?:[a-z]{3,12}\s+){5,}[a-z]{3,12})"), "a phrase"),
 
     # --- added 2026-09-13, rule 7: never describe how any of this is run ---
     # A PCN address handed out by a chat bot is the oldest scam in the business,
