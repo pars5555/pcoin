@@ -1,0 +1,29 @@
+[Unit]
+Description=PCoin contact form backend (pc.am/contact -> Telegram)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pcoin-contact
+Group=pcoin-contact
+WorkingDirectory=/opt/pcoin-contact
+Environment=CONTACT_CONF=/etc/pcoin/contact.conf
+ExecStart=/usr/bin/node /opt/pcoin-contact/server.mjs
+Restart=on-failure
+RestartSec=3
+
+# Hardening — isolated from www-data and unrelated vhosts on this box.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/pcoin-contact
+ReadOnlyPaths=/etc/pcoin/contact.conf /opt/pcoin-contact
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+LockPersonality=true
+MemoryDenyWriteExecute=false
+
+[Install]
+WantedBy=multi-user.target
